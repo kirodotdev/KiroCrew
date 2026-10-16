@@ -69,7 +69,7 @@ const TEAMS = [
 const DEFAULT_MEMBERS = [
   chatted('crewmate', {
     display_name: 'Crew Mate', kiro_agent: 'kirocrew', running: true, last_active_ts: now - 45,
-    last_message: 'Why do I have so many crewmates all of a sudden?',
+    last_message: 'Why do I have so many mates all of a sudden?',
   }),
   chatted('amzn-pipeline-assistant', {
     kiro_agent: 'amzn-pipeline-assistant', last_active_ts: now - 2400,
@@ -193,7 +193,7 @@ const addMenu = await page.waitForSelector('[data-testid="member-add-menu"]')
 await page.waitForTimeout(400)
 const items = await page.locator('[data-testid="member-add-menu"] [role="menuitem"]').evaluateAll((els) => els.map((e) => e.textContent.replace(/\s+/g, ' ').trim()))
 console.log(`"+" menu offers ${items.length}: ${items.join(', ')}`)
-check('the "+" menu offers New crewmate alone', items.length === 1 && (await page.getByTestId('member-add-team').count()) === 0)
+check('the "+" menu offers New mate alone', items.length === 1 && (await page.getByTestId('member-add-team').count()) === 0)
 await addMenu.screenshot({ path: join(OUT, '07-add-menu.png') })
 await page.screenshot({ path: join(OUT, '08-page-add-menu.png') })
 

@@ -1021,24 +1021,24 @@ against sweep completeness, and are torn down at `close_all`.
   tool row: a tool row later than it means the model kept working past the
   directive, and a gateway that died in that work must not hide behind it.
   `test_nothing_to_do_directive.py` pins the two constants against the
-  selectors mirror. The Crewmate chat draws nothing for it: tool rows are
+  selectors mirror. The Mate chat draws nothing for it: tool rows are
   machinery there
   (`crewmateBubbles.MACHINERY_ROLES`), so the quiet turn leaves that surface
-  exactly as it was. The Crewmate chat drops a `notice` row by an ALLOWLIST of
+  exactly as it was. The Mate chat drops a `notice` row by an ALLOWLIST of
   machinery `meta.kind`s (`crewmateBubbles.CREWMATE_HIDDEN_NOTICE_KINDS`), never
   by role: the ladder's own cards — the continue and give-up rungs and the
   post-compaction resume — carry `meta.kind = "empty_turn"`
   (`chat_utils.EMPTY_TURN_NOTICE_KIND`), and the automation arm/revision/stop
   refusal carries `meta.kind = "arm_refusal"`
   (`session_directive_apply.ARM_REFUSAL_NOTICE_KIND`); both are the runtime
-  talking about its own machinery, so a person reading a crewmate has nothing to
+  talking about its own machinery, so a person reading a mate has nothing to
   do with them. Every notice OUTSIDE that allowlist still draws, because it
   names something the person may have to act on (a dropped queued message, a
   model-fallback hint). The refusal still reaches the crewmate: it is also
-  queued into the crewmate's NEXT turn with `chat_utils.AUTOMATION_NOTICE_KIND`,
+  queued into the mate's NEXT turn with `chat_utils.AUTOMATION_NOTICE_KIND`,
   so it drains as an `inject` row (never a `user` row shown as the person's own
-  bubble) the turn carries, and the crewmate can stop and re-arm the loop
-  itself. That inject row is model-only machinery: the crewmate chat hides it
+  bubble) the turn carries, and the mate can stop and re-arm the loop
+  itself. That inject row is model-only machinery: the mate chat hides it
   via `MACHINERY_ROLES` and every other surface suppresses it too
   (`transcriptRenderers` `automation_notice_inject` draws nothing), so the raw
   `[Automation notice] …` text never appears as a row beside the refusal's own
@@ -2355,8 +2355,8 @@ The `side:` prefix is included so
 `/side` conversations never resume across KiroCrew restarts — each cold-start
 triggers `is_first_turn=True` in `build_side_message` which re-seeds the
 parent snapshot + accumulated side history.
-The `thread:` prefix (a reply thread on a crewmate chat message,
-[history](history.md#reply-threads-on-crewmate-chat-messages-dashboardchat_threadspy))
+The `thread:` prefix (a reply thread on a mate chat message,
+[history](history.md#reply-threads-on-mate-chat-messages-dashboardchat_threadspy))
 is included for the same reason: `build_thread_message` re-seeds the whole
 envelope on a cold session.
 

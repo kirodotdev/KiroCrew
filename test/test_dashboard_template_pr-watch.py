@@ -276,7 +276,7 @@ class TestTheVerdictLine:
         """A verdict with no silence state becomes a stale lie the moment the crewmate
         stops writing, which is the normal case on a box whose gateway restarts often."""
         assert "No word yet" in html, (
-            "the verdict line has no state for 'the crewmate has not written a lane "
+            "the verdict line has no state for 'the mate has not written a lane "
             "reading', so an unwritten board renders as a judgment nobody made"
         )
 

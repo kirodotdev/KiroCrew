@@ -7723,8 +7723,8 @@
       "deprecated": false,
       "sensitive": false,
       "tags": [],
-      "label": "Reply threads on crewmate chat messages",
-      "help": "Let any message in a crewmate's chat carry its own reply thread, opened in the side panel while the main chat stays visible. Off by default: the thread routes answer not-found, no thread frame is sent, and the dashboard draws no Reply in thread control. Takes effect on the next request; no restart.",
+      "label": "Reply threads on mate chat messages",
+      "help": "Let any message in a mate's chat carry its own reply thread, opened in the side panel while the main chat stays visible. Off by default: the thread routes answer not-found, no thread frame is sent, and the dashboard draws no Reply in thread control. Takes effect on the next request; no restart.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -7737,8 +7737,8 @@
       "deprecated": false,
       "sensitive": false,
       "tags": [],
-      "label": "Crewmates in the chat agent picker",
-      "help": "List crewmates in the chat composer's agent picker, beside the agent templates, so a chat can be switched onto a crewmate (and its own workspace and memory) without opening it from the Crew page. Off by default: the picker lists templates plus any crewmate no listed template already covers; the default agent stays even when covered, unless a template shares its name. Takes effect when the dashboard is reloaded; no gateway restart.",
+      "label": "Mates in the chat agent picker",
+      "help": "List mates in the chat composer's agent picker, beside the agent templates, so a chat can be switched onto a mate (and its own workspace and memory) without opening it from the Crew page. Off by default: the picker lists templates plus any mate no listed template already covers; the default agent stays even when covered, unless a template shares its name. Takes effect when the dashboard is reloaded; no gateway restart.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -8550,8 +8550,8 @@
       "deprecated": false,
       "sensitive": false,
       "tags": [],
-      "label": "Crewmates Onboarded",
-      "help": "Whether the user has finished or dismissed the first-run Meet CrewMates flow (the four-step introduction that creates the first crewmate). Server-backed like the other first-run flags so a second machine does not replay it. Also set when the flow is re-run from the Crewmates page.",
+      "label": "Mates Onboarded",
+      "help": "Whether the user has finished or dismissed the first-run Meet CrewMates flow (the four-step introduction that creates the first mate). Server-backed like the other first-run flags so a second machine does not replay it. Also set when the flow is re-run from the Mates page.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -9268,7 +9268,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Worker Model",
-      "help": "Model for the sessions this crewmate dispatches through session_create when the call names none. Empty copies the crewmate's model pin when set; with both fields empty, no session model is pinned and the worker's own agent or the global default decides. Unlike 'model', 'auto' is a real pin here: workers run on the backend's own default, which is how a crewmate on a costly model keeps its workers cheap. An explicit model on the call wins.",
+      "help": "Model for the sessions this mate dispatches through session_create when the call names none. Empty copies the mate's model pin when set; with both fields empty, no session model is pinned and the worker's own agent or the global default decides. Unlike 'model', 'auto' is a real pin here: workers run on the backend's own default, which is how a mate on a costly model keeps its workers cheap. An explicit model on the call wins.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
@@ -9282,7 +9282,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Worker Reasoning Effort",
-      "help": "Reasoning effort for the sessions this crewmate dispatches through session_create when the call names none. Empty means: while the workers run the crewmate's own model (worker_model empty and no model on the call) they take the crewmate's own effort (the field above); under any other model no level is pinned and the worker's agent decides as usual (its own crew pin if it runs as a crewmate, else agent.reasoning_effort, else the model default). Set, one of the five standard levels. An explicit effort on the call wins.",
+      "help": "Reasoning effort for the sessions this mate dispatches through session_create when the call names none. Empty means: while the workers run the mate's own model (worker_model empty and no model on the call) they take the mate's own effort (the field above); under any other model no level is pinned and the worker's agent decides as usual (its own crew pin if it runs as a mate, else agent.reasoning_effort, else the model default). Set, one of the five standard levels. An explicit effort on the call wins.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
@@ -9296,7 +9296,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Approval Mode",
-      "help": "Tool approval for this crewmate's own Crewmates-page thread: normal, trust_reads or trust. Empty means the user never chose one, and the thread opens in trust.",
+      "help": "Tool approval for this mate's own Mates-page thread: normal, trust_reads or trust. Empty means the user never chose one, and the thread opens in trust.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""

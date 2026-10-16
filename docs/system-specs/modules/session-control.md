@@ -18,7 +18,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 
 | Tool | Route | What it does |
 |------|-------|--------------|
-| `session_create` | `POST /api/session-control/create` | Open a new, empty session in the caller's workspace, optionally filed into a sidebar folder at creation and pinned to a `model` / `reasoning_effort`; either omitted inherits the dispatching crewmate's worker pair, else its own pair, else the default. Before any gate, a title is refused with `invalid_title` (400) under `session_rename`'s character rules (control, text-direction and non-allowed format characters, U+2800 anywhere, no visible character), then scrubbed with `_scrub_text` and cut to 200 characters; a cut result that shows nothing is refused the same way, and a blank title is no title |
+| `session_create` | `POST /api/session-control/create` | Open a new, empty session in the caller's workspace, optionally filed into a sidebar folder at creation and pinned to a `model` / `reasoning_effort`; either omitted inherits the dispatching mate's worker pair, else its own pair, else the default. Before any gate, a title is refused with `invalid_title` (400) under `session_rename`'s character rules (control, text-direction and non-allowed format characters, U+2800 anywhere, no visible character), then scrubbed with `_scrub_text` and cut to 200 characters; a cut result that shows nothing is refused the same way, and a blank title is no title |
 | `session_fork` | `POST /api/session-control/fork` | Open a new session that CARRIES a copy of a source session's transcript — the caller's own by default — the way the dashboard's Fork button does; optionally titled, filed, and cut at a fork point. The title meets `session_create`'s title rules before any gate (`invalid_title`, 400; scrubbed, cut to 200 characters, a cut result that shows nothing refused, a blank title is no title) |
 | `session_stop` | `POST /api/session-control/stop` | Stop another session's in-flight turn |
 | `session_end_wait` | `POST /api/session-control/end-wait` | Wake a session the caller CREATED from the `wait` tool early, keeping its turn; any other target is refused `not_creator`, for every caller class |
@@ -555,9 +555,9 @@ the whole create with `model_rejected`; a level outside the five fails it with
 the birth metadata line (`model`, `reasoning_effort`) so an idle newborn keeps
 them across a restart.
 
-**Omitted, each takes the dispatching crewmate's matching explicit pin.** A
-crewmate with a model or effort pin passes that value to a worker it opens unless
-the worker fields say otherwise. An empty crewmate pin leaves that half unpinned,
+**Omitted, each takes the dispatching mate's matching explicit pin.** A
+mate with a model or effort pin passes that value to a worker it opens unless
+the worker fields say otherwise. An empty mate pin leaves that half unpinned,
 so the worker's selected agent or the global default decides. `create_session`
 resolves the caller's member record
 (`_dispatching_crewmate`: the caller's protected execution record when it names
@@ -566,39 +566,39 @@ record, the slot's agent name as `resolve_crew_identity` reads it) and fills
 what the call left unsaid from `worker_session_defaults(record)`: the record's
 `worker_model` / `worker_reasoning_effort` when set, else its own `model` /
 `reasoning_effort`. `worker_model` is read raw, so `"auto"` is a real pin there
-(workers on the backend default while the crewmate stays on a costly model),
-where the crewmate's own `model` folds it to inherit. The crewmate's own effort
-carries over only while the workers run the crewmate's own model: with
+(workers on the backend default while the mate stays on a costly model),
+where the mate's own `model` folds it to inherit. The mate's own effort
+carries over only while the workers run the mate's own model: with
 `worker_model` set, or a `model` named on the call, the only effort a worker
 takes is `worker_reasoning_effort`, so a `max` chosen for an opus conductor never
 reaches an `auto`, haiku or explicitly named worker model. With none pinned the
 child's first turn resolves its effort as any session does
-(`resolve_session_effort`: the child's own crew pin when it runs as a crewmate,
+(`resolve_session_effort`: the child's own crew pin when it runs as a mate,
 else `agent.reasoning_effort`, else the model default), which is what the profile
 card's "No level set" names. An inherited pin is also dropped when it cannot
 follow the worker onto its harness (`_inherited_pin_foreign_to_child`): the
-crewmate's thread runs on `agent.member_acp_backend` and its own `model` was
+mate's thread runs on `agent.member_acp_backend` and its own `model` was
 validated there, while the non-member child runs on `agent.acp_backend`, so that
 pin is dropped when the two harnesses disagree on model-id namespace; the
 profile's explicit `worker_model` is validated for the worker's harness
 (`PUT /api/agents/{name}` judges it against `agent.acp_backend`) and crosses
 freely. Either pin is dropped when the child's namespace advertises a list it is
 not on while another harness claims it; `"auto"` always passes. When the
-crewmate's own model is dropped, the crewmate's own effort that rode along for
+mate's own model is dropped, the mate's own effort that rode along for
 it is dropped too; an explicit `worker_reasoning_effort` stays. A caller whose record is a
-template — a dispatched worker running on its crewmate's store — is not a
-crewmate and its own children inherit nothing (an id-less member's worker keeps
+template — a dispatched worker running on its mate's store — is not a
+mate and its own children inherit nothing (an id-less member's worker keeps
 `member` as its selection, so there the template, read against
-`member_template_id`, is what tells it apart); a caller that is not a crewmate,
-or a crewmate with nothing set, leaves the slot on the agent's or the global
-default, exactly as before. Nor does a child that is itself a crewmate inherit:
+`member_template_id`, is what tells it apart); a caller that is not a mate,
+or a mate with nothing set, leaves the slot on the agent's or the global
+default, exactly as before. Nor does a child that is itself a mate inherit:
 an explicit `agent` that selects a member runs that member's own profile through
 the crew-pin tier, and a copied pin would outrank it as a per-session pick. An
 explicit argument always wins. An inherited model runs the same guard an
 explicit one does (`_model_pin_refusal`, the picker's own), but a refusal there
 is DROPPED rather than raised: a profile pin goes stale (delisted, display-only,
-outside the account's entitlement, or an id only the crewmate's own harness serves) without
-anyone looking at it, and a hard failure would stop every worker the crewmate
+outside the account's entitlement, or an id only the mate's own harness serves) without
+anyone looking at it, and a hard failure would stop every worker the mate
 opens until someone edited the profile or named a model on every call. The child
 then starts on the default, the reply carries `inherited_model_dropped: true`
 (the tool reply says so in words), and the SEL record names the refused id. An
@@ -607,7 +607,7 @@ The reply names which of the two came from the profile (`inherited`), as does th
 create's SEL record. The decision is
 [rfc-worker-model-inheritance](../../request-for-change/rfc-worker-model-inheritance.md).
 
-The pair is set from the crewmate's Profile card (**Worker model** / **Worker
+The pair is set from the mate's Profile card (**Worker model** / **Worker
 reasoning effort**, `CrewProfileSettings`), written through
 `PUT /api/agents/{name}` under the crew pin's own validators and shipped on
 `GET /api/members` (not on `GET /api/agents`: the crew editor never shows them).
@@ -762,7 +762,7 @@ its creator.
 
 The create's SEL record carries `agent`, `folder_id`, `model` and
 `reasoning_effort` (each empty when none was pinned), `inherited` (which of the
-two the dispatching crewmate's profile supplied, `""` when neither),
+two the dispatching mate's profile supplied, `""` when neither),
 `inherited_model_dropped` (the profile model the guard refused and the create
 dropped, redacted, `""` when none), and what the
 child was born with: `inherited_trust` and `inherited_trust_reads`, present on both

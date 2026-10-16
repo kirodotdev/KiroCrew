@@ -238,7 +238,7 @@ set against the backend converter), `import '../utils/hljs'`
 ### The file panel, the chat pane and the browser panel
 
 `components/MarkdownPanel.tsx` (a side-panel file tab), `components/ChatPane.tsx`
-(one chat session in split view or a crewmate's chat) and
+(one chat session in split view or a mate's chat) and
 `components/WebPreviewPanel.tsx` (the Browser tab) are facades over sibling owners
 in `components/`. Each facade keeps its module id, its default export and every
 named export: hosts import it, and the specs that mount a host mock it by that id,

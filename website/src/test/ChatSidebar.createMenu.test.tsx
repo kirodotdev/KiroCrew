@@ -201,7 +201,7 @@ describe('create-button caret menu', () => {
     renderSidebar()
     openCreateMenu()
     await findCreateMenuItem('New chat')
-    expect(screen.getByText(/Opens the Crewmates page/)).toBeTruthy()
+    expect(screen.getByText(/Opens the Mates page/)).toBeTruthy()
   })
 
   it('leaves the plain entries single-line', async () => {
@@ -240,7 +240,7 @@ describe('create-button caret menu', () => {
     // the menu simply failed to open.
     await findCreateMenuItem('New chat')
     const item = screen.getByTestId('open-crew-members')
-    expect(item.textContent).toContain('Crewmates')
+    expect(item.textContent).toContain('Mates')
     // The retired ingress and its experimental tag are gone, not merely hidden.
     expect(screen.queryByTestId('new-crew-chat')).toBeNull()
     expect(screen.queryByText('New Crew Mode chat')).toBeNull()
@@ -268,7 +268,7 @@ describe('create-button caret menu', () => {
     // The gloss discloses the detour BEFORE the click, instead of promising the
     // page and then landing somewhere else (UX review on #9519).
     expect(item.textContent).toMatch(/Opens Settings first/)
-    expect(item.textContent).not.toMatch(/Opens the Crewmates page/)
+    expect(item.textContent).not.toMatch(/Opens the Mates page/)
     fireEvent.click(item)
     await waitFor(() => expect(screen.getByTestId('location').textContent)
       .toBe(`/settings/developer?highlight=${SETTINGS_CREW_MEMBERS_PREVIEW_ID}`))

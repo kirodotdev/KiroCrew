@@ -106,7 +106,7 @@ describe('NewCrewmateDialog opened from KiroCrewAgentsPage', () => {
     mockApi.members.mockResolvedValue({ members: [{ name: 'radar', slug: 'radar' }] })
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
-    expect(await screen.findByTestId('crewmate-create-error')).toHaveTextContent('A crewmate named radar already exists.')
+    expect(await screen.findByTestId('crewmate-create-error')).toHaveTextContent('A mate named radar already exists.')
 
     // The host's list was re-read, so `existingNames` now holds radar and a
     // resubmit is refused here instead of posting a second create.

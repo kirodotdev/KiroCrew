@@ -197,7 +197,7 @@ describe('CrewDashboardTab on a preview link', () => {
     expect(screen.queryByTestId('dashboard-preview-outcome')).toBeNull()
   })
 
-  it('a preview that ends while open (applied by the crewmate or expired) says so, with no undo line', async () => {
+  it('a preview that ends while open (applied by the mate or expired) says so, with no undo line', async () => {
     let ended = false
     vi.spyOn(api, 'memberDashboard').mockImplementation(async (_s, _m, _l, preview) => {
       if (preview) {

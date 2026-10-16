@@ -101,7 +101,7 @@ beforeEach(() => {
   })
 })
 
-describe("a crewmate's chat", () => {
+describe("a mate's chat", () => {
   it('draws none of the machinery and says who has not spoken, not "Session ready"', async () => {
     const view = renderPane()
     const hint = await view.findByTestId('crewmate-quiet-hint')
@@ -153,7 +153,7 @@ describe("a crewmate's chat", () => {
     expect(view.queryByTestId('crewmate-quiet-hint')).toBeNull()
   })
 
-  it("rebinding the pane to another working crewmate shows THAT crewmate's step at once, never the held one", async () => {
+  it("rebinding the pane to another working mate shows THAT mate's step at once, never the held one", async () => {
     // The Members page rebinds ONE ChatPane to the newly picked crewmate
     // without remounting it. The status line holds each step briefly
     // (useHeldActivity), so without a per-slot key B's chat would open on A's
@@ -210,7 +210,7 @@ describe("a crewmate's chat", () => {
     expect(view.queryByTestId('crewmate-quiet-hint')).toBeNull()
   })
 
-  it('the motion is the typing bubble — three dots in the crewmate\'s own bubble; the chat page\'s ghost carousel is not mounted beside it', async () => {
+  it('the motion is the typing bubble — three dots in the mate\'s own bubble; the chat page\'s ghost carousel is not mounted beside it', async () => {
     const view = renderLive(liveStore({ kind: 'thinking' }))
     const line = await view.findByTestId('crewmate-live-activity')
     const bubble = view.getByTestId('crewmate-typing-bubble')
@@ -304,7 +304,7 @@ describe("a crewmate's chat", () => {
     expect(where.className).not.toMatch(/underline/)
   })
 
-  it('the composer addresses the crewmate by name, not the product', async () => {
+  it('the composer addresses the mate by name, not the product', async () => {
     const view = renderPane()
     await waitFor(() => expect(view.getByPlaceholderText(/Message Radar/)).toBeInTheDocument())
     expect(view.queryByPlaceholderText(/Message Kiro Crew/)).toBeNull()

@@ -673,7 +673,7 @@ would otherwise clobber your pin.
 | `kirocrew-security-conductor.json` | generated; your `allowedTools` entries are carried forward | every gateway start |
 | `kirocrew-knowledge.json` | generated | every gateway start |
 | `kirocrew-research.json` | generated | every gateway start |
-| `kirocrew-dashboard-manager.json` | generated | every gateway start (the subagent a crewmate hands page work to) |
+| `kirocrew-dashboard-manager.json` | generated | every gateway start (the subagent a mate hands page work to) |
 | `kirocrew-heartbeat.json` | DERIVED from `kirocrew.json` (its `kirocrew-core` entry, `autoApprove` included) | every gateway start, and re-checked before every heartbeat session |
 | an app's generated agent | the App Kit | regenerated on app refresh; containment fields are framework-owned |
 | your own `<name>.json` / `<name>.md` | yours | `model` / `skills` via the Template pane and `toolAliases` on rebuild; nothing else. `.md` is read-only to Crew entirely |
@@ -784,7 +784,7 @@ warning saying nothing behind it was carried: that is what puts a loadable spec
 back.)
 
 
-`kirocrew.json`, and every spec derived from it (the worker, every crewmate
+`kirocrew.json`, and every spec derived from it (the worker, every mate
 built from it), mounts Crew's platform guide server `kirocrew-guide` (where-is
 and how-to answers through `find_ui` and `search_docs`, dashboard guides, and
 change cards). The conductor specs and the background agents (knowledge,
@@ -800,28 +800,28 @@ sent from the dashboard and refuse with one line anywhere else, a message from
 Slack or another channel included; `find_ui` and `search_docs` still answer
 there.
 
-The same specs mount the crewmate's own-record server `kirocrew-mate`, on the
+The same specs mount the mate's own-record server `kirocrew-mate`, on the
 same terms: always emitted, no `autoApprove`, and exactly the tools in
 `agent._MATE_AUTO_GRANTS` as exact `allowedTools` grants (`update_self`, which
-writes the calling crewmate's name, description or ghost face on the user's word
+writes the calling mate's name, description or ghost face on the user's word
 and leaves one undoable row in its chat; `set_model`, `set_approval_mode`,
 `request_capabilities`, `set_goal`, `set_key_results` and `set_check_ins`, which only offer a
 change card; `goal_read`, `key_result_progress` and `save_goal_report`, which
 read and write the calling
-crewmate's own goal record directly). An existing spec gains
+mate's own goal record directly). An existing spec gains
 the ref and those grants once
-(`mate_platform_granted.json`). Every tool acts on the calling crewmate alone
-and refuses outside its own dashboard turn. A crewmate created on a template
+(`mate_platform_granted.json`). Every tool acts on the calling mate alone
+and refuses outside its own dashboard turn. A mate created on a template
 that lacks the server gets it on its own private copy at creation
 (`member_mate_tools.grant_mate_tools_to_new_member`, through the capability
 editor), with the default template's transport and the same grants; its other
 fields keep following the template.
 
-`rebuild_agent_config` creates the first crewmate (`mate`, shown as
-Mate) once, bound to the same template a crewmate you create gets, with its
+`rebuild_agent_config` creates the first mate (`mate`, shown as
+Mate) once, bound to the same template a mate you create gets, with its
 own private memory store; the reserved `default` member is never changed. The
 `mate_member_created.json` sidecar keeps the creation one-time, so a first
-crewmate you delete is not created again. It is an ordinary crewmate you may
+mate you delete is not created again. It is an ordinary mate you may
 rename, rebind and delete. The first-crewmate creation lives in
 `src/kiro_crew/agent_materialization/first_crewmate.py`. The one-time guide grant
 lives in `src/kiro_crew/agent_materialization/guide_platform.py`; the grant tuple stays in
@@ -837,7 +837,7 @@ What you may safely hand-edit: a spec you authored yourself; a conductor spec's
 Frontmatter keys map one-to-one onto the JSON fields above; nesting works
 (`mcpServers`, `permissions`). What differs is who may write the file.
 
-| Field | Built from pane (Customize → Crewmates) |
+| Field | Built from pane (Customize → Mates) |
 |---|---|
 | `model` | editable |
 | `resources` `skill://` entries | editable, via the Skills section |
@@ -873,7 +873,7 @@ fence requirement, the JSON-twin precedence, and which backends run the form.
 | the default spec's locked write | `src/kiro_crew/agent_materialization/default_spec_commit.py` |
 | derived specs — lite, guest, knowledge, research; the conductors; the worker | `src/kiro_crew/agent_materialization/service_agents.py`, `conductor_agents.py`, `worker_agent.py`; their prompts and grant tuples, and the heartbeat installer, stay in `src/kiro_crew/agent.py` |
 | the one-time guide grant on an existing default spec | `src/kiro_crew/agent_materialization/guide_platform.py` |
-| the first crewmate, created once | `src/kiro_crew/agent_materialization/first_crewmate.py` |
+| the first mate, created once | `src/kiro_crew/agent_materialization/first_crewmate.py` |
 | the fork refresh | `src/kiro_crew/agent_materialization/fork_refresh.py` |
 | owned filenames | `src/kiro_crew/agent_files.py` |
 | `model_managed`, `cc_model`, fork lineage | `src/kiro_crew/agent_state.py` |

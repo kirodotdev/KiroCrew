@@ -736,7 +736,7 @@ describe('MembersPage roster', () => {
     expect(roster().getByText('research')).toBeInTheDocument()
   })
 
-  it('shows the empty-state hero when no crewmates exist', async () => {
+  it('shows the empty-state hero when no mates exist', async () => {
     await renderPage([])
     // The hero is rendered twice: in the thread column (above md) and inside
     // the roster list (below md, `md:hidden`). CSS picks one per viewport, so
@@ -744,14 +744,14 @@ describe('MembersPage roster', () => {
     const heroes = await screen.findAllByTestId('crewmate-empty-hero')
     expect(heroes).toHaveLength(2)
     for (const title of screen.getAllByTestId('crewmate-empty-title')) {
-      expect(title).toHaveTextContent('No crewmates yet')
+      expect(title).toHaveTextContent('No mates yet')
     }
     expect(screen.getAllByText(/Give it a job; it keeps working while you are away/i)).toHaveLength(2)
     // The roster's old one-line copy and in-list button are gone: one call to
     // action per viewport besides the header "+".
     expect(screen.queryByTestId('member-empty-cta')).toBeNull()
   })
-  it('treats the built-in default assistant as an empty crewmate roster (the Assistant member absent)', async () => {
+  it('treats the built-in default assistant as an empty mate roster (the Assistant member absent)', async () => {
     await renderPage([row({ name: 'default', slug: 'default', last_active_ts: 999 })])
 
     expect(await screen.findAllByTestId('crewmate-empty-hero')).toHaveLength(2)
@@ -785,7 +785,7 @@ describe('MembersPage roster', () => {
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
-  it('only Mate\'s thread asks for a first welcome; a crewmate not created on this page asks for none', async () => {
+  it('only Mate\'s thread asks for a first welcome; a mate not created on this page asks for none', async () => {
     await renderPage([defaultRow(), row({ name: 'mate', slug: 'mate', kiro_agent: 'kirocrew', has_dm_message: true }), row({ name: 'alpha', slug: 'alpha', last_active_ts: 50 })])
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-alpha')
     // The first crewmate is shown by its label, on whatever template it runs.
@@ -811,9 +811,9 @@ describe('MembersPage roster', () => {
     // Both columns say it: the roster's own notice, and — since no chat can
     // open and the hero is gated on a good read — the chat column's, so a
     // wide window is never half blank.
-    expect(await screen.findByTestId('member-roster-error')).toHaveTextContent(/Could not load your crewmates/i)
+    expect(await screen.findByTestId('member-roster-error')).toHaveTextContent(/Could not load your mates/i)
     const column = screen.getByTestId('member-column-load-error')
-    expect(column).toHaveTextContent(/Could not load your crewmates/i)
+    expect(column).toHaveTextContent(/Could not load your mates/i)
     expect(column.className).toMatch(/\bmd:flex\b/)
     expect(screen.queryByTestId('crewmate-empty-hero')).toBeNull()
     // No roster to count: the header says so with a dash, never "0 members"
@@ -828,7 +828,7 @@ describe('MembersPage roster', () => {
     // read the dialog cannot refuse a name that clashes with an unseen
     // crewmate (ONCALL beside oncall would share one slug and its chat could
     // never open). New team, which has no part in that check, stays live.
-    expect(await probeAddCrewmate()).toEqual({ held: true, reason: 'Could not load your crewmates.' })
+    expect(await probeAddCrewmate()).toEqual({ held: true, reason: 'Could not load your mates.' })
     ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({ members: [row()], default_agent: 'kirocrew' })
     fireEvent.click(screen.getByTestId('member-column-load-retry'))
     expect(await rosterRow('oncall')).toBeInTheDocument()
@@ -865,7 +865,7 @@ describe('MembersPage roster cache (React Query)', () => {
     utils.rerender(page)
     expect(roster().getByText('oncall')).toBeInTheDocument()
     expect(roster().getByText('research')).toBeInTheDocument()
-    expect(screen.queryByText(/No crewmates yet/i)).toBeNull()
+    expect(screen.queryByText(/No mates yet/i)).toBeNull()
     // The roster carries its own 30s staleTime (membersRosterQuery), which
     // wins over the test client's 0: a return inside that window is served
     // from cache with NO refetch — that is the request the user stopped
@@ -967,7 +967,7 @@ describe('MembersPage roster cache (React Query)', () => {
     expect(await rosterRow('research')).toBeInTheDocument()
     // In place: the row that was already there never left the screen.
     expect(roster().getByText('oncall')).toBeInTheDocument()
-    expect(screen.queryByText(/No crewmates yet/i)).toBeNull()
+    expect(screen.queryByText(/No mates yet/i)).toBeNull()
   })
 
   it('a refetch failure after a good read keeps the last roster instead of flipping to the error state', async () => {
@@ -979,7 +979,7 @@ describe('MembersPage roster cache (React Query)', () => {
     })
     await waitFor(() => expect(api.members).toHaveBeenCalledTimes(2))
     expect(roster().getByText('oncall')).toBeInTheDocument()
-    expect(screen.queryByText(/Could not load your crewmates/i)).toBeNull()
+    expect(screen.queryByText(/Could not load your mates/i)).toBeNull()
   })
 })
 
@@ -1003,7 +1003,7 @@ describe('MembersPage thread', () => {
     })
     const { queryClient } = await renderPage([row()], 'kirocrew', { thread: new Error(rawReason) })
     const notice = await screen.findByTestId('member-thread-error', undefined, PANE_READY)
-    expect(notice).toHaveTextContent(/Could not open this crewmate's chat/i)
+    expect(notice).toHaveTextContent(/Could not open this mate's chat/i)
     expect(notice).not.toHaveTextContent('Private memory database is unreadable')
     expect(queryClient.getQueryData(memberThreadQueryKey('oncall'))).toEqual({
       slot_key: '', failed: true, errorReport: report,
@@ -1091,7 +1091,7 @@ describe('MembersPage thread', () => {
     localStorage.setItem(LAST_MEMBER_KEY, 'oncall')
     await renderPage([row()], 'kirocrew', { thread: new Error('Create private memory in the member editor.') })
     expect(
-      await screen.findByText(/Could not open this crewmate's chat/i, undefined, PANE_READY),
+      await screen.findByText(/Could not open this mate's chat/i, undefined, PANE_READY),
     ).toBeInTheDocument()
     // Non-API exceptions have no journal report; do not invent a diagnostic
     // object or leak an unredacted thrown message into the localized banner.
@@ -1219,7 +1219,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(slot.className).toContain('top-full')
   })
 
-  it('the Assistant lands with its docked panel hidden, remembered apart from every other crewmate', async () => {
+  it('the Assistant lands with its docked panel hidden, remembered apart from every other mate', async () => {
     localStorage.removeItem('mc-members-assistant-panel-open')
     const rows = [defaultRow(), assistantRow(), row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' })]
     const utils = await renderPage(rows)
@@ -1349,7 +1349,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(screen.queryByRole('tab', { name: 'Side Chat' })).toBeNull()
   })
 
-  it('the Dashboard is the crewmate\'s generated page, with no repeated identity row', async () => {
+  it('the Dashboard is the mate\'s generated page, with no repeated identity row', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
     expect(await screen.findByTestId('member-dashboard')).toBeInTheDocument()
@@ -1524,7 +1524,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(faces[0]).not.toHaveStyle({ visibility: 'hidden' })
   })
 
-  it('leaving the crewmate mid-flight drops the flight, so the next open starts with a painted pill face', async () => {
+  it('leaving the mate mid-flight drops the flight, so the next open starts with a painted pill face', async () => {
     // The copy unmounts with the crewmate before its onComplete; without the
     // clear, the stale flight replayed the old face and hid the next pill face.
     localStorage.setItem(PANEL_OPEN_KEY, '0')
@@ -1617,7 +1617,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(screen.getByTestId('crew-profile-face')).not.toHaveStyle({ visibility: 'hidden' })
   })
 
-  it("Goals' track row sends a visible message to the crewmate and closes the floating card", async () => {
+  it("Goals' track row sends a visible message to the mate and closes the floating card", async () => {
     const sendMock = api.sendChat as ReturnType<typeof vi.fn>
     sendMock.mockClear()
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
@@ -1682,7 +1682,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(screen.getByTestId('member-pill-face')).not.toHaveStyle({ visibility: 'hidden' })
   })
 
-  it('switching crewmates drops an open Profile instead of reopening it over the next one on the old tab', async () => {
+  it('switching mates drops an open Profile instead of reopening it over the next one on the old tab', async () => {
     // `profile` used to survive the switch, and the card is keyed on name + tab:
     // the next crewmate came up with the card already open — on Sessions.
     localStorage.setItem(PANEL_OPEN_KEY, '0')
@@ -1801,7 +1801,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(screen.getByTestId('member-identity-pill')).not.toHaveTextContent(/\boncall\b/)
   })
 
-  it('the profile pencil opens the existing editor for the exact crewmate', async () => {
+  it('the profile pencil opens the existing editor for the exact mate', async () => {
     localStorage.setItem(PANEL_OPEN_KEY, '0')
     await renderPage([row({ name: 'on call/2', slug: 'on-call-2', bound: true, slot_key: 'member-on-call-2' })])
     fireEvent.click(await rosterRow('on call/2'))
@@ -1886,15 +1886,15 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(pill).toHaveAccessibleName(/oncall/)
   })
 
-  it('the "+" menu offers New crewmate only: no Advanced or guided-flow rows', async () => {
+  it('the "+" menu offers New mate only: no Advanced or guided-flow rows', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     await rosterRow('oncall')
     await openAddMenu()
     const menu = await screen.findByTestId('member-add-menu')
-    expect(within(menu).getAllByRole('menuitem').map(el => el.textContent?.trim())).toEqual(['New crewmate'])
+    expect(within(menu).getAllByRole('menuitem').map(el => el.textContent?.trim())).toEqual(['New mate'])
   })
 
-  it('the roster header "+" menu\'s New crewmate opens the card as a modal with Advanced settings folded, and they unfold inline — no trip to the crew manager', async () => {
+  it('the roster header "+" menu\'s New mate opens the card as a modal with Advanced settings folded, and they unfold inline — no trip to the crew manager', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     await rosterRow('oncall')
     // Creating a crewmate IS creating a crew record, and the write path is
@@ -1919,7 +1919,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(await screen.findByRole('combobox', { name: 'Built from' })).toBeInTheDocument()
     expect(screen.getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'true')
     // A modal named "New crewmate", holding the form — no in-place page region.
-    expect(screen.getByRole('dialog')).toHaveAccessibleName('New crewmate')
+    expect(screen.getByRole('dialog')).toHaveAccessibleName('New mate')
     expect(screen.getByRole('dialog')).toContainElement(screen.getByTestId('crewmate-create-form'))
     expect(navigateSpy).not.toHaveBeenCalledWith(expect.stringContaining('/capabilities'))
   })
@@ -2166,7 +2166,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(counts.className.split(/\s+/)).toEqual(expect.arrayContaining(['hidden', 'sm:inline']))
   })
 
-  it('a team with no crewmates keeps its header and opens an empty team view', async () => {
+  it('a team with no mates keeps its header and opens an empty team view', async () => {
     vi.mocked(api.teams.list).mockResolvedValue({ teams: [{ id: 'abc123abc123', name: 'Release', members: [] }] })
     await renderPage([row({ name: 'oncall', slug: 'oncall' })])
     await rosterRow('oncall')
@@ -2175,14 +2175,14 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     // Edit team, so it stays -- at "0 crewmates" -- above the No-team group.
     expect(headers.map((h) => h.dataset.team)).toEqual(['abc123abc123', 'no-team'])
     expect(headers[0]).toHaveTextContent('Release')
-    expect(headers[0]).toHaveTextContent('0 crewmates')
+    expect(headers[0]).toHaveTextContent('0 mates')
     fireEvent.click(headers[0])
     const view = await screen.findByTestId('team-view')
     expect(within(view).getByTestId('team-empty')).toBeInTheDocument()
     expect(within(view).getByTestId('team-edit')).toBeInTheDocument()
   })
 
-  it('a crewmate waiting on the user with no question in its tail gets a plain waiting card', async () => {
+  it('a mate waiting on the user with no question in its tail gets a plain waiting card', async () => {
     vi.mocked(api.teams.list).mockResolvedValue({ teams: [{ id: 'abc123abc123', name: 'Triage', members: ['oncall'] }] })
     vi.mocked(api.chatSlotDetail).mockResolvedValue({
       messages: [{ role: 'assistant', content: 'Running the approval now.', ts: '2026-09-22T10:05:00Z' }],
@@ -2270,7 +2270,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(screen.getAllByTestId('team-group-header')[0]).toHaveTextContent('Release')
   })
 
-  it('a crewmate moved between teams leaves its old team in the cache too, so a failed refetch cannot show it twice', async () => {
+  it('a mate moved between teams leaves its old team in the cache too, so a failed refetch cannot show it twice', async () => {
     const triage = { id: 'aaaaaaaaaaaa', name: 'Triage', members: ['oncall', 'scribe'] }
     const release = { id: 'bbbbbbbbbbbb', name: 'Release', members: ['fixer'] }
     // First read answers; the refetch the save starts fails, so what the
@@ -2311,7 +2311,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       { route: '/members?team=abc123abc123' },
     )
     const notice = await screen.findByTestId('team-view-roster-error')
-    expect(notice).toHaveTextContent(/Could not load your crewmates/i)
+    expect(notice).toHaveTextContent(/Could not load your mates/i)
     // The roster column stands beside a team view from md up and carries its
     // own copy of the notice, so the pane's copy is the below-md one.
     expect(notice.closest('.md\\:hidden')).not.toBeNull()
@@ -2395,7 +2395,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(update).toHaveBeenCalledWith('abc123abc123', { add: ['scribe'], remove: ['oncall'] })
   })
 
-  it('the team view confirms a bound crewmate\'s thread once per open and never again on a window focus', async () => {
+  it('the team view confirms a bound mate\'s thread once per open and never again on a window focus', async () => {
     vi.mocked(api.teams.list).mockResolvedValue({ teams: [{ id: 'abc123abc123', name: 'Triage', members: ['oncall'] }] })
     vi.mocked(api.chatSlotDetail).mockResolvedValue({ messages: [] } as never)
     await renderPage([row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' })])
@@ -2479,10 +2479,10 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(JSON.parse(localStorage.getItem('mc-members-teams-collapsed') ?? '[]')).toEqual(['abc123abc123'])
   })
 
-  it('the empty-state hero\'s "New crewmate" opens the card folded; its Advanced link opens it with Advanced settings unfolded', async () => {
+  it('the empty-state hero\'s "New mate" opens the card folded; its Advanced link opens it with Advanced settings unfolded', async () => {
     await renderPage([])
     const [cta] = await screen.findAllByTestId('crewmate-empty-cta')
-    expect(cta).toHaveTextContent('New crewmate')
+    expect(cta).toHaveTextContent('New mate')
     fireEvent.click(cta)
     expect(await screen.findByTestId('crewmate-create-look')).toBeInTheDocument()
     expect(screen.getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'false')
@@ -2854,7 +2854,7 @@ describe('MembersPage identity pill and Profile entry', () => {
     expect(screen.getByTestId('crew-profile-name')).toHaveTextContent('oncall')
   })
 
-  it('the pill\'s second line says what the crewmate is doing: text only, always present, out of the button\'s name', async () => {
+  it('the pill\'s second line says what the mate is doing: text only, always present, out of the button\'s name', async () => {
     const { store } = await renderPage([row({ bound: true, slot_key: 'member-oncall', last_active_ts: Math.floor(Date.now() / 1000) - 180 })])
     act(() => {
       store.dispatch(sseSlots([{ key: 'member-oncall', mode: 'member', running: false, messages: 0 }] as never))
@@ -2942,7 +2942,7 @@ describe('MembersPage identity pill and Profile entry', () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
     const header = await screen.findByTestId('member-thread-header')
-    expect(within(header).queryByLabelText('Edit crewmate')).toBeNull()
+    expect(within(header).queryByLabelText('Edit mate')).toBeNull()
 
     fireEvent.click(screen.getByTestId('member-identity-pill'))
     fireEvent.click(await screen.findByTestId('crew-profile-edit'))
@@ -3061,7 +3061,7 @@ describe('MembersPage identity pill and Profile entry', () => {
   })
 })
 
-describe('New crewmate dialog', () => {
+describe('New mate dialog', () => {
   const openDialog = async () => {
     await clickAddAdvanced()
     return await screen.findByTestId('crewmate-create-form')
@@ -3092,7 +3092,7 @@ describe('New crewmate dialog', () => {
     expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1)
   })
 
-  it('a successful create invalidates the crew registry and config caches, as the crew manager\'s own form does, so the pencil deep link finds the new crewmate', async () => {
+  it('a successful create invalidates the crew registry and config caches, as the crew manager\'s own form does, so the pencil deep link finds the new mate', async () => {
     const membersMock = api.members as ReturnType<typeof vi.fn>
     const { queryClient } = await renderPage([row()])
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
@@ -3113,7 +3113,7 @@ describe('New crewmate dialog', () => {
     })
   })
 
-  it('a successful create marks the shared sessionless agents-catalog cache stale, so a later reader (the command bar\'s crewmates view) lists the new crewmate without a reload and without a fetch per keystroke', async () => {
+  it('a successful create marks the shared sessionless agents-catalog cache stale, so a later reader (the command bar\'s mates view) lists the new mate without a reload and without a fetch per keystroke', async () => {
     const membersMock = api.members as ReturnType<typeof vi.fn>
     const { queryClient } = await renderPage([row()])
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
@@ -3189,7 +3189,7 @@ describe('New crewmate dialog', () => {
       fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
       expect(askToLeave()).toBe('false')
       // The modal's own leave-draft wording (the dialog closes; the page is left).
-      expect(confirmSpy).toHaveBeenCalledWith('Leave this page? The New crewmate dialog closes and what you typed is lost.')
+      expect(confirmSpy).toHaveBeenCalledWith('Leave this page? The New mate dialog closes and what you typed is lost.')
       expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
       // Accepting the prompt lets the navigation through.
       confirmSpy.mockReturnValue(true)
@@ -3199,7 +3199,7 @@ describe('New crewmate dialog', () => {
     }
   })
 
-  it('the rail\'s Crewmates row over a typed card: Stay keeps the card and its text, Leave closes it; an untouched card closes unasked', async () => {
+  it('the rail\'s Mates row over a typed card: Stay keeps the card and its text, Leave closes it; an untouched card closes unasked', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     try {
       await renderPage([row()])
@@ -3208,7 +3208,7 @@ describe('New crewmate dialog', () => {
       fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
       // Stay: the row asked, the user kept the draft, nothing moved.
       clickRailMembers()
-      expect(confirmSpy).toHaveBeenCalledWith('Leave this page? The New crewmate dialog closes and what you typed is lost.')
+      expect(confirmSpy).toHaveBeenCalledWith('Leave this page? The New mate dialog closes and what you typed is lost.')
       expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
       expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('radar')
       expect(currentUrl()).toBe('/members?member=oncall')
@@ -3242,7 +3242,7 @@ describe('New crewmate dialog', () => {
       // so the page asks the card's own guard before it would drop the text.
       clickRawMembers()
       await waitFor(() => expect(confirmSpy).toHaveBeenCalledTimes(1))
-      expect(confirmSpy).toHaveBeenCalledWith('Leave this page? The New crewmate dialog closes and what you typed is lost.')
+      expect(confirmSpy).toHaveBeenCalledWith('Leave this page? The New mate dialog closes and what you typed is lost.')
       expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
       expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('radar')
       confirmSpy.mockReturnValue(true)
@@ -3331,7 +3331,7 @@ describe('New crewmate dialog', () => {
       fireEvent.click(screen.getByTestId('crewmate-create-submit'))
       await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
       expect(askToLeave()).toBe('false')
-      expect(confirmSpy).toHaveBeenLastCalledWith(expect.stringMatching(/^Leave while the crewmate is being created\?/))
+      expect(confirmSpy).toHaveBeenLastCalledWith(expect.stringMatching(/^Leave while the mate is being created\?/))
       finish({ ok: true })
     } finally {
       confirmSpy.mockRestore()
@@ -3343,13 +3343,13 @@ describe('New crewmate dialog', () => {
     await rosterRow('oncall')
     await openDialog()
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
-    expect(await screen.findByText('Give your crewmate a name.')).toBeInTheDocument()
+    expect(await screen.findByText('Give your mate a name.')).toBeInTheDocument()
     expect(api.createKirocrewAgent).not.toHaveBeenCalled()
     // A hint is validation, not a failed request: no error notice renders.
     expect(screen.queryByTestId('crewmate-create-error')).toBeNull()
   })
 
-  it('creates through the crew manager\'s write path, opens the new crewmate\'s chat and asks for its first greeting', async () => {
+  it('creates through the crew manager\'s write path, opens the new mate\'s chat and asks for its first greeting', async () => {
     const membersMock = api.members as ReturnType<typeof vi.fn>
     await renderPage([row()])
     // The one row auto-opens on arrival (most recently used), so the page
@@ -3395,7 +3395,7 @@ describe('New crewmate dialog', () => {
     await waitFor(() => expect(screen.queryByTestId('crewmate-create-form')).toBeNull())
   })
 
-  it('the + New crewmate creates from a name alone: built from the built-in agent, wearing its name\'s own face, and its chat opens asking its goal through the hidden greeting', async () => {
+  it('the + New mate creates from a name alone: built from the built-in agent, wearing its name\'s own face, and its chat opens asking its goal through the hidden greeting', async () => {
     const membersMock = api.members as ReturnType<typeof vi.fn>
     await renderPage([row()])
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
@@ -3423,14 +3423,14 @@ describe('New crewmate dialog', () => {
     expect(api.sendChat).not.toHaveBeenCalled()
   })
 
-  it('a crewmate not created on the dashboard asks for no greeting when opened', async () => {
+  it('a mate not created on the dashboard asks for no greeting when opened', async () => {
     await renderPage([row({ name: 'synced', slug: 'synced' })], 'kirocrew', { route: '/members?member=synced' })
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-synced')
     await act(async () => {})
     expect(api.memberGreet).not.toHaveBeenCalled()
   })
 
-  it('a free-form name opens the crewmate under the id the server answered and asks its greeting by that id', async () => {
+  it('a free-form name opens the mate under the id the server answered and asks its greeting by that id', async () => {
     const membersMock = api.members as ReturnType<typeof vi.fn>
     await renderPage([row()])
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
@@ -3448,7 +3448,7 @@ describe('New crewmate dialog', () => {
     expect(api.sendChat).not.toHaveBeenCalled()
   })
 
-  it('a name another crewmate shows is refused up front, like a taken key', async () => {
+  it('a name another mate shows is refused up front, like a taken key', async () => {
     await renderPage([row({ display_name: 'Oncall Sentinel' })])
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
     await openDialog()
@@ -3489,7 +3489,7 @@ describe('New crewmate dialog', () => {
     // Capture the create modal while it is still the active dialog: once the
     // nested New workspace form opens, the create modal goes inert
     // (aria-hidden), which removes its `dialog` role from the a11y tree.
-    const outerDialog = screen.getByRole('dialog', { name: 'New crewmate' })
+    const outerDialog = screen.getByRole('dialog', { name: 'New mate' })
     unfoldAdvanced()
     const workspace = await screen.findByRole('combobox', { name: 'Workspace' })
     fireEvent.keyDown(workspace, { key: 'ArrowDown' })
@@ -3545,7 +3545,7 @@ describe('New crewmate dialog', () => {
     await waitFor(() => expect(screen.getByRole('combobox', { name: 'Workspace' })).toHaveTextContent('staging'))
     // Dismiss and reopen while the refresh is still pending: the fresh form
     // says default, and the refresh landing later must not change that.
-    fireEvent.click(within(screen.getByRole('dialog', { name: 'New crewmate' })).getByRole('button', { name: 'Close' }))
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'New mate' })).getByRole('button', { name: 'Close' }))
     await waitFor(() => expect(screen.queryByTestId('crewmate-create-form')).toBeNull())
     await openDialog()
     unfoldAdvanced()
@@ -3613,7 +3613,7 @@ describe('New crewmate dialog', () => {
     expect(cachedWorkspaceNames(queryClient)).toEqual(before)
     // And the parent modal's own exit (its header X, "Close") is live again:
     // the nested dialog is closed for good.
-    expect(within(screen.getByRole('dialog', { name: 'New crewmate' })).getByRole('button', { name: 'Close' })).toBeEnabled()
+    expect(within(screen.getByRole('dialog', { name: 'New mate' })).getByRole('button', { name: 'Close' })).toBeEnabled()
   })
 
   it('a workspace create that answers after the nested form\'s X does not change the parent\'s pick or the cache', async () => {
@@ -3629,7 +3629,7 @@ describe('New crewmate dialog', () => {
     finish()
     await settle()
     expectStaleDropped(queryClient, readsSince, readsAtClose)
-    expect(within(screen.getByRole('dialog', { name: 'New crewmate' })).getByRole('button', { name: 'Close' })).toBeEnabled()
+    expect(within(screen.getByRole('dialog', { name: 'New mate' })).getByRole('button', { name: 'Close' })).toBeEnabled()
   })
 
   it('a workspace create that answers after the nested form was dismissed with Escape does not change the parent\'s pick', async () => {
@@ -3742,7 +3742,7 @@ describe('New crewmate dialog', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('crewmate-create-error')
-    expect(notice).toHaveTextContent("Couldn't create the crewmate. Nothing was created — try again.")
+    expect(notice).toHaveTextContent("Couldn't create the mate. Nothing was created — try again.")
     expect(notice).not.toHaveTextContent(/Failed to fetch/)
     // "Nothing was created" was CHECKED, not assumed: the roster was re-read
     // (arrival + reconcile) and radar is not on it.
@@ -3768,7 +3768,7 @@ describe('New crewmate dialog', () => {
     })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('crewmate-create-error')
-    expect(notice).toHaveTextContent('A crewmate named radar already exists.')
+    expect(notice).toHaveTextContent('A mate named radar already exists.')
     // Dialog still open; no chat opened for radar, no greeting, one POST.
     expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
     expect(api.memberThread).not.toHaveBeenCalledWith('radar')
@@ -3803,7 +3803,7 @@ describe('New crewmate dialog', () => {
     // The attempted name leads the sentence, so the notice cannot be read as
     // the nameless retry-safe "couldn't create the crewmate" one.
     expect(notice).toHaveTextContent("Couldn't confirm whether radar was created. Check the list before trying again.")
-    expect(notice).not.toHaveTextContent(/the crewmate was created/)
+    expect(notice).not.toHaveTextContent(/the mate was created/)
     expect(notice).not.toHaveTextContent(/Nothing was created/)
     expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
     expect(api.sendChat).not.toHaveBeenCalled()
@@ -3812,7 +3812,7 @@ describe('New crewmate dialog', () => {
     // under the field with NO request — one POST in total.
     expect(await rosterRow('radar')).toBeInTheDocument()
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
-    expect(await screen.findByTestId('crewmate-create-name-hint')).toHaveTextContent('A crewmate named radar already exists.')
+    expect(await screen.findByTestId('crewmate-create-name-hint')).toHaveTextContent('A mate named radar already exists.')
     expect(screen.queryByTestId('crewmate-create-unconfirmed')).toBeNull()
     expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1)
   })
@@ -3850,7 +3850,7 @@ describe('New crewmate dialog', () => {
     expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1)
     // Unlocked again: the mutation settled, so the modal's Close is live.
     expect(screen.getByTestId('crewmate-create-fieldset')).not.toBeDisabled()
-    expect(within(screen.getByRole('dialog', { name: 'New crewmate' })).getByRole('button', { name: 'Close' })).toBeEnabled()
+    expect(within(screen.getByRole('dialog', { name: 'New mate' })).getByRole('button', { name: 'Close' })).toBeEnabled()
     expect(api.sendChat).not.toHaveBeenCalled()
   })
 
@@ -3907,7 +3907,7 @@ describe('New crewmate dialog', () => {
     expect(api.sendChat).not.toHaveBeenCalled()
   })
 
-  it('a chat open that fails right after the create frees the +, and the next successful open of that crewmate asks for its greeting', async () => {
+  it('a chat open that fails right after the create frees the +, and the next successful open of that mate asks for its greeting', async () => {
     const membersMock = api.members as ReturnType<typeof vi.fn>
     const threadMock = api.memberThread as ReturnType<typeof vi.fn>
     const sendMock = api.sendChat as ReturnType<typeof vi.fn>
@@ -3956,7 +3956,7 @@ describe('New crewmate dialog', () => {
     await rosterRow('oncall')
     await openDialog()
     await waitFor(() => expect(catalogMock).toHaveBeenCalledTimes(1))
-    fireEvent.click(within(screen.getByRole('dialog', { name: 'New crewmate' })).getByRole('button', { name: 'Close' }))
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'New mate' })).getByRole('button', { name: 'Close' }))
     await waitFor(() => expect(screen.queryByTestId('crewmate-create-form')).toBeNull())
     // A template was installed while the dialog was closed. No server event
     // invalidates this key, so only a per-open re-read can show it.
@@ -3969,7 +3969,7 @@ describe('New crewmate dialog', () => {
     })
     await openDialog()
     await waitFor(() => expect(catalogMock).toHaveBeenCalledTimes(2))
-    const dlg = within(screen.getByRole('dialog', { name: 'New crewmate' }))
+    const dlg = within(screen.getByRole('dialog', { name: 'New mate' }))
     fireEvent.keyDown(dlg.getByRole('combobox', { name: 'Built from' }), { key: 'ArrowDown' })
     expect(await screen.findByRole('option', { name: 'kirocrew-research' })).toBeInTheDocument()
   })
@@ -3982,7 +3982,7 @@ describe('New crewmate dialog', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('crewmate-create-error')
-    expect(notice).toHaveTextContent("Couldn't create the crewmate. Nothing was created — try again.")
+    expect(notice).toHaveTextContent("Couldn't create the mate. Nothing was created — try again.")
     expect(notice).not.toHaveTextContent(/lock held/)
     expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
   })
@@ -4003,7 +4003,7 @@ describe('New crewmate dialog', () => {
     // Radix item takes no pointer events, so a title would never show).
     expect(await probeAddCrewmate()).toEqual({
       held: true,
-      reason: 'Retry or dismiss the notice about radar before adding another crewmate.',
+      reason: 'Retry or dismiss the notice about radar before adding another mate.',
     })
     // The retry lands: the record clears and the + is a + again.
     membersMock.mockResolvedValueOnce({
@@ -4034,7 +4034,7 @@ describe('New crewmate dialog', () => {
     // why: a second create here could overwrite the first one's retry.
     expect(await probeAddCrewmate()).toEqual({
       held: true,
-      reason: "Finishing alpha's first message before adding another crewmate.",
+      reason: "Finishing alpha's first message before adding another mate.",
     })
     expect(screen.queryByTestId('crewmate-empty-hero')).toBeNull()
     // Alpha's thread confirms: the follow-up is over and the + is a + again.
@@ -4073,7 +4073,7 @@ describe('New crewmate dialog', () => {
     await waitFor(() => expect(membersMock).toHaveBeenCalledTimes(2))
     for (const cta of screen.getAllByTestId('crewmate-empty-cta')) {
       expect(cta).toBeDisabled()
-      expect(cta).toHaveAttribute('title', "Finishing alpha's first message before adding another crewmate.")
+      expect(cta).toHaveAttribute('title', "Finishing alpha's first message before adding another mate.")
     }
     // Both hero doors: the Advanced link is held with the primary.
     for (const adv of screen.getAllByTestId('crewmate-empty-advanced')) expect(adv).toBeDisabled()
@@ -4106,7 +4106,7 @@ describe('New crewmate dialog', () => {
     // Reported as the roster step failing, with its retry — never as "radar is gone".
     const notice = await screen.findByTestId('member-post-create-error', undefined, PANE_READY)
     expect(notice).toHaveTextContent("radar was created, but the list didn't refresh.")
-    expect(screen.getByTestId('member-post-create-retry')).toHaveTextContent('Refresh your crewmates')
+    expect(screen.getByTestId('member-post-create-retry')).toHaveTextContent('Refresh your mates')
     expect(api.memberThread).not.toHaveBeenCalledWith('radar')
     expect(api.sendChat).not.toHaveBeenCalled()
     expect(screen.queryByTestId('member-gone-roster-notice')).toBeNull()
@@ -4194,7 +4194,7 @@ describe('New crewmate dialog', () => {
     await openDialog()
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: '   ' } })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
-    expect(await screen.findByTestId('crewmate-create-name-hint')).toHaveTextContent('Give your crewmate a name.')
+    expect(await screen.findByTestId('crewmate-create-name-hint')).toHaveTextContent('Give your mate a name.')
     expect(screen.getByLabelText('Name')).toHaveAttribute('aria-invalid', 'true')
     expect(api.createKirocrewAgent).not.toHaveBeenCalled()
   })
@@ -4252,7 +4252,7 @@ describe('New crewmate dialog', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('crewmate-create-error')
-    expect(notice).toHaveTextContent("Couldn't create the crewmate. Nothing was created — try again.")
+    expect(notice).toHaveTextContent("Couldn't create the mate. Nothing was created — try again.")
     expect(notice).not.toHaveTextContent(/lock held/)
   })
 
@@ -4276,7 +4276,7 @@ describe('New crewmate dialog', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'aws_secret_access_key' } })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('crewmate-create-error')
-    expect(notice).toHaveTextContent('That name looks like a credential or a URL carrying one. Pick a name that says who the crewmate is.')
+    expect(notice).toHaveTextContent('That name looks like a credential or a URL carrying one. Pick a name that says who the mate is.')
     expect(notice).not.toHaveTextContent(/aws_secret_access_key/)
     expect(notice).not.toHaveTextContent(/try again/)
     expect(screen.queryByTestId('crewmate-create-name-hint')).toBeNull()
@@ -4325,7 +4325,7 @@ describe('New crewmate dialog', () => {
     expect(notice).not.toHaveTextContent(/Invalid Crew Member name|non-canonical|line breaks or tabs|at most 500|only of periods/)
     expect(notice).not.toHaveTextContent(/Rada|Radar|\.\.\./)
     // Not the credential-shaped copy, and not the generic "nothing was created".
-    expect(notice).not.toHaveTextContent(/credential|says who the crewmate is/)
+    expect(notice).not.toHaveTextContent(/credential|says who the mate is/)
     expect(notice).not.toHaveTextContent('Nothing was created')
     expect(screen.queryByTestId('crewmate-create-name-hint')).toBeNull()
     expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1)
@@ -4353,7 +4353,7 @@ describe('New crewmate dialog', () => {
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     // Validation, not a failed request: the hint under the field, no ErrorNotice.
     const hint = await screen.findByTestId('crewmate-create-name-hint')
-    expect(hint).toHaveTextContent('A crewmate named oncall already exists.')
+    expect(hint).toHaveTextContent('A mate named oncall already exists.')
     expect(screen.queryByTestId('crewmate-create-error')).toBeNull()
     // No request left the browser; nothing else moved — the one thread POST
     // is the arrival auto-open, no roster re-read, no greeting.
@@ -4374,7 +4374,7 @@ describe('New crewmate dialog', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('crewmate-create-error')
-    expect(notice).toHaveTextContent('A crewmate named radar already exists.')
+    expect(notice).toHaveTextContent('A mate named radar already exists.')
     expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1)
     expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
     expect(api.sendChat).not.toHaveBeenCalled()
@@ -4414,7 +4414,7 @@ describe('New crewmate dialog', () => {
     const notice = await screen.findByTestId('member-post-create-error', undefined, PANE_READY)
     expect(notice).toHaveTextContent("radar was created, but the list didn't refresh.")
     // The retry names the one step it repeats — never a second "Create".
-    expect(screen.getByTestId('member-post-create-retry')).toHaveTextContent('Refresh your crewmates')
+    expect(screen.getByTestId('member-post-create-retry')).toHaveTextContent('Refresh your mates')
     expect(screen.queryByTestId('member-gone-notice')).toBeNull()
     expect(screen.queryByTestId('member-gone-roster-notice')).toBeNull()
     // oncall's arrival open is the only thread POST; radar's never happened.
@@ -4432,7 +4432,7 @@ describe('New crewmate dialog', () => {
     expect(screen.queryByTestId('member-post-create-error')).toBeNull()
   })
 
-  it('a failed re-read over a roster with other crewmates can be dismissed, so the existing chats stay reachable below md', async () => {
+  it('a failed re-read over a roster with other mates can be dismissed, so the existing chats stay reachable below md', async () => {
     const membersMock = api.members as ReturnType<typeof vi.fn>
     const utils = await renderPage([row()])
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
@@ -4507,10 +4507,10 @@ describe('New crewmate dialog', () => {
     // With the roster back and radar's chat open, the roster stays hidden
     // below md for the usual reason (a chat is open), never for the notice.
     await waitFor(() => expect(api.memberThread).toHaveBeenCalledWith('radar'))
-    expect(screen.getByTestId('member-count')).toHaveTextContent('1 crewmate')
+    expect(screen.getByTestId('member-count')).toHaveTextContent('1 mate')
   })
 
-  it('a first create over a default-only roster whose re-read fails is not dismissable either: the built-in default is not a crewmate', async () => {
+  it('a first create over a default-only roster whose re-read fails is not dismissable either: the built-in default is not a mate', async () => {
     const membersMock = api.members as ReturnType<typeof vi.fn>
     // The cached roster is NOT empty — it holds the built-in `default` row —
     // yet the hero is what it renders (`hasNoCrewmates`). Dismissability must
@@ -4532,7 +4532,7 @@ describe('New crewmate dialog', () => {
     expect(screen.queryByTestId('member-add')).toBeNull()
     for (const cta of screen.getAllByTestId('crewmate-empty-cta')) {
       expect(cta).toBeDisabled()
-      expect(cta).toHaveAttribute('title', 'Refresh the list for radar before adding another crewmate.')
+      expect(cta).toHaveAttribute('title', 'Refresh the list for radar before adding another mate.')
     }
     // The retry is the way off it: the roster lands with radar, the chat
     // opens and asks for its greeting.
@@ -4546,7 +4546,7 @@ describe('New crewmate dialog', () => {
     await waitFor(() => expect(api.memberGreet).toHaveBeenCalledWith('radar'), PANE_READY)
   })
 
-  it('a create over a default + Assistant roster whose re-read fails can be dismissed: the Assistant is a crewmate and its chat stays reachable', async () => {
+  it('a create over a default + Assistant roster whose re-read fails can be dismissed: the Assistant is a mate and its chat stays reachable', async () => {
     const membersMock = api.members as ReturnType<typeof vi.fn>
     // The Assistant counts: the roster is NOT the empty state, so its chat
     // opens and a failed follow-up notice is dismissable (a "No crewmates
@@ -4592,7 +4592,7 @@ describe('New crewmate dialog', () => {
     await renderPage([row()])
     await rosterRow('oncall')
     await openDialog()
-    const dlg = within(screen.getByRole('dialog', { name: 'New crewmate' }))
+    const dlg = within(screen.getByRole('dialog', { name: 'New mate' }))
     await waitFor(() => expect(dlg.getByRole('combobox', { name: 'Built from' })).toHaveTextContent('kirocrew (default)'))
     // A crew alias (`default`) is not a template and must not be offered: a
     // record storing it as `kiro_agent` would boot a fallback, not that crew.
@@ -4609,7 +4609,7 @@ describe('New crewmate dialog', () => {
     await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledWith(expect.objectContaining({ kiro_agent: 'kirocrew' })))
   })
 
-  it('Advanced settings folds the rest of the crew manager\'s form behind one disclosure in the New crewmate card', async () => {
+  it('Advanced settings folds the rest of the crew manager\'s form behind one disclosure in the New mate card', async () => {
     await renderPage([row()])
     await rosterRow('oncall')
     await clickAddCrewmate()
@@ -4650,7 +4650,7 @@ describe('New crewmate dialog', () => {
   })
 })
 
-describe('MembersPage create links open the New crewmate card', () => {
+describe('MembersPage create links open the New mate card', () => {
   // `default` rides along untouched: the Assistant is its own member.
   const assistantAndAlpha = () => [defaultRow(), assistantRow(), row({ name: 'alpha', slug: 'alpha' })]
   /** True when the element, or an ancestor, is hidden by an inline display:none. */
@@ -4695,7 +4695,7 @@ describe('MembersPage create links open the New crewmate card', () => {
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-mate')
   }
 
-  it('a create link in Mate\'s chat opens the New crewmate card as a modal, prefilled: name in Name, goal in What it looks after; the chat stays MOUNTED and VISIBLE behind it; nothing is sent', async () => {
+  it('a create link in Mate\'s chat opens the New mate card as a modal, prefilled: name in Name, goal in What it looks after; the chat stays MOUNTED and VISIBLE behind it; nothing is sent', async () => {
     await openAssistant()
     const through = passedThrough()
     try {
@@ -4765,7 +4765,7 @@ describe('MembersPage create links open the New crewmate card', () => {
     expect(api.createKirocrewAgent).not.toHaveBeenCalled()
   })
 
-  it('Create on a prefilled card posts that name and goal, asks for the first greeting, and opens the new crewmate', async () => {
+  it('Create on a prefilled card posts that name and goal, asks for the first greeting, and opens the new mate', async () => {
     await openAssistant()
     fireEvent.click(screen.getByTestId('chat-link-proposal'))
     await waitFor(() => expect(cardOpen()).toBe(true))
@@ -4801,7 +4801,7 @@ describe('MembersPage create links open the New crewmate card', () => {
     }
   })
 
-  it('only Mate\'s chat intercepts: a crewmate chat\'s create link is left to the chat', async () => {
+  it('only Mate\'s chat intercepts: a mate chat\'s create link is left to the chat', async () => {
     await renderPage(assistantAndAlpha(), 'kirocrew', { route: '/members?member=alpha' })
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-alpha')
     const through = passedThrough()
@@ -4896,7 +4896,7 @@ describe('MembersPage create links open the New crewmate card', () => {
     expect(chatPaneMounts.count).toBe(mountsBefore)
   })
 
-  it('the header shows only the display name, for Mate and for any labelled crewmate', async () => {
+  it('the header shows only the display name, for Mate and for any labelled mate', async () => {
     const utils = await renderPage([defaultRow(), assistantRow(), row({ name: 'oncall', slug: 'oncall', display_name: 'Oncall Sentinel' })])
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-mate')
     const title = screen.getByTestId('member-title-row')
@@ -4941,7 +4941,7 @@ describe('MembersPage create links open the New crewmate card', () => {
       // The user picks alpha mid-create and agrees to leave the card.
       fireEvent.click(await rosterRow('alpha'))
       await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha'), PANE_READY)
-      expect(confirm).toHaveBeenLastCalledWith(expect.stringMatching(/^Leave while the crewmate is being created\?/))
+      expect(confirm).toHaveBeenLastCalledWith(expect.stringMatching(/^Leave while the mate is being created\?/))
       const membersMock = api.members as ReturnType<typeof vi.fn>
       membersMock.mockResolvedValue({
         members: [...assistantAndAlpha(), row({ name: 'radar', slug: 'radar', dashboard_created: true })],
@@ -4961,7 +4961,7 @@ describe('MembersPage create links open the New crewmate card', () => {
     }
   })
 
-  it('New crewmate pressed again while a left create still runs does not reopen a card that create would then close', async () => {
+  it('New mate pressed again while a left create still runs does not reopen a card that create would then close', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     try {
       let finish: (v: unknown) => void = () => {}
@@ -5000,7 +5000,7 @@ describe('MembersPage create links open the New crewmate card', () => {
       await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha'), PANE_READY)
       await act(async () => { fail(new ApiError(500, 'boom')) })
       const notice = await screen.findByTestId('member-left-create-failed', undefined, PANE_READY)
-      expect(notice).toHaveTextContent("Couldn't create the crewmate.")
+      expect(notice).toHaveTextContent("Couldn't create the mate.")
       expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha')
       fireEvent.click(within(notice).getByRole('button'))
       await waitFor(() => expect(screen.queryByTestId('member-left-create-failed')).toBeNull())
@@ -5042,7 +5042,7 @@ describe('MembersPage create links open the New crewmate card', () => {
     }
   })
 
-  it('New crewmate again over a typed blank card, once the user agrees to leave, starts empty', async () => {
+  it('New mate again over a typed blank card, once the user agrees to leave, starts empty', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     try {
       await openAssistant()
@@ -5064,13 +5064,13 @@ describe('resolveDefaultMember', () => {
     row({ name: 'beta', slug: 'beta', last_active_ts: 200 }),
   ]
 
-  it('nobody chatted -> the crewmate with the greatest last_active_ts', () => {
+  it('nobody chatted -> the mate with the greatest last_active_ts', () => {
     // Product decision (CrewMates launch review): the "pick one" landing is
     // gone — the most recently USED crewmate opens by default.
     expect(resolveDefaultMember(ordered)?.name).toBe('beta')
   })
 
-  it('a tie in last_active_ts keeps the first crewmate in `ordered`', () => {
+  it('a tie in last_active_ts keeps the first mate in `ordered`', () => {
     const tied = [
       row({ name: 'alpha', slug: 'alpha', last_active_ts: 100 }),
       row({ name: 'beta', slug: 'beta', last_active_ts: 100 }),
@@ -5078,7 +5078,7 @@ describe('resolveDefaultMember', () => {
     expect(resolveDefaultMember(tied)?.name).toBe('alpha')
   })
 
-  it('the built-in default crewmate is a row like any other: the newest conversation wins', () => {
+  it('the built-in default mate is a row like any other: the newest conversation wins', () => {
     const withDefault = [row({ name: 'default', slug: 'default', last_active_ts: 999 }), ...ordered]
     expect(resolveDefaultMember(withDefault)?.name).toBe('default')
     // A default-only roster is the restore effect's hero case (`hasNoCrewmates`),
@@ -5086,7 +5086,7 @@ describe('resolveDefaultMember', () => {
     expect(resolveDefaultMember([row({ name: 'default', slug: 'default' })])?.name).toBe('default')
   })
 
-  it('Mate is the landing while no message was exchanged with it; then it is a crewmate like any other', () => {
+  it('Mate is the landing while no message was exchanged with it; then it is a mate like any other', () => {
     const withMate = [
       row({ name: 'alpha', slug: 'alpha', last_active_ts: 50 }),
       defaultRow({ last_active_ts: 999 }),
@@ -5162,7 +5162,7 @@ describe('MembersPage lists conversations like a messages app', () => {
 describe('MembersPage default member, memory and URL', () => {
   const alphaBeta = () => [row({ name: 'alpha', slug: 'alpha' }), row({ name: 'beta', slug: 'beta' })]
 
-  it('a fresh visit with nothing remembered opens the most recently used crewmate', async () => {
+  it('a fresh visit with nothing remembered opens the most recently used mate', async () => {
     await renderPage([
       row({ name: 'zeta-quiet', slug: 'zeta-quiet' }),
       row({ name: 'fresh-talker', slug: 'fresh-talker', last_active_ts: 200 }),
@@ -5190,7 +5190,7 @@ describe('MembersPage default member, memory and URL', () => {
     expect(currentUrl()).toBe('/members?member=beta')
   })
 
-  it('opening the built-in default by link remembers it like any crewmate', async () => {
+  it('opening the built-in default by link remembers it like any mate', async () => {
     localStorage.setItem(LAST_MEMBER_KEY, 'alpha')
     await renderPage([
       row({ name: 'default', slug: 'default', last_active_ts: 900 }),
@@ -5231,7 +5231,7 @@ describe('MembersPage default member, memory and URL', () => {
     expect(currentUrl()).toBe('/members?member=default')
   })
 
-  it('a crewmate opened but not messaged since is the one a return lands on (#19341)', async () => {
+  it('a mate opened but not messaged since is the one a return lands on (#19341)', async () => {
     // alpha holds the newest message; the user clicked beta, sent nothing,
     // left the page, and came back. The memory, not the newest thread, decides.
     const rows = [
@@ -5304,14 +5304,14 @@ describe('MembersPage default member, memory and URL', () => {
     expect(api.memberThread).not.toHaveBeenCalledWith('alpha')
   })
 
-  it('a never-chatted Mate is opened ahead of a remembered crewmate', async () => {
+  it('a never-chatted Mate is opened ahead of a remembered mate', async () => {
     localStorage.setItem(LAST_MEMBER_KEY, 'alpha')
     await renderPage([defaultRow(), assistantRow({ has_dm_message: false }), row({ name: 'alpha', slug: 'alpha', last_active_ts: 99 })])
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-mate')
     expect(currentUrl()).toBe('/members?member=mate')
   })
 
-  it('an existing user who chatted with a crewmate lands on an unseen Mate once', async () => {
+  it('an existing user who chatted with a mate lands on an unseen Mate once', async () => {
     await renderPage([
       defaultRow(),
       assistantRow(),
@@ -5373,7 +5373,7 @@ describe('MembersPage default member, memory and URL', () => {
     expect(api.memberThread).not.toHaveBeenCalledWith('mate')
   })
 
-  it('with the Crewmates preview off, opening the page neither lands on Mate nor asks for its welcome', async () => {
+  it('with the Mates preview off, opening the page neither lands on Mate nor asks for its welcome', async () => {
     localStorage.setItem('mc-preview-crew', '0')
     localStorage.setItem(LAST_MEMBER_KEY, 'alpha')
     await renderPage([defaultRow(), assistantRow({ has_dm_message: false }), row({ name: 'alpha', slug: 'alpha' })])
@@ -5434,7 +5434,7 @@ describe('MembersPage default member, memory and URL', () => {
     expect(names()).toEqual(['beta', 'gamma', 'alpha'])
   })
 
-  it('the OPEN crewmate rising to the top is the one recency change that re-sorts', async () => {
+  it('the OPEN mate rising to the top is the one recency change that re-sorts', async () => {
     // #15276: sorted by Recent, typing into a crewmate's DM leaves the row in
     // its alphabetical place. The user's own send is not a background event — it
     // is the thing in front of them — so it is the one advance the order hold
@@ -5610,7 +5610,7 @@ describe('MembersPage default member, memory and URL', () => {
     expect(notice).toHaveAttribute('role', 'status')
     expect(screen.queryByTestId('chat-pane-stub')).toBeNull()
     expect(api.memberThread).not.toHaveBeenCalled()
-    await screen.findAllByText(/No crewmates yet/i)
+    await screen.findAllByText(/No mates yet/i)
     expect(screen.queryByRole('alert')).toBeNull()
     // The return to `/members` is a navigate() issued from an effect once the
     // roster has loaded; on a slow runner the notice can render a tick before
@@ -5652,7 +5652,7 @@ describe('MembersPage default member, memory and URL', () => {
     expect(roster().getByText('beta').closest('button')).toHaveAttribute('aria-current', 'true')
   })
 
-  it('returning to a bare /members with nothing remembered re-opens the most-recently-used crewmate, not the one left active', async () => {
+  it('returning to a bare /members with nothing remembered re-opens the most-recently-used mate, not the one left active', async () => {
     // `safeSetItem` returns false when storage is denied (a locked-down
     // embedding context, blocked cookies), so a click never persists and the
     // later read is null. Denied for this one key so every other raw read in
@@ -5973,7 +5973,7 @@ describe('MembersPage default member, memory and URL', () => {
       await waitFor(() => expect(screen.queryByTestId('member-side-panel')).toBeNull(), { timeout: 3000 })
     })
 
-    it('lands on the remembered crewmate like a wide window, with the roster waiting in a closed drawer', async () => {
+    it('lands on the remembered mate like a wide window, with the roster waiting in a closed drawer', async () => {
       localStorage.setItem(LAST_MEMBER_KEY, 'beta')
       await renderPage(alphaBeta())
       expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-beta')
@@ -5989,7 +5989,7 @@ describe('MembersPage default member, memory and URL', () => {
       expect(toggle.querySelector('.pi-pane')).not.toBeNull()
       expect(toggle.querySelector('.lucide-arrow-left')).toBeNull()
       // A screen reader hears a toggle too, not "Back", in either state.
-      expect(toggle).toHaveAccessibleName('Toggle crewmates')
+      expect(toggle).toHaveAccessibleName('Toggle mates')
       expect(toggle).toHaveAttribute('aria-expanded', 'false')
       fireEvent.click(toggle)
       await screen.findByTestId('roster-drawer')
@@ -6051,7 +6051,7 @@ describe('MembersPage default member, memory and URL', () => {
       expect(localStorage.getItem(LAST_MEMBER_KEY)).toBe('beta')
     })
 
-    it('Back with the drawer open closes it and stays on the crewmate; one more Back leaves the page', async () => {
+    it('Back with the drawer open closes it and stays on the mate; one more Back leaves the page', async () => {
       ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({ members: alphaBeta(), default_agent: 'kirocrew' })
       ;(api.memberThread as ReturnType<typeof vi.fn>).mockImplementation(echoThread)
       function Elsewhere() {
@@ -6131,7 +6131,7 @@ describe('MembersPage default member, memory and URL', () => {
       await waitFor(() => expect(scopeOpen('members.roster-phone')).toBe(true))
     })
 
-    it('a New crewmate card takes the whole screen below md and its close returns to the originating chat', async () => {
+    it('a New mate card takes the whole screen below md and its close returns to the originating chat', async () => {
       await renderPage([row({ name: 'alpha', slug: 'alpha' }), defaultRow()], 'kirocrew', { route: '/members?member=alpha' })
       expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-alpha')
       // The roster's "+" lives in the drawer below md.
@@ -6213,7 +6213,7 @@ describe('MembersPage default member, memory and URL', () => {
       expect(currentUrl()).toBe('/members?member=alpha')
     })
 
-    it('the first crewmate created from an empty roster opens on a replace, so one Back still leaves the page', async () => {
+    it('the first mate created from an empty roster opens on a replace, so one Back still leaves the page', async () => {
       // A pushed open would leave a bare /members under the chat, and the phone
       // lands a bare /members on a crewmate by itself: Back would bounce back in.
       const membersMock = api.members as ReturnType<typeof vi.fn>
@@ -6239,7 +6239,7 @@ describe('MembersPage default member, memory and URL', () => {
       expect(screen.queryByTestId('member-gone-roster-notice')).toBeNull()
     })
 
-    it('switching from the drawer with Profile open does not carry the card to the next crewmate', async () => {
+    it('switching from the drawer with Profile open does not carry the card to the next mate', async () => {
       await renderPage(alphaBeta(), 'kirocrew', { route: '/members?member=alpha' })
       await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
       fireEvent.click(await screen.findByTestId('member-identity-pill'))
@@ -6296,7 +6296,7 @@ describe('MembersPage default member, memory and URL', () => {
       await waitFor(() => expect(report).toHaveBeenLastCalledWith('roster'), PANE_READY)
     })
 
-    it('looks the shell bar slot up only once a crewmate is open, so a bar swapped during a slow read is not kept', async () => {
+    it('looks the shell bar slot up only once a mate is open, so a bar swapped during a slow read is not kept', async () => {
       // The shell may re-render its bar while the roster read is pending,
       // replacing its slot; the crewmate's header must land in the slot that is
       // there once it opens. A slot latched while pending would be the detached
@@ -6502,7 +6502,7 @@ function expectCrewmateMessage(card: HTMLElement) {
 describe('MembersPage cold welcome (a new or long-idle thread)', () => {
   beforeEach(() => { localStorage.clear(); sessionStorage.clear() })
 
-  it('opening a long-idle crewmate with no goal in flight recaps its paused and recent work, once', async () => {
+  it('opening a long-idle mate with no goal in flight recaps its paused and recent work, once', async () => {
     vi.mocked(api.memberRecap).mockResolvedValue({
       slug: 'oncall', member: 'oncall',
       paused: [{ goal: 'Rotate the pager keys', next: 'confirm with Sam' }],
@@ -6535,7 +6535,7 @@ describe('MembersPage warm greeting (a return in the middle of a goal)', () => {
   }
   beforeEach(() => { sessionStorage.clear() })
 
-  it('opening a crewmate mid-goal says where the goal stands and the next step, as its message in the chat, without a chat turn', async () => {
+  it('opening a mate mid-goal says where the goal stands and the next step, as its message in the chat, without a chat turn', async () => {
     vi.mocked(api.crewBoard).mockResolvedValue(midGoal as never)
     await renderPage([row()])
     fireEvent.click(await rosterRow('oncall'))
@@ -6560,7 +6560,7 @@ describe('MembersPage warm greeting (a return in the middle of a goal)', () => {
     expect(screen.queryByTestId('member-resume-card')).toBeNull()
   })
 
-  it('a crewmate opened while its own turn runs gets no greeting: its reply is about to speak', async () => {
+  it('a mate opened while its own turn runs gets no greeting: its reply is about to speak', async () => {
     vi.mocked(api.crewBoard).mockResolvedValue(midGoal as never)
     const { store } = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     act(() => {
@@ -6591,7 +6591,7 @@ describe('MembersPage warm greeting (a return in the middle of a goal)', () => {
     expect(screen.queryByTestId('member-resume-card')).toBeNull()
   })
 
-  it('a worker finishing after the user\'s turn wakes the crewmate in the background: the card stays up', async () => {
+  it('a worker finishing after the user\'s turn wakes the mate in the background: the card stays up', async () => {
     vi.mocked(api.crewBoard).mockResolvedValue(midGoal as never)
     const { store } = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     act(() => { store.dispatch(sseChatMessage({ slot: 'member-oncall', role: 'user', content: TURN_TEXT.user })) })
@@ -6601,7 +6601,7 @@ describe('MembersPage warm greeting (a return in the middle of a goal)', () => {
     expect(screen.getByTestId('member-resume-card')).toBeInTheDocument()
   })
 
-  it('a crewmate opened during a patrol turn still greets with where its goal stands', async () => {
+  it('a mate opened during a patrol turn still greets with where its goal stands', async () => {
     vi.mocked(api.crewBoard).mockResolvedValue(midGoal as never)
     const { store } = await renderPage([row()])
     // The patrol turn runs before the roster lands; the page then opens its
@@ -6611,7 +6611,7 @@ describe('MembersPage warm greeting (a return in the middle of a goal)', () => {
     expect(api.crewBoard).toHaveBeenCalledExactlyOnceWith('member-oncall')
   })
 
-  it('a running crewmate whose transcript lands after the open is judged by it: a patrol still greets', async () => {
+  it('a running mate whose transcript lands after the open is judged by it: a patrol still greets', async () => {
     vi.mocked(api.crewBoard).mockResolvedValue(midGoal as never)
     const { store } = await renderPage([row()])
     act(() => { store.dispatch(sseSlots([{ key: 'member-oncall', mode: 'member', running: true, messages: 1 }] as never)) })

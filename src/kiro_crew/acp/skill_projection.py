@@ -537,7 +537,7 @@ class RetiredSkillView(ValueError):
         super().__init__(
             f"'{view}' is a generated skill view from an earlier run, and the agent it "
             "was built from is not recorded anywhere. Pick the agent for this chat or "
-            "crewmate again, or start a new chat; a gateway restart rebuilds every view."
+            "mate again, or start a new chat; a gateway restart rebuilds every view."
         )
 
 

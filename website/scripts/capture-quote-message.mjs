@@ -241,7 +241,7 @@ for (const theme of ['dark', 'light']) {
     await page.waitForSelector('[data-testid="quote-card-sent"]')
     const text = await page.locator('[data-testid="quote-card-sent"]').locator('..').innerText()
     check(`[${theme}/crewmate-sent] card + body, no raw '>'`, text.includes('Can the chips get a fixed height') && !text.includes('> '))
-    check(`[${theme}/crewmate-sent] card names the crewmate, not the product`, (await page.getByTestId('quote-card-sent').innerText()).includes('Worker') && !(await page.getByTestId('quote-card-sent').innerText()).includes('Kiro Crew'))
+    check(`[${theme}/crewmate-sent] card names the mate, not the product`, (await page.getByTestId('quote-card-sent').innerText()).includes('Worker') && !(await page.getByTestId('quote-card-sent').innerText()).includes('Kiro Crew'))
     await page.mouse.move(5, 5); await page.waitForTimeout(300)
     await shot(page, `${theme}-9-crewmate-sent.png`)
     check(`[${theme}/crewmate-sent] no page errors`, errors.length === 0); await ctx.close()

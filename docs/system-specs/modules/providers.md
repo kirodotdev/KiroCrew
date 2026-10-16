@@ -297,8 +297,8 @@ the built-in mode ids `vibe`, `spec`, `quick-spec`, `bug-fix`, `plan`,
 `agent_files.kas_wire_agent_id(id)` (`<id>-crewmate`) -- the engine accepts an
 entry under the id itself and either drops it or keeps its own built-in under
 it, so it would surface only as an unadvertised mode or as the built-in running
-under the crewmate's name. The projection and every Crew-side record keep the
-crewmate's id (`crew-mode.md`, "Template names the harness cannot activate"). This repository does not establish a universal native model or
+under the mate's name. The projection and every Crew-side record keep the
+mate's id (`crew-mode.md`, "Template names the harness cannot activate"). This repository does not establish a universal native model or
 resource truncation limit; real harness versions still need that integration check.
 Resume and replacement snapshots retain complete text. Frameworks without native steering receive a
 conditional discovery index: the agent reads a guide only after its explicit

@@ -461,7 +461,7 @@ its own once the cache refreshes with a list that carries it.
   read or the agent-pin read fails (`useSettingsDefaultModel` reports `failed`),
   the composer shows an inline "failed to load config" notice instead.
 - **A dashboard chat slot with an empty `slot.model` inherits**, and keeps inheriting
-  across turns. When neither the slot nor its crewmate pins a model, the turn resolves
+  across turns. When neither the slot nor its mate pins a model, the turn resolves
   the default the slot inherits (`_default_session_model`). While that default is
   non-empty, neither `slot.model` backfill site writes the provider's served model
   into the slot; the composer chip reads it from `served_model`. The backfill still
@@ -471,7 +471,7 @@ its own once the cache refreshes with a list that carries it.
   (`allocation_requested_model`) with the default it inherits now. When they differ
   it queues the same reset a model pick queues, consumed with `skip_if_busy`, so a
   turn already streaming on that session is never cut. An empty stamp is unknown and
-  triggers nothing. A slot or crewmate pin never triggers it. A `slot.model` an
+  triggers nothing. A slot or mate pin never triggers it. A `slot.model` an
   earlier backfill stored is indistinguishable from a person's pick and stays until
   the user picks Auto.
 - Codex advertises `model[effort]` pairs, but its `model` config option accepts the
@@ -501,11 +501,11 @@ its own once the cache refreshes with a list that carries it.
   `AgentConfig.resolve_model(role)` in `config/sections_agent.py`. Roles default to
   `"auto"` and deliberately do NOT inherit `agent.model`, so a user's chat model
   does not silently become the price of every background task. The sessions a
-  crewmate dispatches with `session_create` are the one decided exception
+  mate dispatches with `session_create` are the one decided exception
   ([rfc-worker-model-inheritance](../../request-for-change/rfc-worker-model-inheritance.md)):
-  they take the CREWMATE profile's explicit model and effort pins (the values
-  the person chose on that crewmate's profile, never the user's chat model).
-  An empty crewmate pin leaves that half unpinned, so the worker's selected agent
+  they take the MATE profile's explicit model and effort pins (the values
+  the person chose on that mate's profile, never the user's chat model).
+  An empty mate pin leaves that half unpinned, so the worker's selected agent
   or the global default decides. The per-crewmate cost cap is that
   profile's `worker_model` / `worker_reasoning_effort`, where
   `"auto"` is a real pin on the backend default. `worker_session_defaults` in

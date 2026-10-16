@@ -655,10 +655,10 @@ def test_find_ui_quotes_the_pages_own_words_for_what_a_deletion_removes() -> Non
     # Delete crewmate only unbinds; Mate describes it from the page's own
     # notice, never from a guess that it wipes chats and notes for good.
     for locale, want in (
-        ("en", "Deleting a crewmate only unbinds it from new sessions."),
+        ("en", "Deleting a mate only unbinds it from new sessions."),
         ("zh-CN", None),
     ):
-        d = ui_index.find_ui("delete a crewmate", locale)
+        d = ui_index.find_ui("delete a mate", locale)
         hit = next((r for r in d.get("results", []) if r["id"] == "agents.delete"), None)
         assert hit is not None, d
         assert hit["caution"] is True
@@ -734,7 +734,7 @@ def _pointing(lid: str, placement: str) -> list[dict[str, Any]]:
         "id": f"{placement}:gate:preview_flag:mc-preview-crew",
         "kind": "gate",
         "gate": "preview_flag:mc-preview-crew",
-        "setting_id": "developer.crewmates",
+        "setting_id": "developer.mates",
     }
     return steps[1:]
 

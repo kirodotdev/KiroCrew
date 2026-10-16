@@ -116,7 +116,7 @@ beforeEach(() => {
  *  settings, so every workspace-modal path goes through here first. */
 async function openCrewSheet(): Promise<HTMLElement> {
   fireEvent.click(screen.getByTestId('new-crew'))
-  const dlg = await screen.findByRole('dialog', { name: 'New crewmate' })
+  const dlg = await screen.findByRole('dialog', { name: 'New mate' })
   // The crew manager's door opens with Advanced settings already unfolded.
   expect(within(dlg).getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'true')
   await within(dlg).findByRole('combobox', { name: 'Workspace' })

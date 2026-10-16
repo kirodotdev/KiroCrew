@@ -337,11 +337,11 @@ def test_crewmate_cards_name_the_crewmate_the_way_the_user_knows_it():
     )
     before = {"exists": True, "fields": {"description": "old"}}
     preview = catalog.build_preview("crewmate.update", p, before, {"label": "Rock"})
-    assert preview["title"] == "Update crewmate “Rock”"
+    assert preview["title"] == "Update mate “Rock”"
     assert preview["scope"]["members"] == ["Rock"]
     assert preview["apply"][0]["path"] == "/api/agents/scout"
     plain = catalog.build_preview("crewmate.update", p, before, {})
-    assert plain["title"] == "Update crewmate “scout”"
+    assert plain["title"] == "Update mate “scout”"
     assert plain["scope"]["members"] == ["scout"]
 
 
@@ -554,7 +554,7 @@ def test_a_failed_first_step_is_retryable_and_a_failed_later_step_is_partial():
     store.record_failure(rec, op="apply", index=1, status=500, body=None)
     assert rec["status"] == "partial"
     assert rec["result"]["summary"] == (
-        "Created crewmate “Scout”, but its goal or its schedule was not saved"
+        "Created mate “Scout”, but its goal or its schedule was not saved"
     )
 
 
@@ -2097,10 +2097,10 @@ def test_crewmate_delete_memory_line_uses_the_display_name():
     text = catalog.describe_manual_change(
         ("DELETE", "/api/agents/{name}"), {"name": "pr"}, None, "PR跟进"
     )
-    assert text == "deleted crewmate “PR跟进”"
+    assert text == "deleted mate “PR跟进”"
     assert (
         catalog.describe_manual_change(("DELETE", "/api/agents/{name}"), {"name": "pr"}, None, None)
-        == "deleted crewmate “pr”"
+        == "deleted mate “pr”"
     )
 
 

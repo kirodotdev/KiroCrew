@@ -16,7 +16,7 @@ import {
  * navigation -- a closed `connect-src` does not. The server decides and answers
  * `scripts: false`; this is the host honouring it.
  */
-describe('the crewmate dashboard sandbox', () => {
+describe('the mate dashboard sandbox', () => {
   it('grants allow-scripts and nothing else where the page may run', () => {
     expect(crewDashboardSandbox(true)).toBe('allow-scripts')
     expect(crewDashboardSandbox(true)).toBe(CREW_DASHBOARD_SANDBOX)

@@ -41,7 +41,7 @@ const feedState = (notes: Notification[]) =>
 
 beforeEach(() => { members.mockReset() })
 
-describe('crewmate attribution on notifications', () => {
+describe('mate attribution on notifications', () => {
   it('draws the face and display label of the row with the same slug and exact name', async () => {
     roster([
       // Same slug, different exact name: slugs are lossy, so this is another crewmate.
@@ -53,7 +53,7 @@ describe('crewmate attribution on notifications', () => {
     expect(screen.getByTestId('notification-crewmate-name')).toHaveTextContent('Ada Lovelace')
   })
 
-  it('keeps the kind icon while the roster loads and when the crewmate is gone', async () => {
+  it('keeps the kind icon while the roster loads and when the mate is gone', async () => {
     let resolve: (v: unknown) => void = () => {}
     members.mockReturnValue(new Promise(r => { resolve = r }) as never)
     renderWithProviders(<NotificationCard n={fromAda} onOpen={() => {}} openLabel="open" />)
@@ -63,13 +63,13 @@ describe('crewmate attribution on notifications', () => {
     expect(screen.queryByTestId('notification-crewmate-name')).toBeNull()
   })
 
-  it('never queries the roster for a note without a crewmate', async () => {
+  it('never queries the roster for a note without a mate', async () => {
     renderWithProviders(<NotificationCard n={base} onOpen={() => {}} openLabel="open" />)
     await act(async () => {})
     expect(members).not.toHaveBeenCalled()
   })
 
-  it('shows the crewmate in the detail panel', async () => {
+  it('shows the mate in the detail panel', async () => {
     roster([{ name: 'Ada', slug: 'ada' }])
     renderWithProviders(<NotificationDetailPanel n={fromAda} onClose={() => {}} />)
     expect(await screen.findByTestId('notification-crewmate-face')).toBeInTheDocument()
@@ -87,20 +87,20 @@ describe('crewmate attribution on notifications', () => {
 describe('a failed roster read', () => {
   const twoNotes = [fromAda, { ...fromAda, ts: '2026-10-07T10:01:00.000Z' }]
 
-  it('is reported once in a feed showing crewmate notes, and the kind icon stays', async () => {
+  it('is reported once in a feed showing mate notes, and the kind icon stays', async () => {
     members.mockRejectedValue(new Error('503'))
     renderWithProviders(<NotificationFeed selectedTs={null} onSelect={() => {}} />, { store: feedState(twoNotes) })
     expect(await screen.findAllByTestId('notification-crewmate-roster-error')).toHaveLength(1)
     expect(screen.queryByTestId('notification-crewmate-face')).toBeNull()
   })
 
-  it('is reported in the detail panel of a crewmate note', async () => {
+  it('is reported in the detail panel of a mate note', async () => {
     members.mockRejectedValue(new Error('503'))
     renderWithProviders(<NotificationDetailPanel n={fromAda} onClose={() => {}} />)
     expect(await screen.findByTestId('notification-crewmate-roster-error')).toBeInTheDocument()
   })
 
-  it('is left to the detail panel while a crewmate note is selected', async () => {
+  it('is left to the detail panel while a mate note is selected', async () => {
     members.mockRejectedValue(new Error('503'))
     renderWithProviders(
       <>
@@ -121,14 +121,14 @@ describe('a failed roster read', () => {
     await waitFor(() => expect(screen.queryByTestId('notification-crewmate-roster-error')).toBeNull())
   })
 
-  it('is not read at all by a feed with no crewmate notes', async () => {
+  it('is not read at all by a feed with no mate notes', async () => {
     renderWithProviders(<NotificationFeed selectedTs={null} onSelect={() => {}} />, { store: feedState([base]) })
     await act(async () => {})
     expect(members).not.toHaveBeenCalled()
     expect(screen.queryByTestId('notification-crewmate-roster-error')).toBeNull()
   })
 
-  it('is reported once on the live banner, however many crewmate cards it shows', async () => {
+  it('is reported once on the live banner, however many mate cards it shows', async () => {
     vi.spyOn(document, 'hasFocus').mockReturnValue(true)
     members.mockRejectedValue(new Error('503'))
     const bellRef = createRef<HTMLButtonElement>()

@@ -152,27 +152,27 @@ describe('searchByName', () => {
   it('names matches of different kinds by region and kind, never by a landmark alone', () => {
     render(
       <>
-        <nav aria-label="Main navigation"><a href="/members">Crewmates</a></nav>
-        <div role="tablist" aria-label="Customize"><button role="tab">Crewmates</button></div>
+        <nav aria-label="Main navigation"><a href="/members">Mates</a></nav>
+        <div role="tablist" aria-label="Customize"><button role="tab">Mates</button></div>
       </>,
     )
-    const r = searchByName({ label: 'Crewmates' })
+    const r = searchByName({ label: 'Mates' })
     expect(r.result).toBe('ambiguous')
-    expect(distinguishingContexts(r.matches)).toEqual(['Crewmates · link · Main navigation', 'Crewmates · tab · Customize'])
+    expect(distinguishingContexts(r.matches)).toEqual(['Mates · link · Main navigation', 'Mates · tab · Customize'])
   })
 
   it('prefers the page tab over the main-menu entry of the same name for a tab target', () => {
     render(
       <>
-        <nav aria-label="Main navigation"><a href="/members">Crewmates</a></nav>
-        <nav aria-label="Customize"><button role="tab">Crewmates</button></nav>
+        <nav aria-label="Main navigation"><a href="/members">Mates</a></nav>
+        <nav aria-label="Customize"><button role="tab">Mates</button></nav>
       </>,
     )
-    const r = searchByName({ label: 'Crewmates', location: 'tab.capabilities.crews' })
+    const r = searchByName({ label: 'Mates', location: 'tab.capabilities.crews' })
     expect(r.result).toBe('found')
     expect(r.element?.getAttribute('role')).toBe('tab')
     // A search that is not for a tab still sees both.
-    expect(searchByName({ label: 'Crewmates' }).result).toBe('ambiguous')
+    expect(searchByName({ label: 'Mates' }).result).toBe('ambiguous')
   })
 
   it('never offers a link inside a chat reply as a candidate', () => {

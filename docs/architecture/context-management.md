@@ -115,7 +115,7 @@ time-to-first-token: `build_session_context` stamps `_mark(...)` per group
   can also write (`change_card_catalog.MEMORY_ROUTES`), made through a card or
   by hand on the Settings page, appends one `Dashboard: <what changed> (via ...)`
   line to Global memory history (`dashboard/handlers/change_cards.py`
-  `_record_memory`). It is how a crewmate asked "why did this change?" can answer
+  `_record_memory`). It is how a mate asked "why did this change?" can answer
   from `diagnose_settings`' `recent_changes`, and why a hand edit is recorded too:
   a card-only log would miss the change the user is asking about. A line names
   what changed, never a secret, environment or token value

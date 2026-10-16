@@ -1445,8 +1445,8 @@ def build_preview(
         out["apply"] = [step("PATCH", f"/api/crons/{_q(p['id'])}", _cron_body(p["fields"]))]
     elif kind == KIND_CREWMATE_CREATE:
         if snapshot.get("exists"):
-            raise _fail("already_exists", f"a crewmate named '{p['name']}' already exists")
-        out["title"] = f"Create crewmate “{p['name']}”"
+            raise _fail("already_exists", f"a mate named '{p['name']}' already exists")
+        out["title"] = f"Create mate “{p['name']}”"
         out["changes"] = [
             {"label": "Name", "after": p["name"]},
             {"label": "Goal", "after": p["goal"]},
@@ -1500,7 +1500,7 @@ def build_preview(
         out["apply"] = apply
     elif kind == KIND_CREWMATE_UPDATE:
         if not snapshot.get("exists"):
-            raise _fail("not_found", f"no crewmate named '{p['name']}'")
+            raise _fail("not_found", f"no mate named '{p['name']}'")
         stored = snapshot.get("fields") or {}
         before = dict(stored)
         # An unset approval mode is not "nothing": the thread opens in the
@@ -1526,7 +1526,7 @@ def build_preview(
             )
         }
         if not changed:
-            raise _fail("no_change", "the crewmate already has those values")
+            raise _fail("no_change", "the mate already has those values")
         if "approval_mode" in changed:
             # A permission move is ranked like ``agent.approval_mode`` is: toward
             # ``trust`` the card is a widening (badge and acknowledgement), toward
@@ -1539,7 +1539,7 @@ def build_preview(
         # it (its display name, from the context); the key is the identity the
         # plan addresses and stays in the params and the path.
         label = str(context.get("label") or p["name"])
-        out["title"] = f"Update crewmate “{label}”"
+        out["title"] = f"Update mate “{label}”"
         # ``field`` lets the card draw the user's word for the field and its
         # values (the dashboard's FIELD_LABELS); ``label`` stays the fallback.
         out["changes"] = [
@@ -1552,7 +1552,7 @@ def build_preview(
         ]
     elif kind == KIND_CREWMATE_GOAL:
         if not snapshot.get("exists") or not snapshot.get("slug"):
-            raise _fail("not_found", f"no crewmate named '{p['member']}'")
+            raise _fail("not_found", f"no mate named '{p['member']}'")
         goals = [g for g in snapshot.get("goals") or [] if isinstance(g, dict)]
         label = str(context.get("label") or p["member"])
         gid = p.get("goal_id")
@@ -1561,17 +1561,17 @@ def build_preview(
             if any(
                 p["long_term"] in (g.get("text"), _goals.scrub_text(g.get("text"))) for g in goals
             ):
-                raise _fail("no_change", "the crewmate already has that goal")
+                raise _fail("no_change", "the mate already has that goal")
             goal_shown: str | None = None
             out["title"] = f"Add a goal for “{label}”"
             goal_number = len(goals) + 1
         else:
             goal_numbers = {g.get("id"): n for n, g in enumerate(goals, start=1)}
             if gid not in goal_numbers:
-                raise _fail("not_found", "the crewmate has no goal with that id")
+                raise _fail("not_found", "the mate has no goal with that id")
             goal_before = str(goals[goal_numbers[gid] - 1].get("text") or "")
             if goal_before == p["long_term"]:
-                raise _fail("no_change", "the crewmate already has that goal")
+                raise _fail("no_change", "the mate already has that goal")
             # The change line and the plan are public (CardStore.public): the goal
             # they replace is shown as the Goals tab shows it, scrubbed, and the
             # route takes the scrubbed text as ``expected``. The raw goal stays in
@@ -1593,9 +1593,9 @@ def build_preview(
         out["apply"] = [step("PUT", _goal_path(str(snapshot["slug"])), goal_body)]
     elif kind == KIND_CREWMATE_KEY_RESULTS:
         if not snapshot.get("exists") or not snapshot.get("slug"):
-            raise _fail("not_found", f"no crewmate named '{p['member']}'")
+            raise _fail("not_found", f"no mate named '{p['member']}'")
         if not snapshot.get("has_goal"):
-            raise _fail("no_goal", "the crewmate has no goal to measure yet")
+            raise _fail("no_goal", "the mate has no goal to measure yet")
         numbers = {
             g.get("id"): n
             for n, g in enumerate(snapshot.get("goals") or [], start=1)
@@ -1657,13 +1657,13 @@ def build_preview(
         ]
     elif kind == KIND_CREWMATE_CHECK_INS:
         if not snapshot.get("exists") or not snapshot.get("slug"):
-            raise _fail("not_found", f"no crewmate named '{p['member']}'")
+            raise _fail("not_found", f"no mate named '{p['member']}'")
         before_ci = snapshot.get("schedules") or {}
         changed = {k: v for k, v in p.items() if k != "member" and before_ci.get(k) != v}
         if not changed:
             raise _fail("no_change", "the check-ins are already set that way")
         if not snapshot.get("has_goal") and any(p.get(c) is True for c in _goals.CADENCES):
-            raise _fail("no_goal", "the crewmate has no goal to check in on yet")
+            raise _fail("no_goal", "the mate has no goal to check in on yet")
         label = str(context.get("label") or p["member"])
         out["title"] = f"Set the check-ins for “{label}”"
         out["changes"] = [
@@ -2448,9 +2448,9 @@ def result_summary(
             if failed_step == CREWMATE_CREATE_GOAL_STEP:
                 # A failed step stops the plan, so a schedule after it never ran.
                 rest = " or its schedule" if params.get("schedule") else ""
-                return f"Created crewmate “{name}”, but its goal{rest} was not saved"
+                return f"Created mate “{name}”, but its goal{rest} was not saved"
             if failed_step == CREWMATE_CREATE_SCHEDULE_STEP:
-                return f"Created crewmate “{name}”, but its schedule was not saved"
+                return f"Created mate “{name}”, but its schedule was not saved"
         return f"Partly applied: {title}"
     if status == "undone":
         return f"Restored: {title}"
@@ -2496,10 +2496,10 @@ def describe_manual_change(
         count = len(raw_items) if isinstance(raw_items, list) else 0
         return f"set {count} key results for crewmate {s(b.get('member'))}"
     if route == ("PUT", "/api/members/{slug}/goals/long-term"):
-        return f"set the goal of crewmate {s(b.get('member'))} to {s(b.get('long_term'))}"
+        return f"set the goal of mate {s(b.get('member'))} to {s(b.get('long_term'))}"
     if route == ("PUT", "/api/members/{slug}/goals/schedules"):
         fields = ", ".join(s(k) for k in CHECK_IN_FIELDS if k in b)
-        return f"set the check-ins of crewmate {s(b.get('member'))} ({fields or 'none'})"
+        return f"set the check-ins of mate {s(b.get('member'))} ({fields or 'none'})"
     if route == ("PUT", "/api/dashboard/config"):
         prior = before if isinstance(before, dict) else {}
         parts = []
@@ -2519,12 +2519,12 @@ def describe_manual_change(
     if route == ("DELETE", "/api/crons/{job_id}"):
         return f"deleted schedule {s(name)}"
     if route == ("POST", "/api/agents"):
-        return f"created crewmate “{s(b.get('name'))}”"
+        return f"created mate “{s(b.get('name'))}”"
     if route == ("PUT", "/api/agents/{name}"):
-        return f"updated crewmate {s(name)} ({', '.join(sorted(str(k) for k in b)[:6])})"
+        return f"updated mate {s(name)} ({', '.join(sorted(str(k) for k in b)[:6])})"
     if route == ("DELETE", "/api/agents/{name}"):
         shown = before if isinstance(before, str) and before else name
-        return f"deleted crewmate “{s(shown)}”"
+        return f"deleted mate “{s(shown)}”"
     if route == ("PUT", "/api/agents/{name}/capabilities"):
         raw_ops = b.get("operations")
         ops: list[Any] = raw_ops if isinstance(raw_ops, list) else []

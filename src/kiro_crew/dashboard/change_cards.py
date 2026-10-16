@@ -2242,7 +2242,7 @@ def _goal_state(member: str, kind: str) -> dict[str, Any]:
         rec = member_goals.read_goals(slug, member)
     except member_goals.GoalsUnreadable:
         raise catalog.CardCatalogError(
-            "goals_unreadable", "this crewmate's goal record cannot be read"
+            "goals_unreadable", "this mate's goal record cannot be read"
         ) from None
     out: dict[str, Any] = {
         "exists": True,

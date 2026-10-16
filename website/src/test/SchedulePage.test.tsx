@@ -612,7 +612,7 @@ describe('SchedulePage job detail dialog', () => {
     expect(await screen.findByDisplayValue('Nightly report')).toBeInTheDocument()
   })
 
-  it('?job=<id> opens that job\'s detail once the list loads (the Crewmate Profile link)', async () => {
+  it('?job=<id> opens that job\'s detail once the list loads (the Mate Profile link)', async () => {
     const { api } = await import('../api/client')
     vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob({ id: 'job-7', name: 'Linked job' })] })
 

@@ -102,7 +102,7 @@ def _goal_refusal(exc: member_goals.GoalError) -> web.Response:
 
 
 def _unreadable() -> web.Response:
-    return _deny(500, "goals_unreadable", "this crewmate's goal record cannot be read")
+    return _deny(500, "goals_unreadable", "this mate's goal record cannot be read")
 
 
 async def _scheduled_cadences(request: web.Request, slug: str) -> set[str]:
@@ -233,7 +233,7 @@ async def api_member_goals_long_term(request: web.Request) -> web.Response:
         return _deny(400, "invalid_expected", "expected must be the goal text shown")
     goal_id = body.get("goal_id")
     if goal_id is not None and not member_goals.is_goal_id(goal_id):
-        return _deny(400, "invalid_goal_id", "goal_id must be one of the crewmate's goal ids")
+        return _deny(400, "invalid_goal_id", "goal_id must be one of the mate's goal ids")
     if goal_id is None and expected not in (None, ""):
         return _deny(400, "invalid_expected", "a new goal replaces nothing; name a goal_id")
 

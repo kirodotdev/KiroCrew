@@ -379,7 +379,7 @@ describe('NewCrewmateDialog', () => {
       expect(advanced).toContainElement(end)
       expect(within(region).getAllByRole('button').at(-1)).toBe(end)
       expect(end).toHaveClass('w-full', 'min-h-11')
-      expect(end).toHaveTextContent('Create crewmate')
+      expect(end).toHaveTextContent('Create mate')
     })
 
     it('the closing Create submits the same create, once per press', async () => {

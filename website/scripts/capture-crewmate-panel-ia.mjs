@@ -39,12 +39,12 @@ const MEMBERS = [
   member('scribe', { display_name: 'Scribe', kiro_agent: 'docs', last_active_ts: now - 90000, last_message: 'Spec updated in the same commit.' }),
 ]
 const DESC = {
-  kiro: 'Frontend crewmate for the Kiro Crew dashboard. Owns the chat surface, the members page and the Glass design language. Reviews every UI PR from a new-user point of view before it ships, and never merges.',
-  atlas: 'Backend crewmate. Owns the gateway, the ACP client and the session store. Keeps the test suite green and the startup path fast.',
-  scout: 'Research crewmate. Reads papers, repos and docs, then writes short briefs with sources. Never pushes code.',
-  pixel: 'Design crewmate. Turns ideas into mockups rendered with the real theme tokens, and asks you to choose before any code.',
-  ops: 'Infra crewmate. Watches CI, nightly builds and signing. Opens an issue when a lane goes red twice.',
-  scribe: 'Docs crewmate. Keeps system specs in step with the code and lints every doc move.',
+  kiro: 'Frontend mate for the Kiro Crew dashboard. Owns the chat surface, the members page and the Glass design language. Reviews every UI PR from a new-user point of view before it ships, and never merges.',
+  atlas: 'Backend mate. Owns the gateway, the ACP client and the session store. Keeps the test suite green and the startup path fast.',
+  scout: 'Research mate. Reads papers, repos and docs, then writes short briefs with sources. Never pushes code.',
+  pixel: 'Design mate. Turns ideas into mockups rendered with the real theme tokens, and asks you to choose before any code.',
+  ops: 'Infra mate. Watches CI, nightly builds and signing. Opens an issue when a lane goes red twice.',
+  scribe: 'Docs mate. Keeps system specs in step with the code and lints every doc move.',
 }
 const AGENTS = MEMBERS.map((m) => ({
   name: m.name, display_name: m.display_name, kiro_agent: m.kiro_agent, workspace: m.workspace,
@@ -264,7 +264,7 @@ async function captureMonitorTransition() {
   check(`the card takes its own column and the thread narrows (${Math.round(threadBefore)} → ${Math.round(threadAfter)})`, (await page.getByTestId('crew-profile-docked').count()) === 1 && threadAfter < threadBefore - 300)
   check('the pill steps out while the card holds the column', (await pill.count()) === 0)
   check('exactly one face is on screen (the card head)', (await page.getByTestId('crew-profile-face').count()) === 1)
-  check('card names the crewmate', (await page.getByTestId('crew-profile-name').innerText()).trim() === 'Kiro')
+  check('card names the mate', (await page.getByTestId('crew-profile-name').innerText()).trim() === 'Kiro')
   check('card has four tabs', (await rail(page).locator('[role="tab"]').count()) === 4)
   check('the card opens on Sessions', (await visibleWords(page)) === 'Sessions', await visibleWords(page))
   check('the Profile avatar carries the same active monitor mark', (await page.getByTestId('crew-profile-loop-indicator').count()) === 1)
@@ -382,7 +382,7 @@ async function captureMonitorTransition() {
   // 09: Files, scoped to the crewmate's workspace.
   await panel.getByRole('tab', { name: 'Files' }).click()
   await page.waitForTimeout(1200)
-  check(`the Files view asked for the crewmate's workspace (${seenTreeDirs.join(', ')})`, seenTreeDirs.includes('/srv/repos/kiro'))
+  check(`the Files view asked for the mate's workspace (${seenTreeDirs.join(', ')})`, seenTreeDirs.includes('/srv/repos/kiro'))
   check('the Files tree rendered', (await page.getByText('MembersPage.tsx').count()) > 0 || (await page.getByText('website').count()) > 0)
   await page.screenshot({ path: join(OUT, '09-side-panel-files-light.png') })
   await page.getByTestId('side-panel-leading-tab-crew-dashboard').click()
@@ -410,7 +410,7 @@ async function captureMonitorTransition() {
   const list = page.getByTestId('crewmate-switcher-list')
   await list.waitFor({ state: 'visible', timeout: 10000 })
   await page.waitForTimeout(400)
-  check('switcher lists every crewmate', (await page.getByTestId('crewmate-switcher-row').count()) === 6)
+  check('switcher lists every mate', (await page.getByTestId('crewmate-switcher-row').count()) === 6)
   check('the chip carries a needs-you dot for Pixel', (await page.getByTestId('crewmate-switcher-needs-you').count()) === 1)
   check('Pixel row shows needs-you, Scout row shows unread', (await page.getByTestId('crewmate-switcher-needs-you-dot').count()) >= 1 && (await page.getByTestId('crewmate-switcher-unread-dot').count()) >= 1)
   const h = await page.getByTestId('member-thread-header').boundingBox()

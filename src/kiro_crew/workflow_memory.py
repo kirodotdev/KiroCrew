@@ -449,8 +449,8 @@ _GENERIC_MEMORY_REFUSAL = "Workflow memory is unavailable; no Global fallback wa
 _WORKFLOW_HEADLINE_REFUSAL = "Workflow memory is unavailable; Global was not used"
 _MEMBER_BINDING_REASONS = frozenset({MEMBER_ON_GLOBAL_REASON, MEMBER_WITHOUT_IDENTITY_REASON})
 _MEMBER_BINDING_REMEDY = (
-    "To run workflows here, start a chat with no crewmate picked, or pick a crewmate "
-    "that has its own memory (every new crewmate gets one)."
+    "To run workflows here, start a chat with no mate picked, or pick a mate "
+    "that has its own memory (every new mate gets one)."
 )
 
 

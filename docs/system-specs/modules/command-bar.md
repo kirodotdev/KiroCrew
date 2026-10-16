@@ -30,7 +30,7 @@ locally-known rows — sessions awaiting a user decision, commands, app destinat
 settings — and every corpus search is a view the reader ENTERS, so the expensive work is explicit
 and chosen.
 
-Four such views exist: session search, artifact search, folder search, and crewmate search —
+Four such views exist: session search, artifact search, folder search, and mate search —
 the last of them behind the `PREVIEW_CREW` flag, because it is an INGRESS to `/members` and
 that page is registered with the same flag. Every other door to it applies the gate, and this
 app ships `defaultEnabled: true`, so a launcher row that skipped it would advertise a page the
@@ -63,14 +63,14 @@ the `usePaletteActions` route change are wired in `CommandBarOverlay`, which is 
 holding this app's seams. It still renders the host's `Result` row contract, because forking the
 row shape would fork the Enter matrix with it.
 
-The crewmates view (`apps/command-bar/matesProvider.ts`) reaches the reader's own crew: typing
+The mates view (`apps/command-bar/matesProvider.ts`) reaches the reader's own crew: typing
 filters the roster by fuzzy name and Enter lands on that mate's pinned DM thread
 (`/members?member=<name>`, encoded — a crew may be called `Review & QA`). It is a VIEW rather
 than a root group, and the roster's size is the reason it looks like it should be the other way
 round. The deciding fact is that the corpus is a FETCH: `GET /api/agents/catalog`, which
 `useAgents` calls on mount and which no WebSocket push seeds into the cache. A root group would
 therefore either issue that request on every open of the bar — the one invariant this app
-exists for — or subscribe to a cache nothing fills and render an empty Crewmates group on a cold
+exists for — or subscribe to a cache nothing fills and render an empty Mates group on a cold
 install, which reads as the feature being absent. Like the folders view it has no minimum query
 length and no row cap: once the catalog resolves, a keystroke is a local filter over the
 reader's own crew.
@@ -91,9 +91,9 @@ is one state, the sessions view is one keystroke away, and two words for it left
 to tell whether they meant the same thing. Only members are listed — the catalog also answers
 with installed templates, and a template has no DM thread, so a row for one would navigate to a
 page that cannot open it. The built-in `default` assistant is excluded for the same reason
-in a second shape: it arrives tagged as a member, and the Crewmates page treats a roster
+in a second shape: it arrives tagged as a member, and the Mates page treats a roster
 holding only `default` as EMPTY — it draws the empty-roster hero, never opens a thread for
-it, and skips it when choosing which crewmate to open. It is also what a fresh install has
+it, and skips it when choosing which mate to open. It is also what a fresh install has
 instead of a crew, so listing it would make the first thing a new reader sees in this view
 a row that cannot be opened, in place of the empty state that tells them where to make one.
 
@@ -104,13 +104,13 @@ the role — otherwise the row cannot explain itself, and typing `qa` surfaced a
 "reviewer" with no highlight anywhere that read as a wrong result. That is the answer
 `foldersProvider` already gives when an ancestry path is why a folder surfaced, with one
 difference that matters: the identity is GLOSSED ("also called qa-bot"), because a bare second
-name under a different title reads as a possible second crewmate, where `kirocrew › oss`
+name under a different title reads as a possible second mate, where `kirocrew › oss`
 self-evidently reads as a path. The highlight offsets are recomputed against the glossed
 string, since the gloss shifts every position. The description is rendered on every other row
 and deliberately never matched — that would make this a content search over prose, and the row
 could not honestly highlight it.
 
-The view's EMPTY state is a row, not a centred sentence. Naming the Crewmates page without a
+The view's EMPTY state is a row, not a centred sentence. Naming the Mates page without a
 way to reach it was the dead end — a reader reported that "nothing looks like a link", so the
 one thing they came to do had no affordance. As a row it carries both halves the way the
 no-match row does (what is true, and what Enter does about it) and the keyboard reaches it
@@ -118,7 +118,7 @@ without leaving the list. It is gated on the roster having actually answered, so
 draws the skeleton rather than briefly claiming the reader has no crew.
 
 Adding this view cost the `commands` group its shared cap. Six builtin rows (New Session, Toggle
-Theme, and one corpus entry each for sessions, artifacts, folders and crewmates) exactly filled
+Theme, and one corpus entry each for sessions, artifacts, folders and mates) exactly filled
 `PER_GROUP_LIMIT`, which silently evicted every app-CONTRIBUTED command from the idle page: the
 app installed fine, its manifest was accepted, its row was simply absent. The sixth builtin only
 revealed the defect, which is a cap counting the product's own rows against an app's.
@@ -147,9 +147,9 @@ eviction.
 3. **Ranking** — fuzzy match against the live query plus a frecency boost, so habit surfaces
    without out-ranking a clearly better string match
 4. **Scopes** — enter a sub-surface (today: session search, artifact name search, folder search,
-   and crewmate search) as a navigation state, with its own engine loaded on entry
+   and mate search) as a navigation state, with its own engine loaded on entry
 5. **Fallback** — for any non-empty root query, offer Ask plus rows that carry the query into
-   the sessions, artifacts, folders, and crewmates views; when no root row matches, also offer
+   the sessions, artifacts, folders, and mates views; when no root row matches, also offer
    the app page that can disable Command Bar
 
 ## The overlay seam
@@ -238,7 +238,7 @@ that.
   of the title and only survived as a scattered subsequence. The cap on weak matches holds under
   a query for the same reason it holds on the idle page: a word that merely scatters across six
   long setting titles would otherwise spend six rows and push the overlay's recovery rows (Ask
-  the agent, Search sessions / artifacts / folders / crewmates) below the fold — and those rows
+  the agent, Search sessions / artifacts / folders / mates) below the fold — and those rows
   are the whole answer to "the root does not search content" for a reader who typed a name. A
   DIRECT settings hit (the query is a substring of the title) is the user naming the setting, so
   it ranks up to `PER_GROUP_LIMIT` like any row and searching settings on their own name surfaces
@@ -290,7 +290,7 @@ an INDEX, and that index means a different row once the rows move under it — w
 acts on the rows in that window. It does not drop the keystroke either: type-a-name-then-confirm
 is the launcher's primary gesture, and eating it left a fast typist pressing Enter at a bar that
 said nothing. The Enter is LATCHED — held, then fired once, on the rows that answer the query it
-was pressed against — so the gesture lands on the right session, artifact, folder or crewmate
+was pressed against — so the gesture lands on the right session, artifact, folder or mate
 instead of the wrong one or none.
 
 The latch remembers the query the reader confirmed and the row they had selected, and it fires
@@ -324,7 +324,7 @@ from the same debounced query its results are, so a check that covered results a
 latched Enter act on a stale no-match or empty-crewmates row at the dead end where a reader types
 another character.
 
-The query matching is not on its own enough for the crewmates view, which holds its previous rows
+The query matching is not on its own enough for the mates view, which holds its previous rows
 across a key change (see the running-set key above). That hold is scoped to the running set: rows
 are never held across a change of the query, because those answer the previous words while the
 debounced query already matches the new ones.
@@ -392,14 +392,14 @@ debounced query already matches the new ones.
 | the artifacts fallback row issues no request while it is merely OFFERED | offering a way into the corpus becomes a scan on every keystroke, which is the cost this app exists to avoid |
 | the artifacts row cap names its remainder, from OUTSIDE the listbox | a silent slice reads as "these are all of them"; a counted row inside the listbox is an option Enter cannot act on |
 | the root ranks from the live query | a debounced read discards a fast-entered query |
-| the crewmates view is entered, never fetched from the root | the catalog `useAgents` calls on mount becomes a request on every open of the bar |
-| the crewmates view lists MEMBERS only | a template row navigates to a page with no thread to open |
-| the crewmates view excludes the built-in `default` | a fresh install's first row is one the Crewmates page opens for nobody, in place of the empty state |
-| all three crewmate rows sit behind `PREVIEW_CREW` | a default install advertises `/members`, which every other door keeps behind that flag |
-| the crewmates read shares `['agents-catalog', 'global']` | two caches of one sessionless response, so the dialog fetches and the bar refetches the same bytes |
-| a crewmate route is encoded | a crew called `Review & QA` truncates the parameter and opens the page on nothing |
-| a crewmate row is keyed on the immutable `name`, not the display label | a renamed crew routes to a member that does not exist, and reads as idle while it is working |
-| the running set is part of the crewmates query key | a resolved query keeps a finished mate's busy dot for the rest of the stale window |
+| the mates view is entered, never fetched from the root | the catalog `useAgents` calls on mount becomes a request on every open of the bar |
+| the mates view lists MEMBERS only | a template row navigates to a page with no thread to open |
+| the mates view excludes the built-in `default` | a fresh install's first row is one the Mates page opens for nobody, in place of the empty state |
+| all three mate rows sit behind `PREVIEW_CREW` | a default install advertises `/members`, which every other door keeps behind that flag |
+| the mates read shares `['agents-catalog', 'global']` | two caches of one sessionless response, so the dialog fetches and the bar refetches the same bytes |
+| a mate route is encoded | a crew called `Review & QA` truncates the parameter and opens the page on nothing |
+| a mate row is keyed on the immutable `name`, not the display label | a renamed crew routes to a member that does not exist, and reads as idle while it is working |
+| the running set is part of the mates query key | a resolved query keeps a finished mate's busy dot for the rest of the stale window |
 | that query holds its previous rows across the key change | a slot finishing elsewhere blanks the list and resets the reader's keyboard selection to row 0 |
 | it holds them across the RUNNING SET only, never across the query | rows answering the previous words stay actionable for as long as the new read takes |
 | a scoped-view Enter is latched and fired on the rows that answer the query it was pressed against | a dropped keystroke makes a fast typist confirm into silence, and acting now opens the row selected against an older query |
@@ -407,13 +407,13 @@ debounced query already matches the new ones.
 | the latch fires only at a settled result row, and drops at a synthesized dead end | a latch firing a no-match row discards the query just typed, and one firing an empty-roster row navigates away |
 | that guard binds the keyboard, not the pointer | a row the reader can read and press stops responding |
 | the guard compares what the view WOULD ask against what it DID ask | a sub-floor query freezes Enter on a listing that is the correct answer to it |
-| a crewmate row says BUSY in the same word as a session row | two vocabularies for one state, one keystroke apart, that a reader cannot tell apart |
+| a mate row says BUSY in the same word as a session row | two vocabularies for one state, one keystroke apart, that a reader cannot tell apart |
 | an identity match shows the identity it matched | a row surfaces with no highlight anywhere and reads as a wrong result |
-| that identity is GLOSSED, and its highlight recomputed against the gloss | a bare second name reads as a second crewmate, and carried-over offsets mark the gloss's own words |
+| that identity is GLOSSED, and its highlight recomputed against the gloss | a bare second name reads as a second mate, and carried-over offsets mark the gloss's own words |
 | those offsets are shifted by the template's INTERPOLATION SITE | a mate named `cal` glosses to "also called cal" and the highlight marks the `cal` inside "called" |
-| the empty crewmates state is an Enter-able row | the view names the Crewmates page with no way to reach it, and nothing looks like a link |
+| the empty mates state is an Enter-able row | the view names the Mates page with no way to reach it, and nothing looks like a link |
 | that row waits for the roster to answer | a cold fetch briefly claims the reader has no crew |
-| a failed crewmate read renders an ErrorNotice | the retry row carries no text by design, so the failure is unexplained and indistinguishable from a crew-less install |
+| a failed mate read renders an ErrorNotice | the retry row carries no text by design, so the failure is unexplained and indistinguishable from a crew-less install |
 | the `commands` cap counts CONTRIBUTED rows only | a builtin added here evicts an app-contributed row with nothing on screen saying so |
 | that cap still bounds one app's contributions | an app with twenty commands turns the first page into its index |
 | the product's own command list is uncapped | a builtin silently dropped from a page this repository reviews |

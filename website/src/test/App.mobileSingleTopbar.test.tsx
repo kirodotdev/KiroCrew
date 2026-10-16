@@ -54,7 +54,7 @@ function MembersPageStub() {
   useLayoutEffect(() => (reportRosterBar ? () => reportRosterBar('roster') : undefined), [reportRosterBar])
   // A throw after mount, which the route's error boundary catches.
   const [crashed, setCrashed] = useState(false)
-  if (crashed) throw new Error('crewmates page crashed')
+  if (crashed) throw new Error('mates page crashed')
   // Stands in for the page's unsaved-draft guard (a Profile schedule form).
   useRegisterNavigationLeaveGuard(() => membersRailActivate.mayLeave)
   const loc = useLocation()
@@ -240,7 +240,7 @@ describe('phone chat page: one top bar', () => {
     expect(screen.queryByTestId('mobile-nav-rail')).toBeNull()
   })
 
-  it('hands the Crewmates page the same rail for its roster drawer; Home asks the page before leaving', async () => {
+  it('hands the Mates page the same rail for its roster drawer; Home asks the page before leaving', async () => {
     localStorage.setItem('mc-onboarded', '1')
     membersRailActivate.calls = 0
     membersRailActivate.mayLeave = false
@@ -268,7 +268,7 @@ describe('phone chat page: one top bar', () => {
     expect(membersRailActivate.calls).toBe(0)
   })
 
-  it('keeps the regular bar on the bare Crewmates roster, which has no drawer to reach the navigation from', async () => {
+  it('keeps the regular bar on the bare Mates roster, which has no drawer to reach the navigation from', async () => {
     localStorage.setItem('mc-onboarded', '1')
     membersRailActivate.bar = 'roster'
     try {
@@ -320,7 +320,7 @@ describe('phone chat page: one top bar', () => {
     }
   })
 
-  it('gives the regular bar back when the Crewmates page is taken down by its error boundary', async () => {
+  it('gives the regular bar back when the Mates page is taken down by its error boundary', async () => {
     localStorage.setItem('mc-onboarded', '1')
     const quiet = vi.spyOn(console, 'error').mockImplementation(() => {})
     try {
@@ -429,7 +429,7 @@ describe('phone chat page: one top bar', () => {
     }
   })
 
-  it('sizes the brand-mark glyphs on the Crewmates drawer rail like every other 20px tile', async () => {
+  it('sizes the brand-mark glyphs on the Mates drawer rail like every other 20px tile', async () => {
     localStorage.setItem('mc-onboarded', '1')
     localStorage.setItem('mc-preview-crew', '1')
     try {

@@ -1201,7 +1201,7 @@ def edit(
     with _locked(instance_dir(slug)):
         current = read(slug)
         if current.instance_version == 0:
-            raise InstanceRefused("this crewmate has no dashboard yet; adopt a template first")
+            raise InstanceRefused("this mate has no dashboard yet; adopt a template first")
         new_html = current.html
         new_manifest = dict(current.manifest) if manifest is None else dict(manifest)
         checked = _check(new_manifest, new_html)
@@ -1230,7 +1230,7 @@ def rollback(slug: str, to_version: int, *, session_id: str = "") -> Instance:
     with _locked(instance_dir(slug)):
         current = read(slug)
         if current.instance_version == 0:
-            raise InstanceRefused("this crewmate has no dashboard yet; adopt a template first")
+            raise InstanceRefused("this mate has no dashboard yet; adopt a template first")
         if to_version == current.instance_version:
             raise InstanceRefused(f"instance version {to_version} is already the current one")
         if to_version > current.instance_version:

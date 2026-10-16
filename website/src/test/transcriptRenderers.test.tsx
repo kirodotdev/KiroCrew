@@ -662,11 +662,11 @@ describe('the single-chat surface renders from THIS row set', () => {
   })
 })
 
-describe("a change card in a crewmate's chat", () => {
+describe("a change card in a mate's chat", () => {
   const mate = { name: 'mate', label: 'Mate' }
   const card = msg(CARD_ROLE, { meta: { card_id: 'c1' } })
 
-  it("is the crewmate's own message, opening the run when it comes first", () => {
+  it("is the mate's own message, opening the run when it comes first", () => {
     const messages = [msg('user', { content: 'hi' }), card, msg('assistant', { content: 'Press Apply change.' })]
     const el = render(card, { slot: 's1', crewmate: mate }, { index: 1, messages }) as ReactElement<{ pos: string }>
     expect(el.type).toBe(CrewmateMessage)
@@ -681,7 +681,7 @@ describe("a change card in a crewmate's chat", () => {
     expect(el.props.pos).toBe('cont')
   })
 
-  it('stays a plain card outside a crewmate chat', () => {
+  it('stays a plain card outside a mate chat', () => {
     const el = render(card, { slot: 's1' }, { index: 0, messages: [card] }) as ReactElement
     expect(el.type).not.toBe(CrewmateMessage)
   })

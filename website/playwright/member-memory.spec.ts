@@ -455,7 +455,7 @@ test('a legacy configured default member keeps V1 while new members receive inde
     let editor = page.getByRole('dialog').filter({ has: page.getByTestId('crew-editor-identity') })
     await expect(editor).toBeVisible()
     await editor.getByRole('tab', { name: /^Workspace · Memory(?: Shared)?$/ }).click()
-    const guidance = editor.getByText('This crewmate keeps its current memory (V1). Its own memory (V2) is only available when creating a new crewmate.', { exact: true })
+    const guidance = editor.getByText('This mate keeps its current memory (V1). Its own memory (V2) is only available when creating a new mate.', { exact: true })
     await expect(guidance).toBeVisible()
     await expect(editor.getByRole('button', { name: 'Create private memory', exact: true })).toHaveCount(0)
     await expect(editor.getByText(/This member cannot return to its previous memory/)).toHaveCount(0)
@@ -473,7 +473,7 @@ test('a legacy configured default member keeps V1 while new members receive inde
     editor = page.getByRole('dialog').filter({ has: page.getByTestId('crew-editor-identity') })
     await expect(editor).toBeVisible()
     await editor.getByRole('tab', { name: /^Workspace · Memory(?: Shared)?$/ }).click()
-    await expect(editor.getByText('This crewmate has its own memory (V2).', { exact: true })).toBeVisible()
+    await expect(editor.getByText('This mate has its own memory (V2).', { exact: true })).toBeVisible()
     await expect(editor.getByRole('button', { name: 'Create private memory', exact: true })).toHaveCount(0)
     await expect(editor.getByRole('button', { name: 'Manage memory', exact: true })).toBeEnabled()
     // A new member is created on a workspace of its own, named after it.

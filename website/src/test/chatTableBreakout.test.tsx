@@ -139,7 +139,7 @@ describe('transcript table breakout contract', () => {
     expect(container.querySelector(TABLE_SELECTOR)).toBeNull()
   })
 
-  it('keeps a bordered (crewmate) bubble\'s table inside its card', () => {
+  it('keeps a bordered (mate) bubble\'s table inside its card', () => {
     // A crewmate's chat draws the reply as a bordered card via bubbleClassName;
     // a table breaking out of it paints past the card's edges.
     const { container } = render(<div className="chat-message-body"><AssistantMessage content={TABLE} isStreaming={false} bubbleClassName="bg-card border" /></div>)

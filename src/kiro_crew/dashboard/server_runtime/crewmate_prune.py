@@ -107,7 +107,7 @@ def _register_crewmate_prune_gate(app: web.Application, state: DashboardState) -
             except asyncio.TimeoutError:
                 return web.json_response(
                     {
-                        "error": "Crewmates are being tidied; retry shortly.",
+                        "error": "Mates are being tidied; retry shortly.",
                         "code": "prune_in_progress",
                     },
                     status=503,

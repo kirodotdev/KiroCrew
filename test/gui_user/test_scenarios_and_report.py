@@ -332,11 +332,11 @@ class TestShippedScenarios:
         preview_step = next(
             s for s in sc.steps if "preview" in s.lower() and "turn on" in s.lower()
         )
-        assert 'starts with "Crewmates"' in preview_step
+        assert 'starts with "Mates"' in preview_step
         assert (
             "Crew Members and Crew Mode" in preview_step
         )  # the older titles are still valid readings on older builds
-        assert any('"Crewmates" item appears in the left rail' in s for s in sc.steps)
+        assert any('"Mates" item appears in the left rail' in s for s in sc.steps)
 
     def test_members_scenarios_hedge_the_card_label(self) -> None:
         """A seeded member has no display name, so its card shows the id; every members scenario says so."""
@@ -362,17 +362,17 @@ class TestShippedScenarios:
             ]
             for step in preview_steps:
                 checked += 1
-                assert 'starts with "Crewmates"' in step, (path.name, step)
+                assert 'starts with "Mates"' in step, (path.name, step)
             rail_steps = [s for s in sc.steps if "item appears in the left rail" in s]
             for step in rail_steps:
-                assert '"Crewmates" item appears in the left rail' in step, (path.name, step)
+                assert '"Mates" item appears in the left rail' in step, (path.name, step)
         assert checked >= 5
 
     def test_created_crewmate_speaks_first_with_no_user_greeting_bubble(self) -> None:
         """A new crewmate's first turn is a hidden kickoff, so the only bubble is its reply.
 
         The create sends ``first_greeting`` and the server starts the
-        crewmate's first turn from a kickoff that is never written to the
+        mate's first turn from a kickoff that is never written to the
         transcript (``mate_welcome``). No user bubble is drawn, so an
         expectation that asks for one fails on every nightly.
         """

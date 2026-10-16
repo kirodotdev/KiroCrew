@@ -79,7 +79,7 @@ const guide = (over: Partial<Guide> = {}): Guide => ({
   action_index: 0,
   step_index: 0,
   actions: [{ id: 'crewmate.create', params: { name: 'radar', goal: 'watch the build' } }],
-  reason: 'You asked for a crewmate.',
+  reason: 'You asked for a mate.',
   expires_at: null,
   lease_expires_at: null,
   ...over,
@@ -231,7 +231,7 @@ describe('offer and consent', () => {
     renderGuide('/chat/slot-A')
     expect(await screen.findByTestId('guide-start')).toBeTruthy()
     // The gateway's internal reason token is never painted as copy.
-    expect(screen.queryByText('You asked for a crewmate.')).toBeNull()
+    expect(screen.queryByText('You asked for a mate.')).toBeNull()
     // Offered is not accepted: no claim, no navigation, no pre-fill.
     await tickTracker(1)
     expect(calls).toHaveLength(0)
@@ -253,7 +253,7 @@ describe('offer and consent', () => {
     expect(screen.queryByTestId('guide-pending-error')).toBeNull()
   })
 
-  it('Start claims first, then navigates to the Crewmates hand-off with the draft', async () => {
+  it('Start claims first, then navigates to the Mates hand-off with the draft', async () => {
     pending = [guide()]
     onWrite = (name, b) => (name === 'claim' ? claimed({ ...guide(), revision: b.revision as number }) : null)
     renderGuide('/chat/slot-A')
@@ -264,7 +264,7 @@ describe('offer and consent', () => {
     expect(claim.body).not.toHaveProperty('take_over')
   })
 
-  it('reads the Crewmates page thread, not a stale chat activeSlot', async () => {
+  it('reads the Mates page thread, not a stale chat activeSlot', async () => {
     pending = [guide({ status: 'active', owner_tab: 'other-tab' })]
     // activeSlot is still slot-A from an earlier chat visit, but on /members
     // the thread on screen is whatever the page registered.
@@ -277,7 +277,7 @@ describe('offer and consent', () => {
     expect(await screen.findByText(L('other_tab'))).toBeTruthy()
   })
 
-  it('keeps the members address when entering from the Crewmates page', () => {
+  it('keeps the members address when entering from the Mates page', () => {
     const r = resolveGuideAction({ id: 'crewmate.create', params: { goal: 'g' } })
     if (!r.ok || r.action.enter.kind !== 'navigate') throw new Error('expected navigate')
     expect(r.action.enter.to({ pathname: '/members', search: '?member=default' })).toBe('/members?member=default&create=1&goal=g')
@@ -1834,7 +1834,7 @@ describe('in-chat offer card', () => {
     expect(endedBySlot([{ ...recent, dismissed: true }], new Set())['slot-A']).toBeUndefined()
   })
 
-  it('a completed crewmate guide leaves the created line in the chat', async () => {
+  it('a completed mate guide leaves the created line in the chat', async () => {
     pending = [guide()]
     renderGuide('/chat/slot-A')
     await screen.findByTestId('guide-start')
@@ -1903,7 +1903,7 @@ describe('a surface the guide opened', () => {
     expect(onClose).not.toHaveBeenCalled()
   })
 
-  it('the Crewmates page wires it to the New crewmate card and its edited flag', () => {
+  it('the Mates page wires it to the New mate card and its edited flag', () => {
     const src = readFileSync(path.join(__dirname, '../pages/members/MembersPage.tsx'), 'utf-8')
     expect(src).toMatch(/useGuideOpenedSurface\('crewmate\.create'/)
     expect(src).toMatch(/isPristine: \(\) => !createEditedRef\.current && !createBusyRef\.current/)
@@ -2015,7 +2015,7 @@ describe('the way back once a guide ends', () => {
   })
 
   it.each([['complete', 'finished_completed'], ['cancel', 'finished_cancelled']] as const)(
-    '%s from a crewmate\'s chat: the way back lands on that crewmate\'s thread and keeps its result line',
+    '%s from a mate\'s chat: the way back lands on that mate\'s thread and keeps its result line',
     async (how, finishedKey) => {
       await endOwnedGuide('slot-radar', how)
       const back = await screen.findByTestId('guide-back')
@@ -2038,7 +2038,7 @@ describe('the way back once a guide ends', () => {
     await waitFor(() => expect(screen.getByTestId('loc').textContent).toBe('/chat?slot=slot-A'))
   })
 
-  it('shows no way back while the user is already on that crewmate\'s chat', async () => {
+  it('shows no way back while the user is already on that mate\'s chat', async () => {
     setViewedThreadSlot('slot-pilot')
     await endOwnedGuide('slot-pilot', 'complete', '/members?member=pilot')
     await act(async () => { await tickTracker(1) })
@@ -2068,7 +2068,7 @@ describe('the way back once a guide ends', () => {
     expect(guideReturnFor('slot-cap', [{ ...pilotRow, slot_key: 'slot-cap' }], false)).toEqual({ kind: 'chat', to: '/members?member=pilot' })
   })
 
-  it('reads a crewmate thread from its slot key, never the chat page, which does not show it', () => {
+  it('reads a mate thread from its slot key, never the chat page, which does not show it', () => {
     expect(memberSlugOfSlot('member-radar')).toBe('radar')
     expect(memberSlugOfSlot('member-pilot.memory-pilot-v2')).toBe('pilot')
     for (const k of ['member-', 'member-Radar', 'member--x', 'xmember-radar', 'chat-1-2', 'slot-A']) expect(memberSlugOfSlot(k)).toBeNull()
@@ -2087,7 +2087,7 @@ describe('the way back once a guide ends', () => {
   it.each([
     ['the roster failed', () => HttpResponse.json({ error: 'boom' }, { status: 500 }), '/members?member=radar'],
     ['the binding moved on', () => HttpResponse.json({ members: [pilotRow, { ...radarRow, name: 'Radar', slot_key: 'member-radar.memory-radar-v2' }] }), '/members?member=Radar'],
-  ])('a crewmate\'s guide goes back to that crewmate when %s', async (_why, members, to) => {
+  ])('a mate\'s guide goes back to that mate when %s', async (_why, members, to) => {
     server.use(http.get('/api/members', members))
     await endOwnedGuide('member-radar', 'complete')
     const back = await screen.findByTestId('guide-back')
@@ -2670,7 +2670,7 @@ describe('ui.show: point at an indexed location, never click it', () => {
     expect(stepBoundHolds(uninstall)).toBe(false)
   })
 
-  it('walks to Delete crewmate through the editor and its Danger zone row, which it points at', () => {
+  it('walks to Delete mate through the editor and its Danger zone row, which it points at', () => {
     const r = resolveGuideAction(show('agents.delete'))
     if (!r.ok) throw new Error(r.reason)
     expect(r.action.steps.map(st => st.complete.kind)).toEqual(['select', 'reach', 'ack'])
@@ -2902,7 +2902,7 @@ describe('ui.show: point at an indexed location, never click it', () => {
     }
   })
 
-  it('the Delete crewmate guide carries the Danger zone notice as its caution text', () => {
+  it('the Delete mate guide carries the Danger zone notice as its caution text', () => {
     const r = resolveGuideAction(show('agents.delete'))
     if (!r.ok) throw new Error(r.reason)
     const last = r.action.steps[r.action.steps.length - 1]
@@ -3204,7 +3204,7 @@ describe('ui.show phase 3: selection steps, gates and the mid-guide re-plan', ()
     expect(dev.action.steps[0].textVars?.label).toBe(i18nT('pages.settings.developerPanel.developer_mode'))
   })
 
-  it('a crewmate\'s permission picker is its own ceiling: ui.show has no plan for it', () => {
+  it('a mate\'s permission picker is its own ceiling: ui.show has no plan for it', () => {
     expect(resolveGuideAction(show('members.permissions')).ok).toBe(false)
   })
 
@@ -3666,7 +3666,7 @@ describe('ui.show phase 3: selection steps, gates and the mid-guide re-plan', ()
   })
 })
 
-describe("the offering crewmate's own words in a guide", () => {
+describe("the offering mate's own words in a guide", () => {
   // The guide's slot is a crewmate's pinned thread, so its words are that
   // crewmate's: the "From" line names it from the roster.
   beforeEach(() => {
@@ -3682,7 +3682,7 @@ describe("the offering crewmate's own words in a guide", () => {
   })
   const follows = (a: HTMLElement, b: HTMLElement) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
 
-  it('shows the intro on the offer card under its title, attributed to the offering crewmate', async () => {
+  it('shows the intro on the offer card under its title, attributed to the offering mate', async () => {
     pending = [guide(noted())]
     renderGuide('/chat/slot-A')
     const intro = await screen.findByTestId('guide-offer-intro')

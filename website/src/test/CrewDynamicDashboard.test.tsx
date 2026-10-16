@@ -105,7 +105,7 @@ describe('CrewDynamicDashboard', () => {
     retrySpy.mockClear()
   })
 
-  it('reads the crewmate\'s own instance by slug AND exact member name', async () => {
+  it('reads the mate\'s own instance by slug AND exact member name', async () => {
     const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
     mount()
     await waitFor(() => expect(read).toHaveBeenCalledWith('oncall', 'oncall', 'en'))
@@ -311,7 +311,7 @@ describe('CrewDynamicDashboard', () => {
     )
     mount()
     const notice = await screen.findByTestId('crew-dashboard-owner-only')
-    expect(notice).toHaveTextContent("Only this crewmate's owner can see its dashboard.")
+    expect(notice).toHaveTextContent("Only this mate's owner can see its dashboard.")
     expect(screen.queryByTestId('crew-dashboard-error')).toBeNull()
     expect(screen.queryByTestId('crew-dashboard-error-retry')).toBeNull()
   })
@@ -485,7 +485,7 @@ describe('CrewDynamicDashboard', () => {
     expect(mints).toHaveLength(before)
   })
   describe('live refresh', () => {
-    it('re-renders the tab when a crewmate writes a value, with no reload', async () => {
+    it('re-renders the tab when a mate writes a value, with no reload', async () => {
       // THE WHOLE CHAIN, end to end: the gateway's `dashboard_value_written` frame,
       // the handler the socket routes it to, the query key it invalidates, the refetch
       // that follows and the new document the frame mints from it. Driven through the
@@ -509,7 +509,7 @@ describe('CrewDynamicDashboard', () => {
       expect(screen.getByTestId('crew-dashboard-frame')).toBeInTheDocument()
     })
 
-    it('re-reads when a fold advances, not only on a crewmate write', async () => {
+    it('re-reads when a fold advances, not only on a mate write', async () => {
       // A `member_projection` frame IS a fold advance, and every number on the page
       // but the crewmate's own writes comes from a fold. A tab live only for writes
       // would sit on stale costs and counts for the whole of a long turn.
@@ -523,7 +523,7 @@ describe('CrewDynamicDashboard', () => {
       await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(before))
     })
 
-    it('leaves another crewmate\'s open tab alone', async () => {
+    it('leaves another mate\'s open tab alone', async () => {
       // The frame is slug-keyed, so a write to one crewmate must not cost every other
       // open dashboard a read. Without the slug in the key this passes anyway and the
       // cost only shows up on a roster.

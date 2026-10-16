@@ -1769,10 +1769,10 @@ refusal or a `WorkflowMemoryError`, both raised with fixed text (a test parses
 every raise site to keep it so). Any other cause, such as an `OSError` or a
 memory-store refusal that formats one and its path into its own text, stays in
 the log only. When either reason is one of
-the two a crewmate's own binding produces (`MEMBER_ON_GLOBAL_REASON`,
+the two a mate's own binding produces (`MEMBER_ON_GLOBAL_REASON`,
 `MEMBER_WITHOUT_IDENTITY_REASON`), the text adds the two ways to run a workflow:
-a chat with no crewmate picked (the default template on Global), or a crewmate
-with its own memory. A crewmate on Global V1 is still refused: member memory
+a chat with no mate picked (the default template on Global), or a mate
+with its own memory. A mate on Global V1 is still refused: member memory
 never substitutes Global. A refusal that names no reason keeps the generic text
 "Workflow memory is unavailable; no Global fallback was used."
 

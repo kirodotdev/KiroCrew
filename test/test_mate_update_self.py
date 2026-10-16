@@ -1049,9 +1049,9 @@ def test_mates_welcome_fits_a_user_who_already_has_crewmates() -> None:
     entry = KiroCrewAgentConfig(kiro_agent=DEFAULT)
     alone = welcome_kickoff(entry, has_other_crewmates=False)
     crewed = welcome_kickoff(entry, has_other_crewmates=True)
-    assert "you are their first crewmate" in alone
-    assert "first crewmate" not in crewed
-    assert "They already have other crewmates" in crewed
+    assert "you are the first teammate on their crew" in alone
+    assert "first teammate" not in crewed
+    assert "They already have other mates" in crewed
     assert "one more teammate" in crewed
 
 

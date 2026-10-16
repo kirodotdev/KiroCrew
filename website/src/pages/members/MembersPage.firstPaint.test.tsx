@@ -124,7 +124,7 @@ beforeEach(() => {
 })
 
 describe('MembersPage first paint', () => {
-  it('a return to the tab paints the roster already folded beside the opening crewmate', async () => {
+  it('a return to the tab paints the roster already folded beside the opening mate', async () => {
     const frames = renderPage({ members: ROSTER, teams: [], defaultAgent: '' })
     expect(frames).toHaveLength(1)
     // The first frame is the final layout: the column folded, the rows drawn.
@@ -187,6 +187,6 @@ describe('MembersPage first paint', () => {
     })
     await waitFor(() => expect(snapshot().groups).toBeGreaterThan(0))
     expect(snapshot().rows.sort()).toEqual(['pilot', 'radar', 'scribe'])
-    expect(screen.getByTestId('member-count')).toHaveTextContent('3 crewmates')
+    expect(screen.getByTestId('member-count')).toHaveTextContent('3 mates')
   })
 })

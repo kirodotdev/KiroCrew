@@ -114,9 +114,9 @@ model last returned them. The opt-in and the budget therefore pace the sentences
 
 The chat side panel's **Dashboard** tab renders a ROOT session's own Dynamic
 Dashboard: `CommandCenterPanel` mounts `CrewDynamicDashboard` with a session
-target, the same frame a crewmate's Dashboard tab draws. The page comes from the
+target, the same frame a mate's Dashboard tab draws. The page comes from the
 shared built-in template catalog (`dashboard_templates/builtin/`, one catalog for
-crewmates and sessions alike), and its read is
+mates and sessions alike), and its read is
 `GET /api/chat/slots/{slot}/dashboard`, which answers the member route's body
 (`member_dashboard._serve`, `_render`, `_safe_body`, `_page_safe` redaction) for a
 store key derived from the slot (`instance.session_instance_key`, a digest under
@@ -1198,7 +1198,7 @@ migration that rewrites or drops the stranded tags first.
 
 ### Dashboard packages (`kind="dashboard"`)
 
-A `dashboard` artifact holds one crewmate's layout package — `bound_to`,
+A `dashboard` artifact holds one mate's layout package — `bound_to`,
 `model`, `view` and `theme` — canonicalised by
 `kiro_crew.artifact_store.dashboard_package` on every write. Five rules differ
 from every other kind. The first three are enforced in `ArtifactStore`,
@@ -1239,7 +1239,7 @@ the page's shape in the canonicaliser:
   open tab editing one dashboard is the ordinary case here. An update carrying
   no content, no kind and no token is unfenced, which is how a rename stays a
   rename.
-- **Only the crewmate or session the package is BOUND TO may write it, and an
+- **Only the mate or session the package is BOUND TO may write it, and an
   app may not write one at all.** Asked by
   `member_dashboard_fields.package_write_refusal` on every artifact write path
   both doors reach, which compares the caller against `bound_to` through
@@ -1250,14 +1250,14 @@ the page's shape in the canonicaliser:
   dashboard is exempt, positively identified rather than defaulted. An APP token
   (`request["app"]` holding a non-empty string) is refused outright and never
   binding-checked: a page runs script beside the owner's fold values, an app has
-  no crewmate identity to compare against `bound_to`, and the identification is
+  no mate identity to compare against `bound_to`, and the identification is
   the id STRING — any truthy value in that slot used to read as an app. A caller
   that can prove neither identity is refused, because a gate whose default is
   "no identity, no objection" is not a gate. BOTH bindings are authorized and
   the STORED one is checked first: authorizing only the SUBMITTED binding
   authorizes the caller against a claim the caller wrote, so a worker could send
-  a package bound to itself, pass, and rebind the addressed crewmate's page to
-  itself in one write. A crewmate binding also needs the roster to name exactly
+  a package bound to itself, pass, and rebind the addressed mate's page to
+  itself in one write. A mate binding also needs the roster to name exactly
   one owner for the slug — slugification is lossy, so a roster holding both
   `Atlas` and `atlas` derives one slug from two names, and ambiguity refuses
   rather than authorizing either of them for the other's page. This is the
@@ -1285,9 +1285,9 @@ the page's shape in the canonicaliser:
   be a second, weaker gate an author would read as the real one.
 
 **The binding lookup, and when "absent" is a claim it will not make.**
-`resolve_bound_slug(bound_to)` names the package bound to a crewmate or a slot.
+`resolve_bound_slug(bound_to)` names the package bound to a mate or a slot.
 It reads the `kind="dashboard"` records newest-first, capped at
-`MAX_BINDING_SCAN` (256 — one package exists per crewmate or slot, so a library
+`MAX_BINDING_SCAN` (256 — one package exists per mate or slot, so a library
 past that is one to prune), matches on the stored ENVELOPE rather than on a
 validated package so a layout the current validator rejects is still FOUND, and
 returns a match the moment it sees one. `None` means absent as far as the
@@ -1315,16 +1315,16 @@ loaded and no gateway running. So the eligibility question is asked in
 doors reach: the browser's `PATCH /api/artifacts/{slug}` and MCP's
 `artifact_save` / `artifact_update` all arrive at `api_artifacts_create` /
 `api_artifact_update`. It asks the serve path's own questions —
-`_member_names_for_slug` for a crewmate (the helper `member_dashboard._resolve`
+`_member_names_for_slug` for a mate (the helper `member_dashboard._resolve`
 uses) and `is_root_session` for a session (the test `api_session_dashboard`
 applies) — so a binding is accepted exactly when the serve path would serve it.
-A crewmate binding needs EXACTLY ONE matching member, the same count
+A mate binding needs EXACTLY ONE matching member, the same count
 `member_dashboard._resolve` requires (`!= [member]`): slugification is lossy, so
 a roster holding both `Atlas` and `atlas` derives one slug from two names, and
 ambiguity refuses rather than picking one of them.
 
 It is asked ONLY when the write CHANGES the binding, and that is the whole rule
-for a target that dies later. A session closes or a crewmate is renamed, and the
+for a target that dies later. A session closes or a mate is renamed, and the
 package left behind stays as servable as it was: the serve-time refusals
 (`member_not_found`, `dashboard_slug_ambiguous`, `not_root_session`) remain the
 durable gate, because the fact expires and a stored record cannot be re-asked. A
@@ -1333,7 +1333,7 @@ than history, so a record written before the check can still be re-themed,
 re-versioned and REBOUND. A revert is exempt for the same reason: it submits a
 past version's whole package and `revert_package` discards the binding in it, so
 the submitted value is one the store was never going to store.
-A crewmate composes its own package through the save route — the `dashboard_save`
+A mate composes its own package through the save route — the `dashboard_save`
 MCP tool on `kirocrew-panel` and `POST /api/agent-panel/dashboard/save`
 (`kiro_crew.dashboard.handlers.agent_panel`). The `bound_to` is derived from the
 vetted caller and never read from the request, so a body carrying `bound_to` or

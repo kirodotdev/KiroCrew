@@ -92,7 +92,7 @@ async function openTemplatePane(page, crew) {
   await page.goto('/capabilities?tab=crews', { waitUntil: 'domcontentloaded' })
   await page.locator('#main-content').getByText('Your AI teammates', { exact: false })
     .waitFor({ state: 'visible', timeout: 15000 })
-  const card = page.getByRole('button', { name: new RegExp(`Edit (crew|agent|crewmate) ${crew}`, 'i') })
+  const card = page.getByRole('button', { name: new RegExp(`Edit (crew|agent|mate) ${crew}`, 'i') })
   await card.waitFor({ state: 'visible', timeout: 15000 })
   await card.click()
   const sheet = page.getByRole('dialog', { name: /edit (crew|agent|crewmate)/i })

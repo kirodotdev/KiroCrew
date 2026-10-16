@@ -52,7 +52,7 @@ const COVERED_HIDDEN = [
 const agentsApi = vi.mocked(api.agentCatalog)
 const configApi = vi.mocked(api.kirocrewConfig)
 
-describe('useAgents keeps covered crewmates out of the picker unless the config allows them', () => {
+describe('useAgents keeps covered mates out of the picker unless the config allows them', () => {
   beforeEach(() => {
     agentsApi.mockReset()
     configApi.mockReset()
@@ -63,7 +63,7 @@ describe('useAgents keeps covered crewmates out of the picker unless the config 
     ['absent', {}],
     ['false', { dashboard: { crewmates_in_agent_picker: false } }],
     ['a non-boolean', { dashboard: { crewmates_in_agent_picker: 'yes' } }],
-  ])('withholds only covered crewmates from `choices` when the key is %s', async (_label, cfg) => {
+  ])('withholds only covered mates from `choices` when the key is %s', async (_label, cfg) => {
     configApi.mockResolvedValue(cfg as never)
     const { result } = renderHookWithProviders(() => useAgents(0))
     await waitFor(() => expect(configApi).toHaveBeenCalled())
@@ -72,7 +72,7 @@ describe('useAgents keeps covered crewmates out of the picker unless the config 
     expect(result.current.choices.map(c => [c.selection_kind, c.name])).toEqual(COVERED_HIDDEN)
   })
 
-  it('withholds only covered crewmates from `choices` when the config read fails', async () => {
+  it('withholds only covered mates from `choices` when the config read fails', async () => {
     configApi.mockRejectedValue(new Error('offline'))
     const { result } = renderHookWithProviders(() => useAgents(0))
     await waitFor(() => expect(configApi).toHaveBeenCalled())
@@ -90,7 +90,7 @@ describe('useAgents keeps covered crewmates out of the picker unless the config 
     )
   })
 
-  it('withholds an identity-less crewmate on a listed template', () => {
+  it('withholds an identity-less mate on a listed template', () => {
     // `default` has no memory of its own and runs the listed `kirocrew`
     // template -- the same binding -- and no crewmate is exempt for being "the
     // default": a new session runs the default TEMPLATE, whose own row is the
@@ -100,14 +100,14 @@ describe('useAgents keeps covered crewmates out of the picker unless the config 
     expect(members).not.toContain('default')
   })
 
-  it('keeps a same-name crewmate that has its own memory', () => {
+  it('keeps a same-name mate that has its own memory', () => {
     // A template pick binds the shared `default` store, so the `reviewer`
     // template does not reach the `reviewer` crewmate's own memory.
     const rows = withoutCoveredCrewmates(catalog as never)
     expect(rows.filter(r => r.name === 'reviewer').map(r => r.selection_kind)).toEqual(['member', 'template'])
   })
 
-  it('withholds a same-name crewmate with no memory of its own', () => {
+  it('withholds a same-name mate with no memory of its own', () => {
     const rows = withoutCoveredCrewmates([
       { name: 'shared', kiro_agent: 'shared', memory_store: 'default', selection_kind: 'member' },
       { name: 'shared', kiro_agent: 'shared', memory_store: 'default', selection_kind: 'template' },
@@ -115,7 +115,7 @@ describe('useAgents keeps covered crewmates out of the picker unless the config 
     expect(rows.map(r => r.selection_kind)).toEqual(['template'])
   })
 
-  it('keeps a crewmate whose own-memory binding is not a template pick', () => {
+  it('keeps a mate whose own-memory binding is not a template pick', () => {
     // Without its template listed, an identity-less crewmate stays too.
     const rows = withoutCoveredCrewmates([
       { name: 'orphan', kiro_agent: 'gone', memory_store: 'default', selection_kind: 'member' },
@@ -142,7 +142,7 @@ describe('useAgents keeps covered crewmates out of the picker unless the config 
       { name: 'atlas', selection_kind: 'template' },
     ] as never
 
-    it('is a crewmate chat when the slot says member, or a kind-less slot names a crewmate', () => {
+    it('is a mate chat when the slot says member, or a kind-less slot names a mate', () => {
       expect(isCrewmateChat('member', 'atlas', roster)).toBe(true)
       // Saved before kinds existed: the roster decides, so a crewmate's chat
       // never offers to make a crewmate the default custom agent.
@@ -150,7 +150,7 @@ describe('useAgents keeps covered crewmates out of the picker unless the config 
       expect(isCrewmateChat(undefined, 'research', roster)).toBe(true)
     })
 
-    it('is a template chat when the slot says template, or a kind-less slot names no crewmate', () => {
+    it('is a template chat when the slot says template, or a kind-less slot names no mate', () => {
       expect(isCrewmateChat('template', 'research', roster)).toBe(false)
       expect(isCrewmateChat('', 'atlas', roster)).toBe(false)
       expect(isCrewmateChat(undefined, 'unknown', roster)).toBe(false)

@@ -557,20 +557,20 @@ def prune_unknown(teams: list[Team], known: set[str]) -> list[Team]:
 def _validate_names(members: object) -> list[str]:
     """Shape and bounds only -- the list a write may RETAIN, registry aside."""
     if not isinstance(members, list):
-        raise TeamError("invalid_members", "members must be a list of crewmate names")
+        raise TeamError("invalid_members", "members must be a list of mate names")
     if len(members) > TEAM_MEMBERS_MAX:
-        raise TeamError("too_many_members", f"a team lists at most {TEAM_MEMBERS_MAX} crewmates")
+        raise TeamError("too_many_members", f"a team lists at most {TEAM_MEMBERS_MAX} mates")
     out: list[str] = []
     for member in members:
         if not isinstance(member, str) or not member:
-            raise TeamError("invalid_members", "members must be a list of crewmate names")
+            raise TeamError("invalid_members", "members must be a list of mate names")
         # The read side refuses a member past MEMBER_NAME_MAX_CHARS or one UTF-8
         # cannot encode (_parse_teams), so the write side must refuse it FIRST,
         # before the registry lookup: a registry key that slipped past the
         # roster's grammar must never be retained into a document the reader
         # would then refuse whole.
         if len(member) > MEMBER_NAME_MAX_CHARS or not _utf8_encodable(member):
-            raise TeamError("invalid_members", "members must be a list of crewmate names")
+            raise TeamError("invalid_members", "members must be a list of mate names")
         if member not in out:
             out.append(member)
     return out
@@ -580,7 +580,7 @@ def _validate_members(members: object, known: set[str]) -> list[str]:
     out = _validate_names(members)
     for member in out:
         if member not in known:
-            raise TeamError("unknown_member", f"no crewmate named {member!r}")
+            raise TeamError("unknown_member", f"no mate named {member!r}")
     return out
 
 
@@ -662,7 +662,7 @@ def update_team(
             joining = [m for m in clean_add if m not in kept]
             if len(kept) + len(joining) > TEAM_MEMBERS_MAX:
                 raise TeamError(
-                    "too_many_members", f"a team lists at most {TEAM_MEMBERS_MAX} crewmates"
+                    "too_many_members", f"a team lists at most {TEAM_MEMBERS_MAX} mates"
                 )
             _detach(teams, joining, keep=team.id)
             team.members = kept + joining

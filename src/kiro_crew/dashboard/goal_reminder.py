@@ -151,7 +151,7 @@ async def sync_schedule(crons: Any, slug: str, label: str, schedules: dict[str, 
         await crons.add_managed_job_async(
             managed_key(slug, cadence),
             name=name,
-            message=f"{_NAMES[cadence]} for {label}. It runs in the crewmate's own chat.",
+            message=f"{_NAMES[cadence]} for {label}. It runs in the mate's own chat.",
             cron_expr=cron_expr_for(cadence, schedules),
             timezone=tz,
             silent=True,
@@ -295,9 +295,9 @@ def _idle_thread(state: Any, slot_key: str, member: str) -> tuple[Any, str]:
         or getattr(slot, "agent", "") != member
         or getattr(slot, "executor", "") == "remote"
     ):
-        return None, "skipped: the crewmate's thread is not open"
+        return None, "skipped: the mate's thread is not open"
     if slot.running or getattr(slot, "_queue", None):
-        return None, "skipped: the crewmate is busy"
+        return None, "skipped: the mate is busy"
     return slot, ""
 
 
@@ -315,12 +315,12 @@ async def fire(state: Any, job: Any) -> str:
         members_mod.validate_slug(slug)
         binding = await asyncio.to_thread(members_mod.read_dm_binding, slug)
     except (members_mod.MemberSlugError, OSError):
-        return "skipped: no crewmate thread"
+        return "skipped: no mate thread"
     if not binding:
-        return "skipped: no crewmate thread"
+        return "skipped: no mate thread"
     member = binding.get("member")
     if not isinstance(member, str) or not member:
-        return "skipped: no crewmate thread"
+        return "skipped: no mate thread"
     try:
         rec = await asyncio.to_thread(member_goals.read_goals, slug, member)
     except member_goals.GoalsUnreadable:
@@ -341,7 +341,7 @@ async def fire(state: Any, job: Any) -> str:
         if skip:
             return skip
         if again is not slot:
-            return "skipped: the crewmate's thread is not open"
+            return "skipped: the mate's thread is not open"
     dispatch_hidden_turn(
         state,
         slot,

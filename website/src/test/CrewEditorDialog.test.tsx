@@ -192,7 +192,7 @@ describe('CrewEditorDialog — in-place bot editor (CREW-18688)', () => {
     expect(mockApi.kirocrewConfig).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByTestId('open-editor'))
-    expect(await screen.findByRole('dialog', { name: /Edit crewmate/ })).toBeInTheDocument()
+    expect(await screen.findByRole('dialog', { name: /Edit mate/ })).toBeInTheDocument()
     await waitFor(() => expect(mockApi.agentsInstalled).toHaveBeenCalled())
     await waitFor(() => expect(mockApi.workspaces).toHaveBeenCalled())
     await waitFor(() => expect(mockApi.kirocrewConfig).toHaveBeenCalled())
@@ -206,7 +206,7 @@ describe('CrewEditorDialog — in-place bot editor (CREW-18688)', () => {
     fireEvent.click(screen.getByTestId('open-editor'))
     expect(await screen.findByTestId('crew-editor-loading')).toBeInTheDocument()
     resolveRoster(AGENTS_RESPONSE)
-    expect(await screen.findByRole('dialog', { name: /Edit crewmate/ })).toBeInTheDocument()
+    expect(await screen.findByRole('dialog', { name: /Edit mate/ })).toBeInTheDocument()
     expect(screen.queryByTestId('crew-editor-loading')).toBeNull()
   })
 
@@ -214,14 +214,14 @@ describe('CrewEditorDialog — in-place bot editor (CREW-18688)', () => {
     mockApi.agentsInstalled.mockRejectedValue(new Error('installed boom'))
     renderHost()
     fireEvent.click(screen.getByTestId('open-editor'))
-    await screen.findByRole('dialog', { name: /Edit crewmate/ })
+    await screen.findByRole('dialog', { name: /Edit mate/ })
     expect(await screen.findByTestId('crew-editor-options-load-error')).toBeInTheDocument()
   })
 
   it('walks the rail panes and renders each pane body', async () => {
     renderHost()
     fireEvent.click(screen.getByTestId('open-editor'))
-    const dialog = await screen.findByRole('dialog', { name: /Edit crewmate/ })
+    const dialog = await screen.findByRole('dialog', { name: /Edit mate/ })
     await waitFor(() => expect(mockApi.agentsInstalled).toHaveBeenCalled())
     for (const key of ['template', 'model', 'place', 'schedules', 'webhook', 'routing', 'danger', 'overview']) {
       const tab = within(dialog).queryByTestId(`crew-rail-${key}`)
@@ -242,7 +242,7 @@ describe('CrewEditorDialog — in-place bot editor (CREW-18688)', () => {
     wakeProps.last = null
     renderHost({ memberId: 'oncall-slug' })
     fireEvent.click(screen.getByTestId('open-editor'))
-    const dialog = await screen.findByRole('dialog', { name: /Edit crewmate/ })
+    const dialog = await screen.findByRole('dialog', { name: /Edit mate/ })
     await waitFor(() => expect(mockApi.agentsInstalled).toHaveBeenCalled())
     const schedTab = within(dialog).queryByTestId('crew-rail-schedules')
     if (schedTab) fireEvent.click(schedTab)
@@ -255,7 +255,7 @@ describe('CrewEditorDialog — in-place bot editor (CREW-18688)', () => {
     wakeProps.last = null
     renderHost()
     fireEvent.click(screen.getByTestId('open-editor'))
-    const dialog = await screen.findByRole('dialog', { name: /Edit crewmate/ })
+    const dialog = await screen.findByRole('dialog', { name: /Edit mate/ })
     await waitFor(() => expect(mockApi.agentsInstalled).toHaveBeenCalled())
     const schedTab = within(dialog).queryByTestId('crew-rail-schedules')
     if (schedTab) fireEvent.click(schedTab)
@@ -265,7 +265,7 @@ describe('CrewEditorDialog — in-place bot editor (CREW-18688)', () => {
   it('edits the display name and saves through the update mutation', async () => {
     renderHost()
     fireEvent.click(screen.getByTestId('open-editor'))
-    const dialog = await screen.findByRole('dialog', { name: /Edit crewmate/ })
+    const dialog = await screen.findByRole('dialog', { name: /Edit mate/ })
     await waitFor(() => expect(mockApi.agentsInstalled).toHaveBeenCalled())
     const nameField = within(dialog).getByTestId('display-name-input')
     fireEvent.change(nameField, { target: { value: 'On-Call Bot' } })
@@ -276,13 +276,13 @@ describe('CrewEditorDialog — in-place bot editor (CREW-18688)', () => {
   it('arms and runs the delete confirm in the danger pane', async () => {
     renderHost()
     fireEvent.click(screen.getByTestId('open-editor'))
-    const dialog = await screen.findByRole('dialog', { name: /Edit crewmate/ })
+    const dialog = await screen.findByRole('dialog', { name: /Edit mate/ })
     await waitFor(() => expect(mockApi.agentsInstalled).toHaveBeenCalled())
     const dangerTab = within(dialog).queryByTestId('crew-rail-danger')
     if (!dangerTab) return
     fireEvent.click(dangerTab)
     // Two-step: 'Delete crewmate' arms the confirm row, then confirm runs it.
-    fireEvent.click(await within(dialog).findByRole('button', { name: 'Delete crewmate' }))
+    fireEvent.click(await within(dialog).findByRole('button', { name: 'Delete mate' }))
     fireEvent.click(await within(dialog).findByTestId('confirm-delete-crew'))
     await waitFor(() => expect(mockApi.deleteKirocrewAgent).toHaveBeenCalled())
   })
@@ -291,7 +291,7 @@ describe('CrewEditorDialog — in-place bot editor (CREW-18688)', () => {
     mockApi.agentResolvedModel.mockResolvedValue({ model: 'claude-opus-5', pinned: true, kiro_agent: 'oncall-agent', reasoning_effort: '', effort_pinned: false })
     renderHost()
     fireEvent.click(screen.getByTestId('open-editor'))
-    const dialog = await screen.findByRole('dialog', { name: /Edit crewmate/ })
+    const dialog = await screen.findByRole('dialog', { name: /Edit mate/ })
     await waitFor(() => expect(mockApi.agentsInstalled).toHaveBeenCalled())
 
     // Model pane: pick a model (dirties the pane, drives the resolved readout).
@@ -312,7 +312,7 @@ describe('CrewEditorDialog — in-place bot editor (CREW-18688)', () => {
   it('raises the discard prompt when closing with unsaved edits and keeps editing on cancel', async () => {
     renderHost()
     fireEvent.click(screen.getByTestId('open-editor'))
-    const dialog = await screen.findByRole('dialog', { name: /Edit crewmate/ })
+    const dialog = await screen.findByRole('dialog', { name: /Edit mate/ })
     await waitFor(() => expect(mockApi.agentsInstalled).toHaveBeenCalled())
     // Dirty the overview pane so a close must confirm.
     fireEvent.change(within(dialog).getByTestId('display-name-input'), { target: { value: 'Renamed' } })
@@ -325,22 +325,22 @@ describe('CrewEditorDialog — in-place bot editor (CREW-18688)', () => {
   it('discards and closes when the discard prompt is confirmed', async () => {
     renderHost()
     fireEvent.click(screen.getByTestId('open-editor'))
-    const dialog = await screen.findByRole('dialog', { name: /Edit crewmate/ })
+    const dialog = await screen.findByRole('dialog', { name: /Edit mate/ })
     await waitFor(() => expect(mockApi.agentsInstalled).toHaveBeenCalled())
     fireEvent.change(within(dialog).getByTestId('display-name-input'), { target: { value: 'Renamed' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     fireEvent.click(await screen.findByTestId('crew-sched-discard-confirm'))
     // The editor closes: its dialog leaves the DOM.
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: /Edit crewmate/ })).toBeNull())
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /Edit mate/ })).toBeNull())
   })
 
   it('closes cleanly on Escape when nothing is dirty (no discard prompt)', async () => {
     renderHost()
     fireEvent.click(screen.getByTestId('open-editor'))
-    await screen.findByRole('dialog', { name: /Edit crewmate/ })
+    await screen.findByRole('dialog', { name: /Edit mate/ })
     await waitFor(() => expect(mockApi.agentsInstalled).toHaveBeenCalled())
     fireEvent.keyDown(document, { key: 'Escape' })
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: /Edit crewmate/ })).toBeNull())
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /Edit mate/ })).toBeNull())
     expect(screen.queryByTestId('crew-sched-discard-confirm')).toBeNull()
   })
 
@@ -358,12 +358,12 @@ describe('CrewEditorDialog — in-place bot editor (CREW-18688)', () => {
   it('cancels the armed delete confirm in the danger pane', async () => {
     renderHost()
     fireEvent.click(screen.getByTestId('open-editor'))
-    const dialog = await screen.findByRole('dialog', { name: /Edit crewmate/ })
+    const dialog = await screen.findByRole('dialog', { name: /Edit mate/ })
     await waitFor(() => expect(mockApi.agentsInstalled).toHaveBeenCalled())
     const dangerTab = within(dialog).queryByTestId('crew-rail-danger')
     if (!dangerTab) return
     fireEvent.click(dangerTab)
-    fireEvent.click(await within(dialog).findByRole('button', { name: 'Delete crewmate' }))
+    fireEvent.click(await within(dialog).findByRole('button', { name: 'Delete mate' }))
     fireEvent.click(await within(dialog).findByTestId('cancel-delete-crew'))
     // Back to the un-armed state: the confirm button is gone.
     expect(within(dialog).queryByTestId('confirm-delete-crew')).toBeNull()
@@ -373,7 +373,7 @@ describe('CrewEditorDialog — in-place bot editor (CREW-18688)', () => {
     leaveSpy.mockClear()
     renderHost()
     fireEvent.click(screen.getByTestId('open-editor'))
-    const dialog = await screen.findByRole('dialog', { name: /Edit crewmate/ })
+    const dialog = await screen.findByRole('dialog', { name: /Edit mate/ })
     await waitFor(() => expect(mockApi.kirocrewConfig).toHaveBeenCalled())
     fireEvent.click(within(dialog).getByTestId('crew-rail-place'))
     // oncall-mem is a private V2 store owned by oncall, so the Manage control
@@ -402,17 +402,17 @@ describe('CrewEditorDialog — in-place bot editor (CREW-18688)', () => {
     // prompt rather than being silently lost on the Chat hand-off (GPT finding).
     renderHost()
     fireEvent.click(screen.getByTestId('open-editor'))
-    const dialog = await screen.findByRole('dialog', { name: /Edit crewmate/ })
+    const dialog = await screen.findByRole('dialog', { name: /Edit mate/ })
     await waitFor(() => expect(mockApi.agentsInstalled).toHaveBeenCalled())
     fireEvent.change(within(dialog).getByTestId('display-name-input'), { target: { value: 'Renamed' } })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Chat with this crewmate' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Chat with this mate' }))
     expect(await screen.findByTestId('crew-sched-discard-confirm')).toBeInTheDocument()
   })
 
   it('dismisses the discard prompt on Escape without closing the editor', async () => {
     renderHost()
     fireEvent.click(screen.getByTestId('open-editor'))
-    const dialog = await screen.findByRole('dialog', { name: /Edit crewmate/ })
+    const dialog = await screen.findByRole('dialog', { name: /Edit mate/ })
     await waitFor(() => expect(mockApi.agentsInstalled).toHaveBeenCalled())
     fireEvent.change(within(dialog).getByTestId('display-name-input'), { target: { value: 'Renamed' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
@@ -427,7 +427,7 @@ describe('CrewEditorDialog — in-place bot editor (CREW-18688)', () => {
   it('stages an uploaded image avatar and promotes it on save', async () => {
     renderHost()
     fireEvent.click(screen.getByTestId('open-editor'))
-    const dialog = await screen.findByRole('dialog', { name: /Edit crewmate/ })
+    const dialog = await screen.findByRole('dialog', { name: /Edit mate/ })
     await waitFor(() => expect(mockApi.agentsInstalled).toHaveBeenCalled())
     // Open the avatar builder from the routing pane and apply an image with
     // pending data — this dirties the routing pane.
@@ -445,7 +445,7 @@ describe('CrewEditorDialog — in-place bot editor (CREW-18688)', () => {
   it('persists a template switch immediately when a different template is picked', async () => {
     renderHost()
     fireEvent.click(screen.getByTestId('open-editor'))
-    const dialog = await screen.findByRole('dialog', { name: /Edit crewmate/ })
+    const dialog = await screen.findByRole('dialog', { name: /Edit mate/ })
     await waitFor(() => expect(mockApi.agentsInstalled).toHaveBeenCalled())
     fireEvent.click(within(dialog).getByTestId('crew-rail-template'))
     // The template SimpleSelect (stubbed) renders each option as a button; the

@@ -179,8 +179,8 @@ Detail and rationale: [security](docs/system-specs/modules/security.md),
 fallback fails at runtime for anyone not entitled to it, silently until the first
 prompt. The default is `"auto"`; resolve a substitute choice through
 `acp.client.resolve_usable_model`; pin a cheaper model for the worker roles only
-via `agent.role_models.<role>` (and, for one crewmate's dispatched sessions, via
-that crewmate's `worker_model`). `code-review.yml` fails on a newly added hardcoded
+via `agent.role_models.<role>` (and, for one mate's dispatched sessions, via
+that mate's `worker_model`). `code-review.yml` fails on a newly added hardcoded
 literal. Rules and the one exception:
 [model-selection](docs/system-specs/common/model-selection.md).
 

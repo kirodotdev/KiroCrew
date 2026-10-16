@@ -88,7 +88,7 @@ describe('CrewmateLiveActivity draws the typing bubble over the caption', () => 
   beforeEach(() => { vi.useFakeTimers() })
   afterEach(() => { vi.useRealTimers() })
 
-  it('three dots in the crewmate\'s own bubble, decorative; the caption is the live region', () => {
+  it('three dots in the mate\'s own bubble, decorative; the caption is the live region', () => {
     render(<CrewmateLiveActivity activity={THINKING} />)
     const dots = bubble().querySelector('.message-bubble.crewmate-bubble .typing-dots')
     expect(dots?.children).toHaveLength(3)

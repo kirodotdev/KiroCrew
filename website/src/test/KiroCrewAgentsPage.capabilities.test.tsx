@@ -46,7 +46,7 @@ beforeEach(() => {
 async function open() {
   renderWithProviders(<KiroCrewAgentsPage />)
   fireEvent.click(await screen.findByTestId('crew-card'))
-  const sheet = await screen.findByRole('dialog', { name: 'Edit crewmate oncall' })
+  const sheet = await screen.findByRole('dialog', { name: 'Edit mate oncall' })
   fireEvent.click(within(sheet).getByTestId('crew-rail-capabilities'))
   await screen.findByText('Parent template: atlas')
   return sheet
@@ -69,14 +69,14 @@ describe('capability pane inside the crew dialog', () => {
     const confirm = await screen.findByRole('dialog', { name: 'Discard the Capabilities draft?' })
     fireEvent.keyDown(confirm, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Discard the Capabilities draft?' })).toBeNull())
-    expect(screen.getByRole('dialog', { name: 'Edit crewmate oncall' })).toBe(sheet)
+    expect(screen.getByRole('dialog', { name: 'Edit mate oncall' })).toBe(sheet)
     expect(screen.queryByRole('dialog', { name: 'Discard unsaved changes and close the editor?' })).toBeNull()
     expect(discard).toHaveFocus()
     expect(within(sheet).getByRole('combobox', { name: 'Source for Read tool' })).toHaveTextContent('Removed')
     fireEvent.click(discard)
     fireEvent.click(within(await screen.findByRole('dialog', { name: 'Discard the Capabilities draft?' })).getByRole('button', { name: 'Discard draft' }))
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Discard the Capabilities draft?' })).toBeNull())
-    expect(screen.getByRole('dialog', { name: 'Edit crewmate oncall' })).toBe(sheet)
+    expect(screen.getByRole('dialog', { name: 'Edit mate oncall' })).toBe(sheet)
     expect(within(sheet).getByRole('combobox', { name: 'Source for Read tool' })).toHaveTextContent('Inherited')
     expect(within(sheet).queryByTestId('crew-rail-dirty-capabilities')).toBeNull()
     expect(mocks.capabilities.save).not.toHaveBeenCalled()
@@ -88,7 +88,7 @@ describe('capability pane inside the crew dialog', () => {
     </SidePanelLayout>
     const result = renderWithProviders(tree, { route: '/capabilities' })
     fireEvent.click(await screen.findByTestId('crew-card'))
-    const sheet = await screen.findByRole('dialog', { name: 'Edit crewmate oncall' })
+    const sheet = await screen.findByRole('dialog', { name: 'Edit mate oncall' })
     fireEvent.click(within(sheet).getByTestId('crew-rail-capabilities'))
     await screen.findByText('Parent template: atlas')
     fireEvent.click(within(sheet).getByRole('tab', { name: 'Tools', exact: true }))
@@ -101,7 +101,7 @@ describe('capability pane inside the crew dialog', () => {
     expect(screen.getByRole('combobox', { name: 'Source for Read tool' })).toHaveTextContent('Removed')
     viewport.mobile = false
     result.rerender(cloneElement(tree))
-    expect(screen.getByRole('dialog', { name: 'Edit crewmate oncall' })).toBe(sheet)
+    expect(screen.getByRole('dialog', { name: 'Edit mate oncall' })).toBe(sheet)
   })
 
   it('keeps the open create dialog and its typed name when the bare capabilities route becomes mobile', async () => {
@@ -114,12 +114,12 @@ describe('capability pane inside the crew dialog', () => {
     </SidePanelLayout>
     const result = renderWithProviders(tree, { route: '/capabilities' })
     fireEvent.click(await screen.findByTestId('new-crew'))
-    const dialog = await screen.findByRole('dialog', { name: 'New crewmate' })
+    const dialog = await screen.findByRole('dialog', { name: 'New mate' })
     const name = within(dialog).getByRole('textbox', { name: 'Name' })
     fireEvent.change(name, { target: { value: 'my-draft-crew' } })
     viewport.mobile = true
     result.rerender(cloneElement(tree))
-    expect(screen.getByRole('dialog', { name: 'New crewmate' })).toBe(dialog)
+    expect(screen.getByRole('dialog', { name: 'New mate' })).toBe(dialog)
     expect(within(dialog).getByRole('textbox', { name: 'Name' })).toHaveValue('my-draft-crew')
   })
 
@@ -139,7 +139,7 @@ describe('capability pane inside the crew dialog', () => {
     // Open the create dialog and type a draft; the hand-off must disappear so a
     // click cannot unmount the dialog and lose the draft.
     fireEvent.click(await screen.findByTestId('new-crew'))
-    const dialog = await screen.findByRole('dialog', { name: 'New crewmate' })
+    const dialog = await screen.findByRole('dialog', { name: 'New mate' })
     fireEvent.change(within(dialog).getByRole('textbox', { name: 'Name' }), { target: { value: 'my-draft-crew' } })
     await waitFor(() =>
       expect(within(screen.getByTestId('crews-roster-load-error')).queryByRole('button', { name: 'Ask the agent' })).toBeNull(),
@@ -196,7 +196,7 @@ describe('capability pane inside the crew dialog', () => {
     // The title wraps instead of truncating at narrow widths.
     expect(within(confirm).getByText('Discard unsaved changes and close the editor?')).toHaveClass('whitespace-normal')
     fireEvent.click(within(confirm).getByTestId('crew-sched-discard-confirm'))
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Edit crewmate oncall' })).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Edit mate oncall' })).not.toBeInTheDocument())
     expect(mocks.capabilities.save).not.toHaveBeenCalled()
   })
 
@@ -204,7 +204,7 @@ describe('capability pane inside the crew dialog', () => {
     mocks.capabilities.get.mockRejectedValue(new Error('connection failed'))
     renderWithProviders(<KiroCrewAgentsPage />)
     fireEvent.click(await screen.findByTestId('crew-card'))
-    const sheet = await screen.findByRole('dialog', { name: 'Edit crewmate oncall' })
+    const sheet = await screen.findByRole('dialog', { name: 'Edit mate oncall' })
     fireEvent.click(within(sheet).getByTestId('crew-rail-template'))
     expect(await within(sheet).findByTestId('crew-template-switch-error')).toHaveTextContent('The capabilities request failed. Your draft is kept. Reload from server and retry.')
     expect(await within(sheet).findByRole('combobox', { name: 'Model', exact: true })).toBeDisabled()

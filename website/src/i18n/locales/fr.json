@@ -8563,8 +8563,8 @@
       "undo": "Annuler",
       "undone": "annulé",
       "undo_failed": "Impossible d’annuler cette modification : {{message}}",
-      "undo_unavailable": "Ce changement ne peut plus être annulé ici. Définis la valeur dans le profil de {{name}} : ouvre Crewmates, choisis {{name}}, puis le crayon à côté de son nom.",
-      "undo_stale": "Cette valeur a été modifiée à nouveau depuis, cette annulation ne s’applique plus. Définis-la dans le profil de {{name}} : ouvre Crewmates, choisis {{name}}, puis le crayon à côté de son nom.",
+      "undo_unavailable": "Ce changement ne peut plus être annulé ici. Définis la valeur dans le profil de {{name}} : ouvre Coéquipiers, choisis {{name}}, puis le crayon à côté de son nom.",
+      "undo_stale": "Cette valeur a été modifiée à nouveau depuis, cette annulation ne s’applique plus. Définis-la dans le profil de {{name}} : ouvre Coéquipiers, choisis {{name}}, puis le crayon à côté de son nom.",
       "field_display_name": "nom",
       "field_description": "description",
       "field_avatar": "visage",
@@ -10084,7 +10084,7 @@
       "result_undone": "Restauré : {{title}}",
       "retry": "Réessayer",
       "risk_code_exec": "Ceci exécute du code tiers sur cette machine.",
-      "risk_widen": "Ceci permet aux crewmates de faire plus sans te demander.",
+      "risk_widen": "Ceci permet aux coéquipiers de faire plus sans te demander.",
       "risk_widen_ack": "Je comprends que cela élargit les autorisations",
       "schedule_next_run": "Prochaine exécution",
       "schedule_once": "S’exécute une fois",
@@ -12459,7 +12459,7 @@
       "comments_refused_overlay": "{{name}} n’a pas reçu ces commentaires — rouvre le panneau latéral et envoie-les de nouveau. Ils sont toujours dans le document.",
       "comments_sent_other": "{{count}} commentaires envoyés",
       "comments_sent_many": "{{count}} commentaires envoyés",
-      "your_crewmate": "Ton crewmate"
+      "your_crewmate": "Ton coéquipier"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorée — actuellement sélectionnée)",
@@ -18598,7 +18598,7 @@
       "filters_clear": "Effacer les filtres",
       "star": "Ajouter {{name}} aux favoris",
       "unstar": "Retirer {{name}} des favoris",
-      "all_hidden_hint": "Les crewmates que tu n'as pas encore utilisés sont masqués. Recherche-les pour les trouver.",
+      "all_hidden_hint": "Les coéquipiers que tu n'as pas encore utilisés sont masqués. Recherche-les pour les trouver.",
       "star_failed_title": "Favori non enregistré",
       "star_failed": "Impossible de mettre à jour le favori de ce coéquipier.",
       "filter_source_mine_description": "Crews que vous avez créés dans le gestionnaire de crews",

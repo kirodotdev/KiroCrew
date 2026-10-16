@@ -32,13 +32,13 @@ function openList() {
   return screen.getByRole('listbox')
 }
 
-describe('cron JobForm agent picker — crewmates and custom agents in two groups', () => {
-  it('lists crewmates and custom agents as two labelled groups, every row still an option', () => {
+describe('cron JobForm agent picker — mates and custom agents in two groups', () => {
+  it('lists mates and custom agents as two labelled groups, every row still an option', () => {
     renderWithProviders(
       <JobForm agents={catalog} defaultAgent="kirocrew" onSaved={() => {}} layout="vertical" />,
     )
     const listbox = openList()
-    const crews = within(listbox).getByRole('group', { name: 'Crewmates' })
+    const crews = within(listbox).getByRole('group', { name: 'Mates' })
     const customAgents = within(listbox).getByRole('group', { name: 'Custom agents' })
     expect(within(crews).getAllByRole('option').map(o => o.textContent)).toEqual([
       expect.stringContaining('kirocrew'),
@@ -53,7 +53,7 @@ describe('cron JobForm agent picker — crewmates and custom agents in two group
     // Both headers are drawn, since the roster holds both kinds.
     const headers = within(listbox).getAllByTestId('panel-section-header')
     expect(headers.map(h => h.textContent)).toEqual([
-      expect.stringContaining('Crewmates'),
+      expect.stringContaining('Mates'),
       expect.stringContaining('Custom agents'),
     ])
     // The custom-agent group says what a custom-agent pick means for the job.
@@ -107,7 +107,7 @@ describe('cron JobForm agent picker — crewmates and custom agents in two group
     )
     const listbox = openList()
     fireEvent.change(screen.getByLabelText('Filter agents'), { target: { value: 'kiro-' } })
-    expect(within(listbox).queryByRole('group', { name: 'Crewmates' })).toBeNull()
+    expect(within(listbox).queryByRole('group', { name: 'Mates' })).toBeNull()
     const customAgents = within(listbox).getByRole('group', { name: 'Custom agents' })
     expect(within(customAgents).getAllByRole('option')).toHaveLength(2)
     expect(within(listbox).getAllByTestId('panel-section-header')).toHaveLength(1)
@@ -121,7 +121,7 @@ describe('cron JobForm agent picker — crewmates and custom agents in two group
     let listbox = openList()
     // Still grouped for AT (one labelled group), but no header names a
     // distinction the list does not draw.
-    expect(within(listbox).getByRole('group', { name: 'Crewmates' })).toBeInTheDocument()
+    expect(within(listbox).getByRole('group', { name: 'Mates' })).toBeInTheDocument()
     expect(within(listbox).queryAllByTestId('panel-section-header')).toHaveLength(0)
     unmount()
 

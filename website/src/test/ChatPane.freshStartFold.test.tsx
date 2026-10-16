@@ -161,7 +161,7 @@ describe('ChatPane fresh-start fold', () => {
     expect(screen.queryByText('old answer')).toBeNull()
   })
 
-  it('a crewmate pane folds the same way', async () => {
+  it('a mate pane folds the same way', async () => {
     await renderPane('member-fold-3', {
       foldBefore: RESET_AT,
       busyMode: 'steer-only',

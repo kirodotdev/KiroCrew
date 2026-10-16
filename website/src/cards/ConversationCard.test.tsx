@@ -162,7 +162,7 @@ describe('card registry', () => {
 describe('card layout', () => {
   const INSET = /(^|\s)(?:[a-z0-9@[\]:-]*:)?-?(?:p[xlrse]|m[xlrse])-/
 
-  it('names the crewmate that proposed it, and Kiro Crew outside a crewmate chat', async () => {
+  it('names the mate that proposed it, and Kiro Crew outside a mate chat', async () => {
     pending = [card({ reason: 'You asked for shorter replies.' })]
     const rows = pending.map(c => row(c))
     qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -225,7 +225,7 @@ describe('card layout', () => {
 })
 
 describe('change card', () => {
-  it('re-reads the crewmate roster once a crewmate card has run, so the sidebar count moves', async () => {
+  it('re-reads the mate roster once a mate card has run, so the sidebar count moves', async () => {
     pending = [card({
       kind: 'crewmate.create',
       plan: { apply: [{ method: 'POST', path: '/api/agents', body: { name: 'radar' } }], undo: null },
@@ -483,7 +483,7 @@ describe('change card', () => {
   it('continues an apply a reload interrupted, from the step the gateway expects', async () => {
     pending = [card({
       kind: 'crewmate.create',
-      title: 'Create crewmate Scout',
+      title: 'Create mate Scout',
       status: 'applying',
       params: { name: 'Scout', goal: 'g', schedule: { cron_expr: '0 9 * * *' } },
       plan: {
@@ -533,7 +533,7 @@ describe('change card', () => {
     server.use(http.delete('/api/agents/:name', () => HttpResponse.json({ ok: true })))
     pending = [card({
       kind: 'crewmate.create',
-      title: 'Create crewmate Scout',
+      title: 'Create mate Scout',
       status: 'applied',
       params: { name: 'Scout', goal: 'g', schedule: { cron_expr: '0 9 * * *' } },
       plan: {

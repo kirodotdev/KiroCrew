@@ -247,7 +247,7 @@ a reader at the end of the transcript, and decides "is the reader still at the
 end" by position alone. A reader resting on follow's own last write — the pixel a
 pin, a layout clamp, or the reader's own return to the bottom left them on — is
 carried to the new bottom whenever content opens a gap under them, whether or not
-a turn is running: a complete message landing in an idle chat (a crewmate's or
+a turn is running: a complete message landing in an idle chat (a mate's or
 worker's report arriving in a DM, a notice, a cron row) follows without the
 reader touching anything. Hardware input on its own never counts as leaving; a
 wheel at the end that moves nothing is not a move. The one exception is scroll
@@ -302,7 +302,7 @@ walked window leave the tab and are one page-back away.
 
 `loadOlderMessages` stays in the facade. The chat host answers the hook's
 older-page request with it; it reads the page before `slotOldestIndex` and lands
-it only while the slot it was read for is still active. A BACKGROUND pane (a crewmate DM on the Members page, a split pane) pages its OWN older history with the separate `loadOlderSlotMessages` thunk, which reads from that pane's own cursor (`slotPaneNextBefore`, written beside the page by `writeSlotPage`) and tracks its in-flight / failed state per slot in `slotPaneLoadingOlder` / `slotPaneOlderError`, so one pane's walk never blocks or reddens another's; `loadOlderMessages` walks only the active slot. None of these owners filters rows by memory
+it only while the slot it was read for is still active. A BACKGROUND pane (a mate DM on the Members page, a split pane) pages its OWN older history with the separate `loadOlderSlotMessages` thunk, which reads from that pane's own cursor (`slotPaneNextBefore`, written beside the page by `writeSlotPage`) and tracks its in-flight / failed state per slot in `slotPaneLoadingOlder` / `slotPaneOlderError`, so one pane's walk never blocks or reddens another's; `loadOlderMessages` walks only the active slot. None of these owners filters rows by memory
 mode, so a restricted transcript is cached and paged like any other.
 
 ### Card rows: change cards and guide offers
@@ -2219,12 +2219,12 @@ inner JSONL fallback; only an absent replay requests fallback construction.
 5. User returns → new session with history re-injected
 6. After the message count crosses `_CONSOLIDATION_THRESHOLD` (30) past the last offset → background consolidation → structured memory updated
 
-## Reply Threads on Crewmate Chat Messages (`dashboard/chat_threads.py`)
+## Reply Threads on Mate Chat Messages (`dashboard/chat_threads.py`)
 
-A **thread** is the set of replies attached to ONE message of a crewmate's chat --
+A **thread** is the set of replies attached to ONE message of a mate's chat --
 a member-mode slot (`slot.mode == members.DM_SLOT_MODE`) -- addressed by that
 message's durable `meta.mid`. "Thread" is only ever this reply thread; the main
-conversation is the chat. Any message, the user's or the crewmate's, can carry
+conversation is the chat. Any message, the user's or the mate's, can carry
 one.
 
 **Flag.** The feature ships behind `dashboard.crewmate_threads` (`config/sections_dashboard.py`,
@@ -2283,7 +2283,7 @@ an agent put there never reaches the dashboard through the detail response,
 whose `_redacted_reply` likewise emits only those four fields. One
 thread holds at most 500 replies (`thread_full`), one chat's sidecar at most
 5 000 across every thread (`threads_full` -- the whole-file bound, since the
-panel reads the file whole), and the crewmate's stored reply is clipped at
+panel reads the file whole), and the mate's stored reply is clipped at
 64 000 characters with a `[reply clipped]` marker (the streamed frames carried
 the whole text). The reader holds the same line whatever the file says
 (`THREAD_REPLY_CONTENT_MAX_CHARS`, `THREAD_MID_RE`,
@@ -2335,7 +2335,7 @@ their previews.
 
 **API.** All three answer 404 `slot_not_found` for a missing slot or a foreign
 app caller (anti-enumeration, App Kit §5.2) and 409 `not_crewmate_chat` for a
-slot that is not a crewmate's chat.
+slot that is not a mate's chat.
 
 - `GET /api/chat/threads?slot=<key>` -- `{"threads": {<mid>: {"count",
   "last_reply_ts", "participants": [roles, first-appearance order]}}}`, the
@@ -2349,7 +2349,7 @@ slot that is not a crewmate's chat.
   detail and resume handlers run, not a copy of it). Reading finds a parent the
   window holds; writing a reply to it additionally needs the row on disk.
 - `POST /api/chat/threads/{mid}/reply` `{slot_key, text, reply_id?}` -- stores
-  the user's reply, broadcasts it, starts the crewmate's turn and answers
+  the user's reply, broadcasts it, starts the mate's turn and answers
   **202** `{reply, run_id}` at once. `reply_id` (32 hex, minted by the panel
   per send and reused for a retry of the same text) makes the send idempotent:
   a re-send of an id the thread already holds -- the 202 lost on the wire --
@@ -2361,7 +2361,7 @@ slot that is not a crewmate's chat.
   shape. 400 `empty_reply`, 400 `invalid_text` (a lone
   surrogate JSON admits and UTF-8 cannot carry -- a validation answer, never a
   500), 413 `reply_too_long` (32 KiB),
-  409 `thread_turn_in_flight` while the crewmate is still replying in THAT
+  409 `thread_turn_in_flight` while the mate is still replying in THAT
   thread (a reply landing mid-turn would be answered by nothing; the panel
   disables its send meanwhile), 409 `thread_full`, 409 `threads_full`, 409
   `transcript_missing` (no transcript yet, or the parent row not flushed yet),
@@ -2373,7 +2373,7 @@ slot that is not a crewmate's chat.
   was stored but not answered, so a reopened thread never shows a question
   with no answer. The user's reply is
   admitted one seat BELOW each cap (499 / 4 999): it is stored only while the
-  crewmate's answer to it still fits, so the answer -- written under the full
+  mate's answer to it still fits, so the answer -- written under the full
   caps -- is never the reply that finds the thread full after a whole turn ran. The in-flight reservation is taken with no await between the
   check and the mark -- BEFORE the store write suspends -- so two replies racing
   through it (a double-click) run one turn; one `finally` releases it on every
@@ -2383,7 +2383,7 @@ slot that is not a crewmate's chat.
   `thread_full` / `threads_full` texts each end in the next step ("Ask in the
   main chat instead." / "Start a new chat to keep discussing.").
 
-**The crewmate's turn.** `_run_thread_turn` is the side turn's shape
+**The mate's turn.** `_run_thread_turn` is the side turn's shape
 ([side](side.md)) without its steer/queue ledger: resolve the slot's agent
 through `resolve_agent_bindings`, run in the thread's own isolated session
 `thread:<slot>:<mid>` (a `_STATELESS_PREFIXES` member, so it never resumes
@@ -2406,8 +2406,8 @@ chat's resolvers: the validation opens the member's SQLite database
 synchronously on the loop), and a slot whose project or agent changed between two replies is never
 served by a session bound to the old ones. The parent lookup reads the
 transcript by `api_chat_slot_detail`'s rule -- `_reconcile_slot_window` first,
-then disk prefix plus window -- so a parent only disk holds is found. The crewmate's memory is not injected into a thread turn (not done;
-the crewmate's agent spec is). The answer is redacted, clipped, appended to the sidecar as
+then disk prefix plus window -- so a parent only disk holds is found. The mate's memory is not injected into a thread turn (not done;
+the mate's agent spec is). The answer is redacted, clipped, appended to the sidecar as
 an `assistant` reply and broadcast; an empty answer becomes the same visible
 read-only boundary line the side chat shows. A refused read-only spec is audited as a
 denied SEL API access (`operation=thread_reply`, `source=read_only_spec`),
@@ -2428,9 +2428,9 @@ class name (the ACP type lives behind the agent-SDK import boundary) and
 answered with `host_auth.signed_out_message`, latching the readiness service
 signed-out as the main chat does.
 
-**Dashboard.** Only a crewmate's chat (the Members page) offers threads: it
+**Dashboard.** Only a mate's chat (the Members page) offers threads: it
 hands `ChatPane` a `threads` hook set (`app-sdk/messageRenderers.ThreadHooks`:
-`summaryOf(mid)`, `onOpen(mid)`, the crewmate's name), which the assistant and
+`summaryOf(mid)`, `onOpen(mid)`, the mate's name), which the assistant and
 user rows read off `MessageRenderContext.threads`; every other surface has none
 and draws neither footer nor action. The page reads the flag through
 `hooks/useCrewmateThreadsFlag` (the shared `['kirocrewConfig']` query): `on`
@@ -2439,17 +2439,17 @@ said beside the chat through `ErrorNotice` with a Retry while the last known
 value stands -- never rendered as the flag being off, which would make an
 enabled feature vanish under a config blip. A bubble whose `mid` has replies gets a
 `ThreadFooter` under it (faces of who took part, "N replies" in accent, "Last
-reply 2h ago" muted); every user bubble's hover action row and every finished crewmate reply's footer row
-carry "Reply in thread" (`MessageSquare`); a mid-turn crewmate row that runs on into
+reply 2h ago" muted); every user bubble's hover action row and every finished mate reply's footer row
+carry "Reply in thread" (`MessageSquare`); a mid-turn mate row that runs on into
 a tool call has no footer, so no Reply until the turn's last reply. The footer is a SIBLING of its bubble, not a
 child, and states its own side as `align-self` (`self-end` under the user's
-right-aligned bubble, `self-start` under the crewmate's), which beats the row
+right-aligned bubble, `self-start` under the mate's), which beats the row
 wrapper's `align-items`. An appearance that re-aligns or indents the ROW must
 therefore re-state the footer too: CLI UI mode moves the user's bubble
 full-width to the left and indents both bubbles with a bar and padding on the
 message root, so it carries its own footer rules in `styles/cli-mode.css` --
 without them the user's footer stays pinned to the far right of a left-aligned
-bubble and the crewmate's sits 16px left of its own. Those rules are measured in
+bubble and the mate's sits 16px left of its own. Those rules are measured in
 a real engine by `scripts/capture-thread-footer-cli-align.mjs`, which asserts
 each footer's first mark against its bubble's edge on both appearances and
 requires the pre-fix state to reproduce; `src/test/cliModeThreadFooter.test.ts`
@@ -2462,19 +2462,19 @@ is on screen (slides in; `prefers-reduced-motion` fades) and hands them back on
 close, so the main chat stays visible beside it. The panel shows the parent
 quoted as one bubble, a hairline reply count, the replies as small bubbles on
 the main chat's run and corner rule (`components/chat/crewmateBubbles.ts`:
-the crewmate's consecutive replies group on the left, the user's right-aligned
-bubbles are always singles), a typing row while the crewmate replies (an ordinary item, never a
+the mate's consecutive replies group on the left, the user's right-aligned
+bubbles are always singles), a typing row while the mate replies (an ordinary item, never a
 notice) and a one-line "Reply…" composer with the real `SendBtn`, disabled
 while a reply is in flight. Stored replies and the per-slot summary are React
 Query reads (`api/threads.ts`); the reply in progress streams through
 `state/threadLiveStore` from `chat.thread_reply` frames, and a stored frame
-(the user's reply, the crewmate's `final`) invalidates both queries. Failures
+(the user's reply, the mate's `final`) invalidates both queries. Failures
 render through `ErrorNotice` in the panel with one plain sentence picked by the
 backend `code`; a failed send keeps the draft.
 
 **Wire.** `ws.broadcast_thread_reply` emits owner-only `chat.thread_reply`
 frames `{slot, mid, run_id, role, content, ts, final?, is_error?, reply?}`: the
-user's reply once, the crewmate's reply as streamed deltas grouped by `run_id`
+user's reply once, the mate's reply as streamed deltas grouped by `run_id`
 and a terminal `final` frame carrying the stored `reply` record. A frame with a
 `slot` field is a tier-1 slot-scoped WS event. Failure arms (the signed-out
 harness, `ReadOnlySpecError`, an unreadable sidecar, prompt-busy, anything else)

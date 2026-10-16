@@ -229,20 +229,20 @@ async function renderRoster(expectCards = 2) {
 
 /** A roster card, addressed by the accessible name the card exposes. */
 function crewCard(name: string) {
-  return screen.getByRole('button', { name: `Edit crewmate ${name}` })
+  return screen.getByRole('button', { name: `Edit mate ${name}` })
 }
 
 /** Open the editor dialog on `name` and return the dialog element. */
 async function openEditor(name: string): Promise<HTMLElement> {
   fireEvent.click(crewCard(name))
-  return await screen.findByRole('dialog', { name: `Edit crewmate ${name}` })
+  return await screen.findByRole('dialog', { name: `Edit mate ${name}` })
 }
 
 /** Open the create dialog (`NewCrewmateDialog`) and return its element. The
  *  create door opens the Crewmates page's simple dialog, titled "New crewmate". */
 async function openCreate(): Promise<HTMLElement> {
   fireEvent.click(screen.getByTestId('new-crew'))
-  return await screen.findByRole('dialog', { name: 'New crewmate' })
+  return await screen.findByRole('dialog', { name: 'New mate' })
 }
 
 describe('crew editor — collision warning', () => {
@@ -302,7 +302,7 @@ describe('crew editor — collision warning', () => {
     view.queryClient.setQueryData(['member-thread', 'oncall'], { slot_key: 'member-oncall-v1' })
     const sheet = await openEditor('oncall')
     fireEvent.click(within(sheet).getByTestId('crew-rail-place'))
-    expect(within(sheet).getByText('This crewmate keeps its current memory (V1). Its own memory (V2) is only available when creating a new crewmate.')).toBeVisible()
+    expect(within(sheet).getByText('This mate keeps its current memory (V1). Its own memory (V2) is only available when creating a new mate.')).toBeVisible()
     expect(within(sheet).queryByRole('button', { name: /Create.*memory/i })).toBeNull()
     expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
     expect(view.queryClient.getQueryData(['member-thread', 'oncall'])).toEqual({ slot_key: 'member-oncall-v1' })
@@ -326,7 +326,7 @@ describe('crew editor — collision warning', () => {
     const panel = within(sheet).getByRole('tabpanel', { name: 'Workspace · Memory Shared' })
 
     expect(within(panel).getByText('oncall-mem', { exact: true })).toBeVisible()
-    expect(within(panel).getByText('This crewmate has its own memory (V2).')).toBeVisible()
+    expect(within(panel).getByText('This mate has its own memory (V2).')).toBeVisible()
     expect(within(panel).getByRole('button', { name: 'Manage memory' })).toBeEnabled()
     expect(within(panel).queryByRole('button', { name: 'Create private memory' })).toBeNull()
     expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
@@ -351,7 +351,7 @@ describe('crew editor — collision warning', () => {
 
     expect(within(panel).getByText(reason, { exact: true })).toBeVisible()
     expect(within(panel).queryByText(/Open the crew manager/i)).toBeNull()
-    expect(within(panel).queryByText(/This crewmate keeps its current memory \(V1\)\. Its own memory \(V2\) is only available when creating a new crewmate\./)).toBeNull()
+    expect(within(panel).queryByText(/This mate keeps its current memory \(V1\)\. Its own memory \(V2\) is only available when creating a new mate\./)).toBeNull()
     expect(within(panel).queryByRole('button', { name: 'Create private memory' })).toBeNull()
     expect(within(panel).queryByRole('button', { name: 'Manage memory' })).toBeNull()
     expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
@@ -395,7 +395,7 @@ describe('crew editor — a registry write re-reads the config snapshot', () => 
     // "Built from" defaults to the built-in kirocrew template (the list leads
     // with it), so no template pick is needed to fire the create.
     // Both Create buttons submit the same form; the first one is enough.
-    fireEvent.click(within(create).getAllByRole('button', { name: 'Create crewmate' })[0])
+    fireEvent.click(within(create).getAllByRole('button', { name: 'Create mate' })[0])
 
     await waitFor(() => expect(mockApi.createKirocrewAgent).toHaveBeenCalled())
     // The dialog invalidates BOTH ['kirocrew-agents'] and ['kirocrewConfig'] in
@@ -407,7 +407,7 @@ describe('crew editor — a registry write re-reads the config snapshot', () => 
     const sheet = await openEditor('fix')
     fireEvent.click(within(sheet).getByTestId('crew-rail-place'))
     await waitFor(() =>
-      expect(within(sheet).getByText('This crewmate has its own memory (V2).')).toBeVisible())
+      expect(within(sheet).getByText('This mate has its own memory (V2).')).toBeVisible())
     expect(within(sheet).queryByText(/configured memory store is unavailable/)).toBeNull()
   })
 })

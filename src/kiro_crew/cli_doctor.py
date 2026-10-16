@@ -496,7 +496,7 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
         print(
             f"  bound spec:  ⚠️  no spec for {render._safe_display(bound)} under {render._safe_display(str(agents_dir))}"
         )
-        print("               Every new session that picks no crewmate -- plain chats, crons,")
+        print("               Every new session that picks no mate -- plain chats, crons,")
         print(
             "               channel messages, subagents -- starts from this agent and is refused."
         )

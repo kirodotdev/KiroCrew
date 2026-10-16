@@ -382,12 +382,12 @@ ACTIONS: dict[str, ActionDef] = {
     ),
     ACTION_CREWMATE_CREATE: ActionDef(
         id=ACTION_CREWMATE_CREATE,
-        title="Create a crewmate",
+        title="Create a mate",
         description=(
-            "Open the New crewmate card with an optional name and goal "
+            "Open the New mate card with an optional name and goal "
             "pre-filled, then point at its Create button. Nothing is created "
             "until the user clicks Create; completion reports the new "
-            "crewmate's id."
+            "mate's id."
         ),
         steps=(StepDef("create", STEP_COMMIT),),
         params_schema={

@@ -200,7 +200,7 @@ describe('NewCrewmateDialog inside a SidePanelLayout', () => {
     // context and registers with the app shell itself. The dialog must still
     // render, with the typed name held.
     renderStandalone()
-    typeName('typed on the crewmates page')
-    expect(nameInput().value).toBe('typed on the crewmates page')
+    typeName('typed on the mates page')
+    expect(nameInput().value).toBe('typed on the mates page')
   })
 })

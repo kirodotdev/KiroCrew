@@ -127,7 +127,7 @@ try {
   await page.waitForTimeout(500)
   await page.locator(ROW).nth(0).screenshot({ path: `${OUT}/row-undo-unavailable-light.png` })
   await page.unroute(/\/self-changes\/[^/]+\/undo$/)
-  await page.route(/\/self-changes\/[^/]+\/undo$/, refuse(409, 'stale_undo', "the crewmate's description was changed again since; nothing was undone"))
+  await page.route(/\/self-changes\/[^/]+\/undo$/, refuse(409, 'stale_undo', "the mate's description was changed again since; nothing was undone"))
   await page.locator(UNDO).nth(0).click()
   await page.waitForFunction(() => document.querySelectorAll('[data-testid="self-change-undo-error"]').length >= 2, null, { timeout: 15_000 })
   await page.waitForTimeout(500)

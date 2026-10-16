@@ -293,9 +293,7 @@ async def test_unreadable_canonical_identity_never_falls_back(private_parent, da
     assert result["code"] == "workflow_memory_unavailable"
     assert result["error"].startswith(f"Workflow memory is unavailable: {reason}")
     assert "No Global fallback was used." in result["error"]
-    assert ("start a chat with no crewmate picked" in result["error"]) is (
-        damage == "member-on-global"
-    )
+    assert ("start a chat with no mate picked" in result["error"]) is (damage == "member-on-global")
     assert not sessions.acquired
     assert svc.list_runs() == []
 

@@ -261,7 +261,7 @@ def test_a_create_card_whose_goal_write_fails_says_so_on_the_card(
     assert rec["status"] == "partial"
     assert rec["error"]["step"] == catalog.CREWMATE_CREATE_GOAL_STEP
     assert rec["result"]["summary"] == (
-        "Created crewmate “Rover”, but its goal or its schedule was not saved"
+        "Created mate “Rover”, but its goal or its schedule was not saved"
     )
     # The schedule after the failed goal never ran, and Undo still removes the crewmate.
     assert state.cron_bodies == []

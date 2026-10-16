@@ -8563,8 +8563,8 @@
       "undo": "Desfazer",
       "undone": "desfeito",
       "undo_failed": "Não foi possível desfazer esta alteração: {{message}}",
-      "undo_unavailable": "Esta alteração não pode mais ser desfeita aqui. Defina o valor no perfil de {{name}}: abra Crewmates, escolha {{name}} e depois o lápis ao lado do nome.",
-      "undo_stale": "Este valor foi alterado de novo depois, então este desfazer não vale mais. Defina-o no perfil de {{name}}: abra Crewmates, escolha {{name}} e depois o lápis ao lado do nome.",
+      "undo_unavailable": "Esta alteração não pode mais ser desfeita aqui. Defina o valor no perfil de {{name}}: abra Colegas, escolha {{name}} e depois o lápis ao lado do nome.",
+      "undo_stale": "Este valor foi alterado de novo depois, então este desfazer não vale mais. Defina-o no perfil de {{name}}: abra Colegas, escolha {{name}} e depois o lápis ao lado do nome.",
       "field_display_name": "nome",
       "field_description": "descrição",
       "field_avatar": "cara",
@@ -10084,7 +10084,7 @@
       "result_undone": "Restaurado: {{title}}",
       "retry": "Tentar de novo",
       "risk_code_exec": "Isso executa código de terceiros nesta máquina.",
-      "risk_widen": "Isso deixa os crewmates fazerem mais sem perguntar a você.",
+      "risk_widen": "Isso deixa os colegas fazerem mais sem perguntar a você.",
       "risk_widen_ack": "Entendo que isso amplia as permissões",
       "schedule_next_run": "Próxima execução",
       "schedule_once": "Executa uma vez",
@@ -12459,7 +12459,7 @@
       "comments_refused_overlay": "{{name}} não recebeu estes comentários — reabra o painel lateral e envie-os novamente. Eles continuam no documento.",
       "comments_sent_other": "{{count}} comentários enviados",
       "comments_sent_many": "{{count}} comentários enviados",
-      "your_crewmate": "Seu crewmate"
+      "your_crewmate": "Seu colega"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorada — atualmente selecionada)",
@@ -18598,7 +18598,7 @@
       "filters_clear": "Limpar filtros",
       "star": "Favoritar {{name}}",
       "unstar": "Desfavoritar {{name}}",
-      "all_hidden_hint": "Os crewmates que você ainda não usou estão ocultos. Pesquise para encontrá-los.",
+      "all_hidden_hint": "Os colegas que você ainda não usou estão ocultos. Pesquise para encontrá-los.",
       "star_failed_title": "Favorito não salvo",
       "star_failed": "Não foi possível atualizar o favorito deste colega.",
       "filter_source_mine_description": "Crews que você criou no gerenciador de crews",

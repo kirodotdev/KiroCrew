@@ -70,7 +70,7 @@ describe('ThreadPanel', () => {
     expect(screen.queryByText('radar')).not.toBeInTheDocument()
   })
 
-  it('quotes the parent, counts the replies and groups the crewmate run', async () => {
+  it('quotes the parent, counts the replies and groups the mate run', async () => {
     renderPanel()
     expect(screen.getByRole('complementary', { name: 'Thread' })).toBeInTheDocument()
     await screen.findByTestId('thread-parent')
@@ -86,7 +86,7 @@ describe('ThreadPanel', () => {
     expect(screen.getByText('You')).toBeInTheDocument()
   })
 
-  it('sends a reply on Enter, clears the draft and disables send while the crewmate replies', async () => {
+  it('sends a reply on Enter, clears the draft and disables send while the mate replies', async () => {
     renderPanel()
     await screen.findByTestId('thread-parent')
     const box = screen.getByTestId('thread-composer') as HTMLTextAreaElement
@@ -102,7 +102,7 @@ describe('ThreadPanel', () => {
     expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled()
   })
 
-  it('streams the crewmate reply from the live store', async () => {
+  it('streams the mate reply from the live store', async () => {
     renderPanel()
     await screen.findByTestId('thread-parent')
     act(() => {

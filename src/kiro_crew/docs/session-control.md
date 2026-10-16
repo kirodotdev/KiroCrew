@@ -47,7 +47,7 @@ conductor: a session that can dispatch but cannot edit a file. Always pass
 |---|---|---|
 | `title` | no | Short sidebar name. Say what the session is FOR. Follows `session_rename`'s character rules (`invalid_title`), then is cut to 200 characters; a title whose first 200 characters show nothing is refused |
 | `agent` | no (but always pass it) | Agent to bind the session to |
-| `agent_kind` | no | One value, `template`: run the shared template `agent` names on your own memory, even when a crewmate carries the same name. Omit for name-first resolution (a crewmate wins, with its own memory). Always pass it for `kirocrew-worker`, which needs no memory of its own. Requires `agent` (`agent_kind_requires_agent` otherwise); a kind that does not resolve is refused `agent_unresolved` rather than falling back to whoever answers by default |
+| `agent_kind` | no | One value, `template`: run the shared template `agent` names on your own memory, even when a mate carries the same name. Omit for name-first resolution (a mate wins, with its own memory). Always pass it for `kirocrew-worker`, which needs no memory of its own. Requires `agent` (`agent_kind_requires_agent` otherwise); a kind that does not resolve is refused `agent_unresolved` rather than falling back to whoever answers by default |
 | `folder` | no | Sidebar folder id or `/`-separated path to file it into, atomically with creation. Missing path segments are created (`mkdir -p`). The create is checked first, so a create that would be refused normally leaves no new empty folder behind (a race can still leave one) |
 | `model` | no | Model the session starts on, pinned as if the person picked it in the model dropdown (same guard; refused with `model_rejected` when the picker would refuse it). Omit to inherit, as below |
 | `reasoning_effort` | no | Reasoning effort the session starts at, one of the five standard levels: `low`, `medium`, `high`, `xhigh`, `max`. Any other value is refused with `effort_rejected` before anything is created. Omit to inherit, as below |
@@ -57,9 +57,9 @@ crewmate: your profile's worker pair (`worker_model` / `worker_reasoning_effort`
 when set, else your own model and effort, else the agent's or the global
 default. Your own effort carries over only while the child runs your own model:
 under a `worker_model` or a `model` you name, the only level it takes is
-`worker_reasoning_effort`. A caller that is not a crewmate (a template worker a
-crewmate dispatched is not one) gets the agent's or the global default. A child
-that is itself a crewmate (an `agent` naming one) runs its own profile and
+`worker_reasoning_effort`. A caller that is not a mate (a template worker a
+mate dispatched is not one) gets the agent's or the global default. A child
+that is itself a mate (an `agent` naming one) runs its own profile and
 inherits nothing. A stale inherited model, one the picker would refuse or the
 worker's harness does not serve, is dropped rather than refused: the child
 starts on the default model. A model you name yourself is still refused with

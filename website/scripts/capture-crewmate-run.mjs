@@ -40,7 +40,7 @@ for (const theme of ['dark', 'light']) {
   await page.goto(`${BASE}/capture/crewmate-run.html?theme=${theme}`, { waitUntil: 'networkidle' })
   await page.waitForSelector('[data-testid="crewmate-message"]'); await page.waitForTimeout(500)
   const rows = page.locator('[data-testid="crewmate-message"]')
-  check(`[${theme}/${TAG}] three crewmate messages drawn`, await rows.count() === 3)
+  check(`[${theme}/${TAG}] three mate messages drawn`, await rows.count() === 3)
   const authors = await page.locator('[data-testid="crewmate-author"]').count()
   const gutters = await rows.evaluateAll(els => els.filter(e => Array.from(e.querySelectorAll('*')).some(c => /pl-\[38px\]/.test(c.className))).length)
   if (expectAuthor) {
@@ -79,10 +79,10 @@ for (const theme of ['dark', 'light']) {
   } else {
     check(`[${theme}/${TAG}] user bubble is the theme accent`, colours.userBg === colours.accent && colours.userFg === colours.accentFg)
     check(`[${theme}/${TAG}] inline code and link inside it sit on --accent-fg`, colours.codeFg === colours.accentFg && colours.linkFg === colours.accentFg)
-    check(`[${theme}/${TAG}] crewmate bubble is the --bg-hover gray with no border`, colours.aiBg === colours.hover && colours.aiBorder === '0px')
+    check(`[${theme}/${TAG}] mate bubble is the --bg-hover gray with no border`, colours.aiBg === colours.hover && colours.aiBorder === '0px')
     // kiro-light paints inline code with var(--bg-hover), the fill's own colour: the bubble must move
     // that one step off the fill or the patch disappears (Design review R3 on #17918).
-    check(`[${theme}/${TAG}] inline code in a crewmate reply sits on a patch distinct from the fill`, !!colours.aiCodeBg && colours.aiCodeBg !== colours.aiBg && colours.aiCodeBg !== 'rgba(0, 0, 0, 0)')
+    check(`[${theme}/${TAG}] inline code in a mate reply sits on a patch distinct from the fill`, !!colours.aiCodeBg && colours.aiCodeBg !== colours.aiBg && colours.aiCodeBg !== 'rgba(0, 0, 0, 0)')
     // The quote card inside the accent bubble reads the REDEFINED tokens: its bar is the text
     // colour (not accent-on-accent), its excerpt and border are accent-fg mixes, never the page's gray.
     const isFgMix = c => !!c && c !== colours.accent && c !== 'rgba(0, 0, 0, 0)' && /\/ 0\.\d/.test(c)

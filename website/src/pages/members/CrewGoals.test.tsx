@@ -92,7 +92,7 @@ describe('CrewGoalsPane', () => {
     expect(report).toHaveTextContent(/Weekly report · /)
   })
 
-  it('shows no short-term goals: the work ledger says what the crewmate is doing now', async () => {
+  it('shows no short-term goals: the work ledger says what the mate is doing now', async () => {
     memberGoals.get.mockResolvedValue(record())
     renderWithProviders(<CrewGoalsPane slug="scout" member="scout" name="Scout" />)
     await screen.findByTestId('crew-goals-key-results')
@@ -445,7 +445,7 @@ describe('CrewGoalsPane', () => {
     expect(screen.queryByTestId('crew-goals-kr-undo-row')).toBeNull()
   })
 
-  it('asks the crewmate in its chat to track something, as a visible message', async () => {
+  it('asks the mate in its chat to track something, as a visible message', async () => {
     memberGoals.get.mockResolvedValue(record())
     const onTrackInChat = vi.fn().mockResolvedValue('dispatched')
     renderWithProviders(<CrewGoalsPane slug="scout" member="scout" name="Scout" onTrackInChat={onTrackInChat} />)

@@ -295,8 +295,8 @@ async function main() {
     await page.goto(base + '/members?team=tm-ci', { waitUntil: 'domcontentloaded' })
     await page.getByText('CI crew', { exact: true }).first().waitFor({ timeout: 15000 })
     await page.waitForTimeout(1200)
-    await must(page, 'li.pl-7, li .pl-7, .pl-7', 'indented crewmate row (pl-7)').catch(async () => {
-      await must(page, 'li.pl-6, li .pl-6, .pl-6', 'indented crewmate row (pl-6)')
+    await must(page, 'li.pl-7, li .pl-7, .pl-7', 'indented mate row (pl-7)').catch(async () => {
+      await must(page, 'li.pl-6, li .pl-6, .pl-6', 'indented mate row (pl-6)')
     })
     await measure(page, {
       teamHeaderIcon: 'li button svg.lucide-users, li button svg.lucide-inline',
@@ -320,7 +320,7 @@ async function main() {
       throw new Error(`members: team name(s) truncated without width pressure at roster ${rosterWidth}: ${clipped.map(n => JSON.stringify(n.text)).join(', ')}`)
     }
     const flowOpen = await page.locator('[data-testid="meet-crewmates-not-now"]').count()
-      + await page.getByText('Give a crewmate a goal to own').count()
+      + await page.getByText('Give a mate a goal to own').count()
       + await page.locator('[role="dialog"]').count()
     if (flowOpen) {
       throw new Error('members: the Meet CrewMates flow is open over the page; the capture would show it instead of the roster')

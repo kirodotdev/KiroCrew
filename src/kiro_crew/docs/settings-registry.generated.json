@@ -538,7 +538,7 @@
       "label": "Default Model",
       "tab": "chat",
       "route": "/settings/chat/models?highlight=chat.default-model",
-      "description": "Which model new sessions start with when their agent pins none. Set a model per agent under Customize → Crewmates, or pick one inside a session to override it there.",
+      "description": "Which model new sessions start with when their agent pins none. Set a model per agent under Customize → Mates, or pick one inside a session to override it there.",
       "hint": "Agents with their own configured model ignore this setting. 'Default' uses the model from the agent configuration, or the system default when none is configured. Changing this does not affect sessions that are already open."
     },
     {
@@ -1020,13 +1020,6 @@
       "description": "Turns on an in-development, developer-only harness for a new layout mechanism. Nothing you can see changes yet: the mechanism has no page of its own, so this exists only so it can be built and tested behind a switch."
     },
     {
-      "id": "developer.crewmates",
-      "label": "Crewmates",
-      "tab": "developer",
-      "route": "/settings/developer?highlight=developer.crewmates",
-      "hint": "The Crewmates page: every agent you have, each with its own thread. Still being built, so it is not offered until you turn this on."
-    },
-    {
       "id": "developer.decisions-jev",
       "label": "Decisions (Jev)",
       "tab": "developer",
@@ -1062,6 +1055,13 @@
       "description": "Kept in this dashboard's secret store on the machine that runs Kiro Crew, never in config.json, and never shown again once you save it."
     },
     {
+      "id": "developer.mates",
+      "label": "Mates",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.mates",
+      "hint": "The Mates page: every agent you have, each with its own thread. Still being built, so it is not offered until you turn this on."
+    },
+    {
       "id": "developer.model-for-the-small-model-judge",
       "label": "Model for the small-model judge",
       "tab": "developer",
@@ -1069,11 +1069,11 @@
       "description": "Only used when the judge above is the small model. Leave it on the judge agent's own model unless you want a cheaper one."
     },
     {
-      "id": "developer.reply-threads-on-crewmate-chat-messages",
-      "label": "Reply threads on crewmate chat messages",
+      "id": "developer.reply-threads-on-mate-chat-messages",
+      "label": "Reply threads on mate chat messages",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.reply-threads-on-crewmate-chat-messages",
-      "hint": "Let any message in a crewmate's chat carry its own reply thread, opened in the side panel while the chat stays visible. Off, the Reply in thread control is not offered and existing threads are hidden, not deleted."
+      "route": "/settings/developer?highlight=developer.reply-threads-on-mate-chat-messages",
+      "hint": "Let any message in a mate's chat carry its own reply thread, opened in the side panel while the chat stays visible. Off, the Reply in thread control is not offered and existing threads are hidden, not deleted."
     },
     {
       "id": "developer.run-a-local-gateway",

@@ -22,7 +22,7 @@ import CrewDashboardTab from "../pages/members/CrewDashboardTab";
 const LAZY_IMPORT_READY = { timeout: 2000 };
 
 describe("CrewDashboardTab", () => {
-  it("shows only the crewmate's own page", async () => {
+  it("shows only the mate's own page", async () => {
     render(<CrewDashboardTab slug="ada" member="Ada" displayName="Ada" />);
     expect(
       (await screen.findByTestId("frame-stub", undefined, LAZY_IMPORT_READY)).textContent,

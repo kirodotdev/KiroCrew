@@ -19,7 +19,7 @@ import type { SettingEntry } from '../components/commandPalette/settingsTypes'
  * SETTINGS_REGISTRY. Declared above `LEGACY_ID_EXACT` because that table
  * maps the card's previous id onto it.
  */
-export const SETTINGS_CREW_MEMBERS_PREVIEW_ID = 'developer.crewmates'
+export const SETTINGS_CREW_MEMBERS_PREVIEW_ID = 'developer.mates'
 
 /**
  * Legacy highlight-id migrations. Registry ids are `<tab>.<kebab-label>`, so
@@ -50,11 +50,14 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   'chat.pin-the-latest-prompt': 'chat.pin-the-latest-turn',
   // The Feature Previews crew card was relabeled from "Crew Members and Crew
   // Mode" to "Crew Members" when Crew Mode retired, then to "Crewmates" to match
-  // the page title (`pages.membersPage.title`); the flag and the card are the
-  // same ones throughout, only the label (and so the derived id) narrowed. Both
-  // prior ids land on the current one.
+  // the page title (`pages.membersPage.title`), then to "Mates" with the page;
+  // the flag and the card are the same ones throughout, only the label (and so
+  // the derived id) changed. Every prior id lands on the current one.
   'developer.crew-members-and-crew-mode': SETTINGS_CREW_MEMBERS_PREVIEW_ID,
   'developer.crew-members': SETTINGS_CREW_MEMBERS_PREVIEW_ID,
+  'developer.crewmates': SETTINGS_CREW_MEMBERS_PREVIEW_ID,
+  // The reply-threads switch sits under the same page title and moved with it.
+  'developer.reply-threads-on-crewmate-chat-messages': 'developer.reply-threads-on-mate-chat-messages',
   // The peer-session card ("Remote instance sessions", then "Remote crew
   // sessions") folded into "Chat on a crew": one switch now holds both halves.
   'developer.remote-instance-sessions': 'developer.chat-on-a-crew',

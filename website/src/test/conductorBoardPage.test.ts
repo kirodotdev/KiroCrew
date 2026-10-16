@@ -104,7 +104,7 @@ describe('kirocrew-conductor page', () => {
     const band = document.querySelector('#cb-you .band')
     expect(band).not.toBeNull()
     expect(all('#cb-you .v').map((n) => n.textContent)).toEqual(['Approve the merge of PR 4', HOSTILE])
-    expect(text('#cb-you .tag')).toBe('your crewmate wrote this')
+    expect(text('#cb-you .tag')).toBe('your mate wrote this')
     expect(text('#cb-you .band')).toContain('Nothing sends until you press send.')
     expect(document.querySelector('#cb-you img')).toBeNull()
   })
@@ -142,7 +142,7 @@ describe('kirocrew-conductor page', () => {
     expect(text('#cb-you .v')).toBe('stuck one \u2014 is stuck (approval)')
   })
 
-  it('shows the published note as the crewmate wrote it', () => {
+  it('shows the published note as the mate wrote it', () => {
     mount({
       items: [],
       note: { next: 'rebase PR 4', needs_you: HOSTILE, tasks: [] },
@@ -155,7 +155,7 @@ describe('kirocrew-conductor page', () => {
     // The stamp is shown in the reader's own format, never as the raw string.
     expect(note?.textContent).toContain('sent ')
     expect(note?.textContent).not.toContain('2026-10-13T02:00:00')
-    expect(text('#cb-note .tag')).toBe('your crewmate wrote this')
+    expect(text('#cb-note .tag')).toBe('your mate wrote this')
     expect(document.querySelector('#cb-note img')).toBeNull()
   })
 
@@ -268,7 +268,7 @@ describe('kirocrew-conductor page', () => {
 
   it('says there is no goal yet instead of a dash', () => {
     mount({})
-    expect(text('h1')).toBe('No goal yet. Give this crewmate one in chat.')
+    expect(text('h1')).toBe('No goal yet. Give this mate one in chat.')
   })
 
   it('says so when the board is empty and nothing needs the reader', () => {

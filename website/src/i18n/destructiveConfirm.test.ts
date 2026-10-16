@@ -283,7 +283,7 @@ export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
     + 'machine-formatted date from fmtDate, never user-supplied text',
   'pages.membersPage.create_unconfirmed':
     'not a confirmation prompt: a non-interactive outcome notice stating whether the named '
-    + 'crewmate was created; it offers no destructive action and the name identifies the '
+    + 'mate was created; it offers no destructive action and the name identifies the '
     + 'uncertain result that the user must check in the roster',
   'apps.awsControl.console.library_remove_confirm_slug':
     'the {{folder}} operand is an S3 key prefix rendered inside a <folder> tag as a '

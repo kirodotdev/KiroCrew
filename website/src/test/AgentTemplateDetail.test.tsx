@@ -176,7 +176,7 @@ describe('shared (non-copy) template bound', () => {
     // filename-guessed provenance reports for a plain builtin spec.
     expect(await screen.findByText('Custom')).toBeInTheDocument()
     // Two crews point at it, so the reach is stated rather than implied.
-    expect(screen.getByText(/used by 2 crewmates/i)).toBeInTheDocument()
+    expect(screen.getByText(/used by 2 mates/i)).toBeInTheDocument()
     // The helper line warns that the first edit branches a private copy.
     expect(screen.getByText(/its own copy of the custom agent/i)).toBeInTheDocument()
 
@@ -226,7 +226,7 @@ describe('the crew\'s own copy bound', () => {
     expect(selector).toHaveTextContent('atlas')
     expect(selector).not.toHaveTextContent('atlas-crewA')
     // The own copy is nobody else's, so the shared-template lines are suppressed.
-    expect(screen.queryByText(/used by 2 crewmates/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/used by 2 mates/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/its own copy of the custom agent/i)).not.toBeInTheDocument()
     expect(screen.getByText(/Based on the atlas template/i)).toBeInTheDocument()
   })
@@ -373,7 +373,7 @@ describe('Save as new template', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save template' }))
 
     const alert = await screen.findByRole('alert')
-    expect(alert).toHaveTextContent('“default” is reserved for a built-in agent. Pick another name, such as “default-custom”. The crewmate keeps its name; only its template needs a new one.')
+    expect(alert).toHaveTextContent('“default” is reserved for a built-in agent. Pick another name, such as “default-custom”. The mate keeps its name; only its template needs a new one.')
     expect(alert).not.toHaveTextContent('KAS')
     // The dialog stays open with the typed name, so the user can retype.
     expect(screen.getByRole('textbox')).toHaveValue('default')

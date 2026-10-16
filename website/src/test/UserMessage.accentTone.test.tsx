@@ -85,8 +85,8 @@ describe('UserMessage tone', () => {
   })
 })
 
-describe("the crewmate chat's user entry", () => {
-  it('turns the accent tone on, and only when a crewmate is drawn', () => {
+describe("the mate chat's user entry", () => {
+  it('turns the accent tone on, and only when a mate is drawn', () => {
     const crewmate = { name: 'kirocrew-radar', label: 'Radar' }
     // Built the way ChatPane builds it for the Members page: `crewmate` set,
     // `hideSteerBadge` NOT set (the page runs the split busy mode since
@@ -110,7 +110,7 @@ describe("the crewmate chat's user entry", () => {
 })
 
 describe('the index.css hook', () => {
-  it('scopes the crewmate bubble\'s nested surfaces one step off its --bg-hover fill', () => {
+  it('scopes the mate bubble\'s nested surfaces one step off its --bg-hover fill', () => {
     // Kiro-light paints inline code with var(--bg-hover), the fill itself; `hover:bg-bg-hover`
     // controls do the same. Without this scope they vanish inside the bubble (Design review on #17918).
     expect(INDEX_CSS).toMatch(/:has\(>\.message-bubble\.crewmate-bubble\)\{--crewmate-fill:var\(--bg-hover\)\}/)
