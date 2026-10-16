@@ -45,9 +45,9 @@ const TOKEN = /\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · 4 lines \]/
 let queryClient: QueryClient
 const editor = () => screen.getByLabelText('Chat message') as HTMLTextAreaElement
 
-async function mount() {
+async function mount(props: Partial<React.ComponentProps<typeof ChatEmbed>> = {}) {
   await act(async () => {
-    render(<QueryClientProvider client={queryClient}><ChatEmbed slotKey="slot-1" /></QueryClientProvider>)
+    render(<QueryClientProvider client={queryClient}><ChatEmbed slotKey="slot-1" {...props} /></QueryClientProvider>)
   })
 }
 
@@ -135,11 +135,73 @@ describe('ChatEmbed long-paste collapse', () => {
     expect(document.querySelector('[data-paste-seq]')).toBeNull()
   })
 
+  it('undo after deleting a selected chip brings its block back, so the send still carries the full text', async () => {
+    await mount()
+    await paste(BIG)
+    const ta = editor()
+    const token = ta.value
+    // A selected chip falls through to the browser's own deletion.
+    ta.setSelectionRange(0, token.length)
+    await act(async () => { fireEvent.keyDown(ta, { key: 'Backspace' }) })
+    await act(async () => { fireEvent.change(ta, { target: { value: '' } }) })
+    expect(document.querySelector('[data-paste-seq]')).toBeNull()
+    await act(async () => { fireEvent.keyDown(editor(), { key: 'z', ctrlKey: true }) })
+    expect(editor().value).toBe(token)
+    expect(document.querySelector('[data-paste-seq="1"]')).not.toBeNull()
+    await send()
+    expect((mockPost.mock.calls[0][1] as { message: string }).message).toBe(BIG)
+  })
+
+  it('the first edit after a slot switch is undoable: Ctrl+Z after deleting a chip brings it back', async () => {
+    let view!: ReturnType<typeof render>
+    await act(async () => {
+      view = render(<QueryClientProvider client={queryClient}><ChatEmbed slotKey="slot-1" /></QueryClientProvider>)
+    })
+    await paste(BIG)
+    const token = editor().value
+    await act(async () => {
+      view.rerender(<QueryClientProvider client={queryClient}><ChatEmbed slotKey="slot-2" /></QueryClientProvider>)
+    })
+    // The embed keeps the draft across the switch, so the history is still
+    // settling when the user's first edit lands.
+    expect(editor().value).toBe(token)
+    const ta = editor()
+    ta.setSelectionRange(ta.value.length, ta.value.length)
+    await act(async () => { fireEvent.keyDown(ta, { key: 'Backspace' }) })
+    expect(editor().value).toBe('')
+    await act(async () => { fireEvent.keyDown(editor(), { key: 'z', ctrlKey: true }) })
+    expect(editor().value).toBe(token)
+    expect(document.querySelector('[data-paste-seq="1"]')).not.toBeNull()
+  })
+
   it('"Show pasted text in full" keeps a large paste as text', async () => {
     localStorage.setItem('mc-chat-config', JSON.stringify({ showFullPastes: true }))
     await mount()
     // Trailing blank lines make the paste take its own insert path, so the
     // full text is observable here rather than being left to the browser.
+    await paste(`${BIG}\n\n`)
+    expect(editor().value).toBe(BIG)
+    expect(document.querySelector('[data-paste-seq]')).toBeNull()
+  })
+
+  it("a host onSend gets the blocks, and its stored row retires the optimistic one though the host stripped the text", async () => {
+    // A paste ending in whitespace: a host endpoint that strips what it
+    // stores must still be recognised as this send, or the message shows twice.
+    const TRAILING = `${BIG}   `
+    const onSend = vi.fn(() => Promise.resolve())
+    await mount({ onSend })
+    await paste(TRAILING)
+    await send()
+    expect(onSend).toHaveBeenCalledWith(TRAILING, { pastes: [expect.objectContaining({ seq: 1, content: TRAILING })] })
+    mockGet.mockResolvedValue({ messages: [{ role: 'user', content: TRAILING.trim(), cls: 'user', ts: '2026-01-01T00:00:05Z' }], running: true, title: '' })
+    await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
+    expect(shown.rows.filter(r => r.role === 'user')).toHaveLength(1)
+  })
+
+  it('turning "Show pasted text in full" on elsewhere applies to the next paste without a remount', async () => {
+    await mount()
+    localStorage.setItem('mc-chat-config', JSON.stringify({ showFullPastes: true }))
+    await act(async () => { window.dispatchEvent(new Event('mc-config-changed')) })
     await paste(`${BIG}\n\n`)
     expect(editor().value).toBe(BIG)
     expect(document.querySelector('[data-paste-seq]')).toBeNull()

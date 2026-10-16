@@ -82,7 +82,11 @@ describe('flex-1 inputs shrink instead of clipping trailing controls (#3789)', (
     renderWithClient(<ChatEmbed slotKey="slot-1" />)
     await waitFor(() => expect(screen.getByLabelText('Chat message')).toBeInTheDocument())
     const input = screen.getByLabelText('Chat message')
-    expect(input.className).toContain('flex-1')
-    expect(input.className).toContain('min-w-0')
+    // The flex item is the box holding the textarea and its paste-chip
+    // mirror; the textarea fills it.
+    const item = input.parentElement!
+    expect(item.className).toContain('flex-1')
+    expect(item.className).toContain('min-w-0')
+    expect(input.className).toContain('w-full')
   })
 })

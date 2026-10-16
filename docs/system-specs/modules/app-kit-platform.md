@@ -127,7 +127,8 @@ the parked receipt too, so an embed remounted for the slot gets them. Proof
 that an unconfirmed send was delivered unstages the handed-back files still in
 the composer, as it takes the text back, so they are not sent twice. That
 proof is the send's own `sendId`. A host `onSend` send carries none, so its
-only proof is its text arriving as a user row after the send's anchor row;
+only proof is its text arriving as a user row after the send's anchor row,
+compared with edge whitespace trimmed since a host may strip what it stores;
 text cannot say which send landed, so that proof never touches the composer:
 the warning becomes a calm line saying the message is in the conversation and
 its text is still in the composer, or simply goes away when there is no kept
@@ -182,10 +183,20 @@ paste side table, `storeSentPastes`), and the optimistic row carries the same
 blocks so it draws the chip. Recovery hands the blocks back with the text
 (`restorePastes` on the parked receipt), carried through
 `useComposerPastes().carry` so a block whose number the composer already uses
-is renumbered. `ChatEmbed.longPaste.test.tsx` covers collapse, the wire shape,
-the optimistic row, the refused-send hand-back, atomic delete and the setting;
-the import-graph test pins `pasteEditor.ts`, `composerPastes.ts` and both layers
-as store-free.
+is renumbered. Undo/redo is the main composer's own snapshot history,
+`chat-core/composer/undoHistory.ts` (`useUndoHistory`, which `ChatInput` also
+mounts): each snapshot carries the blocks, so Cmd/Ctrl+Z after a chip is
+deleted restores its content with its token, and the send never carries a
+token without its block. Every user change to the draft (typing, a chip
+delete or expand, a picker insert) goes through `setDraftFromUser`, which
+marks it as the user's own, so the history records even the first edit after
+a slot switch instead of reseeding at it as if the parent had restored that
+slot's draft. `ChatEmbed.longPaste.test.tsx` covers collapse, the
+wire shape, the optimistic row, the refused-send hand-back, atomic delete,
+undo after a delete (also as the first edit after a slot switch) and the
+setting; the import-graph test pins
+`pasteEditor.ts`, `undoHistory.ts`, `composerPastes.ts` and both layers as
+store-free.
 
 The host owns session attribution. Chat hosts bind their session; routed app
 pages bind the established `dashboard:ui` page identity. A provided host key

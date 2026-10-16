@@ -148,7 +148,10 @@ export function sendTailProof(
     if (at < 0) return null
     from = at + 1
   }
-  return messages.slice(from).some(m => m.role === 'user' && m.content === host.text) ? 'text' : null
+  // Compared trimmed, as isPendingAcked does: a host endpoint may strip the
+  // text it stores, and an expanded paste can end in whitespace.
+  const sent = host.text.trim()
+  return messages.slice(from).some(m => m.role === 'user' && m.content.trim() === sent) ? 'text' : null
 }
 
 export interface RetireResult {

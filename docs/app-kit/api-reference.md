@@ -378,7 +378,8 @@ more, or over 200 characters, goes into the draft as one
 `[ Paste #N · M lines ]` chip instead of its full text. The chip moves and
 deletes as one unit, hovering it (or putting the caret inside it) previews the
 text, and a double-click (a tap on touch) expands it back into the draft.
-Copy and cut of a selection that covers a chip copy the full text.
+Copy and cut of a selection that covers a chip copy the full text, and
+Cmd/Ctrl+Z after deleting a chip brings it back with its text.
 `Cmd/Ctrl+Shift+V` pastes in full once, and the user's **Show Pasted Text in
 Full** chat setting turns collapsing off.
 

@@ -103,6 +103,10 @@ describe('ChatEmbed composer is store-free (static)', () => {
     const input = readFileSync(join(SRC, 'components', 'ChatInput.tsx'), 'utf8')
     expect(input).toMatch(/import \{ usePasteTokens \} from '\.\.\/chat-core\/composer\/pasteEditor'/)
     expect(existsSync(join(SRC, 'components', 'chat-input', 'paste.ts'))).toBe(false)
+    // Undo/redo, which restores a deleted chip's block, is the same hook too.
+    expect(src).toMatch(/from '\.\.\/chat-core\/composer\/undoHistory'/)
+    expect(src).toMatch(/useUndoHistory\(/)
+    expect(input).toMatch(/import \{ useUndoHistory \} from '\.\.\/chat-core\/composer\/undoHistory'/)
   })
 
   it.each([
@@ -113,6 +117,7 @@ describe('ChatEmbed composer is store-free (static)', () => {
     'chat-core/composer/PickerMenus.tsx',
     'app-sdk/useEmbedPickers.ts',
     'chat-core/composer/pasteEditor.ts',
+    'chat-core/composer/undoHistory.ts',
     'chat-core/composer/composerPastes.ts',
     'components/PasteHighlightLayer.tsx',
     'components/PasteHoverLayer.tsx',
