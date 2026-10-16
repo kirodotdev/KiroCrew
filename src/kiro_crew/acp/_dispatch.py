@@ -27,6 +27,11 @@ from kiro_crew.acp.harness_tool_names import (  # noqa: F401
     MAX_HARNESS_TOOL_NAME_LEN,
     qualified_harness_tool_id,
 )
+from kiro_crew.acp.locator_attestation import (  # noqa: F401
+    attest_tool_result,
+    attested_sharepoint_digests,
+    sharepoint_attestation_policy,
+)
 from kiro_crew.acp.types import (  # noqa: F401
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
@@ -684,6 +689,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _rendered_key_names,
         _rendered_shape_type,
         _todo_payload,
+        attest_session_update,
         log_unrenderable_content,
         parse_todo_snapshot,
         tool_call_content_text,
@@ -691,6 +697,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
+    import asyncio  # noqa: F401
     import difflib  # noqa: F401
     import hashlib  # noqa: F401
     import json  # noqa: F401

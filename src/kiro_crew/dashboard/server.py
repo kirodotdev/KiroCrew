@@ -296,6 +296,7 @@ from kiro_crew.dashboard.server_runtime.listener_claims import (  # noqa: F401
     _write_secret_file,
 )
 from kiro_crew.dashboard.server_runtime.maintenance import (  # noqa: F401
+    _dispatch_locator_attestation_preload,
     _kick_connections_warm_scavenge,
     _kick_display_verdicts,
     _kick_knowledge_orphan_reclaim,
@@ -305,6 +306,7 @@ from kiro_crew.dashboard.server_runtime.maintenance import (  # noqa: F401
     _kick_pinned_order_load,
     _kick_session_search_index,
     _own_host_warm_done,
+    _preload_locator_attestations,
     _register_connections_warm_lifecycle,
     _register_own_host_warm,
 )
@@ -1518,6 +1520,7 @@ async def start_dashboard(
     if schedule_memory_preparation is not None:
         state.memory_startup_task = schedule_memory_preparation()
     state.ready = True
+    _dispatch_locator_attestation_preload(state)
     record_boot_to_ready((time.time() - state.start_time) * 1000.0, server="dashboard")
     # Tells the NEXT boot that this instance got the whole startup battery
     # away, so a stall from here on does not implicate the battery.

@@ -467,3 +467,17 @@ def _kick_pinned_order_load(state: DashboardState) -> None:
     task = asyncio.create_task(chat.load_pinned_order_after_listen(state))
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
+
+
+async def _preload_locator_attestations() -> None:
+    """Warm durable locator authority without filesystem I/O on the serving loop."""
+    from kiro_crew import locator_attestations
+
+    await asyncio.to_thread(locator_attestations.preload)
+
+
+def _dispatch_locator_attestation_preload(state: DashboardState) -> None:
+    """Load locator authority after readiness without delaying the listener."""
+    task = asyncio.create_task(_preload_locator_attestations(), name="locator-attestation-preload")
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)

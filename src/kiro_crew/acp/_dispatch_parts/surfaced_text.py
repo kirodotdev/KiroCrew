@@ -17,6 +17,7 @@ import re
 from typing import Any
 
 from kiro_crew.acp._dispatch_parts.tool_call_identity import is_shell_kind
+from kiro_crew.acp.locator_attestation import attested_sharepoint_digests
 from kiro_crew.acp.types import TOOL_PURPOSE_KEYS
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -208,7 +209,9 @@ def _redact(text: str) -> str:
     if not text:
         return text
     text, _ = redact_exfiltration_urls(text)
-    text, _ = redact_credentials(text)
+    text, _ = redact_credentials(
+        text, attested_sharepoint_digests=attested_sharepoint_digests(text)
+    )
     return text
 
 
