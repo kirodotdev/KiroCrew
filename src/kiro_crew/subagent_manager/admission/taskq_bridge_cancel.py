@@ -1,7 +1,8 @@
 """Cancelling persisted rows that have not started.
 
 One row, inline or run whole on the writer thread; every row of a bulk stop as one writer-thread
-job; and the claimed-not-started probe a parent-end teardown asks before it reaps a run.
+job; the verified, bounded retry a queued stop drives when its cancel does not land; and the
+claimed-not-started probe a parent-end teardown asks before it reaps a run.
 
 A function here whose first parameter is ``self`` is a ``_TaskqBridgeMixin`` method: the class
 binds it under the same name in ``admission/taskq_bridge.py``, so it reaches the manager through
@@ -156,6 +157,122 @@ def taskq_cancel_queued(
     params = dict(rec.params)
     params["_preassigned_id"] = agent_id
     return params
+
+
+async def taskq_queued_row_present_async(self: _TaskqBridgeMixin, agent_id: str) -> bool:
+    """Whether a DURABLE store row exists for *agent_id* (any state).
+
+    The single queued-stop (`cancel_impl`) uses it to decide whether the
+    verified cancel retry even applies: a store-less path, or an
+    incognito/temporary row that `_is_undurable` never wrote, has no row to
+    re-read and must take the ordinary `_unqueue` path, not the retry.
+
+    A HEALTHY read of ``None`` is a definite "no row" -> False, so a non-durable
+    entry is not routed into the retry. A read that RAISES is contention, not an
+    absence: it answers True (assume present) so a durable row whose cancel the
+    store is refusing under contention still reaches the verified retry rather
+    than being published on an unverified write. No store at all is False:
+    nothing durable exists to retry.
+    """
+    store = self.taskq_store()
+    if store is None:
+        return False
+    for attempt in range(_STATE_READ_ATTEMPTS):
+        try:
+            state = await store.run(store.state_of, agent_id)
+        except Exception:
+            if attempt + 1 < _STATE_READ_ATTEMPTS:
+                await _asyncio.sleep(_STATE_READ_BACKOFF_SECS)
+                continue
+            # Contention through the whole bound: assume a row is present so the
+            # retry owns the verification rather than an unverified publish.
+            _glue_logger.warning(
+                "taskq: could not read whether %s has a row in %d attempts; assuming "
+                "present so its cancel is verified rather than published unverified",
+                agent_id,
+                _STATE_READ_ATTEMPTS,
+                exc_info=True,
+            )
+            return True
+        return state is not None
+    return True
+
+
+async def taskq_cancel_queued_until_settled(
+    self: _TaskqBridgeMixin, agent_id: str
+) -> dict[str, Any] | None:
+    """Retry a queued row's cancel until it lands or the store refuses the edge.
+
+    The queued-stop path publishes the stop to the caller before the row's store
+    ``cancel`` is confirmed. When that cancel does not land -- the store is
+    unreachable, or the row left the unstarted states between the read and the
+    write -- an unverified cancel would leave the row ``queued`` and
+    dispatchable, so the next incarnation's dispatcher runs work the user was
+    told had stopped. This reads the answer of each attempt and retries while
+    the store keeps refusing, so the row reaches a terminal state instead.
+
+    Each attempt is :meth:`taskq_cancel_queued`, run WHOLE on the writer thread
+    (``store.run``): the state test and the cancel share one transaction there,
+    so a row a drain started in between is never cancelled under a live run. A
+    non-None answer is the cancelled row's params -- the cancel landed, done,
+    and the caller reports the stop from them. On ``None`` the row's current
+    state decides, read on the same thread:
+
+      * a TERMINAL or already-started state (or a row that is gone) is a healthy
+        store refusing the edge -- there is nothing left to cancel, so stop;
+      * an UNSTARTED state means the cancel's own write was refused under
+        contention, so back off and try again;
+      * a read that itself raises is the outage still in force -- back off and
+        try again.
+
+    The pause is :data:`_STATE_READ_BACKOFF_SECS`, bounded by
+    :data:`_STATE_READ_ATTEMPTS` -- the same per-row contention bound the state
+    read uses, because a refused cancel here is writer-thread contention, not a
+    store outage, and a user's stop must not wait the minutes-scale store-reopen
+    ladder. A store wedged past the cap leaves the row unsettled but logs
+    LOUDLY, so the miss is visible rather than silent. Returns the cancelled
+    row's params once the cancel landed, ``None`` otherwise. Only call it when a
+    store is attached and the row exists -- a store-less or non-durable queued
+    entry has no row to re-read and belongs on the ``_unqueue`` path.
+    """
+    from kiro_crew import taskq as _taskq
+
+    store = self.taskq_store()
+    if store is None:
+        return None
+    for attempt in range(1, _STATE_READ_ATTEMPTS + 1):
+        try:
+            landed = await store.run(self.taskq_cancel_queued, agent_id)
+        except _taskq.TaskStoreUnavailable:
+            landed = None
+        if landed is not None:
+            return landed
+        # The cancel did not land. Decide retry-vs-stop from the row's state,
+        # read on the writer thread. An unreadable row is the outage: keep
+        # trying. A terminal/started/gone row is a healthy refusal: nothing to
+        # cancel. An unstarted row is a refused write under contention: retry.
+        try:
+            state = await store.run(store.state_of, agent_id)
+        except _taskq.TaskStoreUnavailable:
+            state = None
+            unreadable = True
+        else:
+            unreadable = False
+        if not unreadable:
+            if state is None:
+                return None
+            unstarted = _taskq.CLAIMABLE | frozenset({_taskq.ADMITTED})
+            if state not in unstarted:
+                return None
+        if attempt < _STATE_READ_ATTEMPTS:
+            await _asyncio.sleep(_STATE_READ_BACKOFF_SECS)
+    _glue_logger.warning(
+        "taskq: queued cancel of %s did not land in %d attempts; the row may be "
+        "left dispatchable by the next incarnation",
+        agent_id,
+        _STATE_READ_ATTEMPTS,
+    )
+    return None
 
 
 def taskq_cancel_queued_each(

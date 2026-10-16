@@ -392,13 +392,27 @@ class CancellationCoordinator(ManagerComponent):
         publishes a stop either way, and a row left `queued` is dispatchable by
         the next incarnation, which would run work the user was told had
         stopped. So the refusal is audible (the shape `taskq_settle` uses for a
-        refused `finish`) and re-posted to the writer thread, where a store that
-        answers again cancels the row; `taskq_cancel_queued` re-reads the state
-        under its own transaction, so a row that legitimately started is left
-        alone.
+        refused `finish`) and the cancel is retried on the writer thread.
+
+        The retry is :meth:`taskq_cancel_queued_until_settled`, which READS the
+        answer of each attempt and keeps trying under a small capped backoff
+        while the store refuses, ending when the cancel lands or a healthy store
+        refuses the edge (the row reads terminal or started). Reading the answer
+        is what makes it safe: an unverified cancel whose re-post hits the same
+        contention that caused the first miss leaves the row ``queued`` with no
+        terminal write. ``taskq_cancel_queued`` re-reads the state under its own
+        transaction on every attempt, so a row that legitimately started is
+        left alone.
+
+        Posted as a tracked store task on the loop so the retry's backoff never
+        blocks it (both call sites -- ``_unqueue`` under ``cancel`` and the bulk
+        stop's ``_report_stopped_rows`` applier -- run on the gateway loop); run
+        inline when there is no loop, matching ``_post_store_write``.
         """
         # Imported here: this helper is not an ``_impl`` and so keeps this
         # module's namespace, where the facade's ``logger`` is only a type hint.
+        import asyncio
+
         from ..subagent import logger
 
         admission = self._manager._admission
@@ -406,14 +420,23 @@ class CancellationCoordinator(ManagerComponent):
         if store is None:
             return
         logger.warning(
-            "Queued stop for %s: no store row was cancelled — re-posting the cancel",
+            "Queued stop for %s: no store row was cancelled — retrying the cancel "
+            "until it lands",
             agent_id,
         )
-        admission._post_store_write(
-            store,
-            f"queued cancel retry {agent_id}",
-            admission.taskq_cancel_queued,
-            agent_id,
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None:
+            # No loop: the whole helper runs synchronously, so a one-shot cancel
+            # is the most that can be driven here without a loop to await the
+            # verified retry on. Its answer is still read and warned on.
+            if admission.taskq_cancel_queued(agent_id) is None:
+                logger.warning("Queued stop for %s: the retried cancel did not land", agent_id)
+            return
+        admission.track_store_task(
+            loop.create_task(admission.taskq_cancel_queued_until_settled(agent_id))
         )
 
     def _report_queued_stop_impl(
@@ -1563,9 +1586,42 @@ class CancellationCoordinator(ManagerComponent):
             # all: `spawn` builds its queued SubagentInfo and returns it without
             # registering. Unqueueing prevents startup; the synthetic terminal
             # report keeps its parent and batch accounting from waiting forever.
-            # The store phase is taken here rather than inside ``_unqueue`` so
-            # the report knows whether this cancel landed (``row_settled``).
-            stored = self._manager._admission.taskq_cancel_queued(agent_id)
+            # The store phase is taken here so the report is published only once
+            # the cancel is CONFIRMED landed -- a queued stop reported on an
+            # unverified cancel is the defect itself: the row could stay
+            # ``queued`` and run after a restart while the caller was told it
+            # stopped.
+            admission = self._manager._admission
+            stored = admission.taskq_cancel_queued(agent_id)
+            if stored is None and await admission.taskq_queued_row_present_async(agent_id):
+                # A DURABLE row exists and the first cancel did not land -- the
+                # store was unreachable, or the row left the unstarted states.
+                # Only a row that EXISTS reaches the verified retry: a store-less
+                # path, or an incognito/temporary row ``_is_undurable`` never
+                # wrote, has no row to re-read (``taskq_queued_row_present_async``
+                # answers False on a healthy "no row") and takes the ``_unqueue``
+                # path below, exactly as before this change. Publish nothing yet:
+                # drive the bounded, verified retry to a conclusion first.
+                stored = await admission.taskq_cancel_queued_until_settled(agent_id)
+                if stored is None:
+                    # Store still wedged, or the row read terminal/started -- a
+                    # live run the running sweep owns. Fail safe: report no stop,
+                    # leave the window entry so a refill can retry it, and answer
+                    # "not stopped" so the caller does not tell the user the run
+                    # stopped on an unconfirmed cancel.
+                    logger.warning(
+                        "Queued stop for %s not reported: the cancel did not land "
+                        "and the row is not confirmed terminal",
+                        agent_id,
+                    )
+                    return False
+            # ``stored`` is now either the params of a cancel that landed (the
+            # first attempt or the verified retry), or ``None`` for a store-less
+            # / non-durable entry. Either way ``_unqueue`` pops the window entry
+            # AND, for a store-only row with no window entry, returns ``stored``
+            # so the stop is still reported and the parent is not left waiting.
+            # ``store_cancelled=True``: the cancel is confirmed, so ``_unqueue``
+            # attempts no further store cancel and fires no re-post.
             queued = self._manager._unqueue(agent_id, stored=stored, store_cancelled=True)
             if queued is not None:
                 logger.info("Cancelled queued subagent %s before it started", agent_id)

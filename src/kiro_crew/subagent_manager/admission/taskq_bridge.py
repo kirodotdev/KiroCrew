@@ -761,5 +761,7 @@ class _TaskqBridgeMixin(ManagerComponent):
     taskq_cancel_queued_async = _cancel.taskq_cancel_queued_async
     taskq_row_is_claimed_unstarted_async = _cancel.taskq_row_is_claimed_unstarted_async
     taskq_cancel_queued = _cancel.taskq_cancel_queued
+    taskq_queued_row_present_async = _cancel.taskq_queued_row_present_async
+    taskq_cancel_queued_until_settled = _cancel.taskq_cancel_queued_until_settled
     taskq_cancel_queued_each = _cancel.taskq_cancel_queued_each
     taskq_post_cancel_queued = _cancel.taskq_post_cancel_queued

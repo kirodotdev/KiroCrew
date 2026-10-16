@@ -1955,7 +1955,8 @@ row's terminal write, so its queued-stop report skips the settle's `finish`
 (`row_settled`; it could only be refused) and keeps the propagation to a waiting
 parent. The stage Cancel, the parent-end teardown and a single `cancel` pass the
 same flag for the rows whose own cancel landed. A cancel that did not land
-leaves the settle in place and is re-posted (`_repost_unlanded_cancel`). Until the
+leaves the settle in place and is retried, verified, by `_repost_unlanded_cancel`
+(below). Until the
 applier has reported a row, that row is in neither `_queue` nor `_agents`, so
 every id of the job is filed in `_batched_stops` for that span: the claimer
 above joins it, and a single `cancel` of the row joins the batch's answer
@@ -1966,7 +1967,38 @@ report it a second time (two `subagent_done`, two completions to the parent). A
 store-only row is not reported twice that way, since the batch reports nothing
 for a row it holds no entry for and whose cancel came back empty, but its single
 cancel joins as well, so no cancel of a batched row runs a store call on the
-loop. Each id is filed with its parent in `_batched_stop_parents` too, for a
+loop. A cancel that did not land is retried, verified, by
+`taskq_cancel_queued_until_settled`: it reads the answer of each attempt and
+keeps retrying under the per-row contention bound (`_STATE_READ_ATTEMPTS` at
+`_STATE_READ_BACKOFF_SECS`), returning the cancelled row's params once the
+cancel lands or `None` once a healthy store refuses the edge (the row reads
+terminal or started). A SINGLE `cancel` of a queued row AWAITS that retry before
+it publishes anything: the queued-stop terminal is reported only once the cancel
+is confirmed landed, so a stop is never published on the strength of an
+unverified write (the defect — the caller told the run stopped while the row
+stays `queued` and runs after a restart). It enters the retry ONLY for a
+store-backed row (a store is attached and the first cancel came back `None`); a
+store-less or non-durable queued entry (no store, or an incognito/temporary row
+that wrote no row) has nothing to re-read and takes the ordinary `_unqueue` path,
+which pops the window entry and reports as before. The landed params are passed
+through `_unqueue(stored=params, store_cancelled=True)`, so a STORE-ONLY row with
+no window entry is still reported from its params and the parent waiting on its
+last child is not left parked. When the retry exhausts without landing — a store
+wedged past the bound — the stop fails safe: nothing is published, the window
+entry is left in place, and `cancel` answers "not stopped" (logged loudly)
+rather than reporting a stop that did not take. Pinned by
+`test_queued_stop_cancel_verify_21339.py::test_a_queued_stop_whose_cancel_is_refused_still_settles_the_row`
+(store heals mid-retry → row cancelled),
+`::test_a_wedged_store_fails_the_stop_safe_rather_than_reporting_it` (store
+wedged → no stop reported, row left queued) and
+`::test_a_store_only_row_whose_retried_cancel_lands_is_still_reported`
+(store-only row → reported from params). The bulk Stop-all applier keeps the
+best-effort `_repost_unlanded_cancel` re-post (its rows are reported as the batch
+settles); the bound is in memory only, so a store wedged through gateway shutdown
+is the residual, for which a boot-reconcile cancel tombstone would be the durable
+fallback — out of scope here because a never-started `queued` row is outside the
+reconcile's `ACTIVE` set.
+Each id is filed with its parent in `_batched_stop_parents` too, for a
 third reader: a parent-end teardown's snapshot (`snapshot_teardown_children`)
 reads only `_queue` and `_agents`, and once the batch's cancels land its store
 sweep cannot name the rows either. The snapshot puts this parent's batched ids
