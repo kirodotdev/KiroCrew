@@ -205,13 +205,22 @@ async def api_appearances_list(request: web.Request) -> web.Response:
 
 
 async def api_appearance_detail(request: web.Request) -> web.Response:
-    """GET /api/appearances/{id} — one pack with its art inlined."""
+    """GET /api/appearances/{id} — one pack with its art inlined.
+
+    ``?meta=1`` answers without any file's bytes: each slot's format, the sprite
+    geometry and the cue presence. That is what a crew avatar reads to choose a
+    player; the svg and sprite tiers then draw from the slot route, so they never
+    download art they would throw away.
+    """
     denied = await _require_owner(request, "appearances.detail")
     if denied is not None:
         return denied
+    include_content = request.query.get("meta") != "1"
     try:
         store = await asyncio.to_thread(get_appearance_store)
-        detail = await asyncio.to_thread(store.pack_detail, request.match_info["id"])
+        detail = await asyncio.to_thread(
+            store.pack_detail, request.match_info["id"], include_content=include_content
+        )
     except OSError:
         return _library_unavailable()
     if detail is None:

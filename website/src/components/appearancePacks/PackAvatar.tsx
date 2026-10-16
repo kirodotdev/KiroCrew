@@ -79,7 +79,17 @@ export default function PackAvatar({ id, state, size, className = '', onError, f
   // One read per pack per session, shared across every avatar wearing it, retried
   // once, and re-read for every mounted subscriber when the Library invalidates
   // the key. React Query owns all of that; this component only asks.
-  const { data: detail, isError: readFailed } = usePackDetail(id)
+  //
+  // The META read names each slot's format and carries no bytes, which is all an
+  // svg or sprite slot needs: both draw from the per-slot route. A Lottie document
+  // is parsed in the page, so a pack with ANY Lottie slot also reads the whole
+  // pack and draws from that. Per pack rather than per resolved slot, so a mixed
+  // pack does not flash the pending box the first time a state reaches its clip.
+  const { data: meta, isError: metaFailed } = usePackDetail(id)
+  const lottie = !!meta && Object.values(meta.animations).some((art) => art.format === 'lottie')
+  const { data: whole, isError: wholeFailed } = usePackDetail(lottie ? id : null, { content: true })
+  const detail = lottie ? whole : meta
+  const readFailed = metaFailed || (lottie && wholeFailed)
   /** The RENDERER could not draw the art it was handed (broken image, malformed
    *  clip, sheet without the row). Distinct from the read failing. Recorded
    *  AGAINST the art it refused — the id and the detail object — so a different

@@ -121,6 +121,21 @@ describe('packDetailFrom', () => {
     expect(detail.animations.idle.format).toBe('svg')
   })
 
+  it('keeps every slot of a meta answer on its format alone, with no bytes', () => {
+    // `?meta=1` sends no content and lists only the slots whose art loads, so a
+    // Lottie entry without content is a slot here, where a full read drops it.
+    const detail = packDetailFrom(
+      { animations: { idle: { format: 'lottie' }, working: { format: 'sprite' }, done: { format: 'webp' }, error: 'x' } },
+      { meta: true },
+    )
+    expect(detail.animations).toEqual({
+      idle: { content: '', format: 'lottie' },
+      working: { content: '', format: 'sprite' },
+      done: { content: '', format: 'svg' },
+    })
+    expect(resolveSlot(detail, 'working')).toBe('working')
+  })
+
   it('keeps the bytes only for the player that parses them here', () => {
     // The detail route inlines every file. A lottie document is parsed in the
     // page, so its bytes stay; an svg is drawn by an <img> on the slot route and

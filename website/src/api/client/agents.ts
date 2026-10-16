@@ -496,23 +496,20 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
     appearances: {
       list: () => fetch('/api/appearances').then(j) as Promise<{ packs?: unknown }>,
       /**
-       * The whole pack, inlined. Read it through `hooks/usePackDetail` (a React
-       * Query entry, `staleTime: Infinity`) rather than directly: this route
-       * carries every file in the pack, so one read per pack per session is the
-       * budget, and a grid or roster calling it per avatar would load N whole packs
-       * to draw N frames. The crew avatar pays that one read per WORN pack to learn
-       * each slot's format (the per-slot route cannot say it before the request);
-       * `packDetailFrom` then keeps the bytes only for a Lottie slot, so the cache
-       * never pins an svg or a base64 sheet no renderer reads from here. The three
-       * shipped sample bundles are 1-4 KB; a content-free detail variant is the
-       * follow-up if real packs prove otherwise.
+       * One pack. Read it through `hooks/usePackDetail` (a React Query entry,
+       * `staleTime: Infinity`) rather than directly, so a grid or roster shares one
+       * read per pack per session however many avatars wear it.
        *
        * A renderer needs it because the FORMAT lives per slot — the player has to
        * be chosen before any bytes are requested, which the per-slot route
-       * (`packSlotUrl`) cannot answer.
+       * (`packSlotUrl`) cannot answer. `meta: true` (`?meta=1`) answers exactly
+       * that, without any file's bytes: each slot's format, the sprite geometry
+       * and the cue presence. Without it the route inlines every file in the pack,
+       * which only a Lottie slot reads — its document is parsed in the page.
        */
-      detail: (id: string) =>
-        fetch('/api/appearances/' + encodeURIComponent(id)).then(j) as Promise<unknown>,
+      detail: (id: string, opts?: { meta?: boolean }) =>
+        fetch('/api/appearances/' + encodeURIComponent(id) + (opts?.meta ? '?meta=1' : ''))
+          .then(j) as Promise<unknown>,
       /** Install an exported pack. The JSON envelope, not multipart: the bundle is
        *  already parsed client-side to reject an obviously wrong pick, so posting
        *  it back as a file would only re-serialize what we hold. */

@@ -251,6 +251,37 @@ class TestListAndDetail:
         assert body["animations"]["idle"]["content"] == "<svg id='idle.svg'/>"
 
     @pytest.mark.asyncio
+    async def test_a_meta_read_is_the_detail_without_any_bytes(self):
+        """``?meta=1`` tells a client each slot's format without the pack body.
+
+        Everything else in the answer is unchanged. An empty file is left out,
+        because a client drops a slot with empty content from the full answer.
+        """
+        states = {"idle": "idle.png", "working": "working.json", "done": "done.svg"}
+        pack = _seed_pack(shared.library_dir(), "aurora", states={**states, "error": "error.svg"})
+        (pack / "error.svg").write_text("", "utf-8")
+        (pack / "sheet.png").write_text(_b64(_PNG), "utf-8")
+        manifest = json.loads((pack / "manifest.json").read_text("utf-8"))
+        manifest["sprite"] = {"frameWidth": 16, "frameHeight": 16, "fps": 4, "source": "sheet.png"}
+        (pack / "manifest.json").write_text(json.dumps(manifest), "utf-8")
+        async with TestClient(TestServer(_app())) as client:
+            full = await (await client.get("/api/appearances/aurora")).json()
+            resp = await client.get("/api/appearances/aurora?meta=1")
+            assert resp.status == 200
+            meta = await resp.json()
+        assert meta["animations"] == {
+            "idle": {"format": "sprite"},
+            "working": {"format": "lottie"},
+            "done": {"format": "svg"},
+        }
+        assert full["animations"]["error"]["content"] == ""
+        assert "sourceImage" in full and "sourceImage" not in meta
+        assert meta["sprite"] == full["sprite"] == manifest["sprite"]
+        for key in full.keys() - {"animations", "sourceImage"}:
+            assert meta[key] == full[key], key
+        assert "<svg" not in json.dumps(meta) and _b64(_PNG) not in json.dumps(meta)
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("ident", ["gone", "dots.are.out", "x" * 70])
     async def test_a_miss_or_a_bad_id_is_the_same_404(self, ident):
         """Telling the two apart would hand a caller probing for traversal a
@@ -966,6 +997,7 @@ class TestOwnerGate:
         [
             ("get", "/api/appearances"),
             ("get", "/api/appearances/aurora"),
+            ("get", "/api/appearances/aurora?meta=1"),
             ("get", "/api/appearances/aurora/slot/idle"),
             ("get", "/api/appearances/aurora/sound/done"),
             ("post", "/api/appearances/import"),

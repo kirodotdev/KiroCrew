@@ -17,7 +17,8 @@ import type { AnimationFormat } from './types'
  *  slot route and a `sprite` sheet by a canvas from the same route (base64 text
  *  is not an image), so for those two `content` is `''`: the detail route
  *  inlines every file, and keeping bytes no renderer reads would pin a whole
- *  base64 sheet in the query cache for the session. */
+ *  base64 sheet in the query cache for the session. A meta read carries no
+ *  bytes, so every slot in it is `''`, a Lottie one too. */
 export interface PackSlotArt {
   content: string
   format: AnimationFormat
@@ -150,8 +151,12 @@ export function spriteRowFor(detail: PackDetail, slot: string): number {
  * missing pack already shows. A slot whose entry is malformed is DROPPED rather
  * than defaulted, so the fallback chain steps past it instead of handing a
  * player bytes it cannot read.
+ *
+ * `meta` reads the `?meta=1` answer, which carries no bytes at all: every slot
+ * keeps `content: ''`, a Lottie one included, and a slot is kept on its entry
+ * alone, because the server lists only the slots whose art loads.
  */
-export function packDetailFrom(payload: unknown): PackDetail {
+export function packDetailFrom(payload: unknown, { meta = false }: { meta?: boolean } = {}): PackDetail {
   const empty: PackDetail = { animations: {} }
   if (!payload || typeof payload !== 'object') return empty
   const p = payload as Record<string, unknown>
@@ -161,7 +166,8 @@ export function packDetailFrom(payload: unknown): PackDetail {
     for (const [slot, entry] of Object.entries(raw as Record<string, unknown>)) {
       if (!entry || typeof entry !== 'object') continue
       const e = entry as Record<string, unknown>
-      if (typeof e.content !== 'string' || !e.content) continue
+      const bytes = !meta && typeof e.content === 'string' ? e.content : ''
+      if (!meta && !bytes) continue
       const format = e.format
       // An unknown format is read as `svg`, the forgiving direction and the one
       // the listing already takes: the slot route serves it as an image, and an
@@ -172,7 +178,7 @@ export function packDetailFrom(payload: unknown): PackDetail {
         // The bytes stay only for the player that parses them here (see
         // PackSlotArt). The emptiness check above still ran on the served
         // value, so a slot with no art is dropped rather than kept blank.
-        content: kept === 'lottie' ? e.content : '',
+        content: kept === 'lottie' ? bytes : '',
         format: kept,
       }
     }

@@ -16,6 +16,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import PackAvatar from '../components/appearancePacks/PackAvatar'
 import { useInvalidatePackDetail } from '../hooks/usePackDetail'
+import { namedCeiling } from './namedCeiling'
+
+/** A Lottie pack's art sits behind a chained query: the whole-pack read starts
+ *  only once the meta read says the pack has a Lottie slot. */
+const metaThenWholeRead = () => namedCeiling('META_THEN_WHOLE_READ', 5000)
 
 /** One client per test, so a cached pack never leaks between cases. The retry
  *  delay is shortened so the retry cases run in real time. */
@@ -217,14 +222,15 @@ describe('PackAvatar pack reads', () => {
     // wearing it. The row must pick up the new art without remounting.
     detail
       .mockResolvedValueOnce({ animations: { idle: { content: '<svg/>', format: 'svg' } } })
-      .mockResolvedValueOnce({ animations: { idle: { content: '{"v":1}', format: 'lottie' } } })
+      .mockResolvedValue({ animations: { idle: { content: '{"v":1}', format: 'lottie' } } })
     render(<PackAvatar id="aurora" state="idle" size={40} />)
     await screen.findByTestId('pack-avatar-svg')
 
     await invalidate('aurora')
 
-    await screen.findByTestId('pack-avatar-lottie')
-    expect(detail).toHaveBeenCalledTimes(2)
+    await screen.findByTestId('pack-avatar-lottie', undefined, metaThenWholeRead())
+    // The meta read, its re-read, and the whole-pack read a Lottie slot draws from.
+    expect(detail).toHaveBeenCalledTimes(3)
   })
 })
 
@@ -269,11 +275,15 @@ describe('PackAvatar failure reporting', () => {
   it('gives a re-imported pack a fresh chance after its previous art was refused', async () => {
     // The renderer refused the OLD art. The Library re-imports the pack under the
     // same id and invalidates; the new art must be tried, not inherit the verdict.
+    // A Lottie pack is read twice — its meta, then the whole pack — so the old art
+    // answers both reads.
+    const old = { animations: { idle: { content: 'nope', format: 'lottie' } } }
     detail
-      .mockResolvedValueOnce({ animations: { idle: { content: 'nope', format: 'lottie' } } })
-      .mockResolvedValueOnce({ animations: { idle: { content: '<svg/>', format: 'svg' } } })
+      .mockResolvedValueOnce(old)
+      .mockResolvedValueOnce(old)
+      .mockResolvedValue({ animations: { idle: { content: '<svg/>', format: 'svg' } } })
     render(<PackAvatar id="aurora" state="idle" size={40} fallback={<i data-testid="fallback" />} />)
-    await screen.findByTestId('lottie-stub')
+    await screen.findByTestId('lottie-stub', undefined, metaThenWholeRead())
     act(() => screen.getByTestId('lottie-stub').click())
     await screen.findByTestId('fallback')
 
@@ -452,11 +462,14 @@ describe('PackAvatar animation is bounded by visibility', () => {
     // span. Observing only the first mount left `visible` frozen at whatever it
     // last said — a recovered avatar playing off screen, or still on it.
     useManualObserver()
+    // The meta read and the whole-pack read both answer the refused art first.
+    const refused = { animations: { working: { content: 'nope', format: 'lottie' } } }
     detail
-      .mockResolvedValueOnce({ animations: { working: { content: 'nope', format: 'lottie' } } })
-      .mockResolvedValueOnce({ animations: { working: { content: '{"v":1}', format: 'lottie' } } })
+      .mockResolvedValueOnce(refused)
+      .mockResolvedValueOnce(refused)
+      .mockResolvedValue({ animations: { working: { content: '{"v":1}', format: 'lottie' } } })
     render(<PackAvatar id="aurora" state="working" size={40} fallback={<i data-testid="fallback" />} />)
-    await screen.findByTestId('lottie-stub')
+    await screen.findByTestId('lottie-stub', undefined, metaThenWholeRead())
     const first = ManualObserver.instances.at(-1)!
     first.fire(true)
     await waitFor(() =>
@@ -469,7 +482,7 @@ describe('PackAvatar animation is bounded by visibility', () => {
 
     // Recovery mounts a fresh box, which must get a fresh observer.
     await invalidate('aurora')
-    const box = await screen.findByTestId('pack-avatar-lottie')
+    const box = await screen.findByTestId('pack-avatar-lottie', undefined, metaThenWholeRead())
     const second = ManualObserver.instances.at(-1)!
     expect(second).not.toBe(first)
     second.fire(false)
