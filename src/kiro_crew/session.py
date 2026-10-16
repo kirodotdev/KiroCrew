@@ -599,7 +599,7 @@ class SessionManager:
     get_or_create = _claims.get_or_create
     ending_key = _claims.ending_key
     allocation_requested_model = _claims.allocation_requested_model
-    retire_effort_override = _claims.retire_effort_override
+    record_effort_override = _claims.record_effort_override
     record_success = _claims.record_success
     record_failure = _claims.record_failure
     reserve_inbound_callback = _claims.reserve_inbound_callback

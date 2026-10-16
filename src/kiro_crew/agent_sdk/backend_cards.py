@@ -485,6 +485,14 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "whether a settings file is re-seeded on a model switch. Invisible when "
         "right, a stale model when wrong"
     ),
+    "ACP_BACKENDS_EFFORT_OVERLAY": (
+        "which channel carries a reasoning-effort level to the engine at spawn -- the "
+        "workspace cli.json overlay for this set, a config option or a slash command "
+        "for the rest. The card's effort line already says whether effort can be "
+        "changed, and every channel applies the level the user chose. A wrong "
+        "membership is a defect: the level is written where the engine never reads "
+        "it, or a session is started at a level another session left in that file"
+    ),
     "ACP_BACKENDS_TOOL_SEARCH_OVERLAY": (
         "which channel carries the Tool Search setting to the engine -- the "
         "workspace cli.json overlay for this set, the initialize handshake for "
