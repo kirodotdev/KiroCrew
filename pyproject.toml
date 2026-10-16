@@ -31,7 +31,10 @@ dev = [
     "pytest==9.0.3",
     "pytest-xdist==3.5.0",
     "pytest-timeout==2.2.0",
-    "pytest-asyncio==0.20.3",
+    # 0.21.2: the first release whose async-fixture wrapper runs under
+    # pytest >= 8.2 (0.20.3 reads the removed FixtureDef.unittest). Later lines
+    # rework event-loop scoping, which the conftest floor has not migrated to.
+    "pytest-asyncio==0.21.2",
     "hypothesis==6.98.10",
     "coverage==7.10.6",
     "pytest-cov>=5",

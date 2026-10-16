@@ -1,8 +1,7 @@
 """Tests for chat message pin API endpoints.
 
-Uses ``async with _client()`` inside each test rather than an async-gen fixture:
-the CI-pinned ``pytest-asyncio==0.20.3`` is incompatible with the pinned
-``pytest==8.4.1`` for async fixtures (see test_denied_commands_api.py docstring).
+Uses ``async with _client()`` inside each test rather than an async-gen fixture,
+following the suite's convention for teardown that must await on the test's own loop.
 """
 
 from __future__ import annotations

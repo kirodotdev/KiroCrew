@@ -59,9 +59,8 @@ def svc(tmp_path, event_loop):
     the test body is skipped by any failing assertion before it, leaking a
     pending task (and the global) past the test -- so the stop lives here,
     where pytest runs it on failure too, and the cancelled reconciler is
-    drained on the test's still-open event loop. A SYNC fixture on purpose:
-    the pinned pytest-asyncio (0.20.3) cannot run async-generator fixtures
-    under pytest 9 (``FixtureDef.unittest`` was removed), so the drain goes
+    drained on the test's still-open event loop. A SYNC fixture on purpose,
+    following the suite's convention for teardown that must await on the test's own loop: the drain goes
     through the ``event_loop`` fixture, which outlives this one by fixture
     ordering. ``stop()`` is idempotent, so the lifecycle test that exercises
     it explicitly stays valid.

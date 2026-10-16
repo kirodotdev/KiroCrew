@@ -70,9 +70,8 @@ async def _drain_background(mgr: SessionManager) -> None:
 async def _managed(cfg: KiroCrewConfig, provider_factory: Any):
     """Manager whose teardown always runs, even on a failed assert.
 
-    An async CONTEXT MANAGER rather than an async fixture: the CI-pinned
-    ``pytest-asyncio==0.20.3`` is incompatible with pytest 8 for async
-    fixtures, so the suite avoids the decorator by convention.
+    An async CONTEXT MANAGER rather than an async fixture: the suite's convention for teardown that must await on the test's own loop
+    (testing-conventions.md, "Async tests").
     """
     mgr = SessionManager(cfg, provider_factory=provider_factory)
     try:

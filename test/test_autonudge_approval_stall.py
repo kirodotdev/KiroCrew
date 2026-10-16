@@ -30,10 +30,8 @@ def _no_published_service_outlives_the_test():
     test could promise that. ``store_dir`` owns that guarantee by giving the
     store a directory no individual test deletes.
 
-    Deliberately a SYNC fixture: this suite pins pytest-asyncio 0.20.3, whose
-    async-fixture wrapper reads a ``fixturedef`` attribute pytest 8.1 removed, so
-    an async-generator fixture errors at setup on CI. The repo avoids the
-    decorator by convention. The unpublish is in a ``finally`` because ``stop()``
+    Deliberately a SYNC fixture, following the suite's convention for teardown that must await on the test's own loop.
+    The unpublish is in a ``finally`` because ``stop()``
     cancels timer tasks first: if that raises against a loop already torn down,
     the singleton must still be cleared, or one failing teardown poisons every
     later test in the worker.

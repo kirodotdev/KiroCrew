@@ -215,10 +215,8 @@ def fixtures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _seed_template: Pa
 async def signed_client(server_mod) -> AsyncIterator[SignedClient]:
     """A signed test client for a backend module.
 
-    An `async with` helper rather than an `@pytest_asyncio.fixture`: the pinned
-    pytest-asyncio (0.20.3) cannot drive async fixtures under the pinned pytest
-    (8.4.1) — its wrapper reads `fixturedef.unittest`, removed in pytest 8.1 —
-    so the suite avoids async fixtures by convention.
+    An `async with` helper rather than an `@pytest_asyncio.fixture`, following
+    the suite's convention for teardown that must await on the test's own loop.
     """
     app = server_mod.create_app()
     async with TestClient(TestServer(app)) as c:

@@ -1338,7 +1338,7 @@ class TestTheWorkingDirectoryIsRestored:
 class TestTheTestLoopIsRetiredBeforeThePinsLift:
     """What a test's loop leaves behind must finish while ``KIROCREW_HOME`` is pinned.
 
-    pytest-asyncio 0.20 ends the loop with a bare ``loop.close()``: a still-pending
+    pytest-asyncio 0.21 ends the loop with a bare ``loop.close()``: a still-pending
     task's coroutine then runs its ``finally`` blocks at garbage collection, and a
     default-executor job (``asyncio.to_thread``) is abandoned mid-flight. Either one
     reaching ``config_dir()`` after the unpin resolves the OPERATOR's data home -- a fresh

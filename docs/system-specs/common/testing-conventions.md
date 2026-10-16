@@ -2071,7 +2071,7 @@ run, and each named a class the floor did not yet close.
   names when it happens to run (`TestInboundReplayResolvesItsSpoolWhenScheduled` pins
   it). When you add a detached task, resolve every environment-derived input where the
   task is scheduled, or give the tests a handle to await.
-- **What a closed loop leaves behind runs after the pins are gone.** pytest-asyncio 0.20
+- **What a closed loop leaves behind runs after the pins are gone.** pytest-asyncio 0.21
   ends a test's loop with a bare `loop.close()`. Two things survive that: a task the
   code under test detached and the test never awaited — destroyed with the loop, its
   coroutine gets `GeneratorExit` at garbage collection, so its `finally` blocks run
@@ -3266,7 +3266,7 @@ went red, or the fix lands in the wrong file and the leak stays.
   `ContextBuilder`s request the conftest's opt-in `close_skills_loaders` from a one-line
   module autouse fixture, and managers get `manager.close()` before `sessions.close_all()`.
   The one descriptor the probe still sees
-  is pytest-asyncio 0.20.3's replacement loop: +3, one at a time, reclaimed at the next
+  is pytest-asyncio 0.21.2's replacement loop: +3, one at a time, reclaimed at the next
   test's setup -- a float, not a leak, and never the thing to chase.
 - **A cancelled inline reap is a backend nobody owns.** `mcp_gateway/daemon/connection.py`'s stub
   disconnect teardown awaited `orphan.shutdown()` inline; daemon teardown cancels those

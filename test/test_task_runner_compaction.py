@@ -60,10 +60,9 @@ async def _drain_background(mgr: SessionManager) -> None:
 async def _managed(cfg, provider_factory):
     """Manager whose teardown always runs, even on a failed assert.
 
-    An async CONTEXT MANAGER rather than an ``@pytest_asyncio.fixture``: the
-    CI-pinned ``pytest-asyncio==0.20.3`` is incompatible with pytest 8 for
-    async fixtures, so the suite avoids the decorator by convention (see
-    test_trusted_apps_api.py's module docstring).
+    An async CONTEXT MANAGER rather than an ``@pytest_asyncio.fixture``,
+    following the suite's convention for teardown that must await on the test's own loop
+    (see test_trusted_apps_api.py's module docstring).
     """
     mgr = SessionManager(cfg, provider_factory=provider_factory)
     try:

@@ -56,10 +56,8 @@ async def _live_runtime(tmp_path):
     """Start the runtime inside the test's own loop, stop it on exit.
 
     An async CONTEXT MANAGER rather than an ``@pytest_asyncio.fixture``: the
-    suite pins pytest-asyncio 0.20.3, whose async-fixture wrapper reads the
-    ``fixturedef.unittest`` attribute pytest 8.1 removed — on CI every
-    async-generator fixture errors at setup. The repo avoids the decorator by
-    convention (see test_denied_commands_api.py's module docstring).
+    suite's convention for teardown that must await on the test's own loop
+    (see test_denied_commands_api.py's module docstring).
     """
     await hooks.on_startup(_Ctx(tmp_path))
     try:

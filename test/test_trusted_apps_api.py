@@ -8,9 +8,7 @@ third-party app denied.
 
 The aiohttp handlers are exercised through an in-test ``TestClient`` opened with
 ``async with`` (matching ``test_denied_commands_api.py``) rather than an
-async-gen fixture: the CI-pinned ``pytest-asyncio==0.20.3`` is incompatible with
-the pinned ``pytest==8.4.1`` for async fixtures, so the whole suite avoids
-``@pytest_asyncio.fixture`` by convention.
+async-gen fixture, following the suite's convention for teardown that must await on the test's own loop.
 """
 
 from __future__ import annotations

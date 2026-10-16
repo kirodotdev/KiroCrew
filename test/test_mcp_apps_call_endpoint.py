@@ -922,10 +922,8 @@ def relay_env(short_sock_dir, monkeypatch):
     gateway socket redirected at a tmp path via the config override hook.
 
     Returns ``(make_client, sock)``; open the client with ``async with``
-    inside each test — an async-gen fixture breaks under the repo's pinned
-    pytest-asyncio (its wrapper reads ``fixturedef.unittest``, removed in
-    pytest 8.1), so the suite avoids ``@pytest_asyncio.fixture`` by
-    convention (see test_denied_commands_api.py).
+    inside each test, following the suite's convention for teardown that must await on the test's own loop
+    (see test_denied_commands_api.py).
 
     Uses ``short_sock_dir`` rather than ``tmp_path``: an AF_UNIX path is capped
     at ~104 bytes by ``sockaddr_un.sun_path``, and pytest's ``tmp_path`` under

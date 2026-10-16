@@ -109,7 +109,7 @@ Six shapes escape the env var:
   resolves `spool_path()` on the loop and hands it to the task, so the worker reads a
   location fixed at boot. Resolve every environment-derived input of a detached task on
   the calling side before detaching, or give the test a handle it can await.
-- **What a closed loop leaves behind.** pytest-asyncio 0.20 ends the loop with a bare
+- **What a closed loop leaves behind.** pytest-asyncio 0.21 ends the loop with a bare
   `loop.close()`. A pending task's coroutine then gets `GeneratorExit` at garbage
   collection, so its `finally` blocks run *then* (`_run_chat`'s queue cycle reaches a
   sync `KiroCrewConfig.load()`); a default-executor job (`to_thread`) is abandoned

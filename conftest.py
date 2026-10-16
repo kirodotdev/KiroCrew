@@ -484,7 +484,7 @@ def _put_the_tree_under_test_first_on_child_paths() -> None:
 class _AsyncFixtureScanGate:
     """Run pytest-asyncio's fixture scan only when a fixture was registered since.
 
-    pytest-asyncio 0.20.3 hooks ``pytest_pycollect_makeitem`` and, for EVERY test
+    pytest-asyncio 0.21.2 hooks ``pytest_pycollect_makeitem`` and, for EVERY test
     function name it sees, walks EVERY fixture definition the session has registered
     so far to wrap the async ones (``_preprocess_async_fixtures``). Fixtures already
     wrapped are skipped by a set lookup, but the ~1,400 synchronous ones are
@@ -1968,7 +1968,7 @@ _EXECUTOR_JOIN_SECS = 10.0
 def _join_test_loop_executor(item) -> None:
     """Retire the test loop's leftovers before this test's pins lift.
 
-    Two things outlive a test on its own event loop, and pytest-asyncio 0.20 ends the
+    Two things outlive a test on its own event loop, and pytest-asyncio 0.21 ends the
     loop with a bare ``loop.close()`` that waits for neither:
 
     * **Pending tasks.** A task the code under test detached and the test never awaited

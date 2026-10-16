@@ -353,8 +353,7 @@ async def _managed(cfg: KiroCrewConfig, provider_factory: Any):
     """Manager whose teardown always runs, even on a failed assert.
 
     An async CONTEXT MANAGER rather than an async fixture, matching
-    ``test_auto_compact_gate``: the CI-pinned ``pytest-asyncio==0.20.3`` is
-    incompatible with pytest 8 for async fixtures.
+    ``test_auto_compact_gate``.
     """
     mgr = SessionManager(cfg, provider_factory=provider_factory)
     try:
