@@ -1051,6 +1051,37 @@ class TestRuntimeProjectedLaunchDocuments:
         assert handle.native_context_documents == {str(guide): ""}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("session_kind", ["create", "resume"])
+    async def test_a_launch_record_holding_the_persona_gets_no_second_record(
+        self, tmp_path, monkeypatch, session_kind
+    ) -> None:
+        """Both session starts copy the launch record BEFORE the persona recorder
+        runs, so a member launch whose record already holds the persona's text is
+        not given a second record of it under the prompt key."""
+        from kiro_crew.member_essential_context import native_prompt_document_key
+
+        persona = "MEMBER-PERSONA"
+        plan_record = {"file://member-persona.md": persona}
+        runtime, _calls = await self._drive(
+            monkeypatch, tmp_path, inherits=False, member_plan=plan_record
+        )
+        runtime._spawn_persona_snapshot = (runtime._agent, persona)
+        monkeypatch.setattr(runtime, "_verify_spawn_agent_active", AsyncMock())
+        monkeypatch.setattr(runtime, "_activates_agent_by_mode", lambda: False)
+        monkeypatch.setattr(runtime, "_snapshot_descendants", AsyncMock())
+
+        if session_kind == "create":
+            handle = await runtime._finish_create_session(
+                "created-session", {"models": []}, **self._create_session_kwargs(runtime)
+            )
+        else:
+            self._patch_load_session(monkeypatch, runtime, "kirocrew")
+            handle = await runtime.load_session("", "resumed-session")
+
+        assert handle.native_context_documents == plan_record
+        assert native_prompt_document_key(runtime._agent) not in handle.native_context_documents
+
+    @pytest.mark.asyncio
     async def test_provider_rechecks_declared_files_on_each_launch_record_read(
         self, tmp_path, monkeypatch
     ) -> None:
@@ -1140,11 +1171,11 @@ class TestRuntimeProjectedLaunchDocuments:
         sent_alias = recorded_alias if sent == "recorded" else fresh_alias
         after_alias = fresh_alias if sent == "recorded" else recorded_alias
 
-        async def activate_mode_bracketed(*_args, **_kwargs) -> str:
+        async def activate_mode_bracketed(*_args, **_kwargs) -> tuple[str, None]:
             runtime._native_skill_projection = skill_projection.NativeSkillProjection(
                 {runtime._agent: after_alias}
             )
-            return sent_alias
+            return sent_alias, None
 
         monkeypatch.setattr(runtime, "_verify_spawn_agent_active", AsyncMock())
         monkeypatch.setattr(runtime, "_activates_agent_by_mode", lambda: True)

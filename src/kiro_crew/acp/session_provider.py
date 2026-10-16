@@ -56,13 +56,16 @@ from kiro_crew.acp.types import (
 from kiro_crew.acp.types import (
     ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_MEMBER_TOOL_LIMITS,
+    ACP_BACKENDS_NATIVE_SPEC_PROMPT_ACROSS_COMPACTION,
     ACP_BACKENDS_SESSION_EVICTION,
     STOP_REASON_END_TURN,
+    spec_prompt_retention_verified,
 )
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.mcp_gateway.claim import schedule_claim
+from kiro_crew.mcp_hot_reload import parse_kiro_cli_version
 from kiro_crew.providers.base import CancelOutcome, LLMEvent, LLMProvider
 from kiro_crew.recovery.ladder import InfraError
 from kiro_crew.runtime_ownership import (
@@ -587,6 +590,14 @@ class AcpSessionProvider(LLMProvider):
         from kiro_crew.acp.types import ACP_BACKEND_KAS
 
         return self.backend == ACP_BACKEND_KAS
+
+    @property
+    def native_spec_prompt_across_compaction(self) -> bool:
+        # Membership first, then the release floor the transcript sets: below
+        # it, and before the handshake reports a version, the block is sent.
+        return self.backend in ACP_BACKENDS_NATIVE_SPEC_PROMPT_ACROSS_COMPACTION and (
+            spec_prompt_retention_verified(parse_kiro_cli_version(self.agent_version))
+        )
 
     def prompt_timeout_for_deadline(self, deadline: float) -> float:
         """Resolve the immutable transport budget this ACP session supports."""

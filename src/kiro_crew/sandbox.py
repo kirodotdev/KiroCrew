@@ -309,6 +309,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         namespace_argv,
         namespace_launcher_script_dir,
         sandbox_exec_argv,
+        sandbox_may_hide_path,
     )
     from kiro_crew.sandbox_cgroup import (  # noqa: F401
         _CGROUP_AGENTS_SLICE,

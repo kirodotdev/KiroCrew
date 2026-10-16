@@ -4433,7 +4433,7 @@ async def test_set_mode_sends_the_fresh_alias_never_a_changed_spawn_one(
         assert sent == [] and terminated == ["sid"]
         assert stub._native_skill_projection is spawn
         return
-    activated_alias = await activate(
+    activated_alias, _persona = await activate(
         "sid", "crew", budget=5.0, payload_snapshot=None, wire_registered=False
     )
 

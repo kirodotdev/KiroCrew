@@ -135,7 +135,8 @@ async def _with_reader(rt: AcpRuntime, coro):
 
 
 async def _activate(rt: AcpRuntime, projection: NativeSkillProjection | None) -> str | None:
-    """Run the real bracket with the re-preparation returning *projection*."""
+    """Run the real bracket with the re-preparation returning *projection*; returns
+    the alias it sent."""
     rt.terminate_session = AsyncMock()  # type: ignore[method-assign]
     with (
         patch(
@@ -144,9 +145,10 @@ async def _activate(rt: AcpRuntime, projection: NativeSkillProjection | None) ->
         ),
         patch("kiro_crew.agent.require_unchanged_derived_spec", return_value=None),
     ):
-        return await rt._activate_mode_bracketed(
+        alias, _persona = await rt._activate_mode_bracketed(
             "s1", "ops", budget=5.0, payload_snapshot=None, wire_registered=True
         )
+    return alias
 
 
 def _attempts() -> int:
