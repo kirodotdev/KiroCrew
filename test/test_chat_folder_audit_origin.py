@@ -220,7 +220,7 @@ class TestKnownCallerRatchet:
         ``kirocrew-crew-log`` joined it with the read-only crew-log server: its
         routes validate the header through the same ``request_origin`` and refuse a
         request naming anything else, and its own audit assertions live in
-        ``test_crew_log_routes.py``.
+        ``test_crew_log_routes_unit_door_audit.py``.
 
         ``kirocrew-debug`` joins it on the same terms. ``dashboard/handlers/debug.py``
         validates the header through the same ``request_origin``, refuses a request

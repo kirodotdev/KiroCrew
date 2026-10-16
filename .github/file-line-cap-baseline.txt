@@ -175,7 +175,6 @@
 2317 test/test_acp_client_more_coverage.py
 3482 test/test_acp_deepseek_backend.py
 2852 test/test_acp_pi_backend.py
-4284 test/test_acp_seed_provenance.py
 2909 test/test_acp_session_mcp.py
 2780 test/test_admission_gate.py
 9493 test/test_agent.py
@@ -233,7 +232,6 @@
 6406 test/test_crew_log_emit.py
 2202 test/test_crew_log_fold_eager.py
 3011 test/test_crew_log_projection.py
-4247 test/test_crew_log_routes.py
 2195 test/test_crew_turn_proxy.py
 5105 test/test_cron_reaper.py
 3125 test/test_cron_script.py
@@ -306,7 +304,6 @@
 2629 test/test_member_dashboard_package_route.py
 3249 test/test_member_essential_context.py
 2044 test/test_member_session_control.py
-4309 test/test_members_dm_thread.py
 2705 test/test_members_eventlog_wiring.py
 2479 test/test_messaging_privacy_mode.py
 2405 test/test_monitor_controller.py

@@ -3793,7 +3793,7 @@ assertion for the host fact it depends on before reading the test for a bug.
   its branch in the failure instead of `assert 409 == 200`.
 What was flagged and read before being left alone. `slow`/`heavy_cpu` was dominated by the
 first mechanism above; the rest were the suite's own budgets (`test_2000_submissions_...`
-85-110 s under its `timeout(900)` marker, the two `test_members_dm_thread` thousand-event
+85-110 s under its `timeout(900)` marker, the two `test_members_dm_thread_activity_and_briefing` thousand-event
 reads at ~99 s). `env_leak` was again the session-scoped temp-root fixture's arm and undo
 read against a worker's first and last test. `host_write` was the bytecode mirror and the
 hypothesis database, `test_computer_use_launch.py`'s deliberate real-install-directory
