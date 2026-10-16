@@ -7,7 +7,8 @@ again whenever anything the display redaction reads has changed.
 
 from __future__ import annotations
 
-import asyncio
+import hashlib
+import hmac
 import json
 from typing import Any
 
@@ -156,6 +157,104 @@ class TestEveryOutsideInputIsInTheKey:
         assert '"expired": true' in dead and '"expired": true' not in alive
 
 
+class TestContextMovedMidRender:
+    def test_rows_rendered_while_the_context_moved_are_served_but_not_kept(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rows = _rows()
+        readings = iter([b"before" * 3, b"after!" * 3])
+        monkeypatch.setattr(wire_render, "_context_digest", lambda: next(readings))
+        fragments, identities = wire_render.prepare_message_rows(rows, False, live_child="c-1")
+        assert "[" + ", ".join(f for f in fragments if f is not None) + "]" == _expected(rows)
+        assert wire_render.render_memo_info() == (0, 0)
+        # No identity may vouch for a render whose context is not known.
+        assert identities == [None] * len(identities)
+
+    def test_a_steady_context_keeps_the_rows(self) -> None:
+        rows = _rows()
+        _, identities = wire_render.prepare_message_rows(rows, False, live_child="c-1")
+        assert wire_render.render_memo_info()[0] > 0
+        assert any(i is not None for i in identities)
+
+    def test_an_exemption_dropped_mid_read_is_not_served_from_the_memo(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Fill the memo while the tenant host is exempt, so its entries hold the
+        # tenant URL unredacted under that context's digest.
+        hosts: dict[str, frozenset[str]] = {"v": frozenset({"tenant.example.com"})}
+        monkeypatch.setattr(cu, "_exempt_exact_hosts", lambda: hosts["v"])
+        monkeypatch.setattr(exfil, "_exempt_exact_hosts", lambda: hosts["v"])
+        rows = _rows()
+        real = wire_render._context_digest
+        exempt_context = {"v": b""}
+
+        def recording() -> bytes:
+            exempt_context["v"] = real()
+            return exempt_context["v"]
+
+        monkeypatch.setattr(wire_render, "_context_digest", recording)
+        relaxed, _ = wire_render.prepare_message_rows(rows, False, live_child="c-1")
+        assert any(f and "tenant.example.com/collect?data=" in f for f in relaxed)
+        # The exemption is withdrawn after the read took its first reading, so
+        # every lookup still uses the exempt context's key.
+        hosts["v"] = frozenset()
+        readings = iter([exempt_context["v"]])
+        monkeypatch.setattr(wire_render, "_context_digest", lambda: next(readings, None) or real())
+        entries = wire_render.render_memo_info()
+        fragments, identities = wire_render.prepare_message_rows(rows, False, live_child="c-1")
+        served = "[" + ", ".join(f for f in fragments if f is not None) + "]"
+        assert served == _expected(rows)
+        assert "tenant.example.com/collect?data=" not in served
+        assert identities == [None] * len(identities)
+        assert wire_render.render_memo_info() == entries
+
+
+def _legacy_display_key(text: str, base: Any) -> tuple[Any, int]:
+    """The display key built the way it was before its suffix bytes were reused."""
+    raw = text.encode("utf-8", errors="surrogatepass")
+    hosts = "\0".join(sorted(cu._exempt_exact_hosts() | cu.current_scoped_exempt_hosts()))
+    tail = hosts.encode("utf-8", errors="surrogatepass")
+    prefixes = cu._token_param_exempt_prefixes()
+    if prefixes:
+        tail += b"\x01" + "\0".join(prefixes).encode("utf-8", errors="surrogatepass")
+    if base is None:
+        digest = hmac.new(cu._DISPLAY_REDACTION_SALT, raw + b"\0" + tail, hashlib.sha256).digest()
+    else:
+        mac = base.copy()
+        mac.update(len(raw).to_bytes(8, "big"))
+        mac.update(raw)
+        mac.update(b"\0")
+        mac.update(tail)
+        digest = mac.digest()
+    return (digest, len(raw)), len(raw)
+
+
+class TestDisplayKeyIsUnchanged:
+    """Reusing the key's suffix bytes changes no key, so stored verdicts still match."""
+
+    @pytest.mark.parametrize("persistent", [False, True])
+    def test_keys_match_the_previous_construction_as_the_sets_change(
+        self, monkeypatch: pytest.MonkeyPatch, persistent: bool
+    ) -> None:
+        base = hmac.new(b"verdict-subkey", b"rules", hashlib.sha256) if persistent else None
+        texts = ["", "plain", f"k {SECRET}", "caf\u00e9 \ud800 lone", "x" * 5000]
+        exact_sets = [frozenset(), frozenset({"tenant.example.com"}), frozenset({"b.io", "a.io"})]
+        prefix_sets: list[tuple[str, ...]] = [(), ("https://tenant.example.com/dl",)]
+        seen = set()
+        for exact in exact_sets:
+            for prefixes in prefix_sets:
+                for scoped in (frozenset(), frozenset({"a.io", "w.example"})):
+                    monkeypatch.setattr(cu, "_exempt_exact_hosts", lambda e=exact: e)
+                    monkeypatch.setattr(cu, "_token_param_exempt_prefixes", lambda p=prefixes: p)
+                    with cu.scoped_exempt_hosts(scoped):
+                        for text in texts:
+                            new = cu._display_redaction_cache_key(text, base)
+                            assert new == _legacy_display_key(text, base)
+                            seen.add(new[0][0])
+        # Every (sets, text) pair that differs in its MAC input got its own key.
+        assert len(seen) > len(texts) * len(exact_sets)
+
+
 class TestOwnerView:
     def test_owner_view_neither_reads_nor_writes_the_memo(self) -> None:
         redacted_row = [{"role": "assistant", "content": f"k {SECRET}", "ts": "a"}]
@@ -167,75 +266,6 @@ class TestOwnerView:
             assert SECRET in _actual(fresh_row)
             _actual(redacted_row)
         assert wire_render.render_memo_info()[0] == entries
-
-
-class TestPageScope:
-    SCOPE = ("session", None, False)
-
-    def test_page_uses_the_memo_only_after_its_fill(self) -> None:
-        assert wire_render.plan_read(self.SCOPE) == (False, True)
-        # A read while the fill is pending neither uses the memo nor asks again.
-        assert wire_render.plan_read(self.SCOPE) == (False, False)
-        wire_render._settle_scope(self.SCOPE, True)
-        assert wire_render.plan_read(self.SCOPE) == (True, False)
-        assert wire_render.plan_read(("session", 200, False)) == (False, True)
-
-    def test_a_fill_that_did_not_run_is_asked_for_again(self) -> None:
-        wire_render.plan_read(self.SCOPE)
-        wire_render._settle_scope(self.SCOPE, False)
-        assert wire_render.plan_read(self.SCOPE) == (False, True)
-
-    @pytest.mark.asyncio
-    async def test_schedule_fill_fills_off_the_caller(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(wire_render, "FILL_DELAY_S", 0.0)
-        rows = _rows()
-        assert wire_render.plan_read(self.SCOPE) == (False, True)
-        wire_render.schedule_fill(self.SCOPE, rows, False, live_child="c-1", workspace=None)
-        assert wire_render.render_memo_info()[0] == 0
-        await _drain_fills()
-        entries = wire_render.render_memo_info()[0]
-        assert entries > 0
-        assert wire_render.plan_read(self.SCOPE) == (True, False)
-        assert _actual(rows) == _expected(rows)
-        assert wire_render.render_memo_info()[0] == entries
-
-    @pytest.mark.asyncio
-    async def test_fill_waits_for_its_delay(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(wire_render, "FILL_DELAY_S", 3600.0)
-        wire_render.plan_read(self.SCOPE)
-        wire_render.schedule_fill(self.SCOPE, _rows(), False, live_child="c-1", workspace=None)
-        for _ in range(5):
-            await asyncio.sleep(0)
-        assert not wire_render._fills
-        assert wire_render.render_memo_info()[0] == 0
-        assert wire_render.plan_read(self.SCOPE) == (False, False)
-
-    @pytest.mark.asyncio
-    async def test_fill_over_the_limit_leaves_the_page_unfilled(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(wire_render, "FILL_DELAY_S", 0.0)
-        monkeypatch.setattr(wire_render, "_FILLS_MAX", 0)
-        wire_render.plan_read(self.SCOPE)
-        wire_render.schedule_fill(self.SCOPE, _rows(), False, live_child="c-1", workspace=None)
-        await _drain_fills()
-        assert wire_render.render_memo_info()[0] == 0
-        assert wire_render.plan_read(self.SCOPE) == (False, True)
-
-
-async def _drain_fills() -> None:
-    """Let zero-delay fills start, then wait for every one to finish.
-
-    Each pass yields to the loop: a finished task leaves ``_fills`` from its
-    done callback, which runs only once the loop gets a turn.
-    """
-    for _ in range(5):
-        await asyncio.sleep(0)
-    while wire_render._fills:
-        await asyncio.gather(*list(wire_render._fills))
-        await asyncio.sleep(0)
 
 
 class TestBounded:
@@ -275,16 +305,12 @@ def _write_transcript(tmp_path: Any, count: int) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-class TestEndpointDoesNotRehashUnchangedRows:
-    """A second read of an unchanged session digests no message string again."""
+class TestEndpointRowReuse:
+    """Only the cursor read reuses rows; a plain read renders every row as before."""
 
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("query", ["?limit=100", ""])
-    async def test_second_read_skips_the_per_string_digest(
-        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, query: str
-    ) -> None:
-        state = _make_state(tmp_path)
-        state.push_slots_update = lambda: None  # type: ignore[method-assign]
+    @staticmethod
+    def _slot(state: Any, tmp_path: Any) -> Any:
+        state.push_slots_update = lambda: None
         _write_transcript(tmp_path, 700)
         messages = state.conversation_log.read_messages_chained(CHANNEL_KEY)
         slot = channel_slots.surface_channel_session(
@@ -295,6 +321,10 @@ class TestEndpointDoesNotRehashUnchangedRows:
             session_key=CHANNEL_KEY,
         )
         assert slot is not None
+        return slot
+
+    @staticmethod
+    def _counting(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
         digests = {"n": 0}
         real = cu._display_redaction_cache_key
 
@@ -303,23 +333,66 @@ class TestEndpointDoesNotRehashUnchangedRows:
             return real(*args, **kwargs)
 
         monkeypatch.setattr(cu, "_display_redaction_cache_key", counted)
-        monkeypatch.setattr(wire_render, "FILL_DELAY_S", 0.0)
+        return digests
+
+    @pytest.mark.asyncio
+    async def test_second_cursor_read_skips_the_per_string_digest(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        state = _make_state(tmp_path)
+        self._slot(state, tmp_path)
+        digests = self._counting(monkeypatch)
         async with TestClient(TestServer(_make_app(state))) as client:
             bodies = []
             counts = []
             for _ in range(2):
                 digests["n"] = 0
-                resp = await client.get(f"/api/chat/slots/{SLOT_NAME}{query}")
+                resp = await client.get(f"/api/chat/slots/{SLOT_NAME}?limit=100&cursor=1")
                 assert resp.status == 200
                 bodies.append(await resp.json())
                 counts.append(digests["n"])
-                # The first read fills the memo in the background; wait for it.
-                await _drain_fills()
 
-        rows = len(bodies[0]["messages"])
-        assert rows == (100 if query else 700)
-        assert counts[0] >= rows
+        assert len(bodies[0]["messages"]) == 100
+        assert counts[0] >= 100
         # The title and render context are digested; no message string is.
-        assert counts[1] <= 2
+        assert counts[1] <= 4
         assert bodies[0] == bodies[1]
         assert SECRET not in json.dumps([m for m in bodies[1]["messages"] if m["role"] != "user"])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("query", ["?limit=100", ""])
+    async def test_plain_reads_never_take_the_memo(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, query: str
+    ) -> None:
+        # A plain read has no row identities to pay for, so it renders with
+        # _prepare_messages on every read and leaves the memo empty: there is
+        # no page state that could keep pointing a read at evicted rows.
+        state = _make_state(tmp_path)
+        slot = self._slot(state, tmp_path)
+        snapshots = {"n": 0}
+        real_snapshot = wire_render._snapshot
+
+        def counted_snapshot(m: dict) -> Any:
+            snapshots["n"] += 1
+            return real_snapshot(m)
+
+        monkeypatch.setattr(wire_render, "_snapshot", counted_snapshot)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            bodies = []
+            for _ in range(3):
+                resp = await client.get(f"/api/chat/slots/{SLOT_NAME}{query}")
+                assert resp.status == 200
+                bodies.append(await resp.text())
+        assert snapshots["n"] == 0
+        assert wire_render.render_memo_info() == (0, 0)
+        assert bodies[0] == bodies[1] == bodies[2]
+        rows = json.loads(bodies[0])["messages"]
+        assert len(rows) == (100 if query else 700)
+        if query:
+            # The full read renders the slot's own copy of every row rather
+            # than the stored transcript, so only the page read is compared.
+            stored = state.conversation_log.read_messages_chained(CHANNEL_KEY)
+            expected = cu._prepare_messages(
+                stored[-len(rows) :], False, live_child="", workspace=slot.workspace
+            )
+            assert rows == json.loads(json.dumps(expected))

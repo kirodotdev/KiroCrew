@@ -1,20 +1,32 @@
-"""Compare slot-detail render CPU work, not HTTP or browser opening latency.
+"""Compare slot-detail render CPU per request: the plain render against the row memo.
 
-Run with the worktree venv, PYTHONPATH=src and an isolated HOME/KIROCREW_HOME.
-The reference is the unchanged chat_utils renderer followed by json.dumps.
-The hoisted arm computes the existing string-key suffix once per render.
-All three arms use the same corpus and alternate order within each round.
+Run with the worktree venv, PYTHONPATH=src and an isolated HOME/KIROCREW_HOME:
+
+    PYTHONPATH=src .venv/bin/python test/perf/slot_render_bench.py --output out.json
+
+Arms, all on the same corpus, interleaved in a rotating order inside every round
+so host load drifts across arms alike, each timed on a warm per-string cache:
+
+* ``plain_old``  -- ``json.dumps(_prepare_messages(...))`` with the display key
+  built the way it was before the key's suffix bytes were reused (copied below).
+* ``memo_hit``   -- the row memo with every row already stored (a filled page).
+* ``memo_evict`` -- the row memo with a cap smaller than the page, so every row
+  misses (a page whose rows were evicted).
+* ``plain``      -- ``json.dumps(_prepare_messages(...))`` as the handler runs it.
+
+Each arm is measured with and without persistent display verdicts (the MAC base
+the gateway uses once ``display_verdicts`` is enabled). The figure is CPU time of
+the rendering thread, which is the time it holds the GIL; wall time is recorded
+too. Every output is checked byte for byte against ``plain_old``.
 """
 
 import argparse
-import gc
 import hashlib
 import hmac
 import json
 import os
 import statistics
 import time
-import tracemalloc
 from pathlib import Path
 from unittest.mock import patch
 
@@ -36,7 +48,31 @@ def corpus(count):
     ]
 
 
-def reference(rows):
+def legacy_key(text, base=cu._NO_BASE):
+    """The display key as built before its suffix bytes were reused."""
+    raw = text.encode("utf-8", errors="surrogatepass")
+    hosts = "\0".join(sorted(cu._exempt_exact_hosts() | cu.current_scoped_exempt_hosts())).encode(
+        "utf-8", errors="surrogatepass"
+    )
+    prefixes = cu._token_param_exempt_prefixes()
+    tail = hosts
+    if prefixes:
+        tail += b"\x01" + "\0".join(prefixes).encode("utf-8", errors="surrogatepass")
+    if base is cu._NO_BASE:
+        base = cu._display_verdicts.mac_base()
+    if base is None:
+        digest = hmac.new(cu._DISPLAY_REDACTION_SALT, raw + b"\0" + tail, hashlib.sha256).digest()
+    else:
+        mac = base.copy()
+        mac.update(len(raw).to_bytes(8, "big"))
+        mac.update(raw)
+        mac.update(b"\0")
+        mac.update(tail)
+        digest = mac.digest()
+    return (digest, len(raw)), len(raw)
+
+
+def plain(rows):
     return json.dumps(cu._prepare_messages(rows, False, live_child=""))
 
 
@@ -44,132 +80,89 @@ def memo(rows):
     return wr.prepare_messages_json(rows, False, live_child="")
 
 
-def suffix():
-    hosts = "\0".join(sorted(cu._exempt_exact_hosts() | cu.current_scoped_exempt_hosts()))
-    value = b"\0" + hosts.encode("utf-8", errors="surrogatepass")
-    prefixes = cu._token_param_exempt_prefixes()
-    if prefixes:
-        value += b"\x01" + "\0".join(prefixes).encode("utf-8", errors="surrogatepass")
-    return value
-
-
-def rss_kib():
-    for line in Path("/proc/self/status").read_text().splitlines():
-        if line.startswith("VmRSS:"):
-            return int(line.split()[1])
-    raise RuntimeError("RSS unavailable")
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--rounds", type=int, default=9)
-    parser.add_argument("--repeats", type=int, default=20)
+    parser.add_argument("--repeats", type=int, default=15)
+    parser.add_argument("--rows", type=int, nargs="+", default=[100, 3000])
     args = parser.parse_args()
-    results = {"unit": "one render plus JSON serialization, milliseconds", "cases": []}
-    original_key = cu._display_redaction_cache_key
-    current_suffix = b""
-
-    def hoisted_key(text):
-        raw = text.encode("utf-8", errors="surrogatepass")
-        digest = hmac.new(cu._DISPLAY_REDACTION_SALT, raw + current_suffix, hashlib.sha256).digest()
-        return (digest, len(raw)), len(raw)
-
-    def hoisted(rows):
-        nonlocal current_suffix
-        with cu.scoped_exempt_hosts(cu.allowed_hosts_for(None)):
-            current_suffix = suffix()
-            return json.dumps(cu._prepare_messages_scoped(rows, False, live_child=""))
-
-    for count in (100, 3000):
-        rows = corpus(count)
-        expected = reference(rows)
-        assert memo(rows) == expected
-        with patch.object(cu, "_display_redaction_cache_key", hoisted_key):
-            assert hoisted(rows) == expected
-        samples = {name: [] for name in ("reference", "hoisted", "memo")}
-        rounds = []
-        arms = {"reference": reference, "hoisted": hoisted, "memo": memo}
-        for round_id in range(args.rounds):
-            order = list(arms)
-            order = order[round_id % 3 :] + order[: round_id % 3]
-            if round_id % 2:
-                order.reverse()
-            for name in order:
-                key = hoisted_key if name == "hoisted" else original_key
-                with patch.object(cu, "_display_redaction_cache_key", key):
-                    for _ in range(3):
-                        assert arms[name](rows) == expected
-                    load_start = os.getloadavg()
-                    values = []
-                    for _ in range(args.repeats):
-                        start = time.perf_counter_ns()
-                        output = arms[name](rows)
-                        values.append((time.perf_counter_ns() - start) / 1e6)
-                        assert output == expected
-                    samples[name].extend(values)
-                    rounds.append(
-                        {
-                            "round": round_id,
-                            "arm": name,
-                            "p50": statistics.median(values),
-                            "load_start": load_start,
-                            "load_end": os.getloadavg(),
-                        }
-                    )
-        results["cases"].append(
-            {
-                "rows": count,
-                "wire_bytes": len(expected.encode()),
-                "oracle_differences": 0,
-                "summary": {
-                    name: {
-                        "n": len(v),
-                        "p50": statistics.median(v),
-                        "p95": sorted(v)[int((len(v) - 1) * 0.95)],
-                    }
-                    for name, v in samples.items()
-                },
-                "rounds": rounds,
-                "samples": samples,
-            }
-        )
-    rows = corpus(18000)
-    reference(rows)
-    wr.clear_render_memo()
-    gc.collect()
-    before_rss = rss_kib()
-    tracemalloc.start()
-    memo(rows)
-    gc.collect()
-    traced, peak = tracemalloc.get_traced_memory()
-    after_rss = rss_kib()
-    entries, charged = wr.render_memo_info()
-    wr.clear_render_memo()
-    gc.collect()
-    cleared, _ = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
-    results["memory"] = {
-        "entries": entries,
-        "charged_bytes": charged,
-        "traced_before_clear": traced,
-        "traced_after_clear": cleared,
-        "traced_released": traced - cleared,
-        "traced_peak": peak,
-        "rss_before_kib": before_rss,
-        "rss_after_kib": after_rss,
-        "rss_after_clear_kib": rss_kib(),
+    results = {"unit": "render thread CPU per request, milliseconds", "cases": []}
+    current_key = cu._display_redaction_cache_key
+    verdict_base = hmac.new(b"bench-verdict-key", b"rules-v1", hashlib.sha256)
+    arms = {
+        "plain_old": (plain, legacy_key, None),
+        "memo_hit": (memo, legacy_key, None),
+        "memo_evict": (memo, legacy_key, 4096),
+        "plain": (plain, current_key, None),
     }
+    for persist in (False, True):
+        base = verdict_base if persist else None
+        with (
+            patch.object(cu._display_verdicts, "active", lambda: (None, base)),
+            patch.object(cu._display_verdicts, "mac_base", lambda: base),
+        ):
+            for count in args.rows:
+                rows = corpus(count)
+                with patch.object(cu, "_display_redaction_cache_key", legacy_key):
+                    expected = plain(rows)
+                cpu = {name: [] for name in arms}
+                wall = {name: [] for name in arms}
+                rounds = []
+                names = list(arms)
+                for round_id in range(args.rounds):
+                    shift = round_id % len(names)
+                    order = names[shift:] + names[:shift]
+                    for name in order:
+                        fn, key, cap = arms[name]
+                        wr.clear_render_memo()
+                        with (
+                            patch.object(cu, "_display_redaction_cache_key", key),
+                            patch.object(
+                                wr, "RENDER_MEMO_MAX_BYTES", cap or wr.RENDER_MEMO_MAX_BYTES
+                            ),
+                        ):
+                            for _ in range(2):
+                                assert fn(rows) == expected
+                            load = os.getloadavg()[0]
+                            values = []
+                            for _ in range(args.repeats):
+                                c0 = time.thread_time_ns()
+                                w0 = time.perf_counter_ns()
+                                out = fn(rows)
+                                wall[name].append((time.perf_counter_ns() - w0) / 1e6)
+                                values.append((time.thread_time_ns() - c0) / 1e6)
+                                assert out == expected
+                            cpu[name].extend(values)
+                            rounds.append(
+                                {
+                                    "round": round_id,
+                                    "arm": name,
+                                    "p50": statistics.median(values),
+                                    "load": load,
+                                }
+                            )
+                results["cases"].append(
+                    {
+                        "rows": count,
+                        "persistent_verdicts": persist,
+                        "oracle_differences": 0,
+                        "cpu": {
+                            n: {
+                                "n": len(v),
+                                "p50": round(statistics.median(v), 3),
+                                "p95": round(sorted(v)[int((len(v) - 1) * 0.95)], 3),
+                            }
+                            for n, v in cpu.items()
+                        },
+                        "wall_p50": {n: round(statistics.median(v), 3) for n, v in wall.items()},
+                        "rounds": rounds,
+                    }
+                )
     args.output.write_text(json.dumps(results, indent=2) + "\n")
     print(
         json.dumps(
-            {
-                "cases": [
-                    {k: v for k, v in case.items() if k not in ("rounds", "samples")}
-                    for case in results["cases"]
-                ],
-                "memory": results["memory"],
-            },
+            [{k: v for k, v in c.items() if k != "rounds"} for c in results["cases"]],
             indent=2,
         )
     )

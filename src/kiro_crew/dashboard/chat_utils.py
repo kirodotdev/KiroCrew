@@ -2387,17 +2387,15 @@ def _display_redaction_cache_key(
     hash per lookup, so the cache stays cheaper than the battery it fronts.
     """
     raw = text.encode("utf-8", errors="surrogatepass")
-    hosts = "\0".join(sorted(_exempt_exact_hosts() | current_scoped_exempt_hosts())).encode(
-        "utf-8", errors="surrogatepass"
+    # The exempt sets are read live on every call; only the bytes built from
+    # them are reused while they compare equal.
+    tail = _display_key_tail(
+        _exempt_exact_hosts(), current_scoped_exempt_hosts(), _token_param_exempt_prefixes()
     )
-    prefixes = _token_param_exempt_prefixes()
-    tail = hosts
-    if prefixes:
-        tail += b"\x01" + "\0".join(prefixes).encode("utf-8", errors="surrogatepass")
     if base is _NO_BASE:
         base = _display_verdicts.mac_base()
     if base is None:
-        digest = hmac.new(_DISPLAY_REDACTION_SALT, raw + b"\0" + tail, hashlib.sha256).digest()
+        digest = hmac.digest(_DISPLAY_REDACTION_SALT, raw + b"\0" + tail, "sha256")
     else:
         # Persistent verdicts (display_verdicts): the same keyed MAC, under the
         # gateway's verdict subkey with the rules version already absorbed, so a
@@ -2406,12 +2404,40 @@ def _display_redaction_cache_key(
         # without it ``T + NUL + host`` under a smaller host set would hash the
         # same bytes as ``T`` under the larger one.
         mac = cast("hmac.HMAC", base).copy()
-        mac.update(len(raw).to_bytes(8, "big"))
-        mac.update(raw)
-        mac.update(b"\0")
-        mac.update(tail)
+        mac.update(len(raw).to_bytes(8, "big") + raw + b"\0" + tail)
         digest = mac.digest()
     return (digest, len(raw)), len(raw)
+
+
+# The MAC suffix for the newest exempt sets: ``(exact hosts, scoped hosts,
+# token prefixes, suffix bytes)``. Replaced as one tuple, so a reader in another
+# thread sees either the old sets with their bytes or the new ones with theirs.
+_display_key_tail_memo: tuple[frozenset[str], frozenset[str], tuple[str, ...], bytes] = (
+    frozenset(),
+    frozenset(),
+    (),
+    b"",
+)
+
+
+def _display_key_tail(
+    exact: frozenset[str], scoped: frozenset[str], prefixes: tuple[str, ...]
+) -> bytes:
+    """The bytes the exempt sets add to a display redaction key.
+
+    The sorted host union behind its NUL separators, then a non-empty prefix set
+    behind ``\\x01``. Rebuilt only when a set differs from the previous call's,
+    which is once per workspace switch rather than once per string.
+    """
+    global _display_key_tail_memo
+    memo = _display_key_tail_memo
+    if memo[0] == exact and memo[1] == scoped and memo[2] == prefixes:
+        return memo[3]
+    tail = "\0".join(sorted(exact | scoped)).encode("utf-8", errors="surrogatepass")
+    if prefixes:
+        tail += b"\x01" + "\0".join(prefixes).encode("utf-8", errors="surrogatepass")
+    _display_key_tail_memo = (exact, scoped, prefixes, tail)
+    return tail
 
 
 def _clear_display_redaction_cache() -> None:

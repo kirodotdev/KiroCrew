@@ -6,19 +6,18 @@ reader re-opens and re-fetches the same session many times (switching tabs,
 reconnecting, the refetch after every turn), and nearly every row is unchanged
 between those reads, so almost all of that work repeats.
 
-:func:`prepare_messages_json` keeps the serialized output of each rendered row,
-keyed by a digest of the exact row it was rendered from plus everything else
-the render reads. A row that comes back unchanged costs one ``json.dumps`` of
-the row and one hash instead of a digest per string, the redaction and a
-second ``json.dumps``. The text it returns is byte-for-byte what
+:func:`prepare_message_rows` renders a page row by row and gives each row an
+identity: a keyed digest of the exact row it was rendered from plus everything
+else the render reads. The incremental cursor read (``slot_detail_delta``) needs
+those identities anyway, so it also keeps each row's serialized output under
+its identity, and a row that comes back unchanged skips the redaction and the
+output ``json.dumps``. The text is byte-for-byte what
 ``json.dumps(_prepare_messages(...))`` returns for the same input.
 
-Filling the memo costs more than rendering without it (the row's digest, a
-decoded snapshot, the store), so the fill is kept off the request path: a
-session's page (:func:`plan_read`) is answered by the unmemoized render,
-exactly as before, until :func:`schedule_fill` has filled the memo for its rows
-in a worker thread. Later reads of the page reuse it, and only rows that are new
-since the fill are rendered and stored on the way.
+Only that cursor read uses this module. A plain slot-detail read renders with
+``_prepare_messages`` and no row identities: the identity serializes and hashes
+every source row, which costs more than the per-string display cache it would
+skip, so a memo in front of a read that does not need identities is a net cost.
 
 Security properties:
 
@@ -38,11 +37,15 @@ Security properties:
 * On a miss the row is rendered from the decoded copy of the bytes that were
   hashed, not from the live dict, so a row the event loop changes mid-read can
   never file one row's output under another row's key.
+* The redaction context is digested before the rows are rendered and again
+  after. When it moved, every row the memo answered is rendered again against
+  the live context and nothing from that read is stored, so an exemption that
+  came and went mid-read can neither be served from a stale entry nor leave an
+  output it relaxed filed under a context that never had it.
 """
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -110,48 +113,11 @@ def _make_dumps() -> Callable[[object], str]:
 
 _dumps = _make_dumps()
 
-# The pages a reader has opened, oldest first, each either waiting for its
-# background fill or filled. A scope is a session's page shape, so this holds a
-# few tuples per session a reader has opened.
-_SCOPES_MAX = 4096
-_PENDING = "pending"
-_FILLED = "filled"
-_scopes: OrderedDict[tuple[object, ...], str] = OrderedDict()
-
-
-def plan_read(scope: tuple[object, ...]) -> tuple[bool, bool]:
-    """``(use_memo, fill)`` for one read of *scope* (hashable).
-
-    A page is served from the memo only once its background fill has finished.
-    Until then every read of it is the unmemoized render, so no read pays for
-    filling; the first one also asks for the fill (``fill``).
-    """
-    with _memo_lock:
-        state = _scopes.get(scope)
-        if state is None:
-            _scopes[scope] = _PENDING
-            while len(_scopes) > _SCOPES_MAX:
-                _scopes.popitem(last=False)
-            return False, True
-        _scopes.move_to_end(scope)
-        return state == _FILLED, False
-
-
-def _settle_scope(scope: tuple[object, ...], filled: bool) -> None:
-    """Mark *scope* filled, or forget it so its next read asks for a fill again."""
-    with _memo_lock:
-        if scope not in _scopes:
-            return
-        if filled:
-            _scopes[scope] = _FILLED
-        else:
-            del _scopes[scope]
-
 
 def _context_digest() -> bytes:
     """Digest of everything outside the row that the display redaction reads.
 
-    Read once per render, inside the workspace's allowed-host scope.
+    Read before and after each render, inside the workspace's allowed-host scope.
     """
     # Reuse the string cache's complete dependency key instead of maintaining
     # a second list of redaction inputs. The empty text is constant, so only
@@ -232,6 +198,11 @@ def prepare_message_rows(
         context = b"" if bypassed else _context_digest()
         parts: list[str | None] = []
         identities: list[bytes | None] = []
+        # Misses rendered by this read, stored only once the context is known
+        # not to have moved while they were rendered.
+        fresh: list[tuple[tuple[bytes, bytes, str], str]] = []
+        # (position, source) of every row the memo could have answered.
+        looked_up: list[tuple[int, str]] = []
         for m in _cu._collapse_wire_rows(messages):
             # Streaming changes every delta. OAuth URLs depend on revocable
             # endpoint approvals, so neither role is safe or useful to memoize.
@@ -247,12 +218,24 @@ def prepare_message_rows(
                 identities.append(None)
                 continue
             source, digest = snap
+            if memo:
+                looked_up.append((len(parts), source))
             parts.append(
-                _memo_render(source, digest, running, live_child, context)
+                _memo_render(source, digest, running, live_child, context, fresh)
                 if memo
                 else _render_row(json.loads(source), running, live_child)
             )
             identities.append(digest + context + (b"r" if running else b"-"))
+        if not bypassed and _context_digest() != context:
+            # The exempt sets changed while the rows were rendered: no identity
+            # can say which context a fragment was rendered under. A hit was
+            # filed under the context from before the change, so every row the
+            # memo answered is rendered again against the live one.
+            for i, source in looked_up:
+                parts[i] = _render_row(json.loads(source), running, live_child)
+            return parts, [None] * len(identities)
+    for key, fragment in fresh:
+        _remember(key, fragment)
     return parts, identities
 
 
@@ -265,72 +248,19 @@ def _snapshot(m: dict) -> tuple[str, bytes] | None:
     return source, hashlib.blake2b(source.encode("ascii"), key=_KEY, digest_size=16).digest()
 
 
-# Fills running in the background, at most this many at once. A read that finds
-# the limit reached schedules none: its page fills on its next read instead.
-_FILLS_MAX = 2
-_fills: set[asyncio.Task[None]] = set()
-# Seconds between answering a first read and starting its fill. The fill holds
-# the GIL for about as long as a repeat render of the page; started at once it
-# competes with sending the response it follows and with the reader's next
-# requests on open.
-FILL_DELAY_S = 1.0
-
-
-def schedule_fill(
-    scope: tuple[object, ...],
-    messages: list[dict],
-    running: bool,
-    *,
-    live_child: str,
-    workspace: str | None,
-) -> None:
-    """Fill the memo with *messages*' rows off the request path, then mark *scope* filled.
-
-    Called on the event loop after :func:`plan_read` asked for a fill. After
-    :data:`FILL_DELAY_S`, runs the memoized render in a worker thread and drops
-    its result. A fill that cannot start (too many running) or fails leaves the
-    scope unfilled, and its next read asks again.
-    """
-
-    async def _fill() -> None:
-        filled = False
-        try:
-            await asyncio.to_thread(
-                prepare_messages_json,
-                messages,
-                running,
-                live_child=live_child,
-                workspace=workspace,
-            )
-            filled = True
-        except Exception:
-            logger.debug("slot-detail render memo fill failed", exc_info=True)
-        finally:
-            _settle_scope(scope, filled)
-
-    def _start() -> None:
-        if len(_fills) >= _FILLS_MAX:
-            _settle_scope(scope, False)
-            return
-        task = loop.create_task(_fill())
-        _fills.add(task)
-        task.add_done_callback(_fills.discard)
-
-    loop = asyncio.get_running_loop()
-    loop.call_later(FILL_DELAY_S, _start)
-
-
 def _memo_render(
     source: str,
     digest: bytes,
     running: bool,
     live_child: str,
     context: bytes,
+    fresh: list[tuple[tuple[bytes, bytes, str], str]],
 ) -> str | None:
     """The memoized render of the row serialized as *source* (its digest *digest*).
 
-    The key's third slot names a live child only for OAuth rows, which never
-    reach the memo, so it is always empty here.
+    A miss is rendered and appended to *fresh* for the caller to store. The
+    key's third slot names a live child only for OAuth rows, which never reach
+    the memo, so it is always empty here.
     """
     key = (digest, context, "")
     with _memo_lock:
@@ -342,7 +272,7 @@ def _memo_render(
     if fragment is None:
         # Only a chunk row renders as nothing, and chunk rows never reach here.
         return None
-    _remember(key, fragment)
+    fresh.append((key, fragment))
     return fragment
 
 
@@ -352,7 +282,6 @@ def clear_render_memo() -> None:
     with _memo_lock:
         _memo.clear()
         _memo_bytes = 0
-        _scopes.clear()
 
 
 def render_memo_info() -> tuple[int, int]:

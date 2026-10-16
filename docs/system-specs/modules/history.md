@@ -196,23 +196,34 @@ instead of a page that silently omits the archive.
 ### Slot-detail rendered row memo
 
 `dashboard/wire_render.py` keeps rendered row JSON in a process-local bounded
-LRU. Unfilled pages use `_prepare_messages`; a delayed worker fills their rows.
-Filled pages reuse fragments only when the complete source row and render
-context match. The context reuses `_display_redaction_cache_key("")`, so changes
-to that key's redaction dependencies invalidate row fragments too. Workspace
-allowed hosts are also keyed separately: blocked-link restoration reads those
-hosts alone, not their union with policy exemptions. OAuth rows are never
-memoized: every response rechecks live child identity and endpoint approval.
-Owner-view scopes neither read nor fill the memo.
-The per-string cache still serves cold reads, changed rows and other callers.
-The security-posture inventory classifies this module as an internal projection
-of the existing dashboard output sink, not as a separate egress boundary.
-The memo removes the per-string pass and rendered-output encoding on a row hit;
-it still encodes and hashes the source row to detect in-place changes.
+LRU for the incremental cursor read (`slot_detail_delta`) only. That read needs a
+keyed digest of every source row as the row's identity, so reusing the row's
+output under the same digest costs only the lookup. A plain slot-detail read
+renders with `_prepare_messages` and never touches the memo: identifying a row
+serializes and hashes it, which costs about as much as the per-string display
+cache it would skip, and when the rows a reader cycles through outgrow the cap
+every read pays the identity and the render. Fragments are reused only when the
+complete source row and render context match. The context reuses
+`_display_redaction_cache_key("")`, so changes to that key's redaction
+dependencies invalidate row fragments too. Workspace allowed hosts are also
+keyed separately: blocked-link restoration reads those hosts alone, not their
+union with policy exemptions. The context is digested before and after a read's
+rows render; when it moved, every row the memo answered is rendered again against
+the live context, and the read stores none of its fragments and issues no
+row identities. OAuth rows are never memoized: every response rechecks live
+child identity and endpoint approval. Owner-view scopes neither read nor fill
+the memo. The security-posture inventory classifies this module as an internal
+projection of the existing dashboard output sink, not as a separate egress
+boundary.
 
-Retained fragments are limited to 16 MiB of charged output and 60,000 entries;
-page state is bounded independently. Slot detail joins these JSON fragments
-between separately encoded response fields without changing response bytes.
+Retained fragments are limited to 16 MiB of charged output and 60,000 entries.
+Slot detail joins the messages JSON between separately encoded response fields
+without changing response bytes.
+
+The per-string display key (`_display_redaction_cache_key`) reads the exempt host
+and token-prefix sets on every call and reuses the suffix bytes built from them
+while they compare equal, so the key bytes, and the verdicts stored under them,
+are the same as when the suffix was rebuilt per string.
 
 ### The dashboard transcript window (frontend)
 
