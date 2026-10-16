@@ -2754,7 +2754,7 @@ Known residual: `_drained_meta` accumulates only `steer_delivery_id` (into
 `steer_delivery_ids`) and is last-writer-wins for every other key, so a row that
 MERGES two requeued steers keeps one `sendId` and the other send keeps the
 over-keep default. Pinned by the requeue sendId tests in
-`test_steer_requeue.py`.
+`test_steer_requeue_entry_meta.py`.
 
 ### Wait countdown and early end (`/api/session-keepalive` as a control channel)
 
