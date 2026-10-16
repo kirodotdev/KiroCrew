@@ -525,14 +525,16 @@ class ScriptHookStore:
         # read from `data` for the same reason as the timeout: `from_dict` drops one
         # stored against an event no event fires, which is right for a hand-edited
         # file and wrong for a caller who asked for it -- a POST carrying a matcher
-        # must be told, not silently saved without the filter it named.
+        # must be told, not silently saved without the filter it named. So is the
+        # mode: `from_dict` loads an unknown one as glob, and a caller who sent it
+        # must be told rather than saved with a mode it did not ask for.
         validate_hook_fields(
             event=hook.event,
             timeout=data.get("timeout", hook.timeout),
             command=hook.command,
             skills=hook.skills,
             matcher=str(data.get("matcher", hook.matcher) or ""),
-            matcher_mode=hook.matcher_mode,
+            matcher_mode=data.get("matcher_mode", hook.matcher_mode),
         )
         with self._mutex, self._atomic_mutation():
             self._hooks[hook.id] = hook

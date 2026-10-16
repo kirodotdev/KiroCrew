@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+from pathlib import Path
 
 import pytest
 
@@ -25,6 +27,7 @@ from kiro_crew.hooks import (
     HOOK_EVENT_PRE_TOOL_USE,
     HOOK_EVENT_STOP,
     HOOK_EVENT_USER_PROMPT_SUBMIT,
+    HOOK_MATCHER_MODES,
     HOOK_TIMEOUT_DEFAULT,
     HOOK_TIMEOUT_MAX,
     HOOK_TIMEOUT_MIN,
@@ -34,7 +37,10 @@ from kiro_crew.hooks import (
     _has_global_inline_flags,
     validate_hook_fields,
 )
+from kiro_crew.validation import HOOK_CREATE_SCHEMA, HOOK_UPDATE_SCHEMA
 from kiro_crew.webhooks import WebhookStoreUnreadable
+
+HOOKS_PAGE = Path(__file__).resolve().parent.parent / "website" / "src" / "pages" / "HooksPage.tsx"
 
 
 def _valid(**overrides) -> dict:
@@ -327,6 +333,91 @@ class TestStoreLoadResilience:
         loaded = store.get("h")
         assert loaded is not None
         assert loaded.timeout == HOOK_TIMEOUT_MIN
+
+
+# ── matcher_mode: one vocabulary, refused on write, read as glob on load ──
+
+
+class TestMatcherModeVocabulary:
+    """``HOOK_MATCHER_MODES`` is the one list every hook writer is held to.
+
+    The matcher reads any other mode as ``glob``, so a typo such as ``regexp``
+    would save and then quietly match as a glob. Create and update refuse it, the
+    way they refuse an unknown event; a file that already carries one loads as
+    ``glob``, which is how that hook matches anyway.
+    """
+
+    @pytest.mark.parametrize("bad", ["regexp", "Regex", "", None])
+    def test_create_refuses_a_mode_outside_the_vocabulary(self, tmp_path, bad):
+        store = ScriptHookStore(tmp_path)
+        with pytest.raises(ValueError, match="invalid matcher_mode") as refused:
+            store.create(_valid(matcher="*deploy*", matcher_mode=bad))
+        assert ", ".join(HOOK_MATCHER_MODES) in str(refused.value)
+        assert store.list_all() == []
+
+    @pytest.mark.parametrize("bad", ["regexp", "Regex", "", None])
+    def test_update_refuses_a_mode_outside_the_vocabulary(self, tmp_path, bad):
+        store = ScriptHookStore(tmp_path)
+        hook = store.create(_valid(matcher="*deploy*"))
+        with pytest.raises(ValueError, match="invalid matcher_mode") as refused:
+            store.update(hook.id, {"matcher_mode": bad})
+        assert ", ".join(HOOK_MATCHER_MODES) in str(refused.value)
+        kept = store.get(hook.id)
+        assert kept is not None and kept.matcher_mode == "glob"
+
+    @pytest.mark.parametrize("mode", HOOK_MATCHER_MODES)
+    def test_every_mode_in_the_vocabulary_saves(self, tmp_path, mode):
+        store = ScriptHookStore(tmp_path)
+        hook = store.create(_valid(matcher="deploy", matcher_mode=mode))
+        assert hook.matcher_mode == mode
+        updated = store.update(hook.id, {"matcher_mode": mode})
+        assert updated is not None and updated.matcher_mode == mode
+
+    def test_a_stored_unknown_mode_loads_as_glob_and_still_fires(self, tmp_path):
+        """A hand-edited ``regexp`` keeps its hook matching, and editable."""
+        (tmp_path / "hooks.json").write_text(
+            json.dumps(
+                {
+                    "hooks": [
+                        {
+                            "id": "typo",
+                            "name": "typo",
+                            "event": HOOK_EVENT_USER_PROMPT_SUBMIT,
+                            "skills": ["deploy-checklist"],
+                            "matcher": "*deploy*",
+                            "matcher_mode": "regexp",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        store = ScriptHookStore(tmp_path)
+
+        loaded = store.get("typo")
+        assert loaded is not None
+        assert loaded.matcher_mode == "glob"
+        # ``*deploy*`` is not a valid regex, so only a glob reading matches it. A
+        # matched hook is counted whether governance then allows or blocks it.
+        asyncio.run(store.fire(HOOK_EVENT_USER_PROMPT_SUBMIT, "please deploy this"))
+        assert loaded.run_count == 1
+        renamed = store.update("typo", {"name": "renamed"})
+        assert renamed is not None and renamed.name == "renamed"
+
+    @pytest.mark.parametrize("schema", [HOOK_CREATE_SCHEMA, HOOK_UPDATE_SCHEMA])
+    def test_the_api_schemas_allow_exactly_the_vocabulary(self, schema):
+        """``validation`` spells its allow-list out, because ``hooks`` imports it."""
+        (field,) = [f for f in schema.fields if f.name == "matcher_mode"]
+        assert field.allowed == frozenset(HOOK_MATCHER_MODES)
+
+    def test_the_hook_form_offers_exactly_the_vocabulary(self):
+        declared = re.search(r"const MATCHER_MODES = \[([^\]]*)\]", HOOKS_PAGE.read_text("utf-8"))
+        assert declared, f"MATCHER_MODES no longer declared in {HOOKS_PAGE.name}"
+        offered = re.findall(r"'([^']+)'", declared.group(1))
+        assert offered == list(HOOK_MATCHER_MODES), (
+            f"MATCHER_MODES in {HOOKS_PAGE.name} offers {offered}; "
+            f"hooks.HOOK_MATCHER_MODES ships {list(HOOK_MATCHER_MODES)}"
+        )
 
 
 # ── inline regex flag handling (issue: (?-i) and scoped flags) ──

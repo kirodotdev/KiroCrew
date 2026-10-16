@@ -359,6 +359,13 @@ HOOK_EVENTS_AGENT_REQUESTED = (
 #: event absent from it is refused at authoring time and dropped on reload.
 HOOK_EVENTS_ALL = HOOK_EVENTS + HOOK_EVENTS_KAS_ONLY
 
+#: Every ``matcher_mode`` a script hook may be authored with; ``glob`` is the
+#: default. ``validate_hook_fields`` refuses any other value at create and update,
+#: as it refuses an unknown event, and ``ScriptHook.from_dict`` loads one already
+#: on disk as ``glob``. The Hooks page's ``MATCHER_MODES`` and the create/update
+#: schemas' allow-lists are pinned to this tuple by test.
+HOOK_MATCHER_MODES = ("glob", "regex", "contains")
+
 
 #: Set by :func:`uncounted_gate`; read by ``ToolHookResult._count`` and
 #: ``_audit_governance``.
@@ -1521,7 +1528,7 @@ class ScriptHook:
         # not abort the whole store); the raising `validate_hook_fields` is what
         # rejects a bad value at the create/update boundary. `event` is left as
         # written so an unknown event is visibly inert rather than silently
-        # remapped, matching how `matcher_mode` junk falls through to glob.
+        # remapped.
         timeout = _normalize_hook_timeout(data.get("timeout", HOOK_TIMEOUT_DEFAULT))
         event = data.get("event", HOOK_EVENT_USER_PROMPT_SUBMIT)
         # Drop a matcher stored against an event no event fires, the same way the
@@ -1540,12 +1547,24 @@ class ScriptHook:
                 event,
             )
             matcher = ""
+        # An unknown `matcher_mode` loads as glob, unlike an unknown event: glob is
+        # what `_context_matches` runs any other mode as, so loading it as glob
+        # changes nothing about how the hook matches. It also keeps the hook
+        # editable, because `update` validates the MERGED fields and would
+        # otherwise meet the stored value.
+        matcher_mode = data.get("matcher_mode", "glob")
+        if matcher_mode not in HOOK_MATCHER_MODES:
+            logger.warning(
+                "hook %s carried an unknown matcher_mode; loading it as glob",
+                data.get("id", "?"),
+            )
+            matcher_mode = "glob"
         return cls(
             id=data.get("id", str(uuid.uuid4())[:8]),
             name=data.get("name", ""),
             event=event,
             matcher=matcher,
-            matcher_mode=data.get("matcher_mode", "glob"),
+            matcher_mode=matcher_mode,
             command=data.get("command", ""),
             skills=[str(s) for s in skills if isinstance(s, str)],
             timeout=timeout,
