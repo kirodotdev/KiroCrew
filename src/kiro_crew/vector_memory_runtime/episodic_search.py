@@ -885,7 +885,7 @@ def fts5_episodic_search(
     rows = store._fetch_all_locked(
         f"SELECT id, conversation_id, text, tags, importance, created_at, last_accessed_at "
         f"FROM episodic_memories WHERE is_deleted = 0 AND ({conditions}) "
-        f"ORDER BY created_at DESC LIMIT ?",
+        f"ORDER BY created_at DESC, id LIMIT ?",
         (*params, limit),
     )
     return [dict(r) for r in rows]

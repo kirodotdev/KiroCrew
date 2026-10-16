@@ -3044,7 +3044,7 @@ class VectorMemoryStore:
             tag_params += (query, query)
         sql = (
             f"SELECT {columns} FROM {relation} WHERE is_deleted = 0{tag_conds} "
-            "ORDER BY created_at DESC LIMIT ? OFFSET ?"
+            "ORDER BY created_at DESC, id LIMIT ? OFFSET ?"
         )
         params = (*tag_params, limit, offset)
         if query:
