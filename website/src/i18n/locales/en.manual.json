@@ -3062,6 +3062,10 @@
         "expand_grouped_notifications": "Expand {{count}} grouped notifications: {{title}}",
         "hide_muted_count": "Hide muted ({{count}})",
         "open_notification": "Open notification: {{title}}",
+        "decided_clear_failed": "This notification couldn't be dismissed. Try again.",
+        "decision_recorded": "Your decision was recorded.",
+        "decision_failed_retry": "This decision may not have been recorded because the request failed. Try again.",
+        "dismiss_failed": "Couldn't dismiss this notification. Try again.",
         "show_less": "Show less",
         "show_muted_count": "Show muted ({{count}})",
         "try_a_different_search": "Try a different search"

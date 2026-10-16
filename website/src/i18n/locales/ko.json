@@ -7764,6 +7764,10 @@
         "open_notification": "알림 열기: {{title}}",
         "reject": "거부",
         "search": "검색…",
+        "decided_clear_failed": "이 알림을 닫을 수 없습니다. 다시 시도하세요.",
+        "decision_recorded": "결정이 기록되었습니다.",
+        "decision_failed_retry": "요청이 실패해서 이 결정이 기록되지 않았을 수 있습니다. 다시 시도하세요.",
+        "dismiss_failed": "이 알림을 닫을 수 없습니다. 다시 시도하세요.",
         "show_less": "간략히 보기",
         "show_muted_count": "음소거 표시 ({{count}})",
         "try_a_different_search": "다른 검색어로 시도하세요"

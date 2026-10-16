@@ -7764,6 +7764,10 @@
         "open_notification": "通知を開く：{{title}}",
         "reject": "却下",
         "search": "検索…",
+        "decided_clear_failed": "この通知を閉じられませんでした。もう一度お試しください。",
+        "decision_recorded": "決定は記録されました。",
+        "decision_failed_retry": "リクエストが失敗したため、この決定は記録されていない可能性があります。もう一度お試しください。",
+        "dismiss_failed": "この通知を閉じられませんでした。もう一度お試しください。",
         "show_less": "少なく表示",
         "show_muted_count": "ミュート済みを表示（{{count}}）",
         "try_a_different_search": "別の検索を試す"

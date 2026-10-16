@@ -265,3 +265,22 @@ export function fmtRelativeMinute(ts: string): string {
  *  token leads because the i18n lint recognises an arbitrary-value class
  *  cluster by its FIRST bracketed token carrying a comma or underscore. */
 export const MAC_ACTION_BTN_CLASS = 'bg-[color-mix(in_srgb,var(--bg-hover)_80%,transparent)] px-3 py-1 rounded-lg text-[12px] font-medium cursor-pointer font-body whitespace-nowrap transition-colors backdrop-blur border border-[color-mix(in_srgb,var(--border)_45%,transparent)] hover:bg-bg-hover'
+
+/** The sentence a failed Approve/Reject press shows, the same on a feed row
+ *  and in the detail panel. A quoted reason is the decide route's own
+ *  sentence. Anything else (a 5xx, or no response) may have landed, so it
+ *  hedges and says to press again: a second press on a decision that did land
+ *  is refused, which retires the row, so retrying is always safe. */
+export function decisionFailedCopy(f: { reason: string }): string {
+  if (f.reason) return i18nT('components.approvalCard.decision_not_recorded_error', { error: f.reason })
+  return i18nT('components.notifications.notificationFeed.decision_failed_retry')
+}
+
+/** The sentence a press that failed on a request a frame ended meanwhile
+ *  shows (`retiredApprovals`' `{ failed }`), beside the row's "no longer
+ *  pending" notice. The same quoted reason, but no "try again": the
+ *  controls are gone, so there is nothing to press. */
+export function endedDecisionFailedCopy(reason: string): string {
+  if (reason) return i18nT('components.approvalCard.decision_not_recorded_error', { error: reason })
+  return i18nT('components.approvalCard.decision_failed')
+}

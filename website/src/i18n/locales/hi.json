@@ -7888,6 +7888,10 @@
         "open_notification": "सूचना खोलो: {{title}}",
         "reject": "अस्वीकार करें",
         "search": "खोजें…",
+        "decided_clear_failed": "यह सूचना हटाई नहीं जा सकी। फिर से कोशिश करो।",
+        "decision_recorded": "तुम्हारा निर्णय दर्ज हो गया।",
+        "decision_failed_retry": "अनुरोध विफल रहा, इसलिए यह निर्णय शायद दर्ज नहीं हुआ। फिर से कोशिश करो।",
+        "dismiss_failed": "यह सूचना हटाई नहीं जा सकी। फिर से कोशिश करो।",
         "show_less": "कम दिखाएँ",
         "show_muted_count": "म्यूट दिखाओ ({{count}})",
         "try_a_different_search": "कोई दूसरी खोज आज़माएँ"

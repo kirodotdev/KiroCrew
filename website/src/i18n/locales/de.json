@@ -7888,6 +7888,10 @@
         "open_notification": "Benachrichtigung öffnen: {{title}}",
         "reject": "Ablehnen",
         "search": "Suchen…",
+        "decided_clear_failed": "Diese Benachrichtigung konnte nicht verworfen werden. Versuche es noch einmal.",
+        "decision_recorded": "Deine Entscheidung wurde gespeichert.",
+        "decision_failed_retry": "Diese Entscheidung wurde möglicherweise nicht gespeichert, weil die Anfrage fehlgeschlagen ist. Versuche es noch einmal.",
+        "dismiss_failed": "Diese Benachrichtigung konnte nicht verworfen werden. Versuche es noch einmal.",
         "show_less": "Weniger anzeigen",
         "show_muted_count": "Stummgeschaltete anzeigen ({{count}})",
         "try_a_different_search": "Versuche eine andere Suche"

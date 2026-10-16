@@ -8012,6 +8012,10 @@
         "open_notification": "Apri la notifica: {{title}}",
         "reject": "Rifiuta",
         "search": "Cerca…",
+        "decided_clear_failed": "Non è stato possibile ignorare questa notifica. Riprova.",
+        "decision_recorded": "La tua decisione è stata registrata.",
+        "decision_failed_retry": "Questa decisione potrebbe non essere stata registrata perché la richiesta non è riuscita. Riprova.",
+        "dismiss_failed": "Impossibile ignorare questa notifica. Riprova.",
         "show_less": "Mostra meno",
         "show_muted_count": "Mostra silenziate ({{count}})",
         "try_a_different_search": "Prova una ricerca diversa"

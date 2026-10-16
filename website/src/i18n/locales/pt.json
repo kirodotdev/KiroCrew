@@ -8012,6 +8012,10 @@
         "open_notification": "Abrir notificação: {{title}}",
         "reject": "Rejeitar",
         "search": "Pesquisar…",
+        "decided_clear_failed": "Não foi possível dispensar esta notificação. Tente novamente.",
+        "decision_recorded": "Sua decisão foi registrada.",
+        "decision_failed_retry": "Esta decisão pode não ter sido registrada porque a solicitação falhou. Tente novamente.",
+        "dismiss_failed": "Não foi possível dispensar esta notificação. Tente novamente.",
         "show_less": "Mostrar menos",
         "show_muted_count": "Mostrar silenciadas ({{count}})",
         "try_a_different_search": "Tente outra busca"

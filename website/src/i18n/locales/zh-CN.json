@@ -7764,6 +7764,10 @@
         "open_notification": "打开通知：{{title}}",
         "reject": "拒绝",
         "search": "搜索…",
+        "decided_clear_failed": "无法关闭此通知。请重试。",
+        "decision_recorded": "你的决定已记录。",
+        "decision_failed_retry": "请求失败，这次决定可能未被记录。请重试。",
+        "dismiss_failed": "无法关闭此通知。请重试。",
         "show_less": "收起",
         "show_muted_count": "显示已静音（{{count}}）",
         "try_a_different_search": "换个搜索词试试"

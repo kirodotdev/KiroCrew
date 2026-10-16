@@ -4253,18 +4253,35 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
         # record expires. The instance binds the decision to the request the card
         # showed: the request id is minted by the caller and can recur in the same
         # slot, so a card left up from an expired record would otherwise resolve
-        # the request that replaced it.
+        # the request that replaced it. An approval with no owning slot (a cron,
+        # autonudge or task-runner request) names its slot as empty, which only
+        # a record whose own slot is empty matches.
         slot = request.query.get("slot", "")
         instance = request.query.get("instance", "")
-        if request.query["origin"] != "coordinator" or not slot or not instance:
+        if request.query["origin"] != "coordinator" or "slot" not in request.query or not instance:
             return web.json_response(
                 {"error": "invalid approval target", "code": "invalid_approval_target"}, status=400
             )
+        if not slot:
+            # Imported here: chat_handlers imports this package at module scope.
+            from kiro_crew.dashboard.chat_handlers import bare_approval_decide_allowed
+
+            # Before the empty-slot target existed, a slotless record could be
+            # decided only by id, from the owner's browser session. The target
+            # names the request; it does not widen who may decide it.
+            if not bare_approval_decide_allowed(request):
+                return web.json_response(
+                    {
+                        "error": "only the dashboard owner may decide an approval with no session",
+                        "code": "approval_owner_required",
+                    },
+                    status=403,
+                )
         pending = state._pending_approvals.get(approval_id)
         # No await between checking the record and resolving its state-only future.
         ok = bool(
             pending
-            and pending.get("slot") == slot
+            and (pending.get("slot") or "") == slot
             and pending.get("instance") == instance
             and state.resolve_state_approval(approval_id, action == "approve")
         )
