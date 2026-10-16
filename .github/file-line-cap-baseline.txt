@@ -159,7 +159,6 @@
 4193 test/test_aws_control_routes.py
 3564 test/test_browser_cli_view.py
 2032 test/test_channel_folders.py
-2002 test/test_channel_turns.py
 2475 test/test_chat_mirror.py
 2267 test/test_chat_mode_security.py
 10498 test/test_cli.py
@@ -215,7 +214,6 @@
 2118 test/test_llm_helpers.py
 2631 test/test_llm_pool.py
 2248 test/test_markdown_link_parentheses.py
-2005 test/test_mcp_apps_render.py
 2117 test/test_mcp_cron_security.py
 7022 test/test_mcp_discovery.py
 5650 test/test_mcp_gateway_backend_coverage.py
@@ -289,7 +287,6 @@
 2014 test/test_vector_memory_coverage.py
 2549 test/test_wake_judge_feedback.py
 3521 test/test_webex_dispatch.py
-2006 test/test_webhooks_api.py
 2238 test/test_wheel_engine.py
 2944 website/electron/gateway-supervisor.js
 2903 website/scripts/lib/ui-index.mjs

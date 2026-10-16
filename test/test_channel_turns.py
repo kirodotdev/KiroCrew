@@ -32,7 +32,11 @@ too, each because the real one would leave the test or make it unobservable:
 Behaviours a dispatcher still diverges on are parametrized over ``drift``: the
 default and Discord's declared
 :data:`~kiro_crew.messaging.dispatch.DISCORD_DRIFT`; ``TestTheDiscordLeg`` runs
-Discord's cases on its real renderer.
+Discord's cases on its real renderer in ``test_channel_turns_discord_leg.py``.
+
+``drive_turn`` and the exchange record adapter are in
+``test_channel_turns_drive_turn.py``; the keys, autouse stubs and builders all
+three share are in ``channel_turns_helpers.py``.
 """
 
 from __future__ import annotations
@@ -54,13 +58,16 @@ from channel_turn_fakes import (
     answer,
     compaction_status,
     complete,
-    directive,
     permission,
     steer_consumed,
     text,
     thinking,
     tool_call,
 )
+from channel_turns_helpers import governance_fixture  # noqa: F401
+from channel_turns_helpers import published_fixture  # noqa: F401
+from channel_turns_helpers import spooled_fixture  # noqa: F401
+from channel_turns_helpers import _ROOM, CONV, KEY, ROUTE, _answer, _asker, _bound_as_room, _turns
 
 from kiro_crew.acp.types import (
     STOP_REASON_CANCELLED,
@@ -81,25 +88,16 @@ from kiro_crew.messaging.dispatch import (
     Approvals,
     Asker,
     Audience,
-    ChannelTurn,
-    ChannelTurns,
     Drift,
     MonitorWake,
     TurnRecord,
     Verdict,
-    drive_turn,
-    exchange_writer,
 )
-from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.messaging.turn_ceiling import ConversationTurnCeiling
 from kiro_crew.monitoring.models import MonitorDispatchResult
 from kiro_crew.session_allocation import SessionClosingError
 from kiro_crew.start_priority import StartPriority
-
-KEY = "weixin:agentA:direct:userA"
-CONV = "weixin:userA"
-ROUTE = InboundRoute(conversation_id="ROOM", text="what the user typed", user_id="userA")
 
 DRIFTS = [
     pytest.param(frozenset(), id="default"),
@@ -108,106 +106,6 @@ DRIFTS = [
 
 
 # ── fixtures and builders ────────────────────────────────────────────────────
-
-
-class _Governance:
-    """What the channels policy answers, and every channel it was asked about."""
-
-    def __init__(self) -> None:
-        self.permitted = True
-        self.asked: list[str] = []
-
-    async def __call__(self, channel_type: str) -> bool:
-        self.asked.append(channel_type)
-        return self.permitted
-
-
-# The three autouse stubs patch through the isolation floor's own MonkeyPatch
-# (testing-conventions D11), so a test's own ``monkeypatch.undo()`` never strips them.
-@pytest.fixture(autouse=True)
-def governance(_floor_monkeypatch: pytest.MonkeyPatch) -> _Governance:
-    gate = _Governance()
-    _floor_monkeypatch.setattr(D, "channel_inbound_permitted", gate)
-    return gate
-
-
-@pytest.fixture(autouse=True)
-def published(_floor_monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Identity publication, recorded into the session ledger it ran against."""
-    keys: list[str] = []
-
-    async def _publish(sessions: Any, session_key: str) -> None:
-        keys.append(session_key)
-        ledger = getattr(sessions, "ledger", None)
-        if ledger is not None:
-            ledger.append(("publish_turn_identity", session_key))
-
-    _floor_monkeypatch.setattr(D, "publish_turn_identity", _publish)
-    return keys
-
-
-@pytest.fixture(autouse=True)
-def spooled(_floor_monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, Any]]:
-    """Every durable refusal the pipeline spooled, as ``(channel_type, route)``."""
-    calls: list[tuple[str, Any]] = []
-
-    async def _spool(*, channel_type: str, route: Any) -> bool:
-        calls.append((channel_type, route))
-        return True
-
-    _floor_monkeypatch.setattr(D, "spool_refused_turn", _spool)
-    return calls
-
-
-def _turns(
-    sessions: FakeSessions,
-    *,
-    ctx: RecordingCtxBuilder | None = None,
-    recorder: Recorder | None = None,
-    drift: frozenset[Drift] = frozenset(),
-    approval_mode: str = "auto",
-    approvals: Approvals | None = None,
-    restricted: Any = None,
-    conv_log: Any = None,
-    dispatcher: Any = None,
-    agent: str = "agentA",
-    channel: str = "weixin",
-) -> ChannelTurns:
-    recorder = recorder if recorder is not None else Recorder()
-    return ChannelTurns(
-        channel,
-        sessions=sessions,
-        ctx_builder=ctx if ctx is not None else RecordingCtxBuilder(ledger=sessions.ledger),
-        dispatcher=dispatcher if dispatcher is not None else RecordingDispatcher(approval_mode),
-        agent=lambda: agent,
-        record=recorder.record,
-        notice=recorder.notice,
-        surface=recorder.surface,
-        restricted=restricted,
-        conv_log=conv_log,
-        approvals=approvals if approvals is not None else Approvals(grant=None),
-        drift=drift,
-    )
-
-
-def _asker(session_key: str = KEY, **kw: Any) -> Asker:
-    kw.setdefault("route", ROUTE)
-    kw.setdefault("start_priority", StartPriority.FOREGROUND)
-    kw.setdefault("audit_caller", "weixin:userA")
-    kw.setdefault("reply_to", "ROOM")
-    return Asker(session_key, CONV, **kw)
-
-
-def _answer(turns: ChannelTurns, *, asker: Asker | None = None, message: str = "hi", **kw: Any):
-    renderer = kw.pop("renderer", None)
-    return asyncio.run(
-        turns.answer(
-            asker if asker is not None else _asker(),
-            message,
-            renderer if renderer is not None else RecordingRenderer(),
-            **kw,
-        )
-    )
 
 
 def _shown(renderer: RecordingRenderer) -> str:
@@ -935,16 +833,6 @@ class TestTheReinjectionFlag:
 # ── the origin and own-mirror bind ───────────────────────────────────────────
 
 
-_ROOM = ChannelLink("weixin", channel_id="ROOM", thread_id=None)
-
-
-def _bound_as_room(stored: Any) -> bool:
-    """The origin bind stores this location, signed for the session's key."""
-    from kiro_crew.mirror_admission import verify_mirror_admission
-
-    return stored == _ROOM and verify_mirror_admission(KEY, stored)
-
-
 class TestTheOriginBind:
     @pytest.mark.parametrize(
         ("drift", "on_loop"),
@@ -1640,370 +1528,3 @@ def test_a_dispatcher_without_directives_builds_no_consumer(monkeypatch, drift, 
         if consumes
         else []
     )
-
-
-# ── the record adapter every exchange-only channel uses ──────────────────────
-
-
-def test_exchange_writer_writes_answers_off_loop_and_drops_failures() -> None:
-    written: list[tuple[Any, ...]] = []
-    threads: list[int] = []
-
-    def _persist(*args: Any) -> None:
-        threads.append(threading.get_ident())
-        written.append(args)
-
-    record = exchange_writer(_persist)
-
-    async def scenario() -> None:
-        await record(TurnRecord("answered", KEY, "agentA", "hi", "the reply", True))
-        await record(TurnRecord("hook_reply", KEY, "agentA", "ping", "pong", False))
-        await record(TurnRecord("failed", KEY, "agentA", "hi", "", False, error=RuntimeError()))
-
-    asyncio.run(scenario())
-    assert written == [
-        (KEY, "hi", "the reply", True, "agentA"),
-        (KEY, "ping", "pong", False, "agentA"),
-    ]
-    assert threading.get_ident() not in threads
-
-
-# ── drive_turn: the ChannelTurn entry, field for field ───────────────────────
-
-
-def _channel_turn(renderer: Any, **kw: Any) -> ChannelTurn:
-    kw.setdefault("session_key", KEY)
-    kw.setdefault("approval_mode", "auto")
-    return ChannelTurn(
-        channel_type="weixin",
-        conversation_id=CONV,
-        agent="agentA",
-        user_text="hi",
-        renderer=renderer,
-        **kw,
-    )
-
-
-class TestDriveTurn:
-    def test_persists_the_raw_reply_with_the_first_acquires_newness(self) -> None:
-        persisted: list[tuple[str, str, bool]] = []
-        sessions = FakeSessions(ScriptedProvider([text("  "), complete()]), is_new=True)
-        turn = _channel_turn(
-            RecordingRenderer(), persist=lambda u, r, n: persisted.append((u, r, n))
-        )
-
-        asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=RecordingCtxBuilder()))
-
-        assert persisted == [("hi", "  ", True)]
-
-    def test_hands_the_live_provider_on_before_the_driver_and_degrades_on_failure(self) -> None:
-        provider = ScriptedProvider(answer())
-        sessions = FakeSessions(provider)
-        seen: list[Any] = []
-
-        def _bind(p: Any) -> None:
-            seen.append(p)
-            sessions.ledger.append(("bind_provider", ""))
-            raise RuntimeError("no cwd")
-
-        turn = _channel_turn(RecordingRenderer(), bind_provider=_bind)
-        asyncio.run(
-            drive_turn(
-                turn, sessions=sessions, ctx_builder=RecordingCtxBuilder(ledger=sessions.ledger)
-            )
-        )
-
-        assert seen == [provider]
-        names = sessions.names()
-        assert names.index("bind_provider") < names.index("build_message")
-        assert sessions.count("record_success") == 1
-
-    def test_an_unprompted_refusal_ends_silently(self) -> None:
-        renderer = RecordingRenderer()
-        turn = _channel_turn(
-            renderer,
-            session_key=f"weixin:{TOOLLESS_TURN_AGENT}:direct:peerB",
-            deny_all_tools=True,
-            unprompted=True,
-        )
-        sessions = FakeSessions(ScriptedProvider(backend=ACP_BACKEND_CLAUDE))
-        asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=RecordingCtxBuilder()))
-        assert renderer.shown == [] and renderer.closed == 1
-
-    def test_a_disconnected_conversation_is_silenced(self) -> None:
-        provider = ScriptedProvider(answer())
-        sessions = FakeSessions(provider)
-        sessions.muted.add((KEY, True))  # a channel-born key reads the origin flag
-        renderer = RecordingRenderer()
-        asyncio.run(
-            drive_turn(
-                _channel_turn(renderer), sessions=sessions, ctx_builder=RecordingCtxBuilder()
-            )
-        )
-        assert provider.prompts == ["hi"], "the message still lands in the session"
-        assert renderer.shown == [] and renderer.started == 0 and renderer.closed == 0
-
-    def test_the_origin_conversation_is_bound_off_the_loop(self) -> None:
-        threads: list[int] = []
-
-        class _Threaded(FakeSessions):
-            def set_mirror_link(self, key: str, link: Any) -> None:
-                threads.append(threading.get_ident())
-                super().set_mirror_link(key, link)
-
-        sessions = _Threaded()
-        turn = _channel_turn(RecordingRenderer(), origin_conversation=_ROOM)
-        asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=RecordingCtxBuilder()))
-        assert sessions.origin_links[KEY] is _ROOM and _bound_as_room(sessions.mirror_links[KEY])
-        assert threads and threading.get_ident() not in threads
-
-    def test_a_restricted_shutdown_refusal_never_spools(self, spooled) -> None:
-        turn = _channel_turn(RecordingRenderer(), inbound_route=ROUTE, inbound_restricted=True)
-        asyncio.run(
-            drive_turn(turn, sessions=FakeSessions(closing=True), ctx_builder=RecordingCtxBuilder())
-        )
-        assert spooled == []
-
-    def test_an_unprompted_turn_is_still_recorded(self) -> None:
-        """``unprompted`` only silences the tool-less refusal; whether the exchange is
-        written is the channel's ``persist`` alone."""
-        persisted: list[tuple[str, str, bool]] = []
-        turn = _channel_turn(
-            RecordingRenderer(),
-            unprompted=True,
-            persist=lambda u, r, n: persisted.append((u, r, n)),
-        )
-        asyncio.run(
-            drive_turn(
-                turn,
-                sessions=FakeSessions(ScriptedProvider(answer("the reply"))),
-                ctx_builder=RecordingCtxBuilder(),
-            )
-        )
-        assert [(u, "".join(r), n) for u, r, n in persisted] == [("hi", "the reply", False)]
-
-    def test_an_unprompted_hook_reply_is_still_recorded_after_the_gap(self) -> None:
-        persisted: list[tuple[str, str, bool]] = []
-        sessions = FakeSessions()
-        turn = _channel_turn(
-            RecordingRenderer(),
-            unprompted=True,
-            persist=lambda u, r, n: persisted.append((u, r, n)),
-        )
-        asyncio.run(
-            drive_turn(turn, sessions=sessions, ctx_builder=RecordingCtxBuilder(hook_reply="pong"))
-        )
-        assert persisted == [("hi", "pong", False)]
-        assert sessions.count("await_replay_gap") == 1
-
-    @pytest.mark.parametrize(
-        "priority", [None, StartPriority.BACKGROUND, StartPriority.FOREGROUND], ids=str
-    )
-    def test_the_turns_priority_reaches_the_claim(self, priority) -> None:
-        """An automation or unprompted turn (the ``ChannelTurn`` default) cold-starts
-        in the background; only a person's message starts at person priority."""
-        sessions = FakeSessions()
-        kw = {} if priority is None else {"start_priority": priority}
-        turn = _channel_turn(RecordingRenderer(), **kw)
-        asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=RecordingCtxBuilder()))
-        expected = StartPriority.BACKGROUND if priority is None else priority
-        assert sessions.calls("get_or_create")[0][2]["start_priority"] is expected
-
-    def test_the_turns_own_fields_reach_the_driver(self) -> None:
-        provider = ScriptedProvider([permission("r1"), complete()])
-        consumed: list[Any] = []
-
-        async def _directives(kind: str, args: dict[str, Any]) -> None:
-            consumed.append(kind)
-
-        ctx = RecordingCtxBuilder()
-        turn = _channel_turn(
-            RecordingRenderer(),
-            approval_mode="interactive",
-            auto_approve_session=lambda: True,
-            minimal_context=True,
-            directive_consumer=_directives,
-            user_display_name="Ann",
-        )
-        asyncio.run(drive_turn(turn, sessions=FakeSessions(provider), ctx_builder=ctx))
-        assert provider.approved == ["r1"]
-        assert ctx.builds[0]["minimal_context"] is True
-        assert ctx.builds[0]["user_display_name"] == "Ann"
-
-    def test_the_turns_directive_consumer_receives_its_directives(self) -> None:
-        """The per-turn consumer the channel built is the one the driver hands a
-        session directive to, not a default one."""
-        provider = ScriptedProvider([*directive("autonudge_stop"), complete()])
-        consumed: list[Any] = []
-
-        async def _directives(kind: str, args: dict[str, Any]) -> None:
-            consumed.append(kind)
-
-        turn = _channel_turn(RecordingRenderer(), directive_consumer=_directives)
-        asyncio.run(
-            drive_turn(turn, sessions=FakeSessions(provider), ctx_builder=RecordingCtxBuilder())
-        )
-        assert consumed == ["autonudge_stop"], "the turn's own consumer was never handed it"
-
-    def test_without_a_grant_an_interactive_turn_denies_what_no_one_answers(self) -> None:
-        """No ``auto_approve_session`` and no decider: a permission request is
-        rejected, never approved (the grant is opt-in per channel)."""
-        provider = ScriptedProvider([permission("r1"), complete()])
-        turn = _channel_turn(RecordingRenderer(), approval_mode="interactive")
-        asyncio.run(
-            drive_turn(turn, sessions=FakeSessions(provider), ctx_builder=RecordingCtxBuilder())
-        )
-        assert provider.rejected == ["r1"] and provider.approved == []
-
-
-# ── the Discord leg: Discord's drift on its real renderer ────────────────────
-
-
-class _LoggingDiscordRenderer(DiscordRenderer):
-    """The real renderer, writing its turn start to a session ledger and, when
-    asked, failing its close the way a flush can."""
-
-    def __init__(self, client: FakeDiscordClient, ledger: list[Any], *, close_raises: bool = False):
-        super().__init__(client, "c1", DISCORD_CAPABILITIES, session_key=KEY)
-        self._ledger = ledger
-        self._close_raises = close_raises
-
-    async def on_turn_start(self) -> None:
-        self._ledger.append(("on_turn_start", ""))
-        await super().on_turn_start()
-
-    async def close(self) -> None:
-        await super().close()
-        if self._close_raises:
-            raise RuntimeError("renderer finalization failed")
-
-
-class TestTheDiscordLeg:
-    """The turn cases Discord's own suite drove through ``handle_message``, run at
-    the pipeline with ``DISCORD_DRIFT`` and the real ``DiscordRenderer`` over a fake
-    REST client, so what is asserted is what the conversation could read."""
-
-    @staticmethod
-    def _run(sessions: FakeSessions, client: FakeDiscordClient, **kw: Any) -> Any:
-        renderer = kw.pop("renderer", None) or _LoggingDiscordRenderer(client, sessions.ledger)
-        return _answer(
-            _turns(sessions, drift=DISCORD_DRIFT, channel="discord", **kw), renderer=renderer
-        )
-
-    def test_a_turn_streams_its_reply_and_releases_once(self) -> None:
-        client = FakeDiscordClient()
-        sessions = FakeSessions(ScriptedProvider(answer("the reply")))
-
-        outcome = self._run(sessions, client)
-
-        assert outcome.verdict is Verdict.ANSWERED and "the reply" in client.shown()
-        assert sessions.count("release") == 1 and sessions.held == 0
-
-    def test_the_typing_indicator_starts_before_the_cold_start(self) -> None:
-        sessions = FakeSessions()
-
-        self._run(sessions, FakeDiscordClient())
-
-        names = sessions.names()
-        assert names.index("on_turn_start") < names.index("get_or_create")
-
-    def test_a_disconnected_conversation_posts_nothing(self) -> None:
-        client = FakeDiscordClient()
-        provider = ScriptedProvider(answer("the reply"))
-        sessions = FakeSessions(provider)
-        # Both flags: which one a turn reads depends on whether its key is native
-        # to the channel (that rule has its own test above).
-        sessions.muted.update({(KEY, True), (KEY, False)})
-
-        outcome = self._run(sessions, client)
-
-        assert provider.prompts == ["hi"], "the message still lands in the session"
-        assert client.sent == [] and client.edits == []
-        assert outcome.verdict is Verdict.ANSWERED and sessions.count("release") == 1
-
-    def test_a_member_memory_refusal_is_posted_redacted(self, monkeypatch) -> None:
-        secret = "ghp_" + "x" * 36
-
-        async def _refuse(_ctx: Any, _key: str) -> str:
-            raise UnknownMemoryStore(
-                f"Member memory unavailable: cannot read /srv/alice/memory.db; token={secret}. "
-                "Repair this member's memory. Global Memory V1 was not used."
-            )
-
-        monkeypatch.setattr(D, "session_store_for_turn", _refuse)
-        client = FakeDiscordClient()
-        sessions = FakeSessions()
-
-        outcome = self._run(sessions, client)
-
-        shown = client.shown()
-        assert outcome.verdict is Verdict.MEMORY_REFUSED
-        assert "Repair this member's memory" in shown
-        assert "alice" not in shown and secret not in shown
-        assert sessions.count("get_or_create") == 0 and sessions.count("release") == 0
-
-    def test_a_shutdown_never_opens_the_turn_and_spools_its_route(self, spooled) -> None:
-        provider = ScriptedProvider()
-        sessions = FakeSessions(provider, closing=True)
-
-        outcome = self._run(sessions, FakeDiscordClient())
-
-        assert outcome.verdict is Verdict.SHUTTING_DOWN and provider.prompts == []
-        assert spooled == [("discord", ROUTE)] and sessions.count("release") == 1
-
-    def test_a_restricted_shutdown_is_not_spooled(self, spooled) -> None:
-        async def _restricted(_key: str) -> bool:
-            return True
-
-        self._run(FakeSessions(closing=True), FakeDiscordClient(), restricted=_restricted)
-
-        assert spooled == []
-
-    def test_a_cold_start_failure_releases_and_charges_nothing(self) -> None:
-        sessions = FakeSessions(acquire_raises=RuntimeError("cold start failed"))
-
-        outcome = self._run(sessions, FakeDiscordClient())
-
-        assert outcome.verdict is Verdict.FAILED
-        assert sessions.count("release") == 0 and sessions.count("record_failure") == 0
-
-    def test_the_session_is_released_when_the_close_raises(self) -> None:
-        client = FakeDiscordClient()
-        sessions = FakeSessions(ScriptedProvider(answer("the reply")))
-        renderer = _LoggingDiscordRenderer(client, sessions.ledger, close_raises=True)
-
-        outcome = self._run(sessions, client, renderer=renderer)
-
-        assert outcome.verdict is Verdict.ANSWERED and sessions.count("release") == 1
-
-    @pytest.mark.parametrize("fail_sends", [False, True])
-    def test_a_compacted_session_forwards_the_flag_and_a_landed_turn_keeps_it(
-        self, fail_sends
-    ) -> None:
-        """A send that failed after the provider took the context is a delivery
-        failure, not a lost prompt: the flag stays consumed either way."""
-        client = FakeDiscordClient(fail_sends=fail_sends)
-        sessions = FakeSessions(ScriptedProvider(answer("the reply")), reinjection=True)
-        ctx = RecordingCtxBuilder(ledger=sessions.ledger)
-
-        outcome = self._run(sessions, client, ctx=ctx)
-
-        assert (outcome.verdict is Verdict.UNDELIVERED) is fail_sends
-        assert ctx.builds[0]["needs_reinjection"] is True
-        assert sessions.count("mark_reinjection") == 0
-
-    @pytest.mark.parametrize(
-        "script",
-        [
-            pytest.param([RuntimeError("provider fell over")], id="raised"),
-            pytest.param([complete(STOP_REASON_CANCELLED)], id="cancelled"),
-        ],
-    )
-    def test_a_consuming_turn_that_never_landed_puts_the_flag_back(self, script) -> None:
-        sessions = FakeSessions(ScriptedProvider(script), reinjection=True)
-        ctx = RecordingCtxBuilder(ledger=sessions.ledger)
-
-        self._run(sessions, FakeDiscordClient(), ctx=ctx)
-
-        assert ctx.builds[0]["needs_reinjection"] is True
-        assert sessions.count("mark_reinjection") == 1
