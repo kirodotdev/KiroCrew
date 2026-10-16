@@ -38,9 +38,11 @@ if TYPE_CHECKING:
         SessionClosingError,
         StructuredStatus,
         classify_stop_reason,
+        code_channel_post_thread,
         crew_log_emit,
         injection_receipts,
         logger,
+        notify_code_channel_turn_start,
         read_context_tokens,
         sel,
         telemetry_channel_of,
@@ -500,7 +502,19 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         _mirror_thread, _mirror_chan = state.sessions.get_slack_link(session_key)
         turn._mirror_chan = _mirror_chan
         turn._mirror_thread = _mirror_thread
+        _mirror_post_ts = code_channel_post_thread(_mirror_chan, _mirror_thread)
+        turn._mirror_post_ts = _mirror_post_ts
         if _mirror_thread and _mirror_chan:
+            try:
+                _code_channel_turn = await notify_code_channel_turn_start(
+                    _mirror_chan,
+                    _mirror_thread,
+                    session_key,
+                    source="slack" if slot._turn_channel_origin else "dashboard",
+                )
+                turn._code_channel_turn = _code_channel_turn
+            except Exception:
+                logger.debug("code channel turn-start hooks failed", exc_info=True)
             try:
                 # Only a prompt a person typed in the dashboard is quoted into
                 # the thread (see `_prompt_typed_in_dashboard`): a patrol wake,
@@ -520,7 +534,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
                     await state.slack_client.post_message(
                         _mirror_chan,
                         mirror_prompt_echo(_prepare_mirror_msg(_user_msg_for_mirror)),
-                        _mirror_thread,
+                        _mirror_post_ts,
                     )
                 # A separate placeholder, not the task stream's opening text:
                 # a stream only appends, so a "Thinking…" written into it stays
@@ -530,7 +544,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
                 # at turn end, whichever comes first.
                 turn._mirror_thinking_ts = (
                     await state.slack_client.post_message(
-                        _mirror_chan, _MIRROR_THINKING, _mirror_thread
+                        _mirror_chan, _MIRROR_THINKING, _mirror_post_ts
                     )
                     or ""
                 )
