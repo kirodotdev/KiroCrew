@@ -882,3 +882,91 @@ def test_a_health_snapshot_leaves_a_pending_row_pending(seeded):
 
     assert slot.window_pending
     assert snap.last_message_ts
+
+
+@pytest.mark.asyncio
+async def test_restore_drains_its_tab_id_backfills_before_returning(seeded, monkeypatch):
+    """A tab-id backfill is an ``os.replace`` of a session file. If restore
+    leaves it in flight (the fire-and-forget off-loop helper), it can still be
+    mid-replace when a caller reads the same transcript on the loop right after
+    restore — on Windows that ``open()`` is a sharing violation
+    (``PermissionError``) the on-loop read cannot wait out, and it re-raises.
+    The async restore driver must COMMIT its own backfills before it returns.
+
+    The seeded transcripts carry no ``tab_id``, so every restored tab mints one
+    and schedules a backfill. This asserts the driver's contract: it does NOT
+    hand those backfills to the fire-and-forget off-loop helper, and once it
+    RETURNS the backfilled ``tab_id`` is already durable on every restored tab,
+    so no replace is still racing a reader.
+    """
+    monkeypatch.setattr(cp, "EAGER_WINDOW_RESTORES", 1)
+    state = _make_state(seeded / "sessions")
+    conv_log = state.conversation_log
+
+    # The fire-and-forget helper must not be the one carrying a restore backfill:
+    # that is the path whose os.replace outlives the driver's return.
+    fire_and_forget: list[tuple[str, dict]] = []
+    real_off_loop = cp.update_metadata_off_loop
+
+    def _record_off_loop(log, key, fields):
+        fire_and_forget.append((key, dict(fields)))
+        return real_off_loop(log, key, fields)
+
+    monkeypatch.setattr(cp, "update_metadata_off_loop", _record_off_loop)
+
+    restored = await cp.restore_open_slots_async(state)
+
+    assert restored == len(_KEYS)
+    # The async driver drained the backfills itself rather than firing them off.
+    assert fire_and_forget == []
+    # And every restored tab's backfilled tab_id is already durable on disk the
+    # moment restore returned — nothing left mid-replace to race a reader.
+    for k in _KEYS:
+        assert conv_log.get_metadata(_history_key_for(k)).get("tab_id"), k
+    # An immediate on-loop read of the eager tab still returns its transcript.
+    eager = next(k for k in _KEYS if k in state._slots and not state._slots[k].window_pending)
+    assert conv_log.read_messages_chained(_history_key_for(eager))
+
+
+@pytest.mark.asyncio
+async def test_restore_backfill_does_not_recreate_a_session_deleted_mid_restore(
+    seeded, monkeypatch
+):
+    """Deferring the tab-id backfills to the end of the restore pass widens the
+    window in which a ``DELETE /api/sessions/{key}`` can land. The drain must go
+    through ``update_metadata_if(require_existing=True)``, which re-checks
+    existence UNDER the write lock, so a session unlinked during that window is
+    left deleted instead of being resurrected as a metadata-only transcript the
+    next recent-session restore would reopen as an empty tab.
+
+    We model the delete by unlinking one restored transcript right before the
+    drain runs (``_apply_restored_open_slot`` is the last thing the loop does per
+    tab). The drained backfill for that key must then NOT recreate the file.
+    """
+    monkeypatch.setattr(cp, "EAGER_WINDOW_RESTORES", 1)
+    state = _make_state(seeded / "sessions")
+    conv_log = state.conversation_log
+
+    # Delete the LAST key's transcript at the moment its slot is applied — i.e.
+    # after it is queued for backfill but before the end-of-loop drain runs.
+    victim = _KEYS[-1]
+    victim_path = conv_log._path(_history_key_for(victim))
+    real_apply = cp._apply_restored_open_slot
+
+    def _apply_then_maybe_delete(*args, **kwargs):
+        result = real_apply(*args, **kwargs)
+        if args[1] == victim and victim_path.exists():
+            victim_path.unlink()
+        return result
+
+    monkeypatch.setattr(cp, "_apply_restored_open_slot", _apply_then_maybe_delete)
+
+    await cp.restore_open_slots_async(state)
+
+    # The deleted transcript was NOT recreated by the drained backfill.
+    assert not victim_path.exists(), "a deleted session was resurrected by its backfill"
+    # The surviving tabs still got their tab_id.
+    for k in _KEYS:
+        if k == victim:
+            continue
+        assert conv_log.get_metadata(_history_key_for(k)).get("tab_id"), k

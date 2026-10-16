@@ -1047,6 +1047,7 @@ def _apply_restored_open_slot(
     preserve_remote_only: bool = False,
     tail: list[dict] | None = None,
     dropped: set[str] | None = None,
+    pending_backfills: list[tuple[str, dict]] | None = None,
 ) -> int:
     """Turn one prefetched open-tab read into a slot; return 1 if it restored.
 
@@ -1076,6 +1077,15 @@ def _apply_restored_open_slot(
     across every boot, so counting it would raise the same warning on every restart
     for a system working as intended. A warning that repeats forever is one the user
     learns to ignore, which costs the real loss its only visible signal.
+
+    *pending_backfills* collects the ``(key, fields)`` of any tab-id metadata
+    backfill this tab mints, instead of firing it off the loop here. The async
+    driver passes a list and DRAINS it before returning, so restore's own
+    ``os.replace`` of a session file is committed before it hands control back —
+    a caller's immediate on-loop read then cannot land inside that replace window
+    and trip a Windows sharing violation. When ``None`` (the
+    synchronous ``restore_recent_sessions`` driver) the backfill fires off the
+    loop as before.
     """
     if not readable:
         unrestored.add(key)
@@ -1150,6 +1160,7 @@ def _apply_restored_open_slot(
         _prefetched_agent=agent,
         _prefetched_effort_marker=effort_marker,
         _lazy_tail=tail if messages is None else None,
+        _pending_backfills=pending_backfills,
     )
     return 1 if slot is not None else 0
 
@@ -1287,6 +1298,11 @@ async def restore_open_slots_async(state: DashboardState) -> int:
         state.unrestored_slot_keys = unrestored
         # The subset a reader is told about -- see _apply_restored_open_slot.
         dropped: set[str] = set()
+        # Tab-id backfills this restore mints. Drained (its os.replace committed)
+        # before we return, so a caller's immediate on-loop transcript read cannot
+        # race a backfill still in flight on Windows. See
+        # _apply_restored_open_slot's pending_backfills note.
+        pending_backfills: list[tuple[str, dict]] = []
         conv_log = state.conversation_log
         # Which key the loop is on, so a cancellation can name the ones it never
         # read. This driver awaits once per tab, so a shutdown landing in the middle
@@ -1358,6 +1374,7 @@ async def restore_open_slots_async(state: DashboardState) -> int:
                         preserve_remote_only=preserve_remote_only,
                         tail=tail,
                         dropped=dropped,
+                        pending_backfills=pending_backfills,
                     )
                 except Exception:
                     logger.debug("restore_open_slots: rehydrate failed for %s", key, exc_info=True)
@@ -1384,6 +1401,41 @@ async def restore_open_slots_async(state: DashboardState) -> int:
             raise
         # Every key in the seed has now been looked at.
         enumerated = True
+        # Commit the tab-id backfills this restore minted BEFORE returning. Each is
+        # an os.replace of a session file; left in flight (the fire-and-forget
+        # off-loop helper), it would still be mid-replace when a caller reads the
+        # same transcript on the loop right after restore, and on Windows that
+        # open() is a sharing violation the on-loop read cannot wait out, so the
+        # read re-raises PermissionError. Awaited one at a time off the
+        # loop so the flock/os.close/os.replace stay off the event-loop thread.
+        #
+        # Through ``update_metadata_if(require_existing=True)``, NOT the plain
+        # upserting ``update_metadata``: deferring every backfill to here widens
+        # the gap between a tab restoring and its write landing, and a
+        # ``DELETE /api/sessions/{key}`` can fall inside it. The checked variant
+        # re-reads existence UNDER the write lock, so a session unlinked during the
+        # restore window is left deleted instead of being recreated as a
+        # metadata-only transcript the next recent-session restore reopens as an
+        # empty tab. The guard always proceeds; existence is the only gate, and the
+        # minted tab_id has no on-disk siblings so a backfill that is correctly
+        # skipped loses nothing. Best-effort: a backfill is metadata already
+        # reflected in the restored slot, so a lock timeout / I/O error / a skipped
+        # (deleted) write is logged, not raised.
+        for _bk_key, _bk_fields in pending_backfills:
+            try:
+                await asyncio.to_thread(
+                    conv_log.update_metadata_if,
+                    _bk_key,
+                    _bk_fields,
+                    lambda _meta: True,
+                    require_existing=True,
+                )
+            except Exception:  # noqa: BLE001 - best-effort metadata backfill
+                logger.warning(
+                    "restore_open_slots: tab-id backfill failed for %s",
+                    _bk_key,
+                    exc_info=True,
+                )
         if restored:
             logger.info("Restored %d open tab(s) from open_slots.json", restored)
         _report_restore_budget(state, skipped)
@@ -1883,6 +1935,7 @@ def _rehydrate_slot_from_history(
     _prefetched_agent: str | None = None,
     _prefetched_effort_marker: bool = False,
     _lazy_tail: list[dict] | None = None,
+    _pending_backfills: list[tuple[str, dict]] | None = None,
 ) -> _ChatSlot | None:
     """Rehydrate a single dashboard slot from persisted history.
 
@@ -2015,9 +2068,21 @@ def _rehydrate_slot_from_history(
             # returns the identical window whether it is written before or after.
             # Kept off the loop because update_metadata enters _locked (flock +
             # os.close), a blocking-on-loop-prohibited op.
-            update_metadata_off_loop(
-                state.conversation_log, history_key, {"tab_id": applied.minted_tab_id}
-            )
+            #
+            # Reading first makes the self-tab read quiescent, but firing the
+            # backfill off the loop here still leaves its os.replace in flight when
+            # the restore driver returns. A caller that reads THIS transcript on the
+            # loop right after restore (the sidebar's `before` read, a resume) can
+            # then land inside the replace window — the same Windows sharing
+            # violation. When the driver supplies a drain list we hand the backfill
+            # to it so the replace is committed before the driver returns;
+            # otherwise it fires off the loop directly.
+            if _pending_backfills is not None:
+                _pending_backfills.append((history_key, {"tab_id": applied.minted_tab_id}))
+            else:
+                update_metadata_off_loop(
+                    state.conversation_log, history_key, {"tab_id": applied.minted_tab_id}
+                )
         if _lazy_tail is not None:
             # A sidebar row: the window waits for its first reader. The tail
             # stands in for the summary, and nothing here read the transcript,
