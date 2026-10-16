@@ -51,7 +51,6 @@
 2339 src/kiro_crew/connections/warm.py
 5311 src/kiro_crew/crew_log/emit.py
 2260 src/kiro_crew/crew_log/session_tree_projection.py
-5054 src/kiro_crew/crew_log/store.py
 3161 src/kiro_crew/cron_script.py
 2643 src/kiro_crew/dashboard/change_cards.py
 3398 src/kiro_crew/dashboard/chat_folders.py

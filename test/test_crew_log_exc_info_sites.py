@@ -63,8 +63,8 @@ VETTED: frozenset[tuple[str, str]] = frozenset(
         ("session_tree_projection.py", "forget_unit"),
         ("session_tree_projection.py", "reconcile_unit_edge"),
         ("session_tree_projection.py", "retract_unit_parent"),
-        ("store.py", "remove_unit"),
-        ("store.py", "sweep_expired"),
+        ("store_removal.py", "remove_unit"),
+        ("store_retention.py", "sweep_expired"),
     }
 )
 

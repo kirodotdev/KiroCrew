@@ -5024,7 +5024,7 @@ only — the dashboard's `notif-io` pool
 runs. The fix that removes the race rather than draining it is the one in
 [the classes it found](#the-classes-it-found-and-the-one-correct-fix-for-each): resolve
 every path when the work is queued. For the member log that means threading a home
-through `crew_log/store.py`, which derives it at each of the log, lease, segment and
+through `crew_log/store_paths.py`, which derives it at each of the log, lease, segment and
 checkpoint paths; production never moves its home, so only the suite pays. A new
 fire-and-forget writer resolves at queue time AND joins a drain.
 

@@ -1011,7 +1011,7 @@ def _ensure_crew_log_root(home: Path, restrict: Callable[[Path], None]) -> None:
         # every crew log path beneath it would pass while living outside this tree.
         # Establishing them here is what the argument above makes for the root --
         # a name that does not exist has no mode to inherit and is skipped by the
-        # sandbox mask. The names are the spellings ``crew_log/store.py::_ROOT_DIR``
+        # sandbox mask. The names are the spellings ``crew_log/store_paths.py::_ROOT_DIR``
         # maps its kinds to; this module imports no ``kiro_crew`` package at module
         # scope, so they are stated rather than read.
         for leaf in ("crews", "sessions"):

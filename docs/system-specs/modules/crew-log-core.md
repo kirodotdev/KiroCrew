@@ -1,6 +1,6 @@
 # Crew log Core
 
-Owners: `kiro_crew.crew_log` (`schema.py`, `store.py`, `errors.py`, `lease.py`, `entry_types.py` with the field leaf `entry_types_fields.py` and the family owners `entry_types_lifecycle.py`, `entry_types_exchange.py`, `entry_types_delegated.py`, `entry_types_ledgers.py`, `entry_types_surfaces.py`)
+Owners: `kiro_crew.crew_log` (`schema.py`, `store.py` with its owners `store_paths.py`, `store_segment_reads.py`, `store_cuts.py`, `store_segment_writes.py`, `store_tail_repair.py`, `store_results.py`, `store_units.py`, `store_removal.py`, `store_retention.py` and `store_handle.py`, `errors.py`, `lease.py`, `entry_types.py` with the field leaf `entry_types_fields.py` and the family owners `entry_types_lifecycle.py`, `entry_types_exchange.py`, `entry_types_delegated.py`, `entry_types_ledgers.py`, `entry_types_surfaces.py`)
 
 ## 1. Purpose
 
@@ -35,6 +35,25 @@ Every kind lives under ONE `crew-log` leaf, and that leaf is what carries the pr
 Session crew logs do **not** live under the flat `sessions/<key>.jsonl` transcript root, which they could otherwise share without shadowing. That root carries neither fence -- it is not in `_CREW_HIDDEN_LEAVES` (the `sessions` deny that exists is the private-member view's, which covers one narrow population) -- so a session's log there was write-protected by the tool gate alone. Naming the shared root instead of one leaf per kind also means a third unit kind inherits both fences rather than needing a reviewer to notice it was left out.
 
 The `crew-log` root is established EAGERLY, and that is what makes the mask non-vacuous. Both fences are stated per PATH, and the Linux bind-mask loop skips a leaf that does not exist -- so a root created lazily on the first write is unmasked in every sandbox spawned before it, one of which can then create the directory itself and fill it with entries a reader would take as the gateway's. Two mechanisms close that: `ensure_data_home()` creates it `0700` at startup, and `chmod`s it too, since `mkdir`'s mode is umask-masked on creation and a no-op on a directory that already exists; and `sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES` materialises it empty before every namespace spawn so the bind always has a name to cover. macOS needs neither: a Seatbelt deny is a path rule that holds for a name that does not exist yet.
+
+### 3a. Where the store's code lives
+
+`crew_log/store.py` is the module every caller imports, and every name it bound before its owners moved out is still reached there. It is a mirror facade (`kiro_crew._facade_mirror`): it binds each name an owner defines, so its namespace holds the definitions the unsplit module held, and it serves the names the owners import from the owner holding them. A patch through the facade reaches every owner holding the name, so the moved code reads its names as plain module globals. Owners never import the facade, each imports only the owners listed before it below, and new work goes to the owner of its responsibility rather than back into the facade. The store logs under the facade's name, `kiro_crew.crew_log.store`, whichever owner writes the record. `_slot_index` is the one owner name the facade serves instead of binding: `session_units_by_slot` rebinds it, so it lives in `crew_log/store_units.py` alone, where a copy on the facade would go stale.
+
+| Owner | Holds |
+|---|---|
+| `crew_log/store_paths.py` | the data-home root of each kind and its checked form, a unit's directory and file, segment naming and ordering (`segment_paths`, `oldest_segment`, `newest_segment`), the lock beside the log, `_mkdir_private`, `now_ms`, and the store's one logger with `log_exception_text` |
+| `crew_log/store_segment_reads.py` | reading one segment: the bounded tail window (`_scan_tail`, `_TAIL_WINDOW`), entry iteration, the header line, `read_head`, and `_anchor_exists` |
+| `crew_log/store_cuts.py` | the `.cuts` seqlock (`read_cuts`, `_open_cut`, `_close_cut`) and its durable writes |
+| `crew_log/store_segment_writes.py` | one durable append (`_append_line`, `_append_lines`), its rollback, and the one allowed truncation (`_truncate`) |
+| `crew_log/store_tail_repair.py` | the closers `open(repair=True)` appends to an interrupted tail (`_close_interrupted_tail`, `_open_tail`, `_closer_entries`) and the orphan chunk group it drops |
+| `crew_log/store_results.py` | what a read returns: `Page`, `Resolution` and its `STATUS_*` outcomes, `ReadCursor`, `ResumePoint`, and the page limits |
+| `crew_log/store_units.py` | proving a unit's header, the unit listings (`unit_ids`, `unit_dirs`, `unit_dir_for`), the header reads, and the slot index (`session_units_by_slot`, `session_units_for_slot`) |
+| `crew_log/store_removal.py` | `remove_unit` and its `REMOVE_*` outcomes, trash holds, and staging a unit out of and back into the live tree |
+| `crew_log/store_retention.py` | `sweep_expired`, and the session tree's reads of a unit's log: `read_last_tree_edge` (the tail window the sweep reads), `find_last_tree_edge` (every segment), `tree_edge_scan_identity` (when an earlier complete answer still holds) and `find_spawned_entries` (the whole log) |
+| `crew_log/store_handle.py` | `CrewLog`, the handle on one unit's log |
+
+`test/test_store_crew_log_facade.py` pins the owner set and its layer order, the names the facade binds and serves, the patch reach of every name the test trees patch through the facade, and the names served from outside the family.
 
 ## 4. Envelope
 
