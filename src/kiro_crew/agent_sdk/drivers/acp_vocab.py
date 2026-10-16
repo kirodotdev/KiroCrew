@@ -4,8 +4,11 @@ Stop classes and the stop-reason classifier, the stop reasons of a turn the
 backend did not finish, the structured-status frame and its wait reasons, the
 terminal tool-call statuses, the session-start and prompt timeouts and the
 native-child marker are backend vocabulary a consumer compares against or
-raises on. They reach application code from here, so a consumer never names
-``kiro_crew.acp`` itself (``scripts/check_agent_sdk_boundary.py``).
+raises on. The in-flight tool-call tracker is here too: a sub-agent's run
+record builds one as a dataclass field default, so the class has to be bound
+when that module is imported. They reach application code from here, so a
+consumer never names ``kiro_crew.acp`` itself
+(``scripts/check_agent_sdk_boundary.py``).
 
 Unlike :mod:`kiro_crew.agent_sdk.drivers.acp`, the imports here are at MODULE
 scope on purpose: a constant has to exist when the importing module binds it.
@@ -18,6 +21,7 @@ the import this module replaces.
 from __future__ import annotations
 
 from kiro_crew.acp.client import AcpError, AcpProcessDied, AcpTimeoutError
+from kiro_crew.acp.liveness import InFlightToolTracker
 from kiro_crew.acp.session_handle import NATIVE_CHILD_NOT_RESUMABLE, AcpRequestTimeout
 from kiro_crew.acp.types import (
     EVENT_STRUCTURED_STATUS,
@@ -56,6 +60,7 @@ __all__ = [
     "WAIT_REASON_INPUT",
     "AcpRequestTimeout",
     "AcpTimeoutError",
+    "InFlightToolTracker",
     "StructuredStatus",
     "classify_stop_reason",
 ]

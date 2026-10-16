@@ -135,7 +135,7 @@ exceptions.
 - Create: `src/kiro_crew/run_coordinator/memory.py`
 - Create: `src/kiro_crew/run_coordinator/__init__.py`
 - Create: `test/test_run_coordinator_contract.py`
-- Modify: `src/kiro_crew/subagent.py` (`SubagentManager.__init__`, for the optional
+- Modify: `src/kiro_crew/subagent_parts/manager.py` (`SubagentManager.__init__`, for the optional
   `coordinator=` injection)
 - Modify: `docs/request-for-change/rfc-durable-run-coordinator.md`
 

@@ -569,11 +569,11 @@ _MUTATORS = frozenset(
 
 @functools.lru_cache(maxsize=1)
 def _manager_methods() -> frozenset[str]:
-    """The methods ``SubagentManager`` defines: calls, not fields."""
-    tree = ast.parse(Path(subagent_mod.__file__).read_text(encoding="utf-8"))
-    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "SubagentManager")
+    """The methods ``SubagentManager`` defines or binds from a collaborator: calls, not fields."""
     return frozenset(
-        n.name for n in cls.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        name
+        for name, member in vars(subagent_mod.SubagentManager).items()
+        if inspect.isfunction(member) or isinstance(member, (staticmethod, classmethod, property))
     )
 
 

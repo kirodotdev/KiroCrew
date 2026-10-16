@@ -30,7 +30,7 @@ _RUN_ID_HEX_CHARS = 16
 # Wall-clock deadline for one subagent run: the fallback when config is
 # unavailable or ``agent.subagent_timeout_secs`` is 0. One owner in
 # ``constants`` because the MCP gateway's hard-wedge ceiling has to sit above
-# it (see ``mcp_gateway/backend.py``).
+# it (see ``mcp_gateway/backend_liveness.py``).
 _TIMEOUT_SECS = SUBAGENT_TIMEOUT_SECS
 
 

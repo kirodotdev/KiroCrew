@@ -2831,6 +2831,8 @@ class TestRunIdMinting:
             assert len({d[pos] for d in drawn}) > 1, pos
 
     def test_one_draw_site_owns_the_width(self):
+        import inspect
+
         import kiro_crew.subagent_manager as manager_pkg
 
         package = pathlib.Path(manager_pkg.__file__).parent
@@ -2846,14 +2848,13 @@ class TestRunIdMinting:
         assert component_draws == []
 
         facade = pathlib.Path(subagent_module.__file__)
-        source = facade.read_text(encoding="utf-8")
         family = "".join(
             path.read_text(encoding="utf-8")
             for path in (facade, *sorted(facade.with_name("subagent_parts").glob("*.py")))
         )
         assert family.count("os.urandom(") == 1
         assert "uuid4()" not in family
-        mint = source.split("def _mint_agent_id", 1)[1].split("\n    def ", 1)[0]
+        mint = inspect.getsource(subagent_module.SubagentManager._mint_agent_id)
         assert "os.urandom(_RUN_ID_HEX_CHARS // 2).hex()" in mint
 
 

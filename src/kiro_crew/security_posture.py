@@ -937,7 +937,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "Subagent results",
-        "subagent.py",
+        "subagent_parts/run_output.py",
         "Task text and returned results before injection into the parent context or "
         "the dashboard.",
     ),
@@ -1939,21 +1939,24 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # README requires rather than a boundary's own guarantee. The surfaces
         # that SHOW frame-derived text are the registered sinks.
         "acp/_frame_record.py",
-        # Internal coordinator partitions behind the single registered
-        # ``subagent.py`` output boundary.  They redact lifecycle payloads before
-        # handing them to facade-owned event/completion callbacks, but the split
-        # adds no new transport or audience and therefore no additional posture
-        # row.
+        # Internal coordinator partitions behind the single registered subagent
+        # output boundary, ``subagent_parts/run_output.py``.  They redact lifecycle
+        # payloads before handing them to facade-owned event/completion callbacks,
+        # but the split adds no new transport or audience and therefore no
+        # additional posture row.
         "subagent_manager/admission/gate.py",
         "subagent_manager/admission/pump.py",
         "subagent_manager/continuation.py",
         "subagent_manager/monitoring.py",
         "subagent_manager/run.py",
         "subagent_manager/terminal.py",
-        # The owners composed onto that same ``subagent.py`` namespace hold its moved
-        # redaction helpers; they add no transport or audience either.
+        # The other owners composed onto the ``subagent.py`` namespace hold moved
+        # redactor calls; they add no transport or audience either.
+        "subagent_parts/admission_surface.py",
         "subagent_parts/agent_policy.py",
-        "subagent_parts/run_output.py",
+        "subagent_parts/continuation_surface.py",
+        "subagent_parts/monitor_surface.py",
+        "subagent_parts/terminal_surface.py",
         # Internal partitions behind the single registered
         # ``apps/builtins/aws_control/backend/backup.py`` boundary, which keeps every
         # outbound archive and label PUT. ``egress_text`` defines the redaction sequence
@@ -1981,7 +1984,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # the same safe text. They own no output — the scrubbed text reaches a
         # human only through the delivering surfaces (the cron/heartbeat alert
         # paths composed into slack/gateway.py and the sub-agent completion path
-        # in subagent.py), which are the registered sinks.
+        # in subagent_parts/run_output.py), which are the registered sinks.
         "llm_helpers.py",
         # Shared in-band deny-notice builder: redacts the provider-authored tool
         # title ONCE, centrally, before the notice is steered back into the

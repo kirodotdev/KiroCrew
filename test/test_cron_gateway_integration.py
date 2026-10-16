@@ -1206,7 +1206,7 @@ class TestCronDefaultAgent:
         ``read_session_execution(parent)`` ->
         ``parent_spawn_allowlists(parent_execution.template_id)``
         (``dashboard/handlers/messaging.py``, and the off-loop twin in
-        ``subagent.py``). For the floor spelling that resolves to ``()``, which
+        ``subagent_parts/admission_surface.py``). For the floor spelling that resolves to ``()``, which
         ``_vet_parent_available_agents`` admits as "no declaration to honour" --
         so a ``toolsSettings.subagent.availableAgents`` declaration on the
         substituted template is never consulted and a child it forbids starts.

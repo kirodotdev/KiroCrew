@@ -1081,7 +1081,7 @@ class _PumpMixin(ManagerComponent):
             # that field (``POST /api/spawn``) runs BEFORE this task does, so a
             # code minted here would reach no caller — and an unread code is
             # contract surface bought for nothing (see ``error_code``'s own
-            # note in ``subagent.py``). The audit ``reason`` below is what
+            # note in ``subagent_parts/run_record.py``). The audit ``reason`` below is what
             # separates this from a decline for a machine; the prose is what
             # separates it for the agent that receives the completion event.
             info.error = no_surface_error or "spawn rejected"

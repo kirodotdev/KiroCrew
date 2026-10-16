@@ -67,6 +67,7 @@ __all__ = [
     "kiro_cli_resolves",
     "narrowed_agent_permissions",
     "provider_error_client",
+    "provider_label",
     "resolve_pin_spelling",
     "resolve_pin_spelling_on",
     "resolve_usable_model",
@@ -168,6 +169,20 @@ def resolve_usable_model(preferred: str, advertised: object, *, backend: str = "
     from kiro_crew.acp.client import resolve_usable_model as _impl
 
     return _impl(preferred, advertised, backend=backend)  # type: ignore[arg-type]
+
+
+def provider_label(provider: object) -> str:
+    """The backend identity key a session or run persists for *provider*.
+
+    Thin delegation to :func:`kiro_crew.providers.acp.provider_label`, so the
+    sub-agent run surface reaches it through the SDK surface instead of
+    importing the providers layer (the agent-sdk-boundary gate refuses a new
+    edge). Plain data out. Function-local import for the same reason as
+    :func:`resolve_pin_spelling`.
+    """
+    from kiro_crew.providers.acp import provider_label as _impl
+
+    return _impl(provider)
 
 
 def catalog_row_would_drop(model_id: str, advertised: object) -> bool:

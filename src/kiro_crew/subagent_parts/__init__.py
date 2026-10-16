@@ -2,7 +2,8 @@
 
 ``kiro_crew.subagent`` is split by responsibility across the modules of this package and
 stays its only import path and its only patch surface: nothing but ``kiro_crew.subagent``
-imports a module of this package.
+imports a module of this package at runtime, except ``manager.py``, which imports the
+``*_surface`` modules its class binds and ``run_limits`` for its default arguments.
 
 Each owner holds definitions taken verbatim from the one-module file and keeps no state of
 its own. :func:`kiro_crew._facade_compose.compose` makes every function an owner defines -- its module functions and
@@ -24,7 +25,8 @@ coordinator ``*_impl`` methods and so cannot rebind an owner's functions. Conseq
   that needs for real, from the module that defines it.
 * A function's ``__module__`` reads ``kiro_crew.subagent``, as before the split; only its
   source file differs. An owner's classes keep their own module, which is where ``inspect``
-  looks for a class's source.
+  looks for a class's source -- except ``SpawnApprovalUnreachable``, an exception callers
+  catch by name, which reports ``kiro_crew.subagent`` and defines no function to rebind.
 * A ``global`` statement in an owner function writes ``kiro_crew.subagent``'s namespace, so
   module state such a function rebinds is read there (``_host_read_in_flight``).
 

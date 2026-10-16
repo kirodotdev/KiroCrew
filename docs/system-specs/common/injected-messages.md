@@ -151,7 +151,8 @@ time-to-first-token distribution.
 ## Sub-agent delivery failure
 
 A sub-agent reached a terminal state but injecting its report into the parent
-session failed (most commonly a delivery timeout). `subagent.py` builds:
+session failed (most commonly a delivery timeout). `subagent_manager/terminal.py` builds,
+reached through `SubagentManager.notify_injection_failed`:
 
 ```
 [Subagent completion event]

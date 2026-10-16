@@ -83,12 +83,14 @@ def _tree(rel: str) -> ast.Module:
 #: dashboard agents handlers run the functions ``dashboard/agent_admin`` defines on
 #: ``handlers/agents.py``'s globals, the chat handlers those ``dashboard/chat_api``
 #: defines on ``chat_handlers.py``'s, and the chat runner those ``dashboard/chat_turn``
-#: defines on its own, so the identity ratchet reads those owners as
+#: defines on its own, and ``subagent.py`` runs those of ``subagent_parts`` on its own,
+#: so the identity ratchet reads those owners as
 #: part of that file.
 _COMPOSED_OWNERS = {
     "dashboard/handlers/agents.py": "dashboard/agent_admin",
     "dashboard/chat_handlers.py": "dashboard/chat_api",
     "dashboard/chat_runner.py": "dashboard/chat_turn",
+    "subagent.py": "subagent_parts",
 }
 
 

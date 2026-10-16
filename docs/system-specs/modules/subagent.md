@@ -113,13 +113,23 @@ below, and every function the family defines runs on that module's globals.
 
 | Module | Owns |
 |---|---|
-| `subagent.py` | The import block (including the agent-sdk boundary edges baselined for this file), the logger, `SubagentInfo` and the delivery contract, `SubagentManager`, and the composition tail |
+| `subagent.py` | The import block (including the agent-sdk boundary edges baselined for this file), the logger, the `ClaudeCodeProvider` sentinel, the background-task registry, the re-exports and the composition tail |
 | `subagent_parts/run_limits.py` | The timeouts, limits and wire markers a run is held to (the Constants below) |
 | `subagent_parts/run_output.py` | What a run reports: redaction and truncation, exception text, the done result, the usage line, `SubagentDelivery`, `_RunCreditAccounting` |
 | `subagent_parts/agent_policy.py` | Which agent a spawn may name: reserved names and refusal codes, the roster, app ownership, governance vetting, the `availableAgents` allowlists, parent spawn policy, `validate_cwd` |
 | `subagent_parts/model_choice.py` | Which model and reasoning effort a run uses, and the effort notes |
 | `subagent_parts/host_memory.py` | Host and cgroup memory readings, process-subtree sampling, the count ceiling and `resolve_max_subagents` |
 | `subagent_parts/start_pricing.py` | What a start costs in memory, the admitted-start reserve, the one off-loop host reading |
+| `subagent_parts/run_record.py` | The run record, `SubagentInfo`, and the scope fields it carries |
+| `subagent_parts/delivery.py` | How a run's outcome reaches its parent: the callback contracts, the delivery-routing field table and `delivery_is_parked`, the teardown gate's run ids |
+| `subagent_parts/manager.py` | `SubagentManager`: its constructor, class attributes and properties, the durable task queue it opens and closes, and one binding per other method |
+| `subagent_parts/config_surface.py` | The manager's live configuration: sizing re-reads, the turn limit, the completion keep, the effective cap and its raise listener, the queue dispatch release |
+| `subagent_parts/admission_surface.py` | The spawn entry: admission (sync and async) and its spawn approval, the startup population and its clock, the run-id draw, the memory-pressure hold, the queue drain and dispatch, the queued-run and task-memory reads |
+| `subagent_parts/continuation_surface.py` | Continuable conversations: successor claims, `continue_conversation`, steering and follow-ups, conversation release and the registry rebuild |
+| `subagent_parts/monitor_surface.py` | The orphan and stall watch: the reaper loop, process probes and orphan notices, stall attribution and slow-command notes, live cost sampling, the dependency coordinator, the task-queue pump |
+| `subagent_parts/terminal_surface.py` | Terminal reports: the finalize claim and the report's await, the slot release, forced reaps and session kills, the tombstone writer, panel-dismissal settling, the injection-failure notice, the wave and batch digest |
+| `subagent_parts/run_surface.py` | The run loop glue: `_run`, `_run_inner`, the stop-recovery and dependency yields, shared-session recognition and the sharing plan, the provider seam, run lookups, the queue-depth and pending-work queries, the off-loop state and result writers |
+| `subagent_parts/cancellation_surface.py` | Cancellation: the one intentional-cancel chokepoint, queued-run stops, cancel recovery, the parent-end teardown wrappers and their fence |
 | `subagent_manager/` | The coordinators `SubagentManager` delegates to (`OrphanStallMonitor`, `TerminalCoordinator`, `SpawnAdmissionCoordinator`, `ContinuationCoordinator`, `WaveDigestCoordinator`, `RunEventCoordinator`, `CancellationCoordinator`) |
 
 **One namespace, two rebinding passes.** The shared `kiro_crew._facade_compose.compose`
@@ -132,18 +142,40 @@ reads the owner's own globals, as the one-module file read them once at import; 
 `typing.get_type_hints` on an owner's class (`SubagentDelivery` resolves; `_RunCreditAccounting.info`
 names `SubagentInfo`, which `run_output` binds for type checking only). Pinned by
 `test/test_subagent_parts_composition_contract.py` (bytecode sweep, patch reach derived
-from the test trees, import graph, the moved names' BASE shapes).
+from the test trees, import graph, the moved names' BASE shapes, the class inventory).
+
+**The class binds its methods.** A `*_surface` owner holds `SubagentManager` methods as
+module functions taking the manager as `self`, and `manager.py` binds each one as the class
+attribute of the same name (`spawn = _admission_surface.spawn`, `staticmethod(...)` for a
+static one), grouped under one comment per surface. The class attribute IS that function,
+so `MagicMock(spec=SubagentManager)`, autospec, `inspect.signature` and
+`SubagentManager.<name>` patches see what the one-module class had; `compose` gives each
+bound function its `SubagentManager.<name>` qualname back. A method that needs the class
+body (zero-argument `super()`, `__class__`, a name-mangled attribute) stays in `manager.py`.
+Each surface's docstring lists the manager fields it reads and writes. The fields mypy
+reports `[has-type]` for when a `*_surface` owner or a `subagent_manager` coordinator reads
+them are declared with their types in the class body
+(`_admission: SpawnAdmissionCoordinator`): both import the class only under
+`TYPE_CHECKING`, so mypy checks them before it infers those fields from `__init__`. A moved
+class reports its owner module as its `__module__` (`SubagentManager`, `SubagentInfo`, the
+callback Protocols, `_AgingIdSet`, `_BareStateView`), because nothing reads it;
+`SpawnApprovalUnreachable` reports `kiro_crew.subagent`, because a traceback, a log line
+and a pickle name an exception by its module.
 
 **Where new code goes.** A module-level helper goes in the `subagent_parts` owner of its
-responsibility, and `subagent.py` re-exports it; nothing else imports a `subagent_parts`
-module (import the name from `kiro_crew.subagent`). An owner imports the facade only under
-`TYPE_CHECKING`, and imports for real only what its own import-time code needs.
+responsibility, and `subagent.py` re-exports it; a new `SubagentManager` method goes in the
+surface of its responsibility and gets its binding in `manager.py`. Nothing but
+`kiro_crew.subagent` imports a module of `subagent_parts` at runtime, except `manager.py`,
+which imports the `*_surface` modules its class binds and `run_limits` for its default
+arguments; everything else imports the name from `kiro_crew.subagent`. An owner imports
+the facade only under `TYPE_CHECKING`, and imports for real only what its own import-time
+code needs.
 
 **What stays in `subagent.py`, and why.** The `kiro_crew.acp` / `kiro_crew.providers`
-imports (`scripts/check_agent_sdk_boundary.py` lets no other module carry them), the
-`kiro_crew.subagent` logger the caplog pins name, and the names the coordinators read from
-its globals (`_COMPONENT_GLOBAL_BINDINGS`; the owners' reads are `_PARTS_GLOBAL_BINDINGS`).
-
+imports (`scripts/check_agent_sdk_boundary.py` lets no other module carry them; owners reach
+ACP values through `kiro_crew.agent_sdk.drivers`), the `kiro_crew.subagent` logger the
+caplog pins name, and the names the coordinators read from its globals
+(`_COMPONENT_GLOBAL_BINDINGS`; the owners' reads are `_PARTS_GLOBAL_BINDINGS`).
 ## Constants
 
 The subagent constants below are defined in `subagent_parts/run_limits.py` (the
@@ -2502,7 +2534,7 @@ tracks which session spawned the subagent.
 
 | Timeout | Location | Duration | Scope |
 |---|---|---|---|
-| Outer cap | `subagent.py _run()` | 1200s (20 min) | Semaphore wait + injection combined |
+| Outer cap | `subagent_parts/run_surface.py _run()` | 1200s (20 min) | Semaphore wait + injection combined |
 | Inner cap | `slack/gateway_runtime/subagent_injection.py` (the channel and cron injections) | 900s (`INJECTION_TIMEOUT`, tunable via `KIROCREW_INJECTION_TIMEOUT`) | Single `stream_and_collect` call |
 
 On timeout (inner or outer):

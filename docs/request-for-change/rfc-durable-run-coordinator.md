@@ -58,18 +58,18 @@ Verified at `c4f253891` on 2026-08-22.
 
 ### 2.1 Strong lifecycle invariants exist, but they are concentrated
 
-`SubagentManager` lives in `src/kiro_crew/subagent.py`, and the module is
-6,415 lines. Its constructor owns process execution, approval callbacks,
+`SubagentManager` lives in `src/kiro_crew/subagent_parts/manager.py`; at the commit above it sat in a
+6,415-line `subagent.py`. Its constructor owns process execution, approval callbacks,
 in-memory run/task registries, the admission queue, batch accounting, terminal
 report tasks, follow-up watchers, conversation retention, and the periodic
 reaper (`SubagentManager.__init__`). The public `spawn()` path then handles identity,
 admission, approval, queueing, persistence, event publication, and task creation
-(`subagent.py`: `spawn`, `_announce_rejection`, `_drain_queue`,
+(`subagent_parts/admission_surface.py`: `spawn`, `_announce_rejection`, `_drain_queue`,
 `_spawn_with_approval`, and `_log_spawned`).
 
 The lifecycle discipline inside that module is valuable and must be preserved.
 In particular, terminal reporting and slot release are independently claimed by
-`_claim_finalize()` and `_release_slot()` (`subagent.py`, both methods of
+`_claim_finalize()` and `_release_slot()` (`subagent_parts/terminal_surface.py`, both methods of
 `SubagentManager`). The system spec documents four distinct terminal guards and why
 collapsing them previously caused duplicate delivery, lost outcomes, or leaked
 slots (`docs/system-specs/modules/subagent.md:175-190`). The problem is not the
@@ -106,12 +106,12 @@ The `spawn_run` MCP tool submits wave members through separate HTTP requests
 gateway accepted the request, so the caller and gateway maintain extra
 submission accounting and lost-submission reconciliation. The manager exposes
 `record_lost_submission()` and a stuck-wave reaper `_sweep_stuck_waves()`
-(`subagent.py`), while the dashboard handler reconciles the roster
+(`subagent_parts/terminal_surface.py`), while the dashboard handler reconciles the roster
 against accepted IDs (`api_spawn_lost` in `src/kiro_crew/dashboard/messaging_api/run_control.py`).
 
 The existing preassigned run ID is an important foundation: `spawn()` assigns
 identity before every exit path and preserves it through queueing
-(`subagent.py`, the `_preassigned_id` parameter of `spawn()`). What is
+(`subagent_parts/admission_surface.py`, the `_preassigned_id` parameter of `spawn()`). What is
 missing is a durable idempotency record that
 makes a repeated submission with the same command key return the same accepted
 decision rather than opening a reconciliation side protocol.

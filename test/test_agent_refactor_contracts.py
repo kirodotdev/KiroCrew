@@ -7,7 +7,7 @@ where the code lives:
 
 * the SURFACE: every name the module bound, with its kind, signature and value;
 * ``toolsSettings.subagent.availableAgents``: a kiro-cli-owned allowlist Crew reads at
-  its own spawn gate (``subagent.py``), carried byte-for-byte through every read,
+  its own spawn gate (``subagent_parts/agent_policy.py``), carried byte-for-byte through every read,
   normalize, rebuild, derived-agent and atomic-write path;
 * the tool-less guest spec, including its model fallback and install order;
 * the conductor prompts and grant tuples, which are spec bytes too.

@@ -384,7 +384,7 @@ spawn tools cannot drift:
 | `include_lessons` | learned corrections, user profile | false only when the child purely reads and reports |
 | `include_project` | `[PROJECT]`, `[DOCUMENTATION]`, steering | false when the work is outside the active project tree |
 
-`subagent.py` → `_context_groups_of` turns them into the `context_groups` set that
+`subagent_parts/run_record.py` → `_context_groups_of` turns them into the `context_groups` set that
 both `build_message` and the `state.json` record read, so a retried or continued
 run sees the scope its caller asked for. Anything withheld is named to the child
 in `[CONTEXT SCOPE]` — an unexplained gap makes a sub-agent invent user
@@ -693,7 +693,7 @@ per-member permission control; both exist today, in the forms above.
 | Steering and hooks | `src/kiro_crew/context_assembly/agent_spec.py` (`_load_steering_resources`, `steering_target_admissible`), `src/kiro_crew/hooks.py` |
 | Post-compaction re-injection | `src/kiro_crew/messaging/turn_bracket.py` (`TurnBracket`, `consume_reinjection`, `rearm_reinjection`; re-exported by `messaging/dispatch.py`) |
 | Ledger snapshot on nudge turns | `src/kiro_crew/session_ledger.py` (`render_snapshot`), `src/kiro_crew/dashboard/handlers/autonudge.py` |
-| Sub-agent context scope | `src/kiro_crew/subagent.py` (`_context_groups_of`), `src/kiro_crew/mcp_tools/spawn.py` |
+| Sub-agent context scope | `src/kiro_crew/subagent_parts/run_record.py` (`_context_groups_of`), `src/kiro_crew/mcp_tools/spawn.py` |
 | Sub-agent prompt assembly, shared vs dedicated | `src/kiro_crew/subagent_manager/run.py` |
 | Scratch directories | `src/kiro_crew/agent_scratch.py` (`allocate_scratch`, `scratch_env`) |
 | The worker agent spec | `src/kiro_crew/agent_materialization/worker_agent.py` (`_write_worker_spec`) |
