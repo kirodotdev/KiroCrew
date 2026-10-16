@@ -141,7 +141,6 @@
 2096 src/kiro_crew/webex/transport_dispatch.py
 4051 src/kiro_crew/work_ledger.py
 2641 test/conftest.py
-2535 test/eventlog/test_eventlog.py
 3482 test/test_acp_deepseek_backend.py
 2852 test/test_acp_pi_backend.py
 2780 test/test_admission_gate.py
