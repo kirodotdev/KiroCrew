@@ -879,7 +879,11 @@ class TestAllowedRootsSingleProducer:
 
         here = Path(artifacts_mod.__file__).parent
         store_src = "".join(p.read_text("utf-8") for p in here.glob("artifacts*.py"))
-        handler_src = Path(handlers_mod.__file__).read_text(encoding="utf-8")
+        facade = Path(handlers_mod.__file__)
+        handler_src = "".join(
+            path.read_text(encoding="utf-8")
+            for path in [facade, *(facade.parent / "artifacts_parts").glob("*.py")]
+        )
         assert store_src.count("Path.home().resolve()") == 1
         assert store_src.count(".publish.relocate_roots") == 1
         assert "Path.home()" not in handler_src

@@ -496,9 +496,9 @@ async def read_bounded_json(
     (``default_empty`` defaults an absent or ``invalid_json`` body, never a 415
     or 413), ``handlers/session_storage.py::_json_body`` (absent is ``{}``,
     malformed is its own ``invalid_body`` 400), and
-    ``handlers/artifacts.py::_read_json_body`` (``ArtifactValidationError`` for
-    the 400s, the 415 raised). So a handler that picks any of them gets the
-    media-type gate.
+    ``handlers/artifacts_parts/route_plumbing.py::_read_json_body``
+    (``ArtifactValidationError`` for the 400s, the 415 raised). So a handler
+    that picks any of them gets the media-type gate.
 
     What this does NOT cover: handlers that still call ``await request.json()``
     directly, and the builtin apps' own body helpers. Those parse whatever media
@@ -607,11 +607,11 @@ def bounded_json_error_as_exception(error: web.Response) -> web.HTTPException:
 
     For the callers whose contract is to RAISE rather than return a response
     (``handlers_channel._json_object``, the 415 from
-    ``handlers/artifacts.py::_read_json_body``). aiohttp answers a raised
-    ``HTTPException`` with its own status and body, so the client sees the same
-    status, ``code`` and JSON the returning callers send. Keeping the mapping
-    here means a raising caller cannot drop the 415 by translating it into the
-    wrong status.
+    ``handlers/artifacts_parts/route_plumbing.py::_read_json_body``). aiohttp
+    answers a raised ``HTTPException`` with its own status and body, so the
+    client sees the same status, ``code`` and JSON the returning callers send.
+    Keeping the mapping here means a raising caller cannot drop the 415 by
+    translating it into the wrong status.
     """
     kwargs: dict[str, Any] = {"text": error.text, "content_type": "application/json"}
     if error.status == 415:

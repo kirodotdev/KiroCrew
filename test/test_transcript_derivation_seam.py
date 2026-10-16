@@ -94,7 +94,7 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
         ("kiro_crew/dashboard/chat_threads.py", "read_messages_chained"),
         ("kiro_crew/dashboard/cron_inject.py", "read_messages"),
         # Rendering the transcript's own artifacts / rows to its user.
-        ("kiro_crew/dashboard/handlers/artifacts.py", "read_messages"),
+        ("kiro_crew/dashboard/handlers/artifacts_parts/session_documents.py", "read_messages"),
         # SEL audit log `recent`, not a transcript.
         ("kiro_crew/dashboard/handlers/core.py", "recent"),
         ("kiro_crew/dashboard/handlers/cron.py", "read_messages"),

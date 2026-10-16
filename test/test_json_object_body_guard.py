@@ -413,7 +413,10 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "handlers/session_storage.py::_json_body": ("_MAX_BODY_BYTES", _BOUNDED_EXPLICIT),
     # Artifact content (25 MiB) plus envelope: the module's existing cap, which
     # now bounds what is allocated rather than only what is accepted.
-    "handlers/artifacts.py::_read_json_body": ("_MAX_BODY_BYTES", _BOUNDED_EXPLICIT),
+    "handlers/artifacts_parts/route_plumbing.py::_read_json_body": (
+        "_MAX_BODY_BYTES",
+        _BOUNDED_EXPLICIT,
+    ),
 }
 
 _DASHBOARD_DIR = Path(shared.__file__).resolve().parent.parent

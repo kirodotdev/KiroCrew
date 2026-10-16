@@ -307,7 +307,7 @@ reclaimable.
 
 `title` and `first_message` are conversation content, so they pass
 `redact_exfiltration_urls()` then `redact_credentials()` — the same order
-`dashboard/handlers/artifacts.py::_serialize` uses. `origin` gets the same
+`dashboard/handlers/artifacts_parts/record_serialization.py::_serialize` uses. `origin` gets the same
 treatment: a session id is
 rendered, `_UNIT_ID_RE` admits the alphanumeric shape of an access-key id, and a
 credential pasted into an id would otherwise reach the dashboard verbatim.

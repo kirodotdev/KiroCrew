@@ -40,9 +40,9 @@ def allowed_source_roots(self: ArtifactStore, source_root: str = "") -> list[Pat
     SINGLE producer of this set. Three sites consume it — the live read
     (:meth:`_try_read_source_path`), the live write
     (:meth:`_try_write_source_path`), and the relocate handler's containment
-    barrier in ``dashboard/handlers/artifacts.py`` — and they had drifted
-    apart: the handler's copy omitted the data-home root, so relocate
-    refused paths the store would happily read.
+    barrier in ``dashboard/handlers/artifacts_parts/item_lifecycle.py`` — and
+    they had drifted apart: the handler's copy omitted the data-home root, so
+    relocate refused paths the store would happily read.
 
     The set is:
 
@@ -59,8 +59,9 @@ def allowed_source_roots(self: ArtifactStore, source_root: str = "") -> list[Pat
     INLINE at the call site. CodeQL's path-injection taint tracker only
     recognizes that sanitizer intra-procedurally, so moving the comparison
     into this method would reopen the alert
-    (``handlers/artifacts.py`` documents the same constraint). This method
-    only assembles the roots; it never decides containment.
+    (``handlers/artifacts_parts/item_lifecycle.py`` documents the same
+    constraint). This method only assembles the roots; it never decides
+    containment.
     """
     allowed = [Path.home().resolve(), self._root.resolve().parent]
     try:
