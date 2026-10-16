@@ -309,6 +309,9 @@ def _mock_dashboard_state():
     """Return a mock DashboardState."""
     ds = MagicMock()
     ds._slots = {}
+    # DashboardState creates the remote-subagent service lazily and starts at None;
+    # a bare MagicMock attribute would make _shutdown gather a non-awaitable close().
+    ds.remote_subagents = None
     ds._yolo = False
     ds.notify = MagicMock()
     ds.push_slots_update = MagicMock()
@@ -1085,6 +1088,9 @@ class TestShutdown:
         state = MagicMock()
         state._slots = {"s1": SimpleNamespace(task=turn)}
         state.close_all_ws = AsyncMock()
+        # A bare MagicMock would answer ``remote_subagents`` with a mock whose
+        # ``close()`` is not awaitable; this gateway runs no remote executor.
+        state.remote_subagents = None
         orch.dashboard_state = state
         return orch
 

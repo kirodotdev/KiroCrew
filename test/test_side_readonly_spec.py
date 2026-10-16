@@ -93,6 +93,22 @@ _REWRITTEN_TOP_LEVEL = {
 }
 
 
+def test_derived_spec_keeps_the_bases_authored_deny_and_ask_rules():
+    """The base's own ``deny``/``ask`` rules survive; only its ``allow`` goes.
+
+    KAS honours a ``deny`` from the spec's block on every session, so dropping it
+    would let a person answering a floored run's request approve a write the base
+    agent forbids. The ``allow`` is dropped with the other grants.
+    """
+    deny = {"capability": "fs_write", "effect": "deny"}
+    ask = {"capability": "mcp", "match": ["srv/*"], "effect": "ask"}
+    base = copy.deepcopy(_BASE)
+    base["permissions"] = {"rules": [{"capability": "shell", "effect": "allow"}, deny, ask]}
+    derived = srs.derive_readonly_spec(base, base_name="kirocrew")
+
+    assert derived["permissions"] == {"rules": [deny, ask]}
+
+
 def test_derived_spec_empties_every_grant_and_keeps_everything_else():
     """(a) ``allowedTools`` is empty and the spec is otherwise the base, less grants."""
     base = copy.deepcopy(_BASE)

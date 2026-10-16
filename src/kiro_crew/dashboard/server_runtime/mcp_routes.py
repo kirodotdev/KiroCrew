@@ -84,6 +84,8 @@ def _deferred(module_name: str, handler_name: str) -> Callable:
       (``opt_in``) and which most installs never publish to.
     * ``mcp_apps`` -- feature-flagged (``mcp_gateway.apps_enabled``); its module
       scope imports the gateway backend, which must never load on dashboard boot.
+    * ``remote_approvals`` -- answered only for runs a remote hub placed with an
+      approval floor, which most gateways never host.
 
     ``module_name`` is a submodule of ``kiro_crew.dashboard.handlers``, not a
     dotted path, so this cannot be pointed at an arbitrary module.
@@ -95,6 +97,24 @@ def _deferred(module_name: str, handler_name: str) -> Callable:
         return await handler(request)
 
     _route.__name__ = handler_name
+    return _route
+
+
+def _deferred_remote_workspace_upload() -> Callable:
+    """Bind ``POST /api/remote-workspaces`` without importing it at boot.
+
+    The module lives at ``kiro_crew.dashboard.remote_workspaces``, not under
+    ``handlers``, so :func:`_deferred` (which only resolves ``handlers``
+    submodules) would raise ``ModuleNotFoundError`` on every upload -- a 500 on
+    the first remote spawn that syncs a project.
+    """
+
+    async def _route(request: web.Request) -> web.StreamResponse:
+        from kiro_crew.dashboard import remote_workspaces
+
+        return await remote_workspaces.api_remote_workspace_upload(request)
+
+    _route.__name__ = "api_remote_workspace_upload"
     return _route
 
 
@@ -121,6 +141,10 @@ def _deferred_work_ledger(handler_name: str) -> Callable:
 def _register_mcp_routes(app: web.Application) -> None:
     """Register API routes used by MCP tools (spawn, lessons, crons, etc.)."""
     app.router.add_post("/api/spawn", handlers.api_spawn)
+    app.router.add_post(
+        "/api/remote-workspaces",
+        _deferred_remote_workspace_upload(),
+    )
     app.router.add_post("/api/spawn/lost", handlers.api_spawn_lost)
     app.router.add_post("/api/spawn/mark-collected", handlers.api_spawn_mark_collected)
     # MCP Apps (SEP-1865): embedded app iframe -> gateway tool callback.
@@ -138,6 +162,10 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/spawn/{agent_id}/continue", handlers.api_spawn_continue)
     app.router.add_post("/api/spawn/{agent_id}/steer", handlers.api_spawn_steer)
     app.router.add_post("/api/spawn/{agent_id}/release", handlers.api_spawn_release)
+    app.router.add_post(
+        "/api/spawn/{agent_id}/approvals/{approval_id}",
+        _deferred("remote_approvals", "api_spawn_approval_answer"),
+    )
     app.router.add_get("/api/lessons", handlers.api_lessons)
     app.router.add_post("/api/lessons", handlers.api_lessons_create)
     app.router.add_delete("/api/lessons", handlers.api_lessons_delete)

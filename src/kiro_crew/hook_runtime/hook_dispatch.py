@@ -122,6 +122,7 @@ def pre_tool_match_names(
     tool_identity: str = "",
     mcp_server: str = "",
     harness_tool_id: str = "",
+    native_aliases: bool = False,
 ) -> tuple[tuple[str, ...], tuple[str, ...] | None]:
     """The names a PreToolUse matcher meets for one call: ``(all, spec)``.
 
@@ -131,13 +132,27 @@ def pre_tool_match_names(
     *mcp_server*, and the names the harness's own *harness_tool_id* stands for
     (:func:`kiro_crew.agent_sdk.spec_hooks.spec_hook_tool_names`). *spec* is the
     same without the title, for a spec hook, whose matcher names tools; ``None``
-    when the harness stated no id, so a spec hook keeps matching the title.
+    when the harness stated no id, so a spec hook keeps matching the title. With
+    *native_aliases* and no harness id, the kiro-cli names a *tool_identity*
+    stands for (:func:`kiro_crew.agent_sdk.spec_hooks.native_tool_match_names`)
+    join *all*. Only an approval-floored run asks for that: it fires its base
+    spec's hooks itself, so they must meet kiro-cli's own names. Every other
+    caller keeps today's matching.
     """
     # circular import: spec_hooks imports kiro_crew.hooks at load time.
-    from kiro_crew.agent_sdk.spec_hooks import spec_hook_tool_names
+    from kiro_crew.agent_sdk.spec_hooks import native_tool_match_names, spec_hook_tool_names
 
     harness_names = spec_hook_tool_names(harness_tool_id) or ()
-    trusted = [*harness_names, tool_identity]
+    # kiro-cli states no toolId, and the trusted name it does state is in its own
+    # vocabulary, often a legacy alias: on a floored run a call named ``shell``
+    # must still meet an ``execute_bash`` matcher. Those names join the match set
+    # only; the payload and the title fallback stay as they are.
+    native = (
+        (native_tool_match_names(tool_identity) or ())
+        if native_aliases and not harness_tool_id
+        else ()
+    )
+    trusted = [*harness_names, *native, tool_identity]
     if mcp_server and tool_identity:
         trusted += [f"@{mcp_server}/{tool_identity}", f"mcp__{mcp_server}__{tool_identity}"]
     every = tuple(dict.fromkeys(n for n in [title, *trusted] if n))
@@ -158,6 +173,7 @@ async def permission_pre_tool_block(
     subagent_id: str | None = None,
     parent_session_key: str | None = None,
     agent_role: str | None = None,
+    native_aliases: bool = False,
 ) -> str | None:
     """Run the PreToolUse hooks on a subagent or task-runner permission request.
 
@@ -204,6 +220,7 @@ async def permission_pre_tool_block(
         tool_identity=tool_identity,
         mcp_server=mcp_server,
         harness_tool_id=harness_tool_id,
+        native_aliases=native_aliases,
     )
     tool_input = None
     if event_tool_input:

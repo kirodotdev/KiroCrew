@@ -54,7 +54,7 @@ import re
 import stat
 import threading
 from collections.abc import Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -125,11 +125,19 @@ class PublishedSpec:
     ``digest`` identifies the derived CONTENT (sha256 of its canonical JSON), so
     a caller holding a live session can tell whether the spec that session was
     spawned under is still the one on disk — kiro-cli reads the file at spawn,
-    so a changed base needs a cold start to take effect.
+    so a changed base needs a cold start to take effect. ``base_spec`` is the
+    exact spec the derivation read (project scope first), so a caller that must
+    still enforce the base's own hooks reads them from that source and never
+    re-resolves the name to a different file. ``source_id`` is ``None`` when that
+    spec is the user-level one and the project's real path when the checkout
+    supplied it, so such a caller can apply the project-agent trust verdict
+    before running any command the spec names.
     """
 
     name: str
     digest: str
+    base_spec: dict[str, Any] | None = field(default=None, compare=False, repr=False)
+    source_id: str | None = field(default=None, compare=False)
 
 
 def readonly_agent_name(base_name: str, source_id: str | None = None) -> str:
@@ -355,7 +363,24 @@ def derive_readonly_spec(
         # guard stays: a base carrying no block never gains one.
         from kiro_crew.agent import _write_derived_permissions
 
+        inherited = spec["permissions"]
         _write_derived_permissions(spec, spec["allowedTools"], derived_name)
+        if "permissions" in spec:
+            # Emptied grants derive no allow, but the base's authored ``deny`` and
+            # ``ask`` rules still bind: KAS honours them on every session, so a
+            # person answering a floored run's request cannot permit what the base
+            # forbids. The same carry as ``govern_spec``'s ``inherit_narrowing``.
+            from kiro_crew.agent import _audit_inherited_permissions
+            from kiro_crew.agent_sdk.drivers.acp import narrowed_agent_permissions
+
+            spec["permissions"] = narrowed_agent_permissions(
+                spec["permissions"],
+                inherited,
+                derived_name,
+                audit_decision=lambda refs, outcome, reason: _audit_inherited_permissions(
+                    refs, reason, source="side_readonly_spec", agent_filename=derived_name
+                ),
+            )
     spec.pop("hooks", None)
     return spec
 
@@ -502,7 +527,7 @@ def publish_readonly_spec(base_name: str, project_dir: str | None = None) -> Pub
             raise ReadOnlySpecError(
                 "spec_write_failed", f"could not write {target}: {exc}"
             ) from exc
-    return PublishedSpec(name=derived_name, digest=digest)
+    return PublishedSpec(name=derived_name, digest=digest, base_spec=base_spec, source_id=source_id)
 
 
 def _read_current(target: Path) -> dict[str, Any] | None:

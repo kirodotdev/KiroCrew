@@ -676,7 +676,7 @@ def _refilter_archive(archive: Any, *, digest: Optional["hashlib._Hash"] = None)
     return Path(filtered.name)
 
 
-def _custom_home_rel_parts(root: Path) -> Optional[tuple]:
+def custom_home_rel_parts(root: Path) -> Optional[tuple]:
     """``KIROCREW_HOME``'s path parts relative to the repo root, if it's under it.
 
     Dev mode (AGENTS.md) allows a custom-named data dir (e.g. ``.kirocrew-dev`` or
@@ -696,6 +696,30 @@ def _custom_home_rel_parts(root: Path) -> Optional[tuple]:
     except (OSError, ValueError):
         return None
     return rel.parts or None
+
+
+def excluded_tracked_path(rel: str, home_parts: Optional[tuple] = None) -> bool:
+    """Whether a TRACKED repo-relative path is kept out of a source snapshot anyway.
+
+    Defense in depth on top of tracked-only packaging: a force-added secret
+    (``.env*``, a key or credential suffix, a known credential name), a dir in
+    the exclusion set, and a custom ``KIROCREW_HOME`` under the repo
+    (*home_parts*, from :func:`custom_home_rel_parts`) are dropped. Shared by the
+    tarfile fallback and the remote-workspace snapshot so the rule lives once.
+    """
+    parts = Path(rel).parts
+    if set(parts) & _EXCLUDE_DIRS:
+        return True
+    if home_parts and tuple(parts[: len(home_parts)]) == home_parts:
+        return True
+    base = Path(rel).name
+    if rel.endswith(_EXCLUDE_SUFFIXES):
+        return True
+    if base == _EXCLUDE_ENV_NAME or base.startswith(_EXCLUDE_ENV_PREFIX):
+        return True
+    if base in _EXCLUDE_NAMES:
+        return True
+    return False
 
 
 def _git_tracked_files(root: Path) -> Optional[list]:
@@ -766,22 +790,10 @@ def _tar_fallback(root: Path, *, digest: Optional["hashlib._Hash"] = None) -> Pa
             action="source:PackageLocalCheckout",
         )
 
-    home_parts = _custom_home_rel_parts(root)  # e.g. ("data", "kc-home") or None
+    home_parts = custom_home_rel_parts(root)  # e.g. ("data", "kc-home") or None
 
     def _excluded(rel: str) -> bool:
-        parts = Path(rel).parts
-        if set(parts) & _EXCLUDE_DIRS:
-            return True
-        if home_parts and tuple(parts[: len(home_parts)]) == home_parts:
-            return True
-        base = Path(rel).name
-        if rel.endswith(_EXCLUDE_SUFFIXES):
-            return True
-        if base == _EXCLUDE_ENV_NAME or base.startswith(_EXCLUDE_ENV_PREFIX):
-            return True
-        if base in _EXCLUDE_NAMES:
-            return True
-        return False
+        return excluded_tracked_path(rel, home_parts)
 
     out = tempfile.NamedTemporaryFile(  # noqa: SIM115 - held open, never reopened by name
         prefix="kirocrew-src-", suffix=".tar.gz", delete=False, dir=str(_staging_dir())

@@ -543,6 +543,7 @@ def _queued_run(
         reason=reason,
         reason_detail=detail,
         resuming=resuming,
+        cwd=str(params.get("cwd") or ""),
     )
 
 
