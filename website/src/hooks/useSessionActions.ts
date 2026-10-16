@@ -17,7 +17,7 @@ import { forkFailureNoticeOffsite } from '../utils/forkFailure'
 import type { ForkFailureNotice } from '../utils/forkFailure'
 import { errMessage } from '../utils/thunkError'
 import type { ChatSlot } from '../types'
-import { compareBySort, readSessionSortKey } from '../pages/chat/sessionOrder'
+import { compareBySort, readSessionSortKey, type SessionSortConfigBody } from '../pages/chat/sessionOrder'
 
 interface PinMutationEntry {
   key: string
@@ -188,7 +188,7 @@ export function useSessionActions(mode?: string): SessionActions {
       const sortableByKey = new Map<string, ChatSlot>()
       for (const slot of slots) sortableByKey.set(slot.key, slot)
       for (const slot of currentSlots) sortableByKey.set(slot.key, slot)
-      const fallbackSort = readSessionSortKey()
+      const fallbackSort = readSessionSortKey(queryClient.getQueryData<SessionSortConfigBody>(['kirocrewConfig'])?.dashboard?.session_sort)
       const newlyPinnedKeys = [...pinnedKeys]
         .filter(key => !baselineMembership.has(key))
         .sort((a, b) => compareBySort(
@@ -370,7 +370,7 @@ export function useSessionActions(mode?: string): SessionActions {
     mutationFn: ({ key, pinned }: { key: string; pinned: boolean }) => setSlotPinInOrder(key, pinned),
     onMutate: ({ key, pinned }) => {
       const dashboard = store.getState().dashboard
-      const fallbackSort = readSessionSortKey()
+      const fallbackSort = readSessionSortKey(queryClient.getQueryData<SessionSortConfigBody>(['kirocrewConfig'])?.dashboard?.session_sort)
       const naturalPinned = dashboard.slots
         .filter(slot => slot.pinned)
         .sort((a, b) => compareBySort(a, b, fallbackSort))

@@ -48,6 +48,8 @@ vi.mock('@dnd-kit/core', async (importOriginal) => {
   }
 })
 
+const mocks = vi.hoisted(() => ({ config: undefined as unknown }))
+
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>()
   return {
@@ -61,6 +63,7 @@ vi.mock('../api/client', async (importOriginal) => {
         ].map(k => [k, vi.fn().mockResolvedValue({})]),
       ),
       chatFolders: vi.fn().mockResolvedValue([]),
+      kirocrewConfig: vi.fn().mockImplementation(() => Promise.resolve(mocks.config ?? {})),
       sessionsSearch: vi.fn().mockResolvedValue({ sessions: [] }),
     },
   }
@@ -125,6 +128,8 @@ function renderSidebar(slots: ChatSlot[]) {
     } as unknown as RootState['chat'],
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  // The session sort is read from the gateway config (dashboard.session_sort).
+  if (mocks.config !== undefined) qc.setQueryData(['kirocrewConfig'], mocks.config)
   const tree = (s: ChatSlot[]) => (
     <QueryClientProvider client={qc}>
       <Provider store={store}>
@@ -160,6 +165,7 @@ describe('ChatSidebar – sidebar row order is held during a dnd-kit drag', () =
   beforeEach(() => {
     localStorage.clear()
     localStorage.setItem('mc-session-stale-collapse-ms', '0')
+    mocks.config = undefined
     dnd.handlers = {}
     dnd.overId = null
     dnd.active = null
@@ -220,7 +226,7 @@ describe('ChatSidebar – sidebar row order is held during a dnd-kit drag', () =
     // the gesture never come back after the search is cleared, and the
     // pinned/unpinned divider is drawn at every pinned→unpinned step of the
     // stale, search-ordered projection instead of once.
-    localStorage.setItem('mc-session-sort', 'created-desc')
+    mocks.config = { dashboard: { session_sort: 'created-desc' } }
     const slots = [
       slot('chat-a', TITLE_A, '2026-04-01T00:00:00Z', true),
       slot('chat-b', TITLE_B, '2026-03-01T00:00:00Z'),
@@ -261,7 +267,7 @@ describe('ChatSidebar – sidebar row order is held during a dnd-kit drag', () =
   })
 
   it('reorders only pinned rows and keeps that order under Created: newest', () => {
-    localStorage.setItem('mc-session-sort', 'created-desc')
+    mocks.config = { dashboard: { session_sort: 'created-desc' } }
     const pinnedSlots = [
       slot('chat-a', TITLE_A, '2026-03-01T00:00:00Z', true),
       slot('chat-b', TITLE_B, '2026-02-01T00:00:00Z', true),

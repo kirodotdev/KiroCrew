@@ -12803,6 +12803,8 @@
       "folders_load_failed": "Impossible de charger les dossiers",
       "columns_load_failed": "Impossible de charger les colonnes du tableau",
       "folder_update_failed": "Échec de la mise à jour du dossier",
+      "sort_update_failed": "Échec de la mise à jour du tri",
+      "sort_update_failed_detail": "« {{sort}} » n’a pas été enregistré, la liste revient donc à « {{restored}} ». Choisis-le à nouveau pour réessayer.",
       "close_refused_title": "Impossible de fermer la session",
       "close_refused": "« {{title}} » enregistre encore son dernier tour. Ferme-la à nouveau dans quelques secondes.",
       "close_refused_other": "« {{title}} » est toujours ouverte : la fermeture n’a pas abouti.",

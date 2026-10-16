@@ -54,8 +54,10 @@ function slots(patch: Partial<ChatSlot> = {}) {
   store.dispatch(sseSlots([{ key: KEY, messages: 0, running: false, ...patch } as ChatSlot]))
 }
 
-function harness(mode?: string) {
+function harness(mode?: string, opts: { sessionSort?: string } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  // The saved session sort is read from the shared config cache.
+  if (opts.sessionSort !== undefined) client.setQueryData(['kirocrewConfig'], { dashboard: { session_sort: opts.sessionSort } })
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>
       <Provider store={store}>{children}</Provider>
@@ -189,14 +191,13 @@ describe('togglePin', () => {
   })
 
   it('sorts the first baseline by saved preference when no sidebar order exists', async () => {
-    localStorage.setItem('mc-session-sort', 'name-desc')
     store.dispatch(sseSlots([
       { key: 'pin-a', title: 'Alpha', messages: 0, running: false, pinned: true } as ChatSlot,
       { key: 'pin-z', title: 'Zulu', messages: 0, running: false, pinned: true } as ChatSlot,
       { key: KEY, title: 'Middle', messages: 0, running: false, pinned: false } as ChatSlot,
     ]))
     store.dispatch(setSidebarOrder([]))
-    const { result } = harness()
+    const { result } = harness(undefined, { sessionSort: 'name-desc' })
 
     act(() => result.current.togglePin(KEY))
 
@@ -205,7 +206,6 @@ describe('togglePin', () => {
   })
 
   it('ignores a partial sidebar order when seeding the first pinned rank', async () => {
-    localStorage.setItem('mc-session-sort', 'name-desc')
     store.dispatch(sseSlots([
       { key: 'pin-a', title: 'Alpha', messages: 0, running: false, pinned: true } as ChatSlot,
       { key: 'pin-z', title: 'Zulu', messages: 0, running: false, pinned: true } as ChatSlot,
@@ -213,7 +213,7 @@ describe('togglePin', () => {
     ]))
     // A filter projects only one existing pin into the rendered order.
     store.dispatch(setSidebarOrder(['pin-a', KEY]))
-    const { result } = harness()
+    const { result } = harness(undefined, { sessionSort: 'name-desc' })
 
     act(() => result.current.togglePin(KEY))
 
@@ -223,7 +223,6 @@ describe('togglePin', () => {
 
   it('sorts concurrent authoritative new pins before appending them', async () => {
     const other = 'zzq-slot-z'
-    localStorage.setItem('mc-session-sort', 'name-desc')
     localStorage.setItem(PINNED_SESSION_ORDER_KEY, JSON.stringify(['base']))
     store.dispatch(sseSlots([
       { key: 'base', title: 'Base', messages: 0, running: false, pinned: true } as ChatSlot,
@@ -231,7 +230,7 @@ describe('togglePin', () => {
       { key: other, title: 'Zulu', messages: 0, running: false, pinned: false } as ChatSlot,
     ]))
     store.dispatch(setSidebarOrder(['base', KEY, other]))
-    const { result } = harness()
+    const { result } = harness(undefined, { sessionSort: 'name-desc' })
 
     act(() => {
       result.current.togglePin(KEY)

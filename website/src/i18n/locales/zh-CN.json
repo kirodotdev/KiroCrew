@@ -12401,6 +12401,8 @@
       "folders_load_failed": "无法加载文件夹",
       "columns_load_failed": "无法加载看板列",
       "folder_update_failed": "文件夹更新失败",
+      "sort_update_failed": "排序更新失败",
+      "sort_update_failed_detail": "“{{sort}}”未保存，列表已恢复为“{{restored}}”。再次选择即可重试。",
       "close_refused_title": "无法关闭会话",
       "close_refused": "“{{title}}”还在保存最后一轮对话。请过几秒再关闭一次。",
       "close_refused_other": "“{{title}}”仍然打开着：关闭没有成功。",

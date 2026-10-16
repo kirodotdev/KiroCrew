@@ -12401,6 +12401,8 @@
       "folders_load_failed": "フォルダーを読み込めませんでした",
       "columns_load_failed": "ボードの列を読み込めませんでした",
       "folder_update_failed": "フォルダーの更新に失敗しました",
+      "sort_update_failed": "並べ替えの更新に失敗しました",
+      "sort_update_failed_detail": "「{{sort}}」は保存されなかったため、一覧は「{{restored}}」に戻りました。もう一度選ぶと再試行できます。",
       "close_refused_title": "セッションを閉じられませんでした",
       "close_refused": "「{{title}}」はまだ最後のターンを保存中です。数秒後にもう一度閉じてください。",
       "close_refused_other": "「{{title}}」はまだ開いています。閉じる操作は完了しませんでした。",

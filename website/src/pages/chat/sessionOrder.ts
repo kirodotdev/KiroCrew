@@ -12,14 +12,41 @@ import { safeGetItem } from '../../utils/safeStorage'
  * there is one definition and both surfaces import it.
  */
 
-export const SESSION_SORT_STORAGE_KEY = 'mc-session-sort'
+/** The order a session list draws with when no choice is stored. */
+export const DEFAULT_SESSION_SORT: SortKey = 'date-desc'
+/** The gateway config path the sort choice is stored at. */
+export const SESSION_SORT_CONFIG_PATH = 'dashboard.session_sort'
+/**
+ * Where earlier builds kept the choice, in this browser only. Read once by the
+ * sidebar's carry-over into the gateway config and then removed; nothing else
+ * reads or writes it.
+ */
+export const LEGACY_SESSION_SORT_STORAGE_KEY = 'mc-session-sort'
+// Mirrors SESSION_SORT_MODES in src/kiro_crew/config/sections.py.
 const SORT_KEYS = new Set<SortKey>([
   'date-desc', 'date-asc', 'created-desc', 'created-asc', 'name-asc', 'name-desc',
 ])
 
-export function readSessionSortKey(): SortKey {
-  const stored = safeGetItem(SESSION_SORT_STORAGE_KEY)
-  return stored && SORT_KEYS.has(stored as SortKey) ? stored as SortKey : 'date-desc'
+function isSessionSortKey(raw: unknown): raw is SortKey {
+  return typeof raw === 'string' && SORT_KEYS.has(raw as SortKey)
+}
+
+/**
+ * A stored `dashboard.session_sort` value read as a sort key. Missing (no config
+ * body yet, or an older gateway) or unknown reads as the default, the same
+ * choice the gateway's loader makes.
+ */
+export function readSessionSortKey(raw: unknown): SortKey {
+  return isSessionSortKey(raw) ? raw : DEFAULT_SESSION_SORT
+}
+
+/** The slice of the `['kirocrewConfig']` body the session sort is read from. */
+export type SessionSortConfigBody = { dashboard?: { session_sort?: unknown } }
+
+/** The browser-held choice from an earlier build, or null when absent or unknown. */
+export function readLegacySessionSortKey(): SortKey | null {
+  const stored = safeGetItem(LEGACY_SESSION_SORT_STORAGE_KEY)
+  return isSessionSortKey(stored) ? stored : null
 }
 
 export type SortKey = 'date-desc' | 'date-asc' | 'created-desc' | 'created-asc' | 'name-asc' | 'name-desc'

@@ -74,6 +74,7 @@ from kiro_crew.config.sections import (
     EXTERNAL_TERMINAL_APPS,
     FOLDER_SORT_MODES,
     JUDGE_PROVIDERS,
+    SESSION_SORT_MODES,
     STT_LANGUAGE_AUTO,
     TITLE_REFRESH_EVERY_TURNS_MAX,
     TRANSCRIBE_LANGUAGES_MAX,
@@ -3162,6 +3163,9 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # the kirocrew-dashboard MCP server reads back, so the two draw the tree in
     # the same order; the enum is the loader's own list, spelled once.
     "dashboard.folder_sort": {"type": "enum", "values": list(FOLDER_SORT_MODES)},
+    # The sidebar's session sort key, written by the sort menu; the enum is the
+    # loader's own list, spelled once.
+    "dashboard.session_sort": {"type": "enum", "values": list(SESSION_SORT_MODES)},
     # Per-version snooze/skip verdict for the proactive update popup, written
     # as ONE atomic record: the three fields only mean anything together, so
     # per-field writes would open both a crash window (old verdict paired
@@ -3483,6 +3487,10 @@ def _tailnet_governance_pinned_off() -> bool:
     return tailnet.is_governance_pinned_off(audit_tool="config_patch_dashboard_tailnet")
 
 
+class _ConfigKeyAlreadySet(Exception):
+    """A conditional config write found an existing leaf under the write lock."""
+
+
 async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     """PATCH /api/config/kirocrew — update a single config field."""
     from kiro_crew.config.loader import (
@@ -3525,6 +3533,9 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
 
     path_key: str = body.get("path", "")
     value: Any = body.get("value")
+    if_unset = body.get("if_unset", False)
+    if not isinstance(if_unset, bool):
+        return _deny("if_unset must be a boolean")
     clamp_notice: dict | None = None
 
     spec = _editable_config_spec(path_key)
@@ -3802,6 +3813,18 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
 
         def _mutate_config_patch(data: dict) -> dict | None:
             """Apply a single dotted-key assignment to the raw config dict."""
+            if if_unset:
+                # Raw presence, not the loaded default: a stored default is a
+                # choice too. Check under the write lock so no save can race it.
+                existing = data
+                for part in parts[:-1]:
+                    child = existing.get(part)
+                    if not isinstance(child, dict):
+                        break
+                    existing = child
+                else:
+                    if parts[-1] in existing:
+                        raise _ConfigKeyAlreadySet
             # Walk (creating) intermediate objects, then set the leaf. Handles
             # arbitrary depth uniformly — 1-level ("auto_update"), 2-level
             # ("agent.model"), and 3-level ("agent.role_models.background") —
@@ -3824,6 +3847,11 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
 
         try:
             await asyncio.to_thread(update_config_locked, cfg_path, mutate=_mutate_config_patch)
+        except _ConfigKeyAlreadySet:
+            _log_sel("denied", f"{path_key}=already_set")
+            return web.json_response(
+                {"error": f"{path_key} is already set", "code": "already_set"}, status=409
+            )
         except ConfigReadError:
             _log_sel("error", f"{path_key}=read_failed")
             return web.json_response({"error": "failed to read config file"}, status=500)

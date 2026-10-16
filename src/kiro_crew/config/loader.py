@@ -3144,6 +3144,18 @@ def _folder_sort_from(raw: object, default: str) -> str:
     return default
 
 
+def _session_sort_from(raw: object, default: str) -> str:
+    """Normalize the sidebar session sort key; anything unknown is *default*, ``date-desc``.
+
+    ``date-desc`` (latest activity first) is the order the sidebar draws with no
+    stored choice, so a missing or hand-edited value changes nothing the person
+    sees. The sidebar's own reader makes the same choice.
+    """
+    if isinstance(raw, str) and raw in _sections.SESSION_SORT_MODES:
+        return raw
+    return default
+
+
 # (section, key, min, max) for each bounded field clamped at load time. The
 # mins match the runtime floors: subagent_auto_max has a floor of 3
 # (``subagent._LEGACY_DEFAULT_MAX`` — the auto-size minimum), so a value < 3 is
@@ -3943,6 +3955,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             "recent_tint_count", _safe_int, RECENT_TINT_COUNT_MIN, RECENT_TINT_COUNT_MAX
         ),
         folder_sort=section.read("folder_sort", _folder_sort_from),
+        session_sort=section.read("session_sort", _session_sort_from),
         update_nudge=(
             nudge
             if isinstance(nudge := section.get("update_nudge"), dict)

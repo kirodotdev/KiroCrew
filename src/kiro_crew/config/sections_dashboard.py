@@ -815,6 +815,27 @@ class DashboardConfig:
             enum=["custom", "name", "created"],
         ),
     )
+    # Literal enum for the same reason as folder_sort; pinned equal to
+    # SESSION_SORT_MODES by test_config_patch.py::TestSessionSortRoundTrip.
+    session_sort: str = field(
+        default="date-desc",
+        metadata=_meta(
+            "Sidebar Session Order",
+            "How the chat sidebar orders sessions: 'date-desc' / 'date-asc' by last "
+            "activity, 'created-desc' / 'created-asc' by creation time, 'name-asc' / "
+            "'name-desc' by title. A view preference only; pinned sessions keep their "
+            "own order. Stored here (not only in the browser) so the choice follows "
+            "the user across browsers and the desktop app.",
+            enum=[
+                "date-desc",
+                "date-asc",
+                "created-desc",
+                "created-asc",
+                "name-asc",
+                "name-desc",
+            ],
+        ),
+    )
     update_nudge: dict = field(
         default_factory=dict,
         metadata=_meta(

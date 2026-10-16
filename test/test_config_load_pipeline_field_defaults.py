@@ -629,6 +629,13 @@ def _move_cases() -> list:
             "name",
         ),
         _case(
+            "dashboard.session_sort-unknown",
+            [(dashboard, "session_sort", "name-asc")],
+            {"dashboard": {"session_sort": "by colour"}},
+            lambda c: c.dashboard.session_sort,
+            "name-asc",
+        ),
+        _case(
             "dashboard.title_refresh_every_turns-malformed",
             [(dashboard, "title_refresh_every_turns", 8)],
             {"dashboard": {"title_refresh_every_turns": "often"}},

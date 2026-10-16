@@ -12602,6 +12602,8 @@
       "folders_load_failed": "Ordner konnten nicht geladen werden",
       "columns_load_failed": "Board-Spalten konnten nicht geladen werden",
       "folder_update_failed": "Ordner-Aktualisierung fehlgeschlagen",
+      "sort_update_failed": "Aktualisierung der Sortierung fehlgeschlagen",
+      "sort_update_failed_detail": "„{{sort}}“ wurde nicht gespeichert, daher ist die Liste wieder nach „{{restored}}“ sortiert. Wähle die Sortierung noch einmal, um es erneut zu versuchen.",
       "close_refused_title": "Sitzung konnte nicht geschlossen werden",
       "close_refused": "„{{title}}“ speichert noch den letzten Zug. Schließe sie in ein paar Sekunden noch einmal.",
       "close_refused_other": "„{{title}}“ ist noch geöffnet: Das Schließen hat nicht geklappt.",

@@ -28,8 +28,7 @@ import MoveUndoBar from '../components/MoveUndoBar'
 import TagManagerList from '../components/TagManagerList'
 import type { ChatFolder } from '../types'
 import { useSessionRowWindowRoot } from './chat/sessionRowWindow'
-import { readSessionSortKey } from './chat/sessionOrder'
-import type { SortKey } from './chat/sessionOrder'
+import { useSessionSort } from './chat-sidebar/sessionSort'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
 import { i18nT } from '../i18n/t'
@@ -258,7 +257,9 @@ function ChatSidebar({
   const [folderModal, setFolderModal] = useState<
     { mode: 'create'; parentId: string } | { mode: 'edit'; folderId: string } | null
   >(null)
-  const [sortKey, setSortKey] = useState<SortKey>(readSessionSortKey)
+  // The session sort lives in the gateway config (dashboard.session_sort), so a
+  // pick follows the person to every browser.
+  const { sortKey, setSortKey, sortError, dismissSortError } = useSessionSort({ queryClient })
   const { lane, setLanePersisted, setFlatView } = useSidebarLane()
   /** Derived, so every existing `flatView` read site keeps its exact meaning. */
   const flatView = lane === 'flat'
@@ -758,7 +759,7 @@ function ChatSidebar({
     conductorExpanded, conductorMatching, conductorRows, conductorView, connected, createChatInFolder,
     createChatMutation, createEphemeralChatMutation, createFolderMutation, createRemoteChatMutation,
     creatingSlot, crewEnable, crewPreview, cycleLane, defaultAgent, deleteColumnWithConfirm,
-    deleteFolderWithConfirm, deleteHistorySessionWithConfirm, derivedHintCol, disarmHold, dispatch,
+    deleteFolderWithConfirm, deleteHistorySessionWithConfirm, derivedHintCol, disarmHold, dismissSortError, dispatch,
     dndSensors, dropSlotMutation, editingId, editName, editScope, filterCounts, filterHiddenFolders,
     filterSortOpen, filtersPaused, flatLaneActive, flatSlots, flatView, folderActionError, folderCleanupOpen, folderOfflineNotice,
     folderCompare, folderConductorPin, folderCreateError, folderDragWithheld, folderEditInputRef,
@@ -786,7 +787,7 @@ function ChatSidebar({
     setNewChatError, setNewChatMenuOpen, setRecentAmountDraft, setRemoteCrewError, setRenameError,
     setSeedError, setSlotFilter, setSortKey, setStaleCollapseMs, setStaleExpanded, setToggleSaveFailed,
     showAllFolders, shownCrewGroups, shownCrewRowCount, shownCrewRows, sidebarRows, slotFilter, slotFolders,
-    sortKey, staleCollapseMs, staleExpanded, startsAutomaticSection, staticRows, stripEdges,
+    sortError, sortKey, staleCollapseMs, staleExpanded, startsAutomaticSection, staticRows, stripEdges,
     subagentApprovalCounts, suppressMenuRestoreRef, tagById, tagColumnsEnabled, tagFilterRows, tagsData,
     tagsQueryFailed, tintAgents, toggleCollapse, toggleColumnCollapse, toggleCrewCollapsed, toggleFilter,
     toggleFolderFilter, toggleFoldersShelved, toggleHideFilter, toggleModelFilter, toggleReveal,

@@ -2333,6 +2333,26 @@ class TestEdgeCases:
             cfg = _load_from_dict({"dashboard": {"folder_sort": junk}})
             assert cfg.dashboard.folder_sort == "custom", junk
 
+    def test_session_sort_loaded_from_config(self) -> None:
+        from kiro_crew.config.sections import SESSION_SORT_MODES
+
+        for key in SESSION_SORT_MODES:
+            cfg = _load_from_dict({"dashboard": {"session_sort": key}})
+            assert cfg.dashboard.session_sort == key
+
+    def test_session_sort_defaults_to_date_desc(self) -> None:
+        """Absent = latest activity first, the order the sidebar draws with no
+        stored choice, so an upgrade changes nothing the person sees."""
+        cfg = _load_from_dict({})
+        assert cfg.dashboard.session_sort == "date-desc"
+
+    def test_session_sort_unknown_value_reads_as_date_desc(self) -> None:
+        """A hand-edited or downgraded value falls back the same way the
+        sidebar's reader does."""
+        for junk in ("newest", "", None, 3, ["name-asc"], "Name-Asc"):
+            cfg = _load_from_dict({"dashboard": {"session_sort": junk}})
+            assert cfg.dashboard.session_sort == "date-desc", junk
+
     def test_update_nudge_loaded_from_config(self) -> None:
         """The popup's snooze/skip record round-trips through load, so a GET
         after a PATCH reads back what was written."""

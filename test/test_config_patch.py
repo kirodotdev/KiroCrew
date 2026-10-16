@@ -689,6 +689,133 @@ class TestFolderSortRoundTrip:
         assert field.default == FOLDER_SORT_DEFAULT == "custom"
 
 
+# ── Sidebar session sort ─────────────────────────────────────────────────
+
+
+class TestSessionSortRoundTrip:
+    """``dashboard.session_sort`` is the one stored copy of the sidebar's session
+    order, written by the sort menu, so it follows the person to every browser:
+    what a PATCH stores must be what a fresh load reads, and nothing outside the
+    sort-key list may land."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "key", ["date-desc", "date-asc", "created-desc", "created-asc", "name-asc", "name-desc"]
+    )
+    async def test_every_key_round_trips_through_the_config_file(self, tmp_config, key) -> None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "dashboard.session_sort", key)
+            assert resp.status == 200, await resp.text()
+        stored = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert stored["dashboard"]["session_sort"] == key
+        assert KiroCrewConfig.load().dashboard.session_sort == key
+
+    @pytest.mark.asyncio
+    async def test_a_value_outside_the_key_list_is_refused_and_the_file_untouched(
+        self, tmp_config
+    ) -> None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "dashboard.session_sort", "name-asc")).status == 200
+            for bad in ("newest", "", "Name-Asc", "custom", 1, None, ["name-asc"]):
+                resp = await _patch(c, "dashboard.session_sort", bad)
+                assert resp.status == 400, bad
+        assert KiroCrewConfig.load().dashboard.session_sort == "name-asc"
+
+    def test_the_allowlist_enum_is_the_loader_list_spelled_once(self) -> None:
+        """The dataclass field's enum metadata, the shared constant and the PATCH
+        allowlist pinned equal, so a key cannot be writable without being
+        loadable or the other way round."""
+        from dataclasses import fields
+
+        from kiro_crew.config.sections import SESSION_SORT_MODES, DashboardConfig
+        from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
+
+        spec = _EDITABLE_CONFIG["dashboard.session_sort"]
+        assert spec == {"type": "enum", "values": list(SESSION_SORT_MODES)}
+        field = next(f for f in fields(DashboardConfig) if f.name == "session_sort")
+        assert field.metadata["enum"] == list(SESSION_SORT_MODES)
+        assert field.default == "date-desc"
+
+
+class TestSessionSortCarryOver:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("dashboard", [None, {"folder_sort": "name"}])
+    async def test_if_unset_stores_an_absent_key(self, tmp_config, dashboard) -> None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        if dashboard is not None:
+            data = _seed_config()
+            data["dashboard"] = dashboard
+            tmp_config.write_text(json.dumps(data), encoding="utf-8")
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await c.patch(
+                "/api/config/kirocrew",
+                json={"path": "dashboard.session_sort", "value": "name-desc", "if_unset": True},
+            )
+            assert resp.status == 200, await resp.text()
+        stored = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert stored["dashboard"]["session_sort"] == "name-desc"
+        if dashboard is not None:
+            assert stored["dashboard"]["folder_sort"] == "name"
+        assert KiroCrewConfig.load().dashboard.session_sort == "name-desc"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stored", ["name-asc", "date-desc", None, False, 0, "", [], {}])
+    async def test_if_unset_preserves_every_present_value(self, tmp_config, stored) -> None:
+        data = _seed_config()
+        data["dashboard"] = {"session_sort": stored}
+        tmp_config.write_text(json.dumps(data), encoding="utf-8")
+        before = tmp_config.read_bytes()
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await c.patch(
+                "/api/config/kirocrew",
+                json={"path": "dashboard.session_sort", "value": "name-desc", "if_unset": True},
+            )
+            assert resp.status == 409, await resp.text()
+            assert await resp.json() == {
+                "error": "dashboard.session_sort is already set",
+                "code": "already_set",
+            }
+        assert tmp_config.read_bytes() == before
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("if_unset", ["yes", 1, None])
+    async def test_non_boolean_if_unset_writes_nothing(self, tmp_config, if_unset) -> None:
+        before = tmp_config.read_bytes()
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await c.patch(
+                "/api/config/kirocrew",
+                json={
+                    "path": "dashboard.session_sort",
+                    "value": "name-desc",
+                    "if_unset": if_unset,
+                },
+            )
+            assert resp.status == 400, await resp.text()
+            assert await resp.json() == {"error": "if_unset must be a boolean"}
+        assert tmp_config.read_bytes() == before
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("condition", [{}, {"if_unset": False}])
+    async def test_unconditional_patch_overwrites_a_present_key(
+        self, tmp_config, condition
+    ) -> None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "dashboard.session_sort", "name-asc")).status == 200
+            resp = await c.patch(
+                "/api/config/kirocrew",
+                json={"path": "dashboard.session_sort", "value": "date-desc", **condition},
+            )
+            assert resp.status == 200, await resp.text()
+        assert KiroCrewConfig.load().dashboard.session_sort == "date-desc"
+
+
 # ── Auto-title refresh cadence (dashboard.title_refresh_every_turns) ─────
 
 

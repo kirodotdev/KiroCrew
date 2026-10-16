@@ -12602,6 +12602,8 @@
       "folders_load_failed": "फ़ोल्डर लोड नहीं हो सके",
       "columns_load_failed": "बोर्ड कॉलम लोड नहीं हो सके",
       "folder_update_failed": "फ़ोल्डर अपडेट विफल",
+      "sort_update_failed": "क्रम अपडेट विफल",
+      "sort_update_failed_detail": "“{{sort}}” सहेजा नहीं गया, इसलिए सूची फिर से “{{restored}}” पर है। दोबारा कोशिश करने के लिए इसे फिर से चुनो।",
       "close_refused_title": "सेशन बंद नहीं हो सका",
       "close_refused": "“{{title}}” अभी भी अपना आख़िरी टर्न सहेज रहा है। कुछ सेकंड में फिर से बंद करो।",
       "close_refused_other": "“{{title}}” अभी भी खुला है: बंद नहीं हो सका।",

@@ -5907,6 +5907,8 @@
       "folders_load_failed": "Could not load folders",
       "columns_load_failed": "Could not load board columns",
       "folder_update_failed": "Folder update failed",
+      "sort_update_failed": "Sort update failed",
+      "sort_update_failed_detail": "“{{sort}}” wasn’t saved, so the list is back on “{{restored}}”. Pick it again to retry.",
       "close_refused_title": "Couldn't close the session",
       "close_refused": "“{{title}}” is still saving its last turn. Close it again in a few seconds.",
       "close_refused_other": "“{{title}}” is still open: the close didn't go through.",

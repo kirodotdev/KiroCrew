@@ -12803,6 +12803,8 @@
       "folders_load_failed": "No se pudieron cargar las carpetas",
       "columns_load_failed": "No se pudieron cargar las columnas del tablero",
       "folder_update_failed": "Fallo al actualizar la carpeta",
+      "sort_update_failed": "Fallo al actualizar el orden",
+      "sort_update_failed_detail": "No se guardó «{{sort}}», así que la lista vuelve a «{{restored}}». Elígelo otra vez para intentarlo de nuevo.",
       "close_refused_title": "No se pudo cerrar la sesión",
       "close_refused": "\"{{title}}\" aún está guardando su último turno. Vuelve a cerrarla en unos segundos.",
       "close_refused_other": "\"{{title}}\" sigue abierta: no se pudo cerrar.",

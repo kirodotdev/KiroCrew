@@ -32,6 +32,7 @@ import type { useSidebarReveal } from './reveal'
 import type { SidebarRows } from './rows'
 import type { useSearchMatches } from './search'
 import type { useSessionCleanup } from './sessionCleanup'
+import type { SessionSortError } from './sessionSort'
 import type { useSessionSources } from './sessionSources'
 import type { useStaleCollapse } from './stale'
 import type { useHoldPinnedHeaderOnCollapse } from './stickyCollapse'
@@ -183,7 +184,10 @@ export interface SidebarScope {
   setCollapsedHistoryGroups: SetState<Set<string>>
   setFolderModal: SetState<FolderModalTarget | null>
   sortKey: SortKey
-  setSortKey: SetState<SortKey>
+  setSortKey: (key: SortKey) => void
+  /** The last sort pick that did not save (null for none), and its dismiss. */
+  sortError: SessionSortError | null
+  dismissSortError: () => void
   flatView: boolean
   conductorView: boolean
   creatingSlot: RootState['chat']['creatingSlot']

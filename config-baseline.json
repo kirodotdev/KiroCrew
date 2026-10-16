@@ -7522,6 +7522,7 @@
         "language": "",
         "recent_tint_count": 0,
         "folder_sort": "custom",
+        "session_sort": "date-desc",
         "update_nudge": {},
         "onboarded": false,
         "import_onboarded": false,
@@ -8509,6 +8510,27 @@
         "created"
       ],
       "defaultValue": "custom"
+    },
+    {
+      "path": "dashboard.session_sort",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Sidebar Session Order",
+      "help": "How the chat sidebar orders sessions: 'date-desc' / 'date-asc' by last activity, 'created-desc' / 'created-asc' by creation time, 'name-asc' / 'name-desc' by title. A view preference only; pinned sessions keep their own order. Stored here (not only in the browser) so the choice follows the user across browsers and the desktop app.",
+      "hasChildren": false,
+      "enumValues": [
+        "date-desc",
+        "date-asc",
+        "created-desc",
+        "created-asc",
+        "name-asc",
+        "name-desc"
+      ],
+      "defaultValue": "date-desc"
     },
     {
       "path": "dashboard.update_nudge",

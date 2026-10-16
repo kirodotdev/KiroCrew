@@ -43,12 +43,14 @@ vi.mock('framer-motion', async () => {
 vi.mock('../components/ProjectPicker', () => ({ default: () => null }))
 
 const chatFoldersMock = vi.hoisted(() => vi.fn().mockResolvedValue([]))
+const mocks = vi.hoisted(() => ({ config: undefined as unknown }))
 
 vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
   api: new Proxy({} as Record<string, unknown>, {
     get: (_t, prop: string) => {
       if (prop === 'chatFolders') return chatFoldersMock
+      if (prop === 'kirocrewConfig') return vi.fn().mockImplementation(() => Promise.resolve(mocks.config ?? []))
       return vi.fn().mockResolvedValue([])
     },
   }),
@@ -84,6 +86,8 @@ function renderSidebar(slots: FixtureSlot[], { folders = [] as FixtureSlot[], ac
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   if (seedFolders) qc.setQueryData(['chat-folders'], folders)
+  // The session sort is read from the gateway config (dashboard.session_sort).
+  if (mocks.config !== undefined) qc.setQueryData(['kirocrewConfig'], mocks.config)
   const view = render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
@@ -106,7 +110,10 @@ const slot = (key: string, title: string, ageHours: number, extra: Record<string
   created: hoursAgo(ageHours + 1), last_turn_ts: hoursAgo(ageHours), ...extra,
 })
 
-beforeEach(() => localStorage.clear())
+beforeEach(() => {
+  localStorage.clear()
+  mocks.config = undefined
+})
 afterEach(() => vi.clearAllMocks())
 
 describe('chat sidebar — stale-session collapse', () => {
@@ -184,7 +191,7 @@ describe('chat sidebar — stale-session collapse', () => {
   })
 
   it('goes inert under non-date sorts, where a trailing bucket would lie about position', () => {
-    localStorage.setItem('mc-session-sort', 'name-asc')
+    mocks.config = { dashboard: { session_sort: 'name-asc' } }
     const { getByText, queryByTestId } = renderSidebar([
       slot('fresh', 'alpha fresh', 2),
       slot('old-1', 'beta old', 10 * 24),

@@ -21,10 +21,8 @@ import { Btn, IconButton } from '../../components/ui'
 import SimpleSelect from '../../components/SimpleSelect'
 import { isEmbeddedPane } from '../../lib/embedded'
 import { SearchFilterBar, FilterMenuButton, FilterChip, FILTER_CHIP_ROW_CLS, FilterMenuLabel, FilterMenuContent } from '../../components/SearchFilterBar'
-import { safeSetItem } from '../../utils/safeStorage'
 import { FOLDER_SORT_MODES, folderHasCreatedStamp, type FolderSortMode } from '../../utils/folderTree'
 import { type RecentUnit, RECENT_WINDOW_PRESETS, formatRecentWindow } from '../recentWindow'
-import { SESSION_SORT_STORAGE_KEY } from '../chat/sessionOrder'
 import { STALE_COLLAPSE_PRESETS_MS } from '../staleCollapse'
 import type { SortKey } from '../chat/sessionOrder'
 import { i18nT } from '../../i18n/t'
@@ -149,7 +147,7 @@ function RemoteCrewNamesError() {
 export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode; shelf: React.ReactNode } {
   const { activeFilters, activeModelKeys, activeModelRows, activeTagIds, activeTagNames, autoTitleError,
     availableLanes, boardLaneActive, changeRecentUnit, clearHiddenFilters, clearModelFilter, clearTagFilter,
-    closeRefused, columnsError, columnsFailed, commitRecentAmount, conductorView, connected, cycleLane, dispatch,
+    closeRefused, columnsError, columnsFailed, commitRecentAmount, conductorView, connected, cycleLane, dismissSortError, dispatch,
     filterCounts, filterHiddenFolders, filterSortOpen, filtersPaused, flatLaneActive, folderActionError,
     folderFilterRows, folderOfflineNotice, folderReorderHint, folderReorderHintRef, folderRowsDrawn, folderSortMode,
     folderSortMut, folderSortRead, folders, foldersError, foldersFailed, foldersShelved,
@@ -159,7 +157,7 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
     renameError, seedError, seedStateLanesMutation, selectRecentPreset, setAllFiltersPaused,
     setAutoTitleError, setFilterSortOpen, setFolderActionError, setFolderOfflineNotice, setModelFilterExcluded, setNewChatError,
     setRecentAmountDraft, setRenameError, setSeedError, setSlotFilter, setSortKey, setStaleCollapseMs,
-    setToggleSaveFailed, showAllFolders, slotFilter, sortKey, staleCollapseMs, tagFilterRows, toggleFilter,
+    setToggleSaveFailed, showAllFolders, slotFilter, sortError, sortKey, staleCollapseMs, tagFilterRows, toggleFilter,
     toggleFolderFilter, toggleFoldersShelved, toggleHideFilter, toggleModelFilter, toggleSaveFailed,
     toggleTagFilter } = shell
   const field = (
@@ -480,7 +478,7 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                 {SORT_OPTIONS.map(o => (
                   <DropdownMenuItem
                     key={o.value}
-                    onSelect={() => { setSortKey(o.value); safeSetItem(SESSION_SORT_STORAGE_KEY, o.value) }}
+                    onSelect={() => setSortKey(o.value)}
                   >
                     <span className="flex-1">{i18nT(SORT_LABEL_KEY[o.value])}</span>
                     {sortKey === o.value && <Check size={14} className="text-accent shrink-0" />}
@@ -1081,6 +1079,21 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
         onDismiss={() => setFolderActionError('')}
         className="mx-2 mt-2 shrink-0"
         testId="folder-action-error"
+      />
+      {/* A session sort pick the gateway refused. The list is already back on the
+          stored order, so the footer names the refused sort and the order now
+          drawn (`sortKey`); the server's text sits under the title as the detail. The
+          hand-off is withheld offline and stacked below in this narrow column. */}
+      <ErrorNotice
+        title={i18nT('pages.chatSidebar.sort_update_failed')}
+        message={sortError?.message ?? ''}
+        messagePlacement="below"
+        footer={sortError ? i18nT('pages.chatSidebar.sort_update_failed_detail', { sort: i18nT(SORT_LABEL_KEY[sortError.key]), restored: i18nT(SORT_LABEL_KEY[sortKey]) }) : null}
+        askAgent={connected}
+        actionPlacement="below"
+        onDismiss={dismissSortError}
+        className="mx-2 mt-2 shrink-0"
+        testId="session-sort-error"
       />
       {/* The folder order (dashboard.folder_sort) could not be read AND there is
        *  no body to fall back on: the tree is drawn in the stored order meanwhile

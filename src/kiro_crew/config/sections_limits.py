@@ -177,6 +177,17 @@ RECENT_TINT_COUNT_MAX = 10
 # first. The frontend's ``readFolderSortMode`` mirrors this list.
 FOLDER_SORT_MODES: tuple[str, ...] = ("custom", "name", "created")
 FOLDER_SORT_DEFAULT = "custom"
+# The sidebar's session sort keys: last activity, creation time or title, each
+# both ways. The loader normalizes to this set and the PATCH allowlist accepts
+# exactly it; the frontend's ``SortKey`` mirrors this list.
+SESSION_SORT_MODES: tuple[str, ...] = (
+    "date-desc",
+    "date-asc",
+    "created-desc",
+    "created-asc",
+    "name-asc",
+    "name-desc",
+)
 SESSION_TIMEOUT_MIN = 0
 SESSION_TIMEOUT_MAX = 86400
 POOL_TTL_SECS_MIN = 0

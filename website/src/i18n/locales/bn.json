@@ -12602,6 +12602,8 @@
       "folders_load_failed": "ফোল্ডার লোড করা যায়নি",
       "columns_load_failed": "বোর্ড কলাম লোড করা যায়নি",
       "folder_update_failed": "ফোল্ডার আপডেট ব্যর্থ",
+      "sort_update_failed": "সাজানো আপডেট ব্যর্থ",
+      "sort_update_failed_detail": "“{{sort}}” সংরক্ষিত হয়নি, তাই তালিকা আবার “{{restored}}” অনুযায়ী সাজানো। আরেকবার চেষ্টা করতে এটি আবার বেছে নাও।",
       "close_refused_title": "সেশন বন্ধ করা যায়নি",
       "close_refused": "“{{title}}” এখনও শেষ টার্ন সংরক্ষণ করছে। কয়েক সেকেন্ড পরে আবার বন্ধ করো।",
       "close_refused_other": "“{{title}}” এখনও খোলা আছে: বন্ধ করা যায়নি।",

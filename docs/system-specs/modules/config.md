@@ -3005,6 +3005,7 @@ class DashboardConfig:
     theme_color: str = ""          # color-theme slug (e.g. "kiro", "emerald", "monokai"); empty = unset
     language: str = ""             # dashboard UI language, BCP-47 (e.g. "en", "zh-CN"); empty = auto-detect from the browser. See "Dashboard UI language" below.
     folder_sort: str = "custom"    # sidebar folder order: "custom" (stored positions) | "name" (natural, 01. < 02. < 10.) | "created" (newest first). A view preference; never rewrites a folder's stored order. See "Sidebar folder order" below.
+    session_sort: str = "date-desc" # sidebar session order: "date-desc" / "date-asc" (last activity), "created-desc" / "created-asc" (creation time), "name-asc" / "name-desc" (title). A view preference; pinned rows keep their own order. See "Sidebar session order" below.
     onboarded: bool = False         # whether the "Choose your look" onboarding modal was completed
     import_onboarded: bool = False  # whether foreign-agent import was completed or skipped
     terminal: dict                  # the built-in Terminal tab: shell ("" = $SHELL), max_sessions (12, server-wide ceiling), cwd ("" = $HOME), reuse_current (false; true = Run-in-terminal focuses the selected terminal and copies the command, never runs it), completion.enabled (true). PATCH-able via /api/config/kirocrew
@@ -3574,6 +3575,29 @@ if chosen. Queued behind an in-flight save, the newer pick's request starts when
 the previous one settles, so the last pick is both the last request the server sees
 and the persisted one; a refusal behind a newer pick is not reported (the newer
 save's own outcome is).
+
+### Sidebar session order
+
+`DashboardConfig.session_sort` is the chat sidebar's session sort key: `date-desc`
+(last settled activity, newest first; the default) or `date-asc`, `created-desc` /
+`created-asc` (the slot's creation time) and `name-asc` / `name-desc` (the title).
+It is stored here rather than in the browser so a pick follows the person to every
+browser and the desktop app. Written only through the `PATCH /api/config/kirocrew`
+allowlist (`dashboard.session_sort`, enum `SESSION_SORT_MODES`). A carry-over PATCH
+sets `if_unset: true`: the handler checks raw key presence under the config write
+lock and returns 409 with code `already_set`, without writing, if any value is
+stored. Menu picks remain unconditional. The loader and the sidebar's reader both
+read anything outside the enum as `date-desc`. Unlike the folder order, the sidebar
+re-sorts on the pick, through an optimistic overlay on the shared `kirocrewConfig`
+cache, because nothing outside the dashboard reads this key; a refused save puts
+the stored key back and says why. Pinned rows sort first under every key, in their
+own manual order. Earlier builds kept the choice in the browser's local storage
+(`mc-session-sort`): once the config body is read, the sidebar carries a valid
+non-default browser choice only while the gateway stores no value for the key.
+A choice made in another browser, the default included, is never overwritten,
+even if it lands between this browser's read and write. The local key is removed
+when skipped, saved, or refused as already stored; any other carry-over failure
+keeps it for the next load. Settle-time invalidation draws the stored value.
 
 ### Interactive model picker visibility
 

@@ -12803,6 +12803,8 @@
       "folders_load_failed": "Não foi possível carregar as pastas",
       "columns_load_failed": "Não foi possível carregar as colunas do quadro",
       "folder_update_failed": "Falha ao atualizar a pasta",
+      "sort_update_failed": "Falha ao atualizar a ordenação",
+      "sort_update_failed_detail": "“{{sort}}” não foi salvo, então a lista voltou para “{{restored}}”. Escolha-o outra vez para tentar novamente.",
       "close_refused_title": "Não foi possível fechar a sessão",
       "close_refused": "\"{{title}}\" ainda está salvando o último turno. Feche-a novamente em alguns segundos.",
       "close_refused_other": "\"{{title}}\" ainda está aberta: o fechamento não foi concluído.",

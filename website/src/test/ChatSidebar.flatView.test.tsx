@@ -62,13 +62,14 @@ const FOLDERS: ChatFolder[] = [
 ]
 
 // Mutable so individual tests can render with zero folders.
-const mocks = vi.hoisted(() => ({ folders: [] as unknown[] }))
+const mocks = vi.hoisted(() => ({ folders: [] as unknown[], config: undefined as unknown }))
 
 vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
   api: new Proxy({} as Record<string, unknown>, {
     get: (_t, p: string) => {
       if (p === 'chatFolders') return vi.fn().mockImplementation(() => Promise.resolve(mocks.folders))
+      if (p === 'kirocrewConfig') return vi.fn().mockImplementation(() => Promise.resolve(mocks.config ?? []))
       return vi.fn().mockResolvedValue([])
     },
   }),
@@ -108,6 +109,8 @@ function renderSidebar(slots: ChatSlot[] = SLOTS, folders: ChatFolder[] = FOLDER
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   qc.setQueryData(['chat-folders'], folders)
+  // The session sort is read from the gateway config (dashboard.session_sort).
+  if (mocks.config !== undefined) qc.setQueryData(['kirocrewConfig'], mocks.config)
   return render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
@@ -129,6 +132,7 @@ function renderSidebar(slots: ChatSlot[] = SLOTS, folders: ChatFolder[] = FOLDER
 // ChatSidebar.staleCollapse.test.tsx).
 beforeEach(() => {
   localStorage.clear()
+  mocks.config = undefined
   localStorage.setItem('mc-session-stale-collapse-ms', '0')
 })
 afterEach(() => {
@@ -231,7 +235,7 @@ describe('chat sidebar — flat view (explode chats out of folders)', () => {
 
   it('hides date segment headers on non-date sorts', () => {
     safeSetItem('mc-sidebar-flat-view', '1')
-    safeSetItem('mc-session-sort', 'name-asc')
+    mocks.config = { dashboard: { session_sort: 'name-asc' } }
     const iso = pinClock()
     const slots = [
       { key: 'k-b', title: 'Bravo', messages: 1, running: false, folder_id: 'f1', last_ts: iso(0) },
