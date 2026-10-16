@@ -181,7 +181,10 @@ security. Fix, commit and push only within the user's authorization.
 - `monitor_update(message?, interval_secs?, max_cycles?, max_runtime_secs?, banner?)`
   preserves the count and omitted fields. Do not mix these with structured-only
   `target`, `objective`, `max_agent_turns`, `max_tokens`, `max_provider_errors`
-  or `wake_instructions`. On Webex, stop and create a new finite loop instead.
+  or `wake_instructions`. On a dashboard loop, pass `waiting_on_person: true`
+  only after asking the user here a question you cannot proceed without; it
+  holds the loop free until they reply, answer an approval or press Nudge now
+  (at most 24h). On Webex, stop and create a new finite loop instead.
 - One automation occupies a session. `monitor_start` is create-only; update an
   active loop rather than replacing it. A new arm replaces a cap/budget-stopped
   legacy loop, only with user authorization. Manual pauses and user
