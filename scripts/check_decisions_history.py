@@ -345,6 +345,19 @@ def _probe_tree(root: Path, stage: bool) -> str | None:
     return tree.strip() if tree is not None else None
 
 
+def _names_ledger_child(report: str, name: str) -> bool:
+    """Whether a probe's output reports an error naming ledger child ``name``.
+
+    The validators print ``Path`` objects, so a diagnostic carries the path in
+    the platform's own separators — backslashes on native Windows — while
+    ``DECISIONS_DIR`` is slash-separated. Folding backslashes to slashes keeps
+    the expectation true on every platform; a ledger child's name carries no
+    backslash, so the fold cannot merge two different names. The rejection
+    half of the check stays exactly as strict.
+    """
+    return "::error::" in report and f"{DECISIONS_DIR}/{name}" in report.replace("\\", "/")
+
+
 def _self_test() -> int:
     """Probe immutability, regular-file enforcement and allowed ledger shapes."""
     entry = b"# Buttons say New\n\nDecided by: A Person\n"
@@ -462,11 +475,7 @@ def _self_test() -> int:
                 with contextlib.redirect_stderr(captured), contextlib.redirect_stdout(captured):
                     code = enforce(root, ref)
                 report = captured.getvalue()
-                if (
-                    code != 1
-                    or "::error::" not in report
-                    or f"{DECISIONS_DIR}/{shape}" not in report
-                ):
+                if code != 1 or not _names_ledger_child(report, shape):
                     failures.append(f"{side} {shape}: missing rejection and path: {report!r}")
 
     # The head side judges what Git would commit. An ignored swap file and a
@@ -501,7 +510,7 @@ def _self_test() -> int:
                 code = enforce(root, tree)
             report = captured.getvalue()
             if shape == "stray":
-                if code != 1 or f"{DECISIONS_DIR}/notes.txt" not in report:
+                if code != 1 or not _names_ledger_child(report, "notes.txt"):
                     failures.append(f"head {shape}: untracked stray file accepted: {report!r}")
             elif code != 0 or "2 entries" not in report or "intact at head OK" not in report:
                 failures.append(f"head {shape}: content Git would not commit failed: {report!r}")
