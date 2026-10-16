@@ -153,9 +153,7 @@
 2317 test/test_acp_client_more_coverage.py
 3482 test/test_acp_deepseek_backend.py
 2852 test/test_acp_pi_backend.py
-2909 test/test_acp_session_mcp.py
 2780 test/test_admission_gate.py
-2896 test/test_agent_home_isolation.py
 3538 test/test_agent_panel_routes.py
 2200 test/test_app_backend_composition_contract.py
 4051 test/test_app_manager.py
@@ -210,7 +208,6 @@
 2861 test/test_embeddings.py
 2417 test/test_ephemeral_sessions.py
 2765 test/test_fargate_launch_engine.py
-2872 test/test_file_change_snapshots.py
 4162 test/test_gateway_appkit_endpoints.py
 4437 test/test_github_pull_request_monitor.py
 5410 test/test_governance_distribution.py
@@ -309,7 +306,6 @@
 2820 test/test_subagent_turn_resilience.py
 2460 test/test_taskq_runner_adapter.py
 5921 test/test_taskrunner.py
-2918 test/test_taskrunner_v2_scenarios.py
 6082 test/test_telegram_parity.py
 2055 test/test_telegram_sessions.py
 8129 test/test_terminal_handler.py
