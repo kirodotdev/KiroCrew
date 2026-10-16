@@ -974,6 +974,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "slack/handler_runtime/stream.py",
         "slack/handler_runtime/turn.py",
         "slack/handler_runtime/turn_context.py",
+        # The code-channel agent tools: every view, canvas, title and context-bar
+        # label they post goes through the redactor of slack/code_channels/wrapup.py,
+        # the registered "Slack code-channel posts" sink, so they add no egress path
+        # of their own.
+        "slack/code_channels/tools.py",
         # The owners composed into slack/gateway.py, in the same class as that
         # facade: they redact the install-repair, update and boot logs, the
         # AutoNudge notices, the nudge and heartbeat turns' posted replies, the
