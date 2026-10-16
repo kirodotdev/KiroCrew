@@ -585,7 +585,7 @@ class TestFileReadReservedCharacterPaths:
         Only NUL is exercised here. The other unrepresentable shape -- a lone
         surrogate -- cannot be delivered through this transport, because URL
         decoding never yields one; it is covered against the seam itself in
-        test_hooks_coverage.py.
+        test_hooks_coverage_file_branches.py.
         """
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get("/api/file-read?path=" + encoded)

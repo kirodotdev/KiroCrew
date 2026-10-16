@@ -1758,7 +1758,7 @@ the read, since the teardown's `_unqueue` drops a window entry with its row). Th
 leaves `admitted` rows out, where Stop all's includes them: the teardown refuses a
 claimed-not-started row, so naming one would only mark it in the delivery gate and
 count it in the audit line
-(`test_queue_depth_reconcile.py::test_a_parent_end_sweep_never_names_a_claimed_row`).
+(`test_queue_depth_reconcile_exits.py::test_a_parent_end_sweep_never_names_a_claimed_row`).
 The fence orders by ACCEPT, never by `created_at`: a wall clock stepped back during the teardown
 stamps the successor's row earlier than the retired conversation's, and a time cutoff
 would sweep it. It runs after the
@@ -1773,7 +1773,7 @@ each reaper sweep runs it again (`retry_owed_teardown_sweeps`, the same cancel w
 snapshot ids under the kept fence) until a read lands and the fence is released. The
 first refusal warns; a refused retry logs at DEBUG. Pinned by
 `test_subagent_queue_max_wait.py::TestARefusedTeardownSweepIsRetried`, and by
-`test_queue_depth_reconcile.py::test_after_each_exit_the_published_depth_equals_the_store_count`
+`test_queue_depth_reconcile_exits.py::test_after_each_exit_the_published_depth_equals_the_store_count`
 (`parent_end`, `session_reset`),
 `test_a_parent_end_stops_its_store_rows_without_reporting_them_home`, for a row the
 refill windows between the snapshot and the sweep,
@@ -2061,7 +2061,7 @@ store cancel raised is still waiting (the store still holds it), so its window
 entry goes back at the tail, where a refill would put it, the pass goes on and
 then raises that failure; a row whose report raised was removed and counts as
 stopped. Pinned by
-`test_queue_depth_reconcile.py::test_a_row_that_could_not_be_unqueued_fails_the_stop_and_reaps_nothing`.
+`test_queue_depth_reconcile_reads.py::test_a_row_that_could_not_be_unqueued_fails_the_stop_and_reaps_nothing`.
 
 ### `cancel_queued(agent_id, parent_session_key, *, stop_origin="") -> bool`
 The queued half of `cancel_for_parent` for ONE accepted, not-started spawn: the

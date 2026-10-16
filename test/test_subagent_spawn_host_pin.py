@@ -115,6 +115,10 @@ class TestTheSpawnHostMemoryPinRatchet:
         # ``pytestmark`` here would mark no test. Its one importer,
         # ``test_subagent_stop_reason_consistency.py``, carries the pin.
         "subagent_stop_reason_helpers.py": "harness; its importer pins the host readings",
+        # A shared harness, not a collected test module: a module-level
+        # ``pytestmark`` here would mark no test. Its importers, the five
+        # ``test_queue_depth_reconcile*.py`` modules, each carry the pin.
+        "queue_depth_reconcile_helpers.py": "harness; its importers pin the host readings",
     }
 
     def test_every_spawning_module_is_pinned_or_excluded(self) -> None:

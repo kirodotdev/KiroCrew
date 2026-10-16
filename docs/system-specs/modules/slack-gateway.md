@@ -329,7 +329,7 @@ one-module file.
 
 - `handle_message`'s turn decisions: the early dispatch order and the first OPTIONS
   expiry (`test_slack_options_lifecycle`), inbound admission
-  (`test_update_check_install_aware`), session acquisition and the thread claim
+  (`test_update_check_install_aware_background_work`), session acquisition and the thread claim
   (`test_options_click_validation`), the memory-store resolution
   (`test_memory_v2_isolation`), the re-injection consume / rearm beside
   `check_context_usage` (`test_reinjection_gate`), the turn-ceiling gate

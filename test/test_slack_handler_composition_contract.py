@@ -2588,7 +2588,7 @@ def test_the_facade_still_carries_what_the_source_guards_read() -> None:
         assert needle in source, needle
     assert source.count("save_conversation_turn_off_loop(") >= 7  # test_persist_off_loop
     for needle in (
-        "admit_inbound_callback(",  # test_update_check_install_aware
+        "admit_inbound_callback(",  # test_update_check_install_aware_background_work
         "mint_options_token(",  # test_options_click_validation
         "_options_owner =",  # test_slack_options_lifecycle
         "maybe_handle_keyword_command",  # test_slack_options_lifecycle

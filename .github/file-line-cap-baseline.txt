@@ -190,7 +190,6 @@
 5277 test/test_apps_registry.py
 2094 test/test_apps_registry_composition_contract.py
 5531 test/test_apps_routes_coverage.py
-2956 test/test_artifacts.py
 3299 test/test_artifacts_handlers.py
 4053 test/test_auto_research.py
 2089 test/test_auto_research_handlers_coverage.py
@@ -269,7 +268,6 @@
 2809 test/test_history_consolidation_retry.py
 2547 test/test_history_locking_remediation.py
 4353 test/test_hooks.py
-2981 test/test_hooks_coverage.py
 2400 test/test_host_isolation_floor.py
 11302 test/test_instances.py
 2374 test/test_issue_radar_crew_routes.py
@@ -327,7 +325,6 @@
 2215 test/test_publish_sync.py
 2016 test/test_push_branch_gate.py
 4559 test/test_push_guard.py
-2968 test/test_queue_depth_reconcile.py
 2147 test/test_recovery_l1_chat_runner.py
 5775 test/test_remote_crew_chaining.py
 3193 test/test_sandbox_absent_ceiling_seal.py
@@ -391,7 +388,6 @@
 2663 test/test_tool_call_classification.py
 4193 test/test_transcribe.py
 3143 test/test_trusted_apps_api.py
-2944 test/test_update_check_install_aware.py
 5831 test/test_vector_memory.py
 2014 test/test_vector_memory_coverage.py
 3145 test/test_voice_reply.py
