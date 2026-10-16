@@ -3513,8 +3513,9 @@ as redactors, and only the five owners listed in `NON_EGRESS_REDACTION_MODULES`
 them, so a new
 call to either belongs in one of those or needs its own row there.
 `test_apps_registry_composition_contract.py` pins the surface, the
-one-namespace writes, the import order, the three facade call sites, the reload and
-the `create=True` guard end to end.
+one-namespace writes, the import order, the three facade call sites and the reload
+end to end, and `test_apps_registry_composition_contract_patch_spellings.py` pins
+the `create=True` guard.
 
 Writers: `apps/registry.py`, `apps/registry_pipeline/`.
 
