@@ -1093,8 +1093,9 @@ async def api_cloud_launch_signin_restart(request: web.Request) -> web.Response:
     approved it, or the gateway restarted mid-wait. Re-runs **only** the sign-in
     step, with the identity stored on the job; the crew itself is left alone and
     nothing is re-provisioned. 409 while a launch or another sign-in is already
-    running (the guard that keeps one device code live at a time), 400 when the
-    job has no crew to sign in on.
+    running on this crew's instance, or while a launch has not created its
+    instance yet (the guard that keeps one device code live per crew), 400 when
+    the job has no crew to sign in on.
 
     It cannot change WHICH identity signs in: the job's persisted
     ``login_target`` is reused, which is the point — an Identity Center crew must
@@ -1111,6 +1112,9 @@ async def api_cloud_launch_signin_restart(request: web.Request) -> web.Response:
     job_id = request.match_info["id"]
     # Same lock as create: the "nothing active" check awaits, so two restarts
     # arriving together would otherwise both pass it and race two remote logins.
+    # One lock for every crew is enough: it covers the local check and the RUNNING
+    # claim, never the remote login, so restarts on different crews wait on each
+    # other only for that check while two on one crew still serialize.
     async with _launch_lock(state):
         store = await _astore(state)
         job = await _in_executor(store.get, job_id)
@@ -1165,7 +1169,17 @@ async def api_cloud_launch_signin_restart(request: web.Request) -> web.Response:
                 status=400,
             )
         existing = await _in_executor(store.list)
-        active = next((j for j in existing if not j.terminal), None)
+        # Only a job that can reach THIS instance can race this sign-in: one already
+        # on it, or a launch whose instance is unknown until `provision` returns. A
+        # sign-in on another crew, or a launch already on its own instance, runs on.
+        active = next(
+            (
+                j
+                for j in existing
+                if not j.terminal and (not j.instance_id or j.instance_id == job.instance_id)
+            ),
+            None,
+        )
         if active is not None:
             _audit("launch_signin_restart", "denied", request_id=job_id, error="already running")
             return web.json_response(
