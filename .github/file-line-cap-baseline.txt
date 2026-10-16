@@ -288,7 +288,6 @@
 2699 website/src/pages/DevFleetPage.tsx
 2117 website/src/pages/chat/SidePanel.tsx
 2026 website/src/pages/connections/ConnectionsPage.tsx
-6529 website/src/pages/members/MembersPage.test.tsx
 2861 website/src/pages/settings/RemoteCrewPanel.tsx
 2722 website/src/pages/settings/SecurityPanel.test.tsx
 3503 website/src/pages/settings/SecurityPanel.tsx

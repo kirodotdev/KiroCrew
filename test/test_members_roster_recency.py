@@ -13,7 +13,7 @@ list. Three things had to be true at once for that, and each is pinned here:
    turn and an unflushed send were both invisible to the ordering.
 3. ``MembersPage`` merged the pushed projection's ``last_active_ts`` only when
    the row carried none, so a live frame could never move a row. That half is
-   pinned in ``website/src/pages/members/MembersPage.test.tsx``.
+   pinned in ``website/src/pages/members/MembersPage.landing.test.tsx``.
 """
 
 from __future__ import annotations

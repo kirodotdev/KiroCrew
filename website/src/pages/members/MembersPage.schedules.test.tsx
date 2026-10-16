@@ -29,10 +29,6 @@ import { __resetPanelTabs } from '../../hooks/usePanelTabs'
  *     Panel-only hides, file opens, Side Chat switches, and Workspace from a
  *     FLOATING card keep the Profile draft mounted and therefore do not ask;
  *     Workspace from the DOCKED column unmounts the card and does.
- *
- * Its own file rather than a block in `MembersPage.test.tsx`: the `below md`
- * describe there leaves `useIsMobile` answering mobile, so a later case that
- * needs the wide layout finds no header switcher at all.
  */
 
 vi.mock('../../api/client', () => ({
