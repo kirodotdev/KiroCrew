@@ -7658,6 +7658,8 @@
         "double_click_to_edit_desc": "When off, a double-click on your message selects a word as in any text.",
         "sidebar_click_opens_tab": "Open Sidebar Sessions in a Session Tab",
         "sidebar_click_opens_tab_desc": "A click opens the session in its own session tab instead of replacing the active tab's session.",
+        "copy_on_select": "Copy on select",
+        "copy_on_select_desc": "Copy text to the clipboard as soon as you select it in the conversation with the mouse. The Quote, Ask about this and Copy row still opens.",
         "failed_to_save_selectable_models": "Failed to save selectable models",
         "model_picker_all_models": "All models ({{count}})",
         "model_picker_selected_models": "Selected {{selected}} / {{total}}",

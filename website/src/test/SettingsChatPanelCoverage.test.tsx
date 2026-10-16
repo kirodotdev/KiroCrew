@@ -416,6 +416,7 @@ describe('ChatPanel — Messages', () => {
   it.each([
     ['Show Timestamps', 'showTimestamps', false],
     ['Double-click to edit your messages', 'doubleClickToEdit', true],
+    ['Copy on select', 'copyOnSelect', true],
     ['Pin the latest turn', 'pinLastPrompt', false],
     ['Simplified Tool Call Names', 'simplifiedToolNames', false],
     ['Tool calls start expanded', 'toolCallsStartExpanded', true],
