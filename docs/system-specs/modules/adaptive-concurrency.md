@@ -464,11 +464,15 @@ window: as the row narrows the chip's sentence gives way to "Under load: 2/8",
 then to "2/8", and the marker folds away (the subagent progress bar and the
 sidebar row still count the queue); a row that also holds the two-way
 channel-link chip steps down sooner and, narrowest, shows the gauge alone. The
-sentence stays the link's accessible name at every width. On a phone the title
+sentence stays the link's accessible name at every width, and its numbers are
+formatted in the active locale's numerals, as the narrow "2/8" is. On a phone the title
 row is not rendered, so the top bar's overflow menu carries the cut as a row
-linking to the card, its trigger carries a dot, and the bar holds the live
+linking to the card, with the chip's hover reassurance (waiting work keeps its
+place) as a visible second line, since a touch screen shows no hover title; its
+trigger carries a warning-toned dot, and the bar holds the live
 region. A read that fails twice renders through `ErrorNotice` on both
-surfaces, in place of the chip and the menu row: the last good reading is
+surfaces, in place of the chip and the menu row, and the phone trigger's dot
+turns error-toned: the last good reading is
 withheld once the failure is reported, so no surface shows numbers it cannot
 confirm (withheld while the dashboard is disconnected, which its offline
 banner covers).

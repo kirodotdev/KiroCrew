@@ -14,13 +14,17 @@
  *   04 no cut (the header as on main)
  *   05 scene 01 with a two-way channel link, so the inbound-link chip shares
  *      the row (the marker folds away on that crowded row)
- *   07 spawn gate reduced, exec cap untouched (the "agent starts" sentence)
+ *   07 spawn gate reduced, exec cap untouched (the "new agents start 2 at a time" sentence)
  *   08 every read fails (the read-error notice, no cut on screen)
  *   09 a cut, then a refresh and its retry fail (the notice takes the chip's
  *      place; the marker goes with it)
  * Narrow window (900 px, sidebar pinned): 01 and 05.
- * Phone (390 px and 320 px): 01 with the top bar's overflow menu open; at
- * 390 px also 09, so the menu holds the error rows in place of the cut row.
+ * Bengali (12), dark, at 1440 px and 900 px: 01 and 07, every number on the
+ * chip and the marker in Bengali numerals.
+ * Phone (390 px and 320 px): 01 with the top bar's overflow menu open, the cut
+ * row carrying the reassurance as a visible second line; at 390 px also 09,
+ * with the trigger's error-toned dot (11) and then the menu holding the error
+ * rows in place of the cut row (10).
  *
  * Verified by DOM asserts and measured geometry; the captures themselves are
  * only checked for existence and size.
@@ -65,14 +69,15 @@ const SCENES = [
   // (this one is ~59 rem with the sidebar pinned).
   { id: '05-with-inbound-link', throttle: EXEC_CUT, sessionQueued: 3, linked: true, chip: FULL, marker: null },
   { id: '07-gate-reduced', throttle: { cut: true, exec: { cap: 8, configured: 8, cut: false }, gate: { cap: 2, configured: 4, cut: true, paused: false }, queued: 0 },
-    sessionQueued: 0, chip: 'Under load: 2 of 4 agent starts at once', marker: null },
+    sessionQueued: 0, chip: 'Under load: new agents start 2 at a time, down from 4', marker: null },
   // `failAfter` good reads, then every read answers 502. A failure is shown
   // once its one retry fails too: ~5 s for 08, ~20 s (a refresh, then its
   // retry) for 09.
   { id: '08-read-failed', throttle: EXEC_CUT, failAfter: 0, sessionQueued: 0, chip: null, marker: null, error: true },
   { id: '09-read-failed-kept-cut', throttle: EXEC_CUT, failAfter: 1, sessionQueued: 3, chip: FULL, marker: null, error: true },
 ]
-const LOAD_FAILED = 'Could not read the concurrency state'
+const LOAD_FAILED = 'Could not check for queued agents'
+const QUEUE_KEPT = 'Queued agents keep their place and start as room frees up.'
 const byId = Object.fromEntries(SCENES.map(s => [s.id, s]))
 
 /** Per width: which scenes run, and what the chip and marker are expected to show there. */
@@ -107,7 +112,7 @@ const visibleChipText = link => link.evaluate(a => {
   return copy.textContent.replace(/\s+/g, ' ').trim()
 })
 
-async function openPage(browser, base, { width, height, theme, scene, mobile }) {
+async function openPage(browser, base, { width, height, theme, scene, mobile, lang = 'en' }) {
   const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 2, isMobile: !!mobile, hasTouch: !!mobile })
   const page = await context.newPage()
   logPageProblems(page)
@@ -126,11 +131,12 @@ async function openPage(browser, base, { width, height, theme, scene, mobile }) 
   // After the shared stub, which swallows /api/ws: this socket carries the
   // queued-depth frame.
   await page.routeWebSocket(/\/api\/ws/, socket => { ws = socket })
-  await page.addInitScript(slot => {
+  await page.addInitScript(({ slot, lang }) => {
     localStorage.setItem('mc-active-slot', slot)
     localStorage.setItem('mc-privacy-notice-v1', '1')
     localStorage.setItem('mc-sidebar-pinned', 'true')
-  }, ACTIVE)
+    localStorage.setItem('mc-lang', lang)
+  }, { slot: ACTIVE, lang })
   await page.goto(base + '/chat', { waitUntil: 'domcontentloaded' })
   await page.waitForTimeout(2500)
   if (scene.sessionQueued > 0) {
@@ -139,6 +145,27 @@ async function openPage(browser, base, { width, height, theme, scene, mobile }) 
     await page.waitForTimeout(600)
   }
   return { context, page, reads: () => reads }
+}
+
+/** The platform fonts that draw the visible text under `selector`, as the
+ *  renderer reports them, limited to faces whose name says Bengali (or the
+ *  Windows face that carries it). Empty when the host has no such face. */
+async function bengaliFaces(page, selector) {
+  const cdp = await page.context().newCDPSession(page)
+  try {
+    await cdp.send('DOM.enable')
+    await cdp.send('CSS.enable')
+    const { root } = await cdp.send('DOM.getDocument', { depth: -1 })
+    const { nodeIds } = await cdp.send('DOM.querySelectorAll', { nodeId: root.nodeId, selector: `${selector} *` })
+    const names = new Set()
+    for (const nodeId of nodeIds) {
+      const { fonts } = await cdp.send('CSS.getPlatformFontsForNode', { nodeId })
+      for (const f of fonts) if (f.glyphCount > 0 && /bengali|nirmala/i.test(f.familyName)) names.add(f.familyName)
+    }
+    return [...names]
+  } finally {
+    await cdp.detach()
+  }
 }
 
 /** Opens the phone top bar's overflow menu and waits for its open animation
@@ -246,6 +273,42 @@ async function main() {
         }
       }
     }
+    // Bengali, 1440 px wide and 900 px narrow: the sentence, the narrow "2/8"
+    // and the marker all carry Bengali numerals, never Latin ones.
+    for (const [width, tag] of [[1440, ''], [900, '-narrow']]) {
+      for (const id of ['01-exec-cut-queued', '07-gate-reduced']) {
+        const scene = byId[id]
+        const label = `${id} bn${tag}`
+        const { context, page } = await openPage(browser, base, { width, height: 700, theme: 'dark', scene, lang: 'bn' })
+        const chip = page.getByTestId('concurrency-cut-chip')
+        await chip.waitFor({ state: 'visible', timeout: 15_000 })
+        const texts = { chip: await visibleChipText(chip) }
+        const marker = page.getByTestId('session-queued-marker')
+        if (scene.sessionQueued > 0 && (await marker.count()) && (await marker.first().isVisible())) {
+          texts.marker = await marker.first().evaluate(el => {
+            const copy = el.cloneNode(true)
+            copy.querySelectorAll('.sr-only').forEach(n => n.remove())
+            return copy.textContent.trim()
+          })
+        }
+        if (!tag && scene.sessionQueued > 0 && !texts.marker) throw new Error(`${label}: no session marker at 1440 px`)
+        for (const [what, text] of Object.entries(texts)) {
+          if (!/[\u09e6-\u09ef]/.test(text) || /[0-9]/.test(text)) throw new Error(`${label}: the ${what} mixes numeral systems: ${JSON.stringify(text)}`)
+        }
+        // The digits are drawn with a face that has Bengali glyphs, not the
+        // empty boxes a host without one renders: the capture is only evidence
+        // if a reader can see the digits in it.
+        const faces = await bengaliFaces(page, '[data-testid="concurrency-cut-chip"]')
+        if (!faces.length) {
+          throw new Error(`${label}: no installed font draws Bengali here; install one (e.g. Noto Sans Bengali) and re-run`)
+        }
+        const rowBottom = await page.evaluate(() => Math.ceil(document.querySelector('.group\\/header')?.parentElement?.getBoundingClientRect().bottom ?? 120))
+        await page.mouse.move(width - 20, 690)
+        await shot(page, `12-${id}-bn${tag}.png`, { x: 0, y: 0, width, height: rowBottom + 40 })
+        console.log(`${label} OK: ${JSON.stringify(texts)} drawn with ${faces.join(', ')}`)
+        await context.close()
+      }
+    }
     // Phone: the header row is not rendered; the overflow menu carries the cut.
     for (const width of PHONES) {
       for (const theme of ['dark', 'light']) {
@@ -255,16 +318,25 @@ async function main() {
         const more = page.getByTestId('mobile-topbar-more')
         await more.waitFor({ state: 'visible', timeout: 15_000 })
         if (!(await more.getByTestId('concurrency-cut-dot').count())) throw new Error(`${label}: no cut dot on the menu trigger`)
+        assert(`${label} dot tone`, await more.getByTestId('concurrency-cut-dot').getAttribute('data-tone'), 'cut')
         const region = await page.getByRole('status').filter({ hasText: 'Under load:' }).count()
         if (!region) throw new Error(`${label}: the cut is not in a live region`)
         const menu = await openPhoneMenu(page, label)
         const row = page.getByTestId('concurrency-cut-menu-item')
         await row.waitFor({ state: 'visible', timeout: 5_000 })
-        assert(`${label} menu row`, (await row.textContent()).trim(), FULL)
+        assert(`${label} menu row`, (await page.getByTestId('concurrency-cut-menu-label').textContent()).trim(), FULL)
+        // The hover reassurance, drawn as the row's second line inside the menu.
+        const hint = page.getByTestId('concurrency-cut-menu-hint')
+        assert(`${label} menu hint`, (await hint.textContent()).trim(), QUEUE_KEPT)
+        if (!(await hint.isVisible())) throw new Error(`${label}: the menu row's hint line is not visible`)
         const box = await menu.boundingBox()
         if (!box || box.x < 0 || box.x + box.width > width + 1) throw new Error(`${label}: the menu does not fit the screen: ${JSON.stringify(box)}`)
+        const hintBox = await hint.boundingBox()
+        if (!hintBox || hintBox.x < box.x || hintBox.x + hintBox.width > box.x + box.width + 1) {
+          throw new Error(`${label}: the hint line spills out of the menu: ${JSON.stringify(hintBox)}`)
+        }
         await shot(page, `06-phone-${width}-menu-${theme}.png`, { x: 0, y: 0, width, height: Math.min(760, Math.ceil(box.y + box.height + 24)) })
-        console.log(`${label} OK: dot, live region, menu row ${JSON.stringify(FULL)}`)
+        console.log(`${label} OK: dot, live region, menu row ${JSON.stringify(FULL)}, hint ${JSON.stringify(QUEUE_KEPT)} (${Math.round(hintBox.width)}x${Math.round(hintBox.height)} px)`)
         await context.close()
       }
     }
@@ -275,14 +347,40 @@ async function main() {
       const scene = byId['09-read-failed-kept-cut']
       const label = `phone-${width} read-failed ${theme}`
       const { context, page, reads } = await openPage(browser, base, { width, height: 760, theme, scene, mobile: true })
-      await page.getByTestId('concurrency-cut-dot').waitFor({ state: 'attached', timeout: 15_000 })
+      const dot = page.getByTestId('concurrency-cut-dot')
+      await dot.waitFor({ state: 'attached', timeout: 15_000 })
+      const cutColor = await dot.evaluate(d => getComputedStyle(d).backgroundColor)
       // The good read, the failed refresh and its failed retry.
       const deadline = Date.now() + 45_000
       while (reads() < scene.failAfter + 2) {
         if (Date.now() > deadline) throw new Error(`${label}: only ${reads()} reads in 45 s`)
         await page.waitForTimeout(500)
       }
-      await page.getByTestId('concurrency-cut-dot').waitFor({ state: 'detached', timeout: 5_000 })
+      // The trigger's dot stays, turned from the cut's tone to the error tone.
+      await page.locator('[data-testid="concurrency-cut-dot"][data-tone="error"]').waitFor({ state: 'attached', timeout: 5_000 })
+      const errorColor = await dot.evaluate(d => getComputedStyle(d).backgroundColor)
+      if (errorColor === cutColor) throw new Error(`${label}: the error dot keeps the cut's colour ${cutColor}`)
+      // Non-text contrast (WCAG 1.4.11, 3:1) of the dot against the bar behind it.
+      const contrast = await dot.evaluate(d => {
+        const rgb = s => (/rgba?\(([^)]+)\)/.exec(s)?.[1].split(/[ ,/]+/).filter(Boolean).map(Number)) ?? [0, 0, 0, 0]
+        const lum = ([r, g, b]) => {
+          const ch = v => { const c = v / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4 }
+          return 0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b)
+        }
+        let el = d.parentElement
+        let bg = [0, 0, 0, 0]
+        while (el) {
+          bg = rgb(getComputedStyle(el).backgroundColor)
+          if (bg.length < 4 || bg[3] > 0) break
+          el = el.parentElement
+        }
+        const [a, b] = [lum(rgb(getComputedStyle(d).backgroundColor)), lum(bg)]
+        return Math.round(((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)) * 100) / 100
+      })
+      if (contrast < 3) throw new Error(`${label}: the error dot's contrast is ${contrast}:1, under 3:1`)
+      const bar = await page.getByTestId('mobile-topbar-more').boundingBox()
+      await shot(page, `11-phone-${width}-read-failed-dot-${theme}.png`, { x: 0, y: 0, width, height: Math.ceil(bar.y + bar.height + 16) })
+      console.log(`${label} dot: ${cutColor} -> ${errorColor}, contrast ${contrast}:1`)
       const menu = await openPhoneMenu(page, label)
       if (await page.getByTestId('concurrency-cut-menu-item').count()) throw new Error(`${label}: the stale cut row is still in the menu`)
       const menuText = (await menu.textContent()).replace(/\s+/g, ' ')
