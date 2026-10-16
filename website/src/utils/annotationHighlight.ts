@@ -1,3 +1,5 @@
+import { codeRangesWithin } from './composedText'
+
 /**
  * The stand-in highlight for the passage an open comment composer annotates.
  *
@@ -55,7 +57,8 @@ export function paintAnnotationHighlight(owner: object, range: Range): void {
   if (textNodes.length === 0 && range.startContainer.nodeType === Node.TEXT_NODE) {
     textNodes.push(range.startContainer as Text)
   }
-  const ranges: Range[] = []
+  // A whole code block inside the passage paints its rows too.
+  const ranges: Range[] = codeRangesWithin(range)
   for (const textNode of textNodes) {
     const start = textNode === range.startContainer ? range.startOffset : 0
     const end = textNode === range.endContainer ? range.endOffset : textNode.length

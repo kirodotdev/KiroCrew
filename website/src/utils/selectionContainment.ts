@@ -16,6 +16,10 @@
  * last line shipped the raw paste-chip label, and triple-clicking a spec
  * document's last paragraph raised no Comment pill.
  */
+import { composedContains } from './composedText'
+
+/** Re-exported for hosts that resolve a selection and then contain it. */
+export { liveSelectionRange } from './composedText'
 
 /**
  * The part of `range` that lies inside `container`, or `null` when the selection
@@ -38,10 +42,12 @@
  * into a sibling rejected in either direction.
  */
 export function containedSelectionRange(range: Range, container: Node): Range | null {
-  if (container.contains(range.commonAncestorContainer)) return range
+  // Composed, not `Node.contains`: a selection inside a highlighted code block
+  // lives in that block's shadow tree, and `contains` never crosses into one.
+  if (composedContains(container, range.commonAncestorContainer)) return range
 
-  const startInside = container.contains(range.startContainer)
-  const endInside = container.contains(range.endContainer)
+  const startInside = composedContains(container, range.startContainer)
+  const endInside = composedContains(container, range.endContainer)
   if (!startInside && !endInside) return null
 
   // `setEnd` before the start (or `setStart` after the end) collapses the clone

@@ -8,6 +8,7 @@ import { InlineCommentOverlay } from './InlineCommentOverlay'
 import { CommentThreadPopover } from './CommentThreadPopover'
 import type { SelectionComposer } from './SelectionToolbar'
 import { containedSelectionRange } from '../utils/selectionContainment'
+import { liveSelectionRange } from '../utils/composedText'
 import { anchorFromRange } from '../utils/selectionAnchor'
 import { paintAnnotationHighlight } from '../utils/annotationHighlight'
 import { useSelectionComposerAnchor } from '../hooks/useSelectionComposerAnchor'
@@ -183,8 +184,10 @@ export function useFileArtifactComments({
   // the draft guard live in the shared wiring below; this host contributes how
   // the live DOM selection inside `previewRef` becomes a durable anchor.
   const resolveSelectionAnchor = useCallback((highlightOwner: object): PendingAnchor | null => {
-    const sel = window.getSelection()
-    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null
+    // A selection inside a highlighted code block arrives collapsed at the
+    // block's host; `liveSelectionRange` sees through to the code.
+    const live = liveSelectionRange(window.getSelection())
+    if (!live) return null
     const root = previewRef.current
     if (!root) return null
     // The SAME containment predicate the toolbar opened the composer with, so
@@ -193,7 +196,7 @@ export function useFileArtifactComments({
     // judging the raw endpoints would leave the comment with a quote-only
     // anchor. The returned range is clamped to the preview, so every offset
     // below is measured inside it.
-    const range = containedSelectionRange(sel.getRangeAt(0), root)
+    const range = containedSelectionRange(live, root)
     if (!range) return null
     const anchor = anchorFromRange(root, range)
     if (!anchor) return null

@@ -23,6 +23,7 @@ import { downloadFileName } from '../utils/fileReadUrl'
 import { dropDeliveredComments, loadCommentDrafts, persistFileComments } from '../utils/commentDrafts'
 import { copyToClipboard } from '../utils/clipboard'
 import { anchorFromRange } from '../utils/selectionAnchor'
+import { COMPOSED_MUTATION_OPTS as MUTATION_OPTS, codeRangesWithin, composedContains, indexComposedText, liveSelectionRange, observeOpenShadowRoots, rangeForTextSpan } from '../utils/composedText'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { FileHeaderBreadcrumb, OverflowMenu, FileArtifactActionButton, KnowledgeToggleIconButton, barIconBtn } from './MarkdownPanelHeader'
 import { useFileKnowledgeState, useFileArtifactState, type ReportError } from './useMarkdownPanelFileState'
@@ -499,23 +500,27 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     const sel = window.getSelection()
     const root = previewRef.current ?? fullscreenPreviewRef.current
     if (!root) return undefined
-    // Try live selection first
-    if (sel && !sel.isCollapsed && sel.anchorNode && root.contains(sel.anchorNode)) {
-      const raw = sel.toString()
+    // Try live selection first. `liveSelectionRange` + `composedContains`: a
+    // selection inside a highlighted code block lives in its shadow tree,
+    // reported collapsed at the block's host.
+    const range = liveSelectionRange(sel)
+    if (range) {
+      const raw = range.toString()
       if (raw.trim()) {
-        const range = sel.getRangeAt(0)
-        if (root.contains(range.startContainer) && root.contains(range.endContainer)) {
-          const anchor = raw.trim()
+        if (composedContains(root, range.startContainer) && composedContains(root, range.endContainer)) {
+          // The anchor is measured in the composed index, the space the
+          // highlight loop searches: inside a code block `range.toString()`
+          // joins the rows with no line break.
+          let derived: ReturnType<typeof anchorFromRange> = null
+          try { derived = anchorFromRange(root, range) } catch { /* fall back to the raw text */ }
+          const anchor = derived?.quote ?? raw.trim()
           const rect = range.getBoundingClientRect()
           const coords = isMarkdown
             ? (resolveSourcePos(range, root, displayContent) ?? findCoords(displayContent, raw) ?? findCoords(displayContent, anchor))
             : (findCoords(content, raw) ?? findCoords(content, anchor))
-          // Compute the rendered-text character offset so repeated occurrences
-          // of the same anchor text can be disambiguated at highlight time.
-          let startOffset: number | undefined
-          try {
-            startOffset = anchorFromRange(root, range)?.startOffset
-          } catch { /* leave undefined */ }
+          // The rendered-text character offset disambiguates repeated
+          // occurrences of the same anchor text at highlight time.
+          const startOffset = derived?.startOffset
           return { anchor, rect, range: range.cloneRange(), line: coords?.line, column: coords?.column, startOffset }
         }
       }
@@ -796,40 +801,34 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     // comment forces a re-run). A MutationObserver + rAF re-apply fixes it.
     // `activeHits` is read by the pointer handlers below.
     let activeHits: { range: Range; comment: InlineComment }[] = []
+    // A highlighted code block fills its shadow tree after the host mounts,
+    // which the light-DOM observation never sees: `apply` (debounced) points
+    // the observer at each open shadow root it finds, so a comment on code is
+    // re-ranged once its rows exist.
+    let timer = 0
+    const observedRoots = new WeakSet<ShadowRoot>()
+    const observer = new MutationObserver(() => {
+      clearTimeout(timer)
+      timer = window.setTimeout(apply, 60)
+    })
     const apply = () => {
+      observeOpenShadowRoots(observer, scrollRoot, observedRoots, MUTATION_OPTS)
       const textRoot = previewRef.current ?? fullscreenPreviewRef.current
       if (!textRoot) { activeHits = []; clear(); return }
-      const walker = document.createTreeWalker(textRoot, NodeFilter.SHOW_TEXT)
-      const textNodes: { node: Text; start: number }[] = []
-      let fullText = ''
-      let node: Node | null
-      while ((node = walker.nextNode())) {
-        textNodes.push({ node: node as Text, start: fullText.length })
-        fullText += (node as Text).nodeValue ?? ''
-      }
-      const locate = (off: number): { node: Text; offset: number } | null => {
-        for (const tn of textNodes) {
-          const len = tn.node.nodeValue?.length ?? 0
-          if (off <= tn.start + len) return { node: tn.node, offset: off - tn.start }
-        }
-        return null
-      }
+      // The composed index (the same space `anchorFromRange` stored the
+      // offset in), so a comment on a highlighted code block resolves too.
+      const idx = indexComposedText(textRoot)
       const ranges: Range[] = []
       const hits: { range: Range; comment: InlineComment }[] = []
       for (const comment of comments) {
         if (!comment.anchor) continue
-        const bestIdx = findBestOccurrence(fullText, comment.anchor, comment.startOffset)
+        const bestIdx = findBestOccurrence(idx.text, comment.anchor, comment.startOffset)
         if (bestIdx < 0) continue
-        const s = locate(bestIdx)
-        const e = locate(bestIdx + comment.anchor.length)
-        if (!s || !e) continue
-        try {
-          const r = document.createRange()
-          r.setStart(s.node, s.offset)
-          r.setEnd(e.node, e.offset)
-          ranges.push(r)
-          hits.push({ range: r, comment })
-        } catch { /* skip */ }
+        const r = rangeForTextSpan(idx, bestIdx, bestIdx + comment.anchor.length)
+        if (!r) continue
+        // A comment over a whole code block paints that block's rows too.
+        ranges.push(r, ...codeRangesWithin(r))
+        hits.push({ range: r, comment })
       }
       activeHits = hits
       if (ranges.length === 0) { clear(); return }
@@ -838,26 +837,35 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     apply()
 
     // Re-apply after async DOM mutations (syntax highlighting, lazy content).
-    let raf1 = 0, raf2 = 0, timer = 0
+    let raf1 = 0, raf2 = 0
     raf1 = requestAnimationFrame(() => { raf2 = requestAnimationFrame(apply) })
-    const observer = new MutationObserver(() => {
-      clearTimeout(timer)
-      timer = window.setTimeout(apply, 60)
-    })
-    observer.observe(scrollRoot, { childList: true, subtree: true, characterData: true })
+    observer.observe(scrollRoot, MUTATION_OPTS)
 
     // Hit-test the pointer against the comment ranges (no DOM elements exist).
-    const hitAt = (x: number, y: number): { range: Range; comment: InlineComment } | null => {
+    const hitAt = (x: number, y: number, target: EventTarget | null): { range: Range; comment: InlineComment } | null => {
       const caret = (document as unknown as { caretRangeFromPoint?: (x: number, y: number) => Range | null }).caretRangeFromPoint?.(x, y)
-      if (!caret) return null
+      if (caret) {
+        for (const h of activeHits) {
+          try { if (h.range.comparePoint(caret.startContainer, caret.startOffset) === 0) return h } catch { /* */ }
+        }
+      }
+      // Over a highlighted code block the caret and the event target are both
+      // retargeted to its host, so a range inside that shadow tree is
+      // hit-tested by its painted boxes, and only while the pointer is there.
+      const host = target instanceof Element && target.shadowRoot ? target : null
+      if (!host) return null
       for (const h of activeHits) {
-        try { if (h.range.comparePoint(caret.startContainer, caret.startOffset) === 0) return h } catch { /* */ }
+        const root = h.range.startContainer.getRootNode()
+        if (!(root instanceof ShadowRoot) || root.host !== host) continue
+        for (const r of Array.from(h.range.getClientRects())) {
+          if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return h
+        }
       }
       return null
     }
 
     const onMove = (ev: MouseEvent) => {
-      const hit = hitAt(ev.clientX, ev.clientY)
+      const hit = hitAt(ev.clientX, ev.clientY, ev.target)
       if (!hit) { scrollRoot.style.cursor = ''; removeCommentTooltip(); return }
       scrollRoot.style.cursor = 'pointer'
       let tip = commentTooltipRef.current
@@ -880,7 +888,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     }
     const onLeave = () => { scrollRoot.style.cursor = ''; removeCommentTooltip() }
     const onClick = (ev: MouseEvent) => {
-      const hit = hitAt(ev.clientX, ev.clientY)
+      const hit = hitAt(ev.clientX, ev.clientY, ev.target)
       if (!hit) return
       ev.preventDefault(); ev.stopPropagation()
       window.getSelection()?.removeAllRanges()

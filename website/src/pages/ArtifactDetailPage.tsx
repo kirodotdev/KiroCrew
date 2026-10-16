@@ -37,7 +37,7 @@ import { formatArtifactCommentsMessage } from '../components/CommentOverlay'
 import { ArtifactChatPanel } from '../components/ArtifactChatPanel'
 import { CommentThreadPopover } from '../components/CommentThreadPopover'
 import { findCoords, resolveSourcePos } from '../components/MarkdownPanel'
-import { containedSelectionRange } from '../utils/selectionContainment'
+import { containedSelectionRange, liveSelectionRange } from '../utils/selectionContainment'
 import { anchorFromRange } from '../utils/selectionAnchor'
 import { paintAnnotationHighlight } from '../utils/annotationHighlight'
 import { useSelectionComposerAnchor } from '../hooks/useSelectionComposerAnchor'
@@ -1191,15 +1191,15 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   /** The live DOM selection inside the rendered body as a durable anchor, or
    *  null when there is none (collapsed, blank, or outside the preview). */
   const resolveSelectionAnchor = useCallback((highlightOwner: object): PendingAnchor | null => {
-    const sel = window.getSelection()
-    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null
+    const live = liveSelectionRange(window.getSelection()) // sees into code blocks
+    if (!live) return null
     const root = previewRef.current
     if (!root) return null
     // The SAME containment predicate the toolbar opened the composer with, so
     // a selection it accepted is never rejected here (a triple-click on the
     // last block ends at a boundary point OUTSIDE the preview); the returned
     // range is clamped to the preview, so the offsets below are measured in it.
-    const range = containedSelectionRange(sel.getRangeAt(0), root)
+    const range = containedSelectionRange(live, root)
     if (!range) return null
     const derived = anchorFromRange(root, range)
     if (!derived) return null

@@ -1,6 +1,7 @@
 import { useLayoutEffect, useMemo, useState } from 'react'
 import type { ArtifactComment } from '../types'
 import { indexTextNodes, rangeForAnchor } from '../hooks/useMarkdownCommentHighlights'
+import { COMPOSED_MUTATION_OPTS as MUTATION_OPTS, observeOpenShadowRoots } from '../utils/composedText'
 
 import { i18nT } from '../i18n/t'
 /**
@@ -86,7 +87,11 @@ export function InlineCommentOverlay({
     const textRoot = textRef.current
     if (!scroller || !textRoot) { setBoxes([]); setBubbles([]); return }
     let raf = 0
+    const seenRoots = new WeakSet<ShadowRoot>()
     const compute = () => {
+      // Inside the rAF, not in the observer callback: one scan per frame, and
+      // it finds a code block whose shadow root was attached after its host.
+      observeOpenShadowRoots(mo, textRoot, seenRoots, MUTATION_OPTS)
       const sRect = scroller.getBoundingClientRect()
       const idx = indexTextNodes(textRoot)
       const nb: Box[] = []
@@ -119,11 +124,19 @@ export function InlineCommentOverlay({
       setBubbles(nbubbles)
       setContentH(scroller.scrollHeight)
     }
+    const schedule = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(compute) }
+    // A code block's highlighted rows replace its plain stand-in WITHOUT a
+    // reflow (CodeBlock keeps the metrics equal on purpose), so no resize
+    // fires; the rows land in a shadow tree a light-DOM observer never hears.
+    // Watching the tree and each open shadow root re-ranges an anchor on code
+    // once its rows exist. Created before the first frame: `compute` reads it.
+    const mo = new MutationObserver(schedule)
+    mo.observe(textRoot, MUTATION_OPTS)
     raf = requestAnimationFrame(compute)
-    const ro = new ResizeObserver(() => { cancelAnimationFrame(raf); raf = requestAnimationFrame(compute) })
+    const ro = new ResizeObserver(schedule)
     ro.observe(textRoot)
     ro.observe(scroller)
-    return () => { cancelAnimationFrame(raf); ro.disconnect() }
+    return () => { cancelAnimationFrame(raf); ro.disconnect(); mo.disconnect() }
   }, [scrollRef, textRef, sig, anchored, replyCounts, unreadRootIds])
 
   // Sidebar → body: scroll the active anchor into view when asked.

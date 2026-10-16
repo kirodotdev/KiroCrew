@@ -1992,6 +1992,22 @@ box for a retry; a post refused after the composer closed shows a banner quoting
 the passage. Kinds that cannot anchor a comment (`json`, `svg`, images) get Copy
 only on a selection.
 
+**Comments on fenced code** — a passage inside a highlighted code block anchors
+like prose. The rows render in Pierre's open shadow root, which `Node.contains`,
+a `TreeWalker` and a light-DOM `Range` cannot reach, and Chromium reports a drag
+there as a selection collapsed at the block's host. So every selection, offset
+and highlight step goes through `website/src/utils/composedText.ts`:
+`liveSelectionRange` (reads `getComposedRanges`), `composedContains`, and
+`indexComposedText`. The text space that file defines is the light DOM's text
+plus each block's `[data-line]` rows, joined by `\n`. That matches the plain
+stand-in CodeBlock shows before highlighting. On a body with no code block it is
+the plain `textContent`, so offsets stored there are unchanged. On a body with
+highlighted code the offsets now count the code text, which only moves the
+tie-break `start_offset` gives between repeats of one quote. The `::highlight()`
+rules for `mc-annotate` / `mc-comment` are injected into every Pierre code
+surface through `unsafeCSS` (`PIERRE_ANNOTATION_HIGHLIGHT_CSS`), because a
+document stylesheet does not style text in a shadow tree.
+
 ## Roadmap
 
 In scope for the foundation:

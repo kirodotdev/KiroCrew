@@ -27,6 +27,7 @@ import {
 } from '../utils/highlightLanguages'
 import {
   PIERRE_EXTENSION_OVERRIDES,
+  PIERRE_ANNOTATION_HIGHLIGHT_CSS,
   PIERRE_REGEX_ENGINE,
   PIERRE_THEMES,
   PIERRE_VIRTUALIZER_CONFIG,
@@ -608,7 +609,12 @@ export function PierreCodeImpl({ file, options, className, langHint, scrollClass
   // one instance re-rendering with streamed content must keep its own.
   const surfaceId = useId()
   const resolved = useMemo(
-    () => pierreFileOptions({ themeType: pierreThemeType(dark), ...options }),
+    () => pierreFileOptions({
+      themeType: pierreThemeType(dark),
+      ...options,
+      // Every code surface can carry a comment highlight (see the constant).
+      unsafeCSS: (options?.unsafeCSS ?? '') + PIERRE_ANNOTATION_HIGHLIGHT_CSS,
+    }),
     [dark, options],
   )
   const resolvedFile = useMemo(() => {
@@ -645,7 +651,11 @@ export function PierrePatchImpl({ patch, options, className, renderHeaderMetadat
   const dark = useIsDark()
   const surfaceId = useId()
   const resolved = useMemo(
-    () => pierreDiffOptions({ themeType: pierreThemeType(dark), ...options }),
+    () => pierreDiffOptions({
+      themeType: pierreThemeType(dark),
+      ...options,
+      unsafeCSS: (options?.unsafeCSS ?? '') + PIERRE_ANNOTATION_HIGHLIGHT_CSS,
+    }),
     [dark, options],
   )
   const poolState = usePierreWorkerPool()
