@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from git_maintenance_helpers import git_maintenance_off_entries
 
 from kiro_crew import session_environment as se
 from kiro_crew.coder import client as client_mod
@@ -35,6 +36,11 @@ def _developer_flag_on(_floor_monkeypatch):
 
 
 URL = "https://coder.example"
+# PEM framing for synthetic key fixtures, assembled the way the suite's other
+# credential tests build it; the bodies these wrap are random, never a real key.
+_PEM_DASHES = "-" * 5
+PEM_BEGIN_RSA = f"{_PEM_DASHES}BEGIN RSA PRIVATE KEY{_PEM_DASHES}"
+PEM_END_RSA = f"{_PEM_DASHES}END RSA PRIVATE KEY{_PEM_DASHES}"
 
 
 def sync(fn):
@@ -735,6 +741,476 @@ def test_git_views_are_read_only_and_handle_non_repos(tmp_path):
     (root / "f.txt").write_text("x\n")
     status = wt.browse(ws, {"op": "git_status"})
     assert status["git"] is True and "?? f.txt" in status["output"]
+    assert "first" in wt.browse(ws, {"op": "git_log"})["output"]
+    assert wt.browse(ws, {"op": "git_bodies", "path": "../outside"})["error"]
+
+
+def test_git_diff_view_does_not_run_a_repository_textconv(tmp_path):
+    import shlex
+    import shutil
+    import subprocess
+    import sys
+
+    from kiro_crew.remote_session import workspace_tools as wt
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    root = tmp_path / "repo"
+    root.mkdir()
+    marker = tmp_path / "textconv-ran"
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@x",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@x",
+    }
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(root), *args], check=True, env=env, cwd=root)
+
+    git("init", "-q")
+    (root / ".gitattributes").write_text("*.txt diff=probe\n")
+    (root / "f.txt").write_text("one\n")
+    git("add", ".")
+    git("commit", "-q", "-m", "first")
+    script = tmp_path / "probe.py"
+    script.write_text(
+        "import pathlib, sys\n"
+        f"pathlib.Path({str(marker)!r}).write_text('ran')\n"
+        "sys.stdout.write(open(sys.argv[1]).read())\n"
+    )
+    git(
+        "config", "diff.probe.textconv", f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}"
+    )
+    (root / "f.txt").write_text("two\n")
+    diff = wt.browse(wt.Workspace(str(root)), {"op": "git_bodies", "path": "f.txt"})
+    assert diff["git"] is True and diff["old"] == "one\n" and diff["new"] == "two\n"
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("op", ["git_status", "git_bodies", "git_log"])
+def test_git_views_do_not_run_a_repository_filter_driver(tmp_path, op):
+    import shlex
+    import shutil
+    import subprocess
+    import sys
+
+    from kiro_crew.remote_session import workspace_tools as wt
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    root = tmp_path / "repo"
+    root.mkdir()
+    marker = tmp_path / "filter-ran"
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@x",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@x",
+    }
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(root), *args], check=True, env=env, cwd=root)
+
+    git("init", "-q")
+    (root / ".gitattributes").write_text("*.txt filter=probe\n")
+    (root / "f.txt").write_text("one\n")
+    git("add", ".")
+    git("commit", "-q", "-m", "first")
+    script = tmp_path / "probe.py"
+    script.write_text(
+        "import pathlib, sys\n"
+        f"pathlib.Path({str(marker)!r}).write_text('ran')\n"
+        "sys.stdout.write(sys.stdin.read())\n"
+    )
+    command = f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}"
+    for key in ("clean", "smudge"):
+        git("config", f"filter.probe.{key}", command)
+    git("config", "filter.probe.required", "true")
+    (root / "f.txt").write_text("two\n")
+    # Bump the mtime so status must re-read the file through the index.
+    os.utime(root / "f.txt", (1, 1))
+    result = wt.browse(wt.Workspace(str(root)), {"op": op, "path": "f.txt"})
+    assert result["git"] is True, result
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("op,path", [("git_status", ""), ("git_bodies", "sub")])
+def test_git_views_never_run_a_submodule_filter_driver(tmp_path, op, path):
+    import shlex
+    import shutil
+    import subprocess
+    import sys
+
+    from kiro_crew.remote_session import workspace_tools as wt
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    marker = tmp_path / "submodule-filter-ran"
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@x",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@x",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": str(tmp_path / "empty-config"),
+    }
+    env.update(git_maintenance_off_entries(env))
+
+    def git(cwd, *args):
+        subprocess.run(["git", "-C", str(cwd), *args], check=True, env=env, capture_output=True)
+
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    git(seed, "init", "-q")
+    (seed / ".gitattributes").write_text("*.txt filter=probe\n")
+    (seed / "f.txt").write_text("one\n")
+    git(seed, "add", ".")
+    git(seed, "commit", "-q", "-m", "seed")
+    root = tmp_path / "repo"
+    root.mkdir()
+    git(root, "init", "-q")
+    git(root, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(seed), "sub")
+    git(root, "commit", "-q", "-m", "add sub")
+    script = tmp_path / "probe.py"
+    script.write_text(
+        "import pathlib, sys\n"
+        f"pathlib.Path({str(marker)!r}).write_text('ran')\n"
+        "sys.stdout.write(sys.stdin.read())\n"
+    )
+    command = f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}"
+    # The driver lives only in the submodule's own config, never the superproject's.
+    git(root / "sub", "config", "filter.probe.clean", command)
+    (root / "sub" / "f.txt").write_text("two\n")
+    os.utime(root / "sub" / "f.txt", (1, 1))
+    result = wt.browse(wt.Workspace(str(root)), {"op": op, "path": path})
+    assert result["git"] is True, result
+    assert not marker.exists()
+
+
+def _plain_git_repo(tmp_path):
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@x",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@x",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": str(tmp_path / "empty-config"),
+    }
+    env.update(git_maintenance_off_entries(env))
+
+    def git(cwd, *args):
+        return subprocess.run(
+            ["git", "-C", str(cwd), *args], check=True, env=env, capture_output=True
+        ).stdout.decode()
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    git(root, "init", "-q")
+    return root, git
+
+
+def test_a_diff_of_a_key_with_a_middle_line_removed_shows_no_key_line(tmp_path):
+    import base64
+    import secrets
+
+    from kiro_crew.coder.session_browse import _git_diff_from_bodies
+    from kiro_crew.platform import redact_via_context
+    from kiro_crew.remote_session import workspace_tools as wt
+
+    root, git = _plain_git_repo(tmp_path)
+    # Random text in PEM framing, wrapped at 32 columns; never a real key.
+    blob = base64.b64encode(secrets.token_bytes(600)).decode()
+    body = [blob[i : i + 32] for i in range(0, len(blob), 32)]
+    pem = [PEM_BEGIN_RSA, *body, PEM_END_RSA]
+    (root / "id_rsa").write_text("\n".join(pem) + "\n")
+    git(root, "add", ".")
+    git(root, "commit", "-q", "-m", "key")
+    del pem[len(pem) // 2]
+    (root / "id_rsa").write_text("\n".join(pem) + "\n")
+    # The trigger is real: git's own patch carries header-free key lines that
+    # the shared redactor, read a line at a time, leaves untouched.
+    raw = git(root, "diff", "HEAD", "--", "id_rsa")
+    hunk = [line[1:] for line in raw.split("\n") if line[:1] in " -" and line[1:] in body]
+    assert hunk and all(redact_via_context(line) == line for line in hunk)
+
+    bodies = wt.browse(wt.Workspace(str(root)), {"op": "git_bodies", "path": "id_rsa"})
+    output = _git_diff_from_bodies(bodies, "id_rsa")["output"]
+    assert not [line for line in body if line in output]
+
+
+def test_an_untracked_nested_repository_is_a_failed_diff_not_an_empty_one(tmp_path):
+    from kiro_crew.remote_session import workspace_tools as wt
+
+    root, git = _plain_git_repo(tmp_path)
+    (root / "f.txt").write_text("one\n")
+    git(root, "add", ".")
+    git(root, "commit", "-q", "-m", "seed")
+    nested = root / "nested"
+    nested.mkdir()
+    git(nested, "init", "-q")
+    (nested / "x.txt").write_text("content\n")
+    ws = wt.Workspace(str(root))
+    assert "?? nested/" in wt.browse(ws, {"op": "git_status"})["output"]
+    result = wt.browse(ws, {"op": "git_bodies", "path": "nested/"})
+    assert result["git"] is False and result["code"] == "git_failed", result
+    assert "output" not in result
+
+
+def test_git_reads_never_lazy_fetch_a_missing_promisor_blob(tmp_path, monkeypatch):
+    import subprocess
+    import sys
+
+    from kiro_crew.remote_session import workspace_tools as wt
+
+    seed, git = _plain_git_repo(tmp_path)
+    try:
+        git(seed, "--no-lazy-fetch", "config", "--list")
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode == 129 and b"unknown option" in exc.stderr:
+            pytest.skip("git 2.44 or later is required for the no-lazy-fetch flag")
+        raise
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "empty-config"))
+    monkeypatch.setenv("GIT_NO_LAZY_FETCH", "0")
+    (seed / "f.txt").write_text("one\n", encoding="utf-8")
+    git(seed, "add", "f.txt")
+    git(seed, "commit", "-q", "-m", "seed")
+    sha = git(seed, "rev-parse", "HEAD:f.txt").strip()
+    git(seed, "config", "uploadpack.allowFilter", "true")
+    root = tmp_path / "partial"
+    git(
+        seed,
+        "-c",
+        "protocol.file.allow=always",
+        "clone",
+        "--filter=blob:none",
+        "--no-checkout",
+        seed.as_uri(),
+        str(root),
+    )
+    git(root, "read-tree", "HEAD")
+    assert f"?{sha}" in git(root, "rev-list", "--objects", "--all", "--missing=print")
+    (root / "f.txt").write_text("two\n", encoding="utf-8")
+    marker = tmp_path / "lazy-fetch-ran"
+    script = tmp_path / "probe.py"
+    script.write_text(
+        "import pathlib\n" + f"pathlib.Path({str(marker)!r}).write_text('ran')\n",
+        encoding="utf-8",
+    )
+    # remote-ext escapes spaces with %, not shell quoting; no network is used.
+    command = " ".join(
+        s.replace("%", "%%").replace(" ", "% ") for s in (sys.executable, str(script))
+    )
+    git(root, "config", "remote.origin.url", f"ext::{command}")
+    git(root, "config", "protocol.ext.allow", "always")
+    with pytest.raises(subprocess.CalledProcessError) as absent:
+        git(root, "--no-lazy-fetch", "cat-file", "blob", sha)
+    assert absent.value.returncode == 128
+    assert b"bad file" in absent.value.stderr
+    assert not marker.exists()
+
+    ws = wt.Workspace(str(root))
+    for op in ("git_bodies", "git_status", "git_log"):
+        result = wt.browse(ws, {"op": op, "path": "f.txt"})
+        assert not marker.exists(), f"{op} ran the promisor transport"
+        if op == "git_bodies":
+            assert result["git"] is False and result["code"] == "git_failed", result
+            assert "bad file" in result["error_text"]
+            assert not {"old", "new", "output"}.intersection(result)
+        else:
+            assert result["git"] is True, result
+            assert result["output"]
+
+
+@pytest.mark.parametrize("op", ["git_status", "git_log", "git_bodies"])
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        (None, None),
+        ("extensions.partialClone", "origin"),
+        ("remote.origin.promisor", "true"),
+        ("remote.origin.promisor", "false"),
+        ("remote.another.partialclonefilter", "blob:none"),
+        ("remote.another.partialclonefilter", ""),
+    ],
+)
+def test_old_git_refuses_only_bodies_in_a_partial_clone(tmp_path, monkeypatch, op, key, value):
+    from kiro_crew.remote_session import workspace_tools as wt
+
+    root, git = _plain_git_repo(tmp_path)
+    (root / "f.txt").write_text("one\n", encoding="utf-8")
+    git(root, "add", "f.txt")
+    git(root, "commit", "-q", "-m", "seed")
+    (root / "f.txt").write_text("two\n", encoding="utf-8")
+    if key is not None:
+        git(root, "config", key, value)
+    real_run = wt._run_grouped
+    calls = []
+    envs = []
+
+    def old_git(argv, **kwargs):
+        calls.append(argv)
+        envs.append(dict(kwargs["env"]))
+        assert kwargs["env"]["GIT_NO_LAZY_FETCH"] == "1"
+        if "--no-lazy-fetch" in argv:
+            assert "config" in argv
+            return SimpleNamespace(
+                returncode=129, stdout=b"", stderr=b"unknown option: --no-lazy-fetch\n"
+            )
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(wt, "_run_grouped", old_git)
+    result = wt.browse(wt.Workspace(str(root)), {"op": op, "path": "f.txt"})
+    assert sum("--no-lazy-fetch" in argv for argv in calls) == 1
+    if key is not None and op == "git_bodies":
+        assert result["git"] is False and result["code"] == "git_failed", result
+        assert "git 2.44 or later is needed" in result["error_text"]
+        assert len(calls) == 2 and all("config" in argv for argv in calls)
+        return
+    assert result["git"] is True, result
+    if op == "git_bodies":
+        assert (result["old"], result["new"]) == ("one\n", "two\n")
+    elif op == "git_status":
+        assert " M f.txt\0" in result["output"]
+        assert ("--no-renames" in calls[-1]) is (key is not None)
+    else:
+        assert result["output"].endswith("\tseed")
+    # Every read after the probe runs with lazy fetching's transport refused.
+    assert all((env.get("GIT_ALLOW_PROTOCOL") == "") is (key is not None) for env in envs[2:])
+    assert envs[2:]
+
+
+def _old_git_without_lazy_fetch_guards(wt, monkeypatch):
+    real_run = wt._run_grouped
+
+    def old_git(argv, **kwargs):
+        if "--no-lazy-fetch" in argv:
+            return SimpleNamespace(
+                returncode=129, stdout=b"", stderr=b"unknown option: --no-lazy-fetch\n"
+            )
+        # Git before 2.44 ignores GIT_NO_LAZY_FETCH as well as lacking the flag.
+        env = {k: v for k, v in kwargs.pop("env").items() if k != "GIT_NO_LAZY_FETCH"}
+        return real_run(argv, env=env, **kwargs)
+
+    monkeypatch.setattr(wt, "_run_grouped", old_git)
+
+
+@pytest.mark.parametrize("filter_spec", ["blob:none", "tree:0"])
+def test_old_git_in_a_partial_clone_never_lazy_fetches(tmp_path, monkeypatch, filter_spec):
+    import sys
+
+    from kiro_crew.remote_session import workspace_tools as wt
+
+    seed, git = _plain_git_repo(tmp_path)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "empty-config"))
+    (seed / "a.txt").write_text("one\ntwo\nthree\nfour\nfive\nsix\n", encoding="utf-8")
+    git(seed, "add", "a.txt")
+    git(seed, "commit", "-q", "-m", "first")
+    (seed / "a.txt").write_text("one\ntwo\nthree\nfour\nfive\nsix\nseven\n", encoding="utf-8")
+    git(seed, "commit", "-q", "-am", "second")
+    git(seed, "config", "uploadpack.allowFilter", "true")
+    root = tmp_path / "partial"
+    git(
+        seed,
+        "-c",
+        "protocol.file.allow=always",
+        "clone",
+        "-q",
+        f"--filter={filter_spec}",
+        seed.as_uri(),
+        str(root),
+    )
+    # HEAD now names the first commit, whose blob (and, in a treeless clone,
+    # tree) this clone never fetched; the index keeps the second commit's.
+    git(root, "reset", "-q", "--soft", "HEAD~1")
+    git(root, "mv", "a.txt", "b.txt")
+    with (root / "b.txt").open("a", encoding="utf-8") as handle:
+        handle.write("eight\n")
+    git(root, "add", "b.txt")
+    marker = tmp_path / "lazy-fetch-ran"
+    script = tmp_path / "probe.py"
+    script.write_text(
+        "import pathlib\n" + f"pathlib.Path({str(marker)!r}).write_text('ran')\n",
+        encoding="utf-8",
+    )
+    # remote-ext escapes spaces with %, not shell quoting; no network is used.
+    command = " ".join(
+        s.replace("%", "%%").replace(" ", "% ") for s in (sys.executable, str(script))
+    )
+    git(root, "config", "remote.origin.url", f"ext::{command}")
+    git(root, "config", "protocol.ext.allow", "always")
+    _old_git_without_lazy_fetch_guards(wt, monkeypatch)
+    ws = wt.Workspace(str(root))
+
+    status = wt.browse(ws, {"op": "git_status"})
+    assert not marker.exists()
+    if filter_spec == "blob:none":
+        # Without rename detection status needs only trees, which it has.
+        assert status["git"] is True, status
+        assert "\0D  a.txt\0A  b.txt\0" in status["output"]
+    else:
+        # The missing HEAD tree is refused, not fetched.
+        assert status["git"] is False and status["code"] == "git_failed", status
+    log = wt.browse(ws, {"op": "git_log"})
+    assert log["git"] is True and log["output"].endswith("\tfirst"), log
+    assert wt.browse(ws, {"op": "git_bodies", "path": "b.txt"})["code"] == "git_failed"
+    assert not marker.exists()
+
+
+def test_old_git_refuses_a_failed_partial_clone_config_check(tmp_path, monkeypatch):
+    from kiro_crew.remote_session import workspace_tools as wt
+
+    calls = []
+
+    def old_git(argv, **kwargs):
+        calls.append(argv)
+        assert "config" in argv
+        if "--no-lazy-fetch" in argv:
+            return SimpleNamespace(
+                returncode=129, stdout=b"", stderr=b"unknown option: --no-lazy-fetch\n"
+            )
+        return SimpleNamespace(returncode=128, stdout=b"", stderr=b"bad config")
+
+    monkeypatch.setattr(wt, "_run_grouped", old_git)
+    result = wt.browse(wt.Workspace(str(tmp_path)), {"op": "git_status"})
+    assert result["git"] is False and result["code"] == "git_failed"
+    assert result["error_text"] == "git partial clone config not checked"
+    assert len(calls) == 2
+
+
+def test_a_filter_driver_that_cannot_be_named_stops_the_read(tmp_path):
+    import shutil
+    import subprocess
+
+    from kiro_crew.remote_session import workspace_tools as wt
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    root = tmp_path / "repo"
+    root.mkdir()
+    subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+    # A driver name holding "=" cannot be overridden through `-c`.
+    subprocess.run(
+        ["git", "-C", str(root), "config", "filter.a=b.clean", "touch pwned"], check=True
+    )
+    result = wt.browse(wt.Workspace(str(root)), {"op": "git_status"})
+    assert result == {
+        "root": str(root),
+        "git": False,
+        "code": "git_failed",
+        "error_text": "git filter config not checked",
+    }
 
 
 @sync

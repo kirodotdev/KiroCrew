@@ -852,4 +852,11 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "and credential redaction (the display battery for timeline labels) "
         "before it reaches the browser.",
     ),
+    (
+        "Remote session Git views",
+        "coder/session_browse.py",
+        "Git status, log and diff output and error text pass the shared "
+        "exfiltration-URL and credential redactor at the gateway before reaching "
+        "the dashboard, preserving record separators and patch framing.",
+    ),
 )
