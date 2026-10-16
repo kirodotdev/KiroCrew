@@ -88,6 +88,12 @@ from kiro_crew.acp.client import (
     registration_throttle_line,
     resolve_usable_model,
 )
+from kiro_crew.acp.engine_fallback import (
+    KAS_KIND_MODEL_FALLBACK,
+    EngineFallbackTracker,
+    normalize_kas,
+    normalize_kiro_v2,
+)
 from kiro_crew.acp.liveness import (
     EVIDENCE_ESTABLISHED_FLAT,
     EVIDENCE_MCP_SUBTREE_ACTIVE,
@@ -142,6 +148,7 @@ from kiro_crew.acp.types import (
     EVENT_MCP_OAUTH_REQUEST,
     EVENT_MCP_SERVER_INIT_FAILURE,
     EVENT_MCP_SERVER_INITIALIZED,
+    EVENT_MODEL_FALLBACK,
     EVENT_STEER_CLEARED,
     EVENT_STEER_CONSUMED,
     EVENT_STEER_QUEUED,
@@ -1530,6 +1537,9 @@ class AcpSessionHandle:
         # (mirrors AcpClient._resolved_model_id; avoids the profile-id
         # pinning trap where a resolved profile id poisons slot.model).
         self._resolved_model_id: str = ""
+        # Keeps the two fields above in step with a fallback the ENGINE made
+        # mid-turn (acp/engine_fallback.py).
+        self._engine_fallback = EngineFallbackTracker()
         # True after set_mode switched a live session's agent, until the model
         # kiro-cli reported for that activation has been judged against the
         # served list (see _served_default_after_set_mode).
@@ -2184,6 +2194,7 @@ class AcpSessionHandle:
             )
 
         self.last_prompt_stats = self.last_prompt_stats.carry_over()
+        self._engine_fallback.begin_prompt(self)
 
         # send_request must be inside the turn-state guard: _turn_done was just
         # cleared above, so if the request raises (e.g. AcpRuntimeDead on a
@@ -3184,6 +3195,9 @@ class AcpSessionHandle:
         # (otherwise the context meter converts pct against the stale session/new
         # model until the next session refresh).
         self._resolved_model_id = resolved
+        # The switch is what the session runs next, so the next prompt must
+        # not restore the model the last turn's engine hop moved off.
+        self._engine_fallback.note_model_set()
         # Also rebase the meter stats themselves — the old model's window and
         # its authoritative usage_update no longer describe this session
         # (mirrors AcpClient.set_model).
@@ -5931,6 +5945,16 @@ class AcpSessionHandle:
                             subagents=subs,
                             runtime_global=msg.fanout_no_owner,
                         )
+                elif action == "model_fallback":
+                    # The V2 engine's fallback notice for THIS session. A notice
+                    # naming another session is not ours to apply: V2 sub-agents
+                    # never fall back, so it can only be a co-tenant's.
+                    params = msg.params or {}
+                    ssid = str(params.get("sessionId") or "")
+                    upd = params.get("update")
+                    if (not ssid or ssid == self._session_id) and isinstance(upd, dict):
+                        for _fb_event in self._model_fallback_events(normalize_kiro_v2(upd)):
+                            yield _fb_event
                 elif action == "subagent_activity":
                     params = msg.params or {}
                     ssid = str(params.get("sessionId") or "")
@@ -7219,6 +7243,11 @@ class AcpSessionHandle:
                 # (redacted + bounded by the helper).
                 summary = compaction_failure_detail(kiro)
             return [AcpEvent(kind=EVENT_COMPACTION_STATUS, text=status_type, title=summary)]
+        if kind == KAS_KIND_MODEL_FALLBACK:
+            # KAS moved this turn onto another model, or could not. Applied to
+            # the resolved model first, so the usage of whatever answers next is
+            # credited to the model that produced it.
+            return self._model_fallback_events(normalize_kas(kiro))
         if kind in kas_wire.STEERING_KINDS:
             # KAS mid-turn steer echo. kiro-cli sends these as `session/update`
             # discriminants (handled by the "steer" action); KAS instead puts the
@@ -7236,6 +7265,13 @@ class AcpSessionHandle:
             )
             return [AcpEvent(kind=steer_kind, text=text)]
         return []
+
+    def _model_fallback_events(self, notices: list) -> list[AcpEvent]:
+        """Apply engine fallback *notices* to this session and wrap them as events."""
+        return [
+            AcpEvent(kind=EVENT_MODEL_FALLBACK, model_fallback=notice)
+            for notice in self._engine_fallback.apply(self, notices)
+        ]
 
     def _handle_kas_subagent(self, update: dict) -> list[AcpEvent] | None:
         """Route KAS PARENT sub-agent frames to EVENT_SUBAGENT_LIST.

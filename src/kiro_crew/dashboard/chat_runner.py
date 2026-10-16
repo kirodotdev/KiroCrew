@@ -55,6 +55,7 @@ from kiro_crew.acp.types import (
     EVENT_MCP_OAUTH_REQUEST,
     EVENT_MCP_SERVER_INIT_FAILURE,
     EVENT_MCP_SERVER_INITIALIZED,
+    EVENT_MODEL_FALLBACK,
     EVENT_STEER_CONSUMED,
     STOP_CLASS_FAILED,
     STOP_REASON_CANCELLED,
@@ -86,6 +87,7 @@ from kiro_crew.agent_discovery import (
 )
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name  # noqa: F401
 from kiro_crew.agent_sdk.capabilities import capabilities_for, capabilities_of
+from kiro_crew.agent_sdk.drivers.acp_vocab import EngineFallbackWalk
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.agent_sdk.spec_hooks import (
     crew_fired_spec_hooks,
@@ -130,6 +132,7 @@ from kiro_crew.context_blocks import (
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard import chat_turn as _chat_turn
 from kiro_crew.dashboard import directive_queue
+from kiro_crew.dashboard import engine_fallback as _engine_fallback
 from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
     COMMANDS_OFF_META_KEY,
     STEER_STATE_CONSUMED,
@@ -561,6 +564,7 @@ from kiro_crew.llm_helpers import (  # noqa: F401
     configured_fallback_chain,
     connection_recovery_open,
     connection_retry_delay,
+    engine_attributed_model,
     fallback_rewound_transient_budget,
     first_advertised_fallback,
     latch_route_baseline,
@@ -7871,6 +7875,9 @@ async def _run_chat(
     # teardown before that, so it must be bound up front.
     _stop_reason = ""
     turn._stop_reason = _stop_reason
+    # The engine's own fallback hops this turn (acp/engine_fallback.py). Bound up
+    # front for the same reason: the finally ends the walk with a notice.
+    _engine_fallback_walk = EngineFallbackWalk()
     # Replay settlement also lives in ``finally``. Bind at turn scope because
     # config, binding and session-start failures can reach teardown before the
     # acquisition block determines whether replay is pending.
@@ -14176,6 +14183,14 @@ async def _run_chat(
                         _crew_log_turn_no,
                         items=(event.todo or {}).get("tasks"),
                     )
+            elif event.kind == EVENT_MODEL_FALLBACK:
+                # kiro-cli moved this turn onto another model, or could not. The
+                # handle already moved the resolved model; the slot follows a
+                # promotion, and the finally ends the walk with one notice.
+                if event.model_fallback is not None:
+                    _engine_fallback.record_engine_fallback(
+                        state, slot, client, _engine_fallback_walk, event.model_fallback
+                    )
             elif event.kind == EVENT_SUBAGENT_LIST:
                 # kiro-cli per-subagent state (native use_subagent crews).
                 # Reconcile one Activity card per sub-agent (spawn/done).
@@ -14468,7 +14483,10 @@ async def _run_chat(
                 # the `model_source` walk — no worse than the blank it would
                 # write anyway.
                 _provider_name = capabilities_of(client).provider_seam
-                _record_model = slot.model
+                # A move the engine made inside this prompt bills the model it
+                # moved to, by the same rule as the cron, heartbeat and
+                # sub-agent rows; a turn-scoped hop leaves `slot.model` on the pin.
+                _record_model = engine_attributed_model(slot.model, client)
                 # Occupancy is read ABOVE the billing gate, beside the other locals
                 # the turn closer needs. Two reasons, and either alone decides it:
                 # the closer runs for EVERY completed turn, so a name bound only
@@ -15133,6 +15151,12 @@ async def _run_chat(
             _flush_text_stream()
             _flush_segment(state, slot, turn.assistant_text, broadcast=False)
             turn._reply_flushed = True
+            # A refusal terminal means the engine did not answer this turn: a turn
+            # its in-turn fallback recovered ends `end_turn` on both engines (KAS
+            # reports it so, and a V2 refusal hop drops the refusal it moved off;
+            # see acp/engine_fallback._drop_superseded_refusal). So no extra gate:
+            # a recovered turn never reaches Crew's refusal card or retry, and the
+            # engine-fallback notice is the only account of the walk.
             if _stop_reason == STOP_REASON_REFUSAL:
                 # The Kiro service's content filter STREAMS its canned
                 # explanation as assistant text and then ends the turn, so the
@@ -18253,6 +18277,13 @@ async def _run_chat(
                 "reply_flushed": _turn_flushed_visible_text,
                 "nudge_turn": _directive_self_wake and _turn_landed,
             },
+        )
+        # The engine's fallback walk, said once whatever path ended the turn.
+        _engine_fallback.finish_engine_fallback(
+            slot,
+            _engine_fallback_walk,
+            stop_reason=_stop_reason,
+            cancelled=_crew_log_error == "CancelledError",
         )
         # The turn's crew log closers, in the one order a reader can trust: every
         # `message/sent` for this turn has now been flushed, so the tool closer,

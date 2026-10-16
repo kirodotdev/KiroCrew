@@ -127,6 +127,11 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # it before the evidence text, and the sub-agent run loop yields
         # its lane slot (``waiting_input`` WaitRecord) on it.
         status=e.status,
+        # The engine's fallback decision on EVENT_MODEL_FALLBACK. Dropping it
+        # zeroes the payload to None, so the dashboard enters its branch with
+        # nothing to record: no notice line and no promotion of the slot to
+        # the model the engine moved to (acp/engine_fallback.py).
+        model_fallback=e.model_fallback,
     )
 
 

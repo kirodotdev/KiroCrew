@@ -358,10 +358,10 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
           if (!resolvedKnown && !liveDowngrade && normalizeModelKey(display) !== 'auto') return null
           return (
             <code
-              className={`text-[11px] px-1.5 py-0.5 rounded shrink-[4] min-w-0 max-w-[7rem] truncate inline-block align-middle [direction:rtl] [unicode-bidi:plaintext] text-left${liveDowngrade ? ' bg-warn-subtle border border-warn/20 text-warn-text' : resolvedKnown ? ' text-accent/70 bg-accent/10' : ' text-muted/60 bg-bg-hover'}`}
+              className={`text-[11px] px-1.5 py-0.5 rounded shrink-[4] min-w-0 max-w-[10rem] inline-flex items-center align-middle${liveDowngrade ? ' bg-warn-subtle border border-warn/20 text-warn-text' : resolvedKnown ? ' text-accent/70 bg-accent/10' : ' text-muted/60 bg-bg-hover'}`}
               data-testid="subagent-model"
               // The downgrade meaning rides on the amber colour + the AlertCircle
-              // glyph (aria-hidden), and the chip's [direction:rtl] truncation can
+              // glyph (aria-hidden), and the id's [direction:rtl] truncation can
               // reorder how a screen reader voices the id — so mirror the tooltip
               // text into an aria-label. Otherwise AT users hear only the bare
               // (possibly truncated) model id with no requested-vs-served context,
@@ -378,8 +378,16 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
                   ? i18nT('pages.chat.activityViewer.model_label', { model: a.model })
                   : i18nT('pages.chat.activityViewer.model_effective', { model: display })}
             >
-              {liveDowngrade && <AlertCircle size={10} aria-hidden className="inline-block mr-0.5 align-middle" />}
-              {display}
+              {liveDowngrade && <AlertCircle size={10} aria-hidden className="shrink-0 mr-0.5" />}
+              {/* Left-truncate the id only: long ids share a prefix
+                  (claude-opus-…, us.anthropic.claude-…), so clipping the END hides
+                  the one part that says WHICH model. The span is rtl so its
+                  ellipsis falls on the left, and the id sits in an ltr <bdi> so its
+                  glyphs keep their order. Not `unicode-bidi: plaintext`: that
+                  re-derives the direction from the (LTR) id and puts the ellipsis
+                  back on the right. The rtl box is the span, not the chip, so the
+                  glyph stays put. */}
+              <span className="min-w-0 truncate [direction:rtl] text-left"><bdi dir="ltr">{display}</bdi></span>
             </code>
           )
         })()}

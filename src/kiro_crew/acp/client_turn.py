@@ -19,9 +19,9 @@ Instance fields written: ``_active_run_id``, ``_active_tool_calls``, ``_cancelle
 ``_tool_call_params``, ``_tool_call_tool_name``, ``_tool_call_unclassified``,
 ``_tool_dispatched``, ``_turn_done``, ``last_prompt_stats``.
 
-Instance fields read: ``_agent_accepts_image``, ``_buffer``, ``_last_activity``, ``_liveness_oracle``,
-``_permission_gate_events``, ``_pid``, ``_process``, ``_session_id``, ``_steer_turn``,
-``_turn_lock``.
+Instance fields read: ``_agent_accepts_image``, ``_buffer``, ``_engine_fallback``,
+``_last_activity``, ``_liveness_oracle``, ``_permission_gate_events``, ``_pid``, ``_process``,
+``_session_id``, ``_steer_turn``, ``_turn_lock``.
 """
 
 from __future__ import annotations
@@ -50,6 +50,7 @@ from kiro_crew.acp.client_timeouts import (
 )
 from kiro_crew.acp.client_transport import _is_safe_oauth_url
 from kiro_crew.acp.client_turn_control import format_command_result
+from kiro_crew.acp.engine_fallback import is_v2_model_fallback, normalize_kiro_v2
 from kiro_crew.acp.liveness import EVIDENCE_SAMPLING, VERDICT_WORKING, consult_offloaded
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks
 from kiro_crew.acp.transport_errors import (
@@ -68,6 +69,7 @@ from kiro_crew.acp.types import (
     EVENT_MCP_OAUTH_REQUEST,
     EVENT_MCP_SERVER_INIT_FAILURE,
     EVENT_MCP_SERVER_INITIALIZED,
+    EVENT_MODEL_FALLBACK,
     EVENT_STEER_CONSUMED,
     EVENT_SUBAGENT_ACTIVITY,
     EVENT_SUBAGENT_LIST,
@@ -168,6 +170,10 @@ def _process_message(self: AcpClient, msg: JsonRpcMessage, req_id: int) -> str:
         return "subagent_list"
 
     if msg.is_method(METHOD_KIRO_SESSION_UPDATE):
+        # The V2 engine's fallback notice for this session rides the same
+        # extension method (acp/engine_fallback.py).
+        if is_v2_model_fallback(msg.params):
+            return "model_fallback"
         return "subagent_activity"
 
     # Unknown server→client REQUEST (has both method AND id). Per JSON-RPC
@@ -632,6 +638,7 @@ async def send_message_stream(
 
     req_id = await self._send_prompt(message)
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
+    self._engine_fallback.begin_prompt(self)
 
     # aclosing(): _prompt_loop holds _turn_lock and releases it in its
     # finally. Consumers below `return` on "complete" without exhausting the
@@ -764,6 +771,7 @@ async def _dispatch_events(
 ) -> AsyncGenerator[AcpEvent, None]:
     """Shared event dispatch loop for prompts and commands."""
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
+    self._engine_fallback.begin_prompt(self)
     self._tool_call_inputs.clear()
     self._tool_call_input_redacted.clear()
     self._tool_call_is_shell.clear()
@@ -1072,6 +1080,13 @@ async def _dispatch_events(
                 # process with a single session, so an ownerless frame from
                 # it is this session's own roster, never a co-tenant's.
                 yield AcpEvent(kind=EVENT_SUBAGENT_LIST, subagents=_subs)
+        elif action == "model_fallback":
+            # The engine moved this turn onto another model, or could not.
+            # AcpClient owns one session, so the notice is this session's.
+            _fb_upd = (msg.params or {}).get("update")
+            if isinstance(_fb_upd, dict):
+                for _fb_notice in self._engine_fallback.apply(self, normalize_kiro_v2(_fb_upd)):
+                    yield AcpEvent(kind=EVENT_MODEL_FALLBACK, model_fallback=_fb_notice)
         elif action == "subagent_activity":
             # _kiro.dev/session/update: a sub-agent session's own update,
             # tagged with its sessionId. Carries either:
@@ -1260,6 +1275,7 @@ async def _send_prompt(self: AcpClient, message: str, *, allow_image: bool = Tru
 async def _read_prompt_response(self: AcpClient, req_id: int, timeout: float) -> str:
     output: list[str] = []
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
+    self._engine_fallback.begin_prompt(self)
 
     async for action, msg in self._prompt_loop(req_id, timeout):
         if action == "complete":

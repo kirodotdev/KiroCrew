@@ -3483,12 +3483,35 @@ class RunEventCoordinator(ManagerComponent):
 
             cleaned, _ = redact_exfiltration_urls(cleaned)
             cleaned, _ = redact_credentials(cleaned)
+        # The engine may have moved this run onto another model inside its last
+        # prompt (acp/engine_fallback.py). The panel's model chip, the
+        # ``subagent_done`` frame and the completion card all read
+        # ``info.resolved_model``, set at spawn from the session's served model,
+        # so a fallback the engine made would otherwise leave them naming the
+        # model that refused. Set here without an await, so the ending below is
+        # still claimed first-arrival-wins; a claimed completion then persists
+        # it, so a card rebuilt from state after a restart agrees with the live one.
+        from kiro_crew.agent_sdk.drivers.acp_vocab import engine_served_model
+
+        _engine_model = engine_served_model(client)
+        if _engine_model and _engine_model != info.resolved_model:
+            info.resolved_model = _engine_model
+        else:
+            _engine_model = ""
         # Model-fallback visibility (agent.fallback_model): a run served by a
         # fallback model must say so in the delivered result — same contract as
         # the cron/heartbeat annotation and the dashboard notice card. One
         # shared spelling (llm_helpers.annotate_model_fallback) redacts the
         # config-sourced model ids the same way as the result body.
-        cleaned = annotate_model_fallback(cleaned, client)
+        cleaned = annotate_model_fallback(
+            cleaned,
+            client,
+            stop_reason=(
+                str(getattr(_complete_event, "stop_reason", "") or "")
+                if _complete_event is not None
+                else None
+            ),
+        )
         # EVENT_COMPLETE only says the stream ENDED. Classify its stop reason
         # (one mapping for every entry: acp.types.classify_stop_reason) so a
         # stall, a runtime cancel or a transport death is never recorded as a
@@ -3553,13 +3576,20 @@ class RunEventCoordinator(ManagerComponent):
             )
 
             _used, _window = read_context_tokens(client)
+            from kiro_crew.llm_helpers import engine_attributed_model
+
             _usage_row = asyncio.ensure_future(
                 persist_token_record_async(
                     session_key,
-                    # Blank while a fallback serves this run: the explicit pin
-                    # would bill the fallback's spend to a model that never
-                    # executed; model_source reports what actually ran.
-                    ("" if provider_fallback_active(client) else (info.model or "")),
+                    # Blank while Crew's fallback serves this run: the explicit
+                    # pin would bill the fallback's spend to a model that never
+                    # executed; model_source reports what actually ran. An
+                    # engine fallback bills the model the engine moved to.
+                    (
+                        ""
+                        if provider_fallback_active(client)
+                        else engine_attributed_model(info.model or "", client)
+                    ),
                     _complete_event,
                     provider="claude_code" if is_cc else "acp",
                     surface="subagent",
@@ -3618,6 +3648,21 @@ class RunEventCoordinator(ManagerComponent):
                 await self._manager._write_finished_result_off_loop(info, result_text)
             except Exception:
                 logger.warning("Failed to record result_complete for %s", info.id, exc_info=True)
+            else:
+                if _engine_model:
+                    # After the claim, so this await cannot let a stop take the
+                    # ending; inside this try, so the ``finally`` still records
+                    # ``done`` if the write is cancelled.
+                    try:
+                        await self._manager._write_state_off_loop(
+                            info, "engine fallback model", resolved_model=_engine_model
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Failed to persist engine fallback model for %s",
+                            info.id,
+                            exc_info=True,
+                        )
             finally:
                 # Read before the flip: the hold belongs to the line that makes
                 # the done transition (see the ``was_done`` arm below).

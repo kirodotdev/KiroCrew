@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, cast
 
 from kiro_crew import mcp_apps_render, session_directive
+from kiro_crew.acp.engine_fallback import is_v2_model_fallback
 from kiro_crew.acp.harness_tool_names import (
     CLAUDE_READ_ONLY_BUILTINS,
     GOOSE_READ_ONLY_BUILTINS,
@@ -551,6 +552,11 @@ def classify_notification(msg: JsonRpcMessage) -> str:
     if msg.is_method(METHOD_SUBAGENT_LIST_UPDATE):
         return "subagent_list"
     if msg.is_method(METHOD_KIRO_SESSION_UPDATE):
+        # The V2 engine's own fallback notice rides the extension method too
+        # (``acp/engine_fallback.py``); it describes the session's model, not a
+        # child's activity.
+        if is_v2_model_fallback(msg.params):
+            return "model_fallback"
         return "subagent_activity"
     # Unknown server request — must be answered
     if msg.method is not None and msg.id is not None:

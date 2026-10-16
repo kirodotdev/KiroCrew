@@ -1820,6 +1820,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # args or url, and REFUSES the guide when it would. Nothing it returns is
         # redacted text.
         "guide_catalog.py",
+        # Validator only: `parse_model_id` runs both redactors on a model id read
+        # from an engine fallback notice and DROPS the id when either would change
+        # it. Only the unchanged id is ever returned, never redacted text.
+        "acp/engine_fallback.py",
         # Inbound / gate-side: redacts what comes IN or what a gate logs, not what
         # goes out to a human.
         "context.py",

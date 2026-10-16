@@ -327,6 +327,144 @@ families — a different model routinely accepts what another's filter declined
 The refusal retry is dashboard-only. Unattended surfaces (cron, heartbeat,
 sub-agents) keep the terminal refusal behavior.
 
+## Engine-side fallback (kiro-cli)
+
+kiro-cli can move a turn onto another model by itself, inside one
+`session/prompt`, under both of its engines: KAS (the `kas` harness,
+`kiro-cli acp --agent-engine v3`) when its model fallback is enabled, and the V2
+engine (the default `kiro` harness). Crew sees
+an ordinary terminal for such a turn, so its own fallback above never runs for
+it; the engine reports the move in a notice instead. `acp/engine_fallback.py`
+is the only reader of the two wire shapes:
+
+- KAS: `session_info_update` with `_meta.kiro.kind: "model_fallback"`,
+  `{from, to?, trigger, scope, reason?, agentSubtaskId?}`. `scope: "session"`
+  means KAS pinned the target as the session's model.
+- V2: `_kiro.dev/session/update` with `update.sessionUpdate: "model_fallback"`,
+  `{from, to, cause, source, promoted}`; the promotion is a second notice.
+
+Both decode to `ModelFallbackNotice` with the rules kiro-cli's own terminal UI applies,
+so the two clients tell a user the same thing: an id is accepted only as one
+token of the engine's model-id grammar (and only when the credential scrub
+leaves it unchanged), an unknown `trigger` is reported as `unknown`, an unknown
+`scope` keeps the hop without promoting, a KAS notice carrying `agentSubtaskId`
+is a sub-agent's own move and is not shown, and a same-id move is a retry on
+one model rather than a switch. `_dispatch.classify_notification` (and
+`AcpClient`'s classifier) route the V2 notice as action `model_fallback`
+rather than as sub-agent activity; the KAS notice arrives through
+`AcpSessionHandle._handle_kas_session_info`. Both emit `EVENT_MODEL_FALLBACK`.
+
+State follows the engine, through `EngineFallbackTracker` on the handle and on
+`AcpClient`:
+
+- A turn-scoped hop sets `_resolved_model_id` to the target, so the turn's usage
+  and stats (`read_effective_model`) are credited to the model that answered.
+  The next prompt puts the prior value back, unless something else changed it
+  since, because the engine starts that prompt on the user's model. A model
+  switch that lands in between (`set_model` on the handle or the client) cancels
+  the restore through `EngineFallbackTracker.note_model_set`, including a switch
+  onto the hop's own target, which the value comparison alone cannot tell apart
+  from the hop.
+- A promotion is kiro-cli making the target the session's model; the engine runs
+  later prompts on it whatever Crew records. Crew follows instead of overriding
+  it, because putting the session back on the model that refused only buys
+  another refusal and another fallback on the next prompt. `_resolved_model_id`
+  takes the target, and so does `_model` when the session was pinned; an
+  unpinned session stays unpinned. On the dashboard (`dashboard/engine_fallback.py`)
+  a pinned slot's `slot.model` takes it too, and the promotion counts as an
+  explicit pick (`_model_pick_gen` and the client pick epoch both move). The one
+  thing this changes in Crew is the re-apply: a pin re-apply (respawn, warm-pool
+  claim, cold start) and the throttle and refusal-fallback restores would
+  otherwise call `set_model` on the refused model. The replaced model survives
+  only in the transcript line; the user returns to it by picking it again, as in
+  kiro-cli's own picker.
+- Every usage row bills an engine move to the model the engine ran, through one
+  rule, `llm_helpers.engine_attributed_model(pin, client)`: the dashboard row
+  (`dashboard/chat_runner.py`), cron sequential and isolated
+  (`slack/gateway.py`) and sub-agent rows (`subagent_manager/run.py`). A
+  turn-scoped hop leaves a pinned `slot.model` on the pin, so the row cannot
+  read the pin; Crew's own fallback keeps its separate
+  `provider_fallback_active` check.
+
+What the user sees is kiro-cli's end-of-turn line (`EngineFallbackWalk.line`):
+`"<from> refused|was unavailable|yielded"` per hop, then `answered by <to> for
+this turn`, `answered by <to>, now this conversation's model`, `No model
+answered`, or `cancelled`, with a promotion named on every line that does not
+already name it. Which ending it is comes from the turn's terminal stop reason,
+for both engines (`acp/engine_fallback.py:walk_outcome`): `end_turn` answered, a
+cancel cancelled, anything else (a refusal, a timeout, an `error:` reason, an
+empty one) did not. A promotion is NOT read as an answer: KAS pins its target at
+move time, before that target answers.
+
+The terminal is trustworthy on both engines because of one rule at the ACP
+layer, not in any consumer. `AcpPromptStats.terminal_refusal` relabels a
+prompt's terminal `refusal` whenever a refusal was recorded on
+`_kiro.dev/metadata`, because Kiro ends a filtered turn `end_turn`. In a V2
+refusal fallback that recorded refusal belongs to the model being left. On the
+wire it arrives as a `_kiro.dev/metadata` refusal, then the `model_fallback`
+hop, then the prompt's answer: `stopReason: end_turn` when a later hop answered,
+`refusal` when none did. So
+`EngineFallbackTracker.apply` drops the recorded refusal on a V2 refusal hop
+(`_drop_superseded_refusal`). A target that refuses too records a fresh refusal,
+which folds as usual. A decline, an availability hop and every KAS notice leave
+it alone; KAS reports its own terminal. Clearing at the hop rather than the
+promotion matters, because the promotion notice can reach the client after a
+refusal the target sent, and clearing there would wipe that refusal.
+
+Every consumer reads the terminal from the same `EVENT_COMPLETE`: the dashboard
+notice and refusal card, cron, heartbeat, the sub-agent run's outcome
+classification, and the channel turns. So none of them carries an engine check
+of its own.
+
+The dashboard appends the line once from the turn's `finally`, as a persisted
+notice, whatever path ended the turn. The unattended surfaces (cron sequential
+and isolated, heartbeat, sub-agent runs) prefix it to the delivered result
+through `annotate_model_fallback(..., stop_reason=)`, passing the terminal stop
+reason each already captures; a caller that saw no terminal passes `None` and the
+line reads as answered. Crew's refusal retry is dashboard-only, so there is no
+refusal card to suppress on those surfaces. Native Slack inbound runs through
+the dashboard's `_run_chat` and gets the dashboard behavior. The standalone
+channel transports (Telegram, WhatsApp, Discord, Webex, Slack transport mode,
+and the autonudge wake turn) run through `messaging/driver.TurnDriver`, which
+prints no fallback line, the engine's or Crew's own; the session's model state
+still follows the engine there, because the session handle keeps it.
+
+Where a surface SHOWS which model a conversation is on, it follows the engine
+rather than naming the model that refused:
+
+- The sub-agent tab's model chip, the `subagent_done` frame and the completion
+  card all read `SubagentInfo.resolved_model`, set at spawn from the session's
+  served model. At the end of a run, `subagent_manager/run.py` replaces it with
+  `engine_served_model(client)` (the walk's promoted model, else its last hop
+  target) when the engine moved the last prompt, and persists it, so a card
+  rebuilt from state agrees. The session's `served_model` cannot be used for
+  this: a turn-scoped hop leaves a pinned `_model` alone.
+- The Telegram, Discord and Webex `/model` pickers show their own per-conversation
+  `_model_pref`, which is also what a cold start re-applies. After each turn,
+  `follow_engine_promotion` moves a pinned pick onto a model the engine promoted,
+  the same rule as a pinned dashboard slot. An Auto pick stays Auto, and a
+  turn-scoped hop changes nothing. The caller passes the pick it read when the
+  turn started, the same value it hands the cold start (`before=`), so a pick
+  the user changed during the turn is left alone. Each prompt's promotion is
+  read once, followed or skipped, so a later turn that never prompts cannot
+  apply it. A resumed dashboard session on Telegram or
+  Discord is left alone, since its model is the dashboard slot's.
+
+App code reaches all of this through `agent_sdk/drivers/acp_vocab.py`, which
+re-exports the engine-fallback names, so no consumer imports `kiro_crew.acp`
+for it (`scripts/check_agent_sdk_boundary.py`).
+
+Crew's own fallback is unchanged and is not gated on the engine's: a turn the
+engine moved that still ends in an error or a refusal enters Crew's walk or
+refusal retry as before. A turn the engine recovered never reaches them, because
+it ends `end_turn` on both engines (above), so they need no gate on the engine's
+walk. Two
+consequences are accepted. Crew may then take another hop in the same turn, past
+the engine's own hop limit. And a turn-scoped hop is not reflected in
+`served_model` (it prefers the pinned `_model`), so Crew's walk can choose the
+engine's failed target as its own candidate when that model is also configured
+as `agent.fallback_model`.
+
 ## Non-goals
 
 - Swapping models after activity has begun on the transient/throttle path;
@@ -335,9 +473,12 @@ sub-agents) keep the terminal refusal behavior.
   and continues from the completed work when one did.)
 - Per-crew, per-cron, or per-role fallback chains.
 - A dedicated per-turn model field on the ACP wire.
-- kiro-cli changes.
+- kiro-cli changes. The engine-side fallback above is read, never driven.
 
 ## Tests
+
+`test/test_engine_fallback.py` covers the engine notice decoders, the tracker,
+the end-of-turn wording, and the handle, dispatcher and dashboard seams.
 
 `test/test_llm_helpers.py` covers chain derivation, candidate selection, retry
 state, story handling, and unattended restore. `test/test_dashboard_chat.py`

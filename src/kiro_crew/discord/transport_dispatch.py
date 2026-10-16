@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
+from kiro_crew.agent_sdk.drivers.acp_vocab import follow_engine_promotion
 from kiro_crew.agent_switch_command import ChannelAgentPicks, handle_channel_agent_command
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig
@@ -961,6 +962,7 @@ class DiscordDispatcher:
                 or self._session_key(user_id, thread_id) == monitor_session_key
             )
 
+        _pick_before = self._model_pref.get(scope_id)
         try:
             outcome = await self._channel_turns().answer(
                 Asker(
@@ -985,7 +987,7 @@ class DiscordDispatcher:
                     # ``model`` applies only when this turn COLD-STARTS the session:
                     # the fast path returns a reused session before it consults the
                     # argument, which is exactly what ``!model``'s reply promises.
-                    model=self._model_pref.get(scope_id) or None,
+                    model=_pick_before or None,
                     # A resumed session runs its own persisted agent.
                     agent=None if resumed_key is not None else self._resolve_agent(scope_id),
                 ),
@@ -1004,6 +1006,16 @@ class DiscordDispatcher:
             if built and self._active_renderers.get(session_key) is built[0]:
                 self._active_renderers.pop(session_key)
             await asyncio.to_thread(cleanup_attachments, attachment_temp_paths)
+
+        if resumed_key is None:
+            # The conversation's pick is what `!model` shows and what a cold start
+            # re-applies; follow a model the engine promoted this turn.
+            follow_engine_promotion(
+                self._model_pref,
+                scope_id,
+                self.sessions.get_provider(session_key),
+                before=_pick_before,
+            )
 
         # Drain anything queued during the turn (queue_mode == "queue").
         #

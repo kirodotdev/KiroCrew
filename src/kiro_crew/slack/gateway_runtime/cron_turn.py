@@ -52,6 +52,7 @@ if TYPE_CHECKING:
         consume_reinjection,
         context_meter_reading,
         dataclass,
+        engine_attributed_model,
         logger,
         persist_token_record_async,
         provider_fallback_active,
@@ -269,7 +270,9 @@ async def _cron_run_sequence(
                 _seq_landed = stop_reason_landed(_seq_stop["reason"])
                 if not result_text:
                     result_text = _gate.empty_reply_placeholder()
-                result_text = _annotate_model_fallback(result_text, client)
+                result_text = _annotate_model_fallback(
+                    result_text, client, stop_reason=_seq_stop["reason"]
+                )
                 logger.info("Cron '%s': agent '%s' completed", job.name, agent)
 
                 # ── Per-turn usage row: background spend. ──
@@ -290,14 +293,16 @@ async def _cron_run_sequence(
                         # that never executed. Blank defers to
                         # model_source, which reports what actually ran.
                         # A half-applied pair pin bills the bare
-                        # model that ran, not the suffixed pin.
+                        # model that ran, not the suffixed pin, and an
+                        # engine fallback bills the model it moved to.
                         (
                             ""
                             if (_seq_downgraded or provider_fallback_active(client))
-                            else (
+                            else engine_attributed_model(
                                 (job.model and provider_model_pin_partial(client))
                                 or job.model
-                                or ""
+                                or "",
+                                client,
                             )
                         ),
                         _turn_usage,
@@ -641,7 +646,9 @@ async def _cron_run_single(
 
         if _model_downgraded:
             result_text = _annotate_model_downgrade(job, result_text)
-        result_text = _annotate_model_fallback(result_text, client)
+        result_text = _annotate_model_fallback(
+            result_text, client, stop_reason=_turn_stop["reason"]
+        )
         # Before set_run_result and the dedup hash below, so the stored
         # result, the slot, the bell and every transport carry the
         # refusal, and a run that lost a call never hashes equal to
@@ -679,11 +686,15 @@ async def _cron_run_single(
                 session_key,
                 # Blank on a downgrade or an active fallback — see the
                 # sequential site above / provider_fallback_active. A
-                # half-applied pair pin bills the bare model that ran.
+                # half-applied pair pin bills the bare model that ran, and an
+                # engine fallback the model it moved to.
                 (
                     ""
                     if (_model_downgraded or provider_fallback_active(client))
-                    else ((job.model and provider_model_pin_partial(client)) or job.model or "")
+                    else engine_attributed_model(
+                        (job.model and provider_model_pin_partial(client)) or job.model or "",
+                        client,
+                    )
                 ),
                 _turn_usage,
                 provider=_provider,

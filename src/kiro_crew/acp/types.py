@@ -123,6 +123,10 @@ EVENT_STEER_CLEARED = "steer_cleared"
 #: see :meth:`StructuredStatus.from_meta` and the origin rule in
 #: ``AcpSessionHandle._handle_update``.
 EVENT_STRUCTURED_STATUS = "structured_status"
+#: The ENGINE moved the turn onto another model, or reported that it could not
+#: (kiro-cli's KAS or V2 engine). Carries an ``engine_fallback.ModelFallbackNotice``
+#: on :attr:`AcpEvent.model_fallback`; see ``acp/engine_fallback.py``.
+EVENT_MODEL_FALLBACK = "model_fallback"
 
 # ── ACP Protocol Methods ──
 
@@ -855,6 +859,9 @@ class AcpEvent:
     #: ``None`` on every other terminal, including a plain ``end_turn`` whose
     #: metadata said nothing about a refusal.
     refusal: "RefusalInfo | None" = None
+    #: Set on ``EVENT_MODEL_FALLBACK``: the engine's fallback decision, an
+    #: ``engine_fallback.ModelFallbackNotice``. ``None`` on every other event.
+    model_fallback: Any = None
     #: True when Kiro Crew fabricated this terminal event because the provider
     #: omitted its result frame. Consumers must not treat it as raw completion
     #: evidence even when compatibility requires ``stop_reason=end_turn``.

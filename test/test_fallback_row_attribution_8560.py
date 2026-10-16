@@ -31,7 +31,7 @@ from test_dashboard_chat import TestRunChatTransientRetry as _TransientSuite
 def _deep_chain_client(stream, *, primary="primary-model", advertised=("fallback-model",)):
     """A provider whose model state sits six wrapper layers below the surface.
 
-    Mirrors the real nesting ``_wrapper_chain``'s docstring documents —
+    Mirrors the real nesting ``wrapper_chain``'s docstring documents —
     ``AcpProvider`` -> ``client`` -> ``AcpSessionProvider`` -> ``_handle`` ->
     ``AcpSessionHandle`` -> ``_runtime`` — with the extra wrapper layers a
     long-lived shared session accumulates. ``set_model`` writes the handle's
@@ -226,6 +226,51 @@ class TestFallbackServedTurnAttribution:
         rows = self._rows(shard_dir)
         assert len(rows) == 1, rows
         assert rows[0]["model"] == "pinned-model", rows[0]
+
+    @pytest.mark.asyncio
+    async def test_an_engine_turn_hop_bills_the_model_the_engine_ran(self, tmp_path, monkeypatch):
+        """kiro-cli moved this one prompt off the pin: the pin stays on the slot,
+        and the row names the model that answered (``engine_attributed_model``)."""
+        from unittest.mock import AsyncMock, patch
+
+        from kiro_crew.acp.engine_fallback import (
+            TRACKER_ATTR,
+            EngineFallbackTracker,
+            ModelFallbackNotice,
+        )
+        from kiro_crew.acp.types import TurnUsage
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.dashboard.handlers import usage as usage_mod
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        shard_dir = tmp_path / "usage" / "tokens"
+        monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", shard_dir)
+
+        async def _stream(msg):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok")
+            yield LLMEvent(kind=EVENT_COMPLETE, usage=TurnUsage(credits=4.0))
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client, handle = _deep_chain_client(_stream)
+        tracker = EngineFallbackTracker()
+        tracker.apply(
+            handle,
+            [ModelFallbackNotice("pinned-model", "engine-model", "unavailable", engine="kas")],
+        )
+        setattr(handle, TRACKER_ATTR, tracker)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        slot.model = "pinned-model"
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await _run_chat(state, slot, "hello")
+            await self._drain_bg(state)
+
+        assert slot.model == "pinned-model"
+        rows = self._rows(shard_dir)
+        assert len(rows) == 1, rows
+        assert rows[0]["model"] == "engine-model", rows[0]
 
     @pytest.mark.asyncio
     async def test_stale_sticky_fallback_is_not_billed_after_a_resume(self, tmp_path, monkeypatch):

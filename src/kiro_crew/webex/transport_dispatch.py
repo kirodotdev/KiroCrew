@@ -53,6 +53,7 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
+from kiro_crew.agent_sdk.drivers.acp_vocab import follow_engine_promotion
 from kiro_crew.agent_switch_command import ChannelAgentPicks, handle_channel_agent_command
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
@@ -720,6 +721,7 @@ class WebexDispatcher:
 
             await surface_dispatcher_session(self)
 
+        _pick_before = self._model_pref.get(email)
         try:
             await drive_turn(
                 ChannelTurn(
@@ -765,7 +767,7 @@ class WebexDispatcher:
                         session_key, user_text, reply, is_new, agent
                     ),
                     notice=lambda sk, provider: self._maybe_notice(inbound, sk, provider),
-                    model=self._model_pref.get(email) or None,
+                    model=_pick_before or None,
                     audit_caller=f"webex:{email}",
                     after_persist=_surface_new_session,
                 ),
@@ -781,6 +783,14 @@ class WebexDispatcher:
                 # Off-loop: unlinking a run of files is blocking filesystem work,
                 # and this runs on the shared gateway loop.
                 await asyncio.to_thread(cleanup_attachments, temp_paths)
+        # The person's pick is what `/model` shows and what a cold start
+        # re-applies; follow a model the engine promoted this turn.
+        follow_engine_promotion(
+            self._model_pref,
+            email,
+            self.sessions.get_provider(session_key),
+            before=_pick_before,
+        )
         # drive_turn released the semaphore in its finally, so the session is free
         # and anything queued during the turn can run now.
         if drain:
