@@ -1,7 +1,7 @@
 """Tests for POST /api/channel-folders/backfill.
 
 The endpoint's own decisions only -- the filing behaviour it delegates to is
-covered in ``test_channel_folders.py``. What is tested here is the boundary: who
+covered in ``test_channel_folders_backfill.py``. What is tested here is the boundary: who
 may call it, which namespaces it accepts, and that a report reaches the caller
 unflattened (the panel renders the moved list, so losing it silently would make
 the button look like it did nothing).
