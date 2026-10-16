@@ -20,6 +20,7 @@ names and is the patch surface those modules read their seams from at call time.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import hashlib
 import json
 import logging
@@ -482,6 +483,10 @@ def _migrate_v2(db: sqlite3.Connection) -> None:
 _MEMORY_META_TABLE = memory_schema.MEMORY_META_SQL
 
 
+# Every step runs inside the one setup transaction ``init()`` opens, so a step
+# must not commit: no ``db.commit()`` and no ``executescript`` (which commits
+# first). ``init()`` raises on a step that ends the transaction and does not
+# record that step's version, so the next open runs it again.
 _MIGRATIONS: list[tuple[int, str, "Callable[[sqlite3.Connection], None] | None"]] = [
     (1, _SCHEMA_V1, None),
     (2, "", _migrate_v2),
@@ -522,6 +527,44 @@ def _lesson_key(rule: str, repo_scope: str | None = None) -> str:
 
 def _now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
+
+
+#: How long an open waits for the write lock, in the WAL switch and in every
+#: statement after it (``PRAGMA busy_timeout``).
+_BUSY_TIMEOUT_SECS = 5.0
+#: Pause between attempts to switch a file to WAL while another opener holds a lock.
+_WAL_SWITCH_RETRY_SECS = 0.01
+
+
+def _enable_wal(db: sqlite3.Connection) -> None:
+    """Put *db*'s file in WAL mode, waiting out another opener's lock.
+
+    The switch upgrades a read lock to a write lock, and SQLite does not call the
+    busy handler for that upgrade, so ``busy_timeout`` does not cover it: a second
+    first-open of a fresh file raises "database is locked" at once. A file already
+    in WAL needs no lock at all, so the current mode is read first.
+    """
+    if str(db.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal":
+        return
+    deadline = time.monotonic() + _BUSY_TIMEOUT_SECS
+    while True:
+        try:
+            db.execute("PRAGMA journal_mode=WAL")
+            return
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc) or time.monotonic() >= deadline:
+                raise
+        time.sleep(_WAL_SWITCH_RETRY_SECS)
+
+
+def _require_setup_transaction(db: sqlite3.Connection) -> None:
+    """Refuse a schema step that ended the setup transaction (it committed).
+
+    Only the end of the transaction is seen: a step that commits and then opens a
+    new transaction is not caught.
+    """
+    if not db.in_transaction:
+        raise RuntimeError("A memory schema step committed the setup transaction")
 
 
 def _sanitize_decay_rates(raw: Mapping[str, object] | None) -> dict[str, float]:
@@ -1547,7 +1590,8 @@ class VectorMemoryStore:
             str(self._db_path), check_same_thread=False, isolation_level=None
         )
         self._db.row_factory = sqlite3.Row
-        self._db.execute("PRAGMA journal_mode=WAL")
+        self._db.execute(f"PRAGMA busy_timeout={int(_BUSY_TIMEOUT_SECS * 1000)}")
+        _enable_wal(self._db)
         # synchronous stays at the sqlite default (FULL). NORMAL would drop the
         # per-commit fsync, but under WAL that only survives a process crash --
         # an OS crash or power loss can still lose the unsynced WAL tail, and
@@ -1555,62 +1599,43 @@ class VectorMemoryStore:
         # rows. The write-volume problem it was meant to address is handled by
         # debouncing the last_accessed_at touch instead, which removes the
         # commits rather than weakening the ones that remain.
-        self._db.execute("PRAGMA busy_timeout=5000")
-        self._db.isolation_level = ""  # Restore implicit transaction handling
 
-        # Apply migrations
-        self._db.execute(
-            "CREATE TABLE IF NOT EXISTS schema_version "
-            "(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
-        )
-        self._db.commit()
-        applied = {
-            row[0] for row in self._db.execute("SELECT version FROM schema_version").fetchall()
-        }
-        # WHICH lineage, decided here and nowhere else. This is the single gate:
-        # nine call sites construct a store, one of which (security.scan_memory)
-        # sits outside the memory subsystem entirely and reaches the default store
-        # as a bare VectorMemoryStore(), so a per-call-site check could not cover it.
-        #
-        # A file that already holds product tables answers itself, so no path is
-        # consulted for it and the operator's running memory.db cannot take the
-        # crew branch however the predicate below is later edited. Only a file
-        # with no product tables asks where it lives.
-        detected = memory_schema.detect_lineage(self._db)
-        self._bind_lineage(detected or memory_schema.lineage_for_new_file(self._db_path))
-        named_store = memory_stores.named_store_of_db(self._db_path)
-        self._memory_version = 1
-        migrations = (
-            memory_schema.MIGRATIONS_CREW
-            if self._lineage == memory_schema.LINEAGE_CREW
-            else _MIGRATIONS
-        )
-        for ver, sql, fn in migrations:
-            if ver not in applied:
-                if sql:
-                    self._db.executescript(sql)
-                if fn:
-                    fn(self._db)
-                self._db.execute(
-                    "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (?, ?)",
-                    (ver, _now_iso()),
-                )
-                self._db.commit()
-                logger.info("Applied memory schema migration v%s", ver)
+        # Schema setup reads first and writes only when something is pending. The
+        # first pass runs with no transaction, so the schema step of an up-to-date
+        # file takes no write lock.
+        # Anything pending is built in ONE transaction: a new file pays one durable
+        # commit, not one per DDL statement (outside a transaction every statement
+        # is its own FULL-sync commit), and a failure part-way leaves the file
+        # exactly as it was. The plan is derived again under BEGIN IMMEDIATE,
+        # because another connection may have built the same steps in between.
+        # ``journal_mode`` cannot change inside a transaction, so it stays above.
+        migrated: list[int] = []
+        try:
+            if self._schema_steps(migrated):
+                self._db.execute("BEGIN IMMEDIATE")
+                try:
+                    self._db.execute(
+                        "CREATE TABLE IF NOT EXISTS schema_version "
+                        "(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+                    )
+                    for step in self._schema_steps(migrated):
+                        step()
+                        _require_setup_transaction(self._db)
+                    self._db.execute("COMMIT")
+                except BaseException:
+                    self._db.rollback()
+                    raise
+        finally:
+            self._db.isolation_level = ""  # Restore implicit transaction handling
+        for ver in migrated:
+            logger.info("Applied memory schema migration v%s", ver)
 
-        # Additive revision metadata is shared by both lineages. It never changes
-        # their physical rows or version series; old binaries remain readable.
+        # The metadata backfill keeps its own transaction: it reads every row, and
+        # the write lock the schema transaction holds must not wait on that scan.
         with self._db:
-            record_meta.ensure_schema(self._db)
             record_meta.reconcile(self._db)
             if self.algorithm_version == "v1":
                 record_meta.limit_v1_accepted_history(self._db)
-
-        if self._lineage == memory_schema.LINEAGE_CREW:
-            if self._read_meta(memory_schema.LINEAGE_META_KEY) != self._lineage:
-                self._write_meta(memory_schema.LINEAGE_META_KEY, self._lineage)
-            if named_store and self._read_meta(memory_schema.STORE_NAME_META_KEY) is None:
-                self._write_meta(memory_schema.STORE_NAME_META_KEY, named_store)
 
         # Second pass, after the connect: covers what SQLite has just created. Runs
         # on EVERY init, not only when init created the files -- an existing DB is
@@ -1639,6 +1664,88 @@ class VectorMemoryStore:
             logger.warning(
                 "FAISS index not loaded (faiss-cpu may not be installed yet)", exc_info=True
             )
+
+    def _schema_steps(self, migrated: list[int]) -> list[Callable[[], object]]:
+        """Every schema write this file still needs, in order. Reads only.
+
+        Empty for an up-to-date file. Also binds the lineage, which a file that
+        needs nothing still has to know. *migrated* collects the version of each
+        migration step as it runs, for the log line after COMMIT.
+        """
+        with self._db_lock:
+            if self.db.execute(
+                "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'schema_version'"
+            ).fetchone():
+                applied = {row[0] for row in self.db.execute("SELECT version FROM schema_version")}
+            else:
+                applied = set()
+            # WHICH lineage, decided here and nowhere else. This is the single gate:
+            # nine call sites construct a store, one of which (security.scan_memory)
+            # sits outside the memory subsystem entirely and reaches the default store
+            # as a bare VectorMemoryStore(), so a per-call-site check could not cover it.
+            #
+            # A file that already holds product tables answers itself, so no path is
+            # consulted for it and the operator's running memory.db cannot take the
+            # crew branch however the predicate below is later edited. Only a file
+            # with no product tables asks where it lives.
+            detected = memory_schema.detect_lineage(self.db)
+            self._bind_lineage(detected or memory_schema.lineage_for_new_file(self._db_path))
+            named_store = memory_stores.named_store_of_db(self._db_path)
+            self._memory_version = 1
+            migrations = (
+                memory_schema.MIGRATIONS_CREW
+                if self._lineage == memory_schema.LINEAGE_CREW
+                else _MIGRATIONS
+            )
+            steps: list[Callable[[], object]] = [
+                functools.partial(self._apply_migration, ver, sql, fn, migrated)
+                for ver, sql, fn in migrations
+                if ver not in applied
+            ]
+            # Additive revision metadata is shared by both lineages. It never changes
+            # their physical rows or version series; old binaries remain readable.
+            if not record_meta.schema_is_current(self.db):
+                steps.append(functools.partial(record_meta.ensure_schema, self.db))
+            if self._lineage == memory_schema.LINEAGE_CREW:
+                # Before its migrations run, a crew file has no memory_meta to read,
+                # so the stamp step is planned and reads the stamps when it runs.
+                if steps or self._crew_stamps_missing(named_store):
+                    steps.append(functools.partial(self._stamp_crew_lineage, named_store))
+            return steps
+
+    def _apply_migration(
+        self,
+        ver: int,
+        sql: str,
+        fn: Callable[[sqlite3.Connection], None] | None,
+        migrated: list[int],
+    ) -> None:
+        """Run one migration and record its version, inside the setup transaction."""
+        with self._db_lock:
+            if sql:
+                memory_schema.execute_script(self.db, sql)
+            if fn:
+                fn(self.db)
+            # Before the version row, so a step that committed is never recorded applied.
+            _require_setup_transaction(self.db)
+            self.db.execute(
+                "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (?, ?)",
+                (ver, _now_iso()),
+            )
+        migrated.append(ver)
+
+    def _crew_stamps_missing(self, named_store: str | None) -> bool:
+        """Whether a crew file still lacks its lineage or store-name stamp."""
+        if self._read_meta(memory_schema.LINEAGE_META_KEY) != self._lineage:
+            return True
+        return bool(named_store) and self._read_meta(memory_schema.STORE_NAME_META_KEY) is None
+
+    def _stamp_crew_lineage(self, named_store: str | None) -> None:
+        """Write whichever crew stamp is missing, inside the setup transaction."""
+        if self._read_meta(memory_schema.LINEAGE_META_KEY) != self._lineage:
+            self._write_meta_in_transaction(memory_schema.LINEAGE_META_KEY, self._lineage)
+        if named_store and self._read_meta(memory_schema.STORE_NAME_META_KEY) is None:
+            self._write_meta_in_transaction(memory_schema.STORE_NAME_META_KEY, named_store)
 
     def close(self) -> None:
         with self._db_lock:

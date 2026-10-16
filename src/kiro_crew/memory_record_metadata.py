@@ -134,9 +134,11 @@ _DERIVED = {"embedding", "last_accessed_at", "access_count", "id", "kind", "meta
 _HASH_DERIVED = _DERIVED | {"updated_at"}
 
 
-def ensure_schema(db: sqlite3.Connection) -> None:
-    """Create additive tables/indexes without executescript's implicit COMMIT."""
-    statements = (
+#: Every additive object, by name: :func:`ensure_schema` builds them and
+#: :func:`schema_is_current` reads whether they all exist, from the one list.
+_SCHEMA_OBJECTS: tuple[tuple[str, str], ...] = (
+    (
+        "memory_record_meta",
         """CREATE TABLE IF NOT EXISTS memory_record_meta (
             record_id TEXT PRIMARY KEY, kind TEXT NOT NULL,
             revision INTEGER NOT NULL, category TEXT NOT NULL DEFAULT '',
@@ -146,21 +148,45 @@ def ensure_schema(db: sqlite3.Connection) -> None:
             observed_at TEXT NOT NULL DEFAULT '', source_ref TEXT NOT NULL DEFAULT '',
             content_hash TEXT NOT NULL, email_addresses TEXT NOT NULL DEFAULT '[]',
             updated_at TEXT NOT NULL)""",
+    ),
+    (
+        "memory_revisions",
         """CREATE TABLE IF NOT EXISTS memory_revisions (
             id INTEGER PRIMARY KEY AUTOINCREMENT, record_id TEXT NOT NULL,
             revision INTEGER NOT NULL, base_revision INTEGER NOT NULL,
             status TEXT NOT NULL, operation TEXT NOT NULL, source TEXT NOT NULL,
             before_json TEXT, after_json TEXT, metadata_json TEXT NOT NULL,
             created_at TEXT NOT NULL)""",
+    ),
+    (
+        "idx_memory_revision_record",
         "CREATE INDEX IF NOT EXISTS idx_memory_revision_record "
         "ON memory_revisions(record_id, id)",
+    ),
+    (
+        "idx_memory_fact_identity",
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_fact_identity "
         "ON memory_record_meta(scope, subject, predicate) "
         "WHERE kind IN ('fact', 'directive') AND subject <> '' AND predicate <> '' "
         "AND status = 'active'",
-    )
-    for statement in statements:
+    ),
+)
+
+
+def ensure_schema(db: sqlite3.Connection) -> None:
+    """Create additive tables/indexes without executescript's implicit COMMIT."""
+    for _name, statement in _SCHEMA_OBJECTS:
         db.execute(statement)
+
+
+def schema_is_current(db: sqlite3.Connection) -> bool:
+    """Whether every object :func:`ensure_schema` creates already exists. Reads only."""
+    names = [name for name, _statement in _SCHEMA_OBJECTS]
+    placeholders = ", ".join("?" for _ in names)
+    found = db.execute(
+        f"SELECT count(*) FROM sqlite_schema WHERE name IN ({placeholders})", names
+    ).fetchone()[0]
+    return found == len(names)
 
 
 def identity_key(db: sqlite3.Connection, key: str, metadata: dict | None) -> str:

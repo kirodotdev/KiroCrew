@@ -280,6 +280,8 @@ CREATE VIEW IF NOT EXISTS episodic_memories AS
       FROM memory_items WHERE kind = '{KIND_EPISODE}';
 {MEMORY_EVENTS_SQL}{MEMORY_META_SQL}"""
 
+# Like ``vector_memory._MIGRATIONS``: every step runs inside the store's one setup
+# transaction and must not commit; ``init()`` raises on a step that ends it.
 MIGRATIONS_CREW: Final[list[tuple[int, str, "Callable[[sqlite3.Connection], None] | None"]]] = [
     (CREW_SCHEMA_VERSION, CREW_SCHEMA_SQL, None),
 ]
@@ -804,6 +806,26 @@ def facet_count_query(
         f"GROUP BY {column} ORDER BY total DESC, value ASC LIMIT ?"
     )
     return sql, (*params, groups)
+
+
+def execute_script(db: sqlite3.Connection, sql: str) -> None:
+    """Run every statement of *sql* inside the caller's open transaction.
+
+    ``Connection.executescript`` COMMITs a pending transaction before it runs,
+    so it cannot be one step of a larger one. Statements end where SQLite's own
+    tokenizer says they do (:func:`sqlite3.complete_statement`), so a ``;``
+    inside a literal, a comment or a trigger body does not split a statement.
+    """
+    pending = ""
+    for piece in sql.split(";"):
+        pending += piece + ";"
+        if sqlite3.complete_statement(pending):
+            if pending.strip(" \t\r\n;"):
+                db.execute(pending)
+            pending = ""
+    tail = pending[:-1]  # the ";" appended after the last piece
+    if tail.strip():
+        db.execute(tail)
 
 
 def detect_lineage(db: sqlite3.Connection) -> str | None:
