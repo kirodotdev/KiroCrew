@@ -4209,7 +4209,10 @@ The mechanism is one extra window plus one env value, applied at three seams:
   `subagent_manager/run.py`, which adds `shared_scratch` to the `get_or_create`
   kwargs (and which is also the signal that skips the warm pool —
   `pool_decision = "bypass_shared_scratch"` — because a pooled child's mounts were
-  fixed when it was pre-spawned with no parent); a shared-session subagent needs
+  fixed when it was pre-spawned with no parent; the
+  `kirocrew.session.pool.decision` counter reports it under its own `outcome`, so
+  the warm hits it costs can be read against the other bypass reasons
+  ([metrics](metrics.md)); a shared-session subagent needs
   nothing, it already runs in the parent's process. The `_bg` runtime's
   replacement in `session_background.get_bg_session` inherits its predecessor's
   `work_scratch_dir`, recorded on `BackgroundRuntimeState.inherited_scratch` from

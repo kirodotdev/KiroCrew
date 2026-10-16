@@ -284,6 +284,38 @@ class TestPoolDecisions:
             "disabled",
         } <= POOL_DECISIONS
 
+    def test_every_reason_the_allocator_assigns_is_modelled(self):
+        """A reason missing from the set is counted as ``other``, so its share
+        of lost pool hits cannot be read off the metric. Reads the allocator's
+        own assignments so a new bypass arm cannot ship unmodelled."""
+        import ast
+        import inspect
+
+        from kiro_crew.session_allocation_parts import get_or_create
+
+        tree = ast.parse(inspect.getsource(get_or_create))
+        assigned = {
+            node.value.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "pool_decision" for t in node.targets)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+            and node.value.value
+        }
+        # The conditional expression arm assigns "hit" / "miss_empty".
+        assert {"bypass_shared_scratch", "bypass_cwd"} <= assigned
+        assert assigned | {"hit", "miss_empty"} <= POOL_DECISIONS
+
+    def test_shared_scratch_bypass_is_counted_by_name(self):
+        from kiro_crew.session import SessionManager
+
+        mgr = SessionManager.__new__(SessionManager)
+        rec = _Rec()
+        with patch("kiro_crew.session.get_recorder", return_value=rec):
+            mgr._record_pool_decision("bypass_shared_scratch", "subagent:abc")
+        assert [a["outcome"] for _, a in rec.counters] == ["bypass_shared_scratch"]
+
     def test_unmodelled_decision_folds_to_other(self):
         from kiro_crew.session import SessionManager
 

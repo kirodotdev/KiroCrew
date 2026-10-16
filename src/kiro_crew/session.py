@@ -533,17 +533,24 @@ _THREAD_PREFIX = "thread:"
 
 #: Every value the ``kirocrew.session.pool.decision`` counter can report. A
 #: warm-pool claim either happens or is refused for exactly one reason; keeping
-#: the set closed keeps the metric's cardinality bounded.
+#: the set closed keeps the metric's cardinality bounded. Every reason the
+#: allocator assigns must be listed: an unlisted one is counted as ``other``,
+#: so the hit rate it costs cannot be told apart from any other reason.
 POOL_DECISIONS: frozenset[str] = frozenset(
     {
         "hit",
         "miss_empty",
+        "bypass_member_capabilities",
         "bypass_resume",
         "bypass_stateless",
+        "bypass_member",
+        "bypass_restricted_context",
         "bypass_member_context",
         "bypass_cwd",
-        "bypass_effort",
         "bypass_env",
+        "bypass_shared_scratch",
+        "bypass_backend_override",
+        "bypass_effort",
         "disabled",
         "other",
     }
