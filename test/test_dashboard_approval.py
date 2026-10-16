@@ -2597,7 +2597,7 @@ class TestDenyRowTitleRedaction:
         # the tier outright, the request falls through to the interactive card, and
         # the `trust_reads` deny asserted below never happens. Patching the ONE
         # off-loop entry point every tier goes through is the same seam
-        # `test_chat_runner_coverage.py` uses; the check itself is covered directly
+        # `test_chat_runner_coverage_approval.py` uses; the check itself is covered directly
         # in `test/test_name_grant.py`.
         _no_refusal = patch.object(
             chat_runner, "_name_grant_refusal_off_loop", new=AsyncMock(return_value=None)

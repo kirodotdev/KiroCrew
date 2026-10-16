@@ -175,7 +175,6 @@
 2336 test/test_chat_agent_selection.py
 2475 test/test_chat_mirror.py
 2267 test/test_chat_mode_security.py
-6983 test/test_chat_runner_coverage.py
 10498 test/test_cli.py
 2744 test/test_cli_server_more_coverage.py
 2182 test/test_cloud_microvm_engine.py

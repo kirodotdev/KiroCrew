@@ -84,7 +84,9 @@
  2 test_chat_nav.py
  4 test_chat_regenerate_cov80.py
  1 test_chat_regenerate_cov80_edit_resend_boundary.py
- 9 test_chat_runner_coverage.py
+ 5 test_chat_runner_coverage_commands.py
+ 2 test_chat_runner_coverage_pending.py
+ 2 test_chat_runner_coverage_queue.py
  1 test_chat_runner_folder_steering.py
  2 test_chat_send_client_meta_survival.py
  4 test_chat_send_echo_scope.py

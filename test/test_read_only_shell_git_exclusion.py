@@ -18,7 +18,7 @@ What is pinned here:
 * the classifier itself is unchanged: ``is_read_only_bash`` still reads a git
   read as read-only, so only the auto-approve sites change.
 
-The trust-reads path is driven end to end in ``test_chat_runner_coverage.py``.
+The trust-reads path is driven end to end in ``test_chat_runner_coverage_approval.py``.
 """
 
 from __future__ import annotations
