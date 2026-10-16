@@ -1,6 +1,6 @@
 /** View types the sidebar's owners share. `Slot` is the sidebar's narrowed view of a
  *  chat slot; the wire type is `ChatSlot` in ../../types. */
-import type { SessionLink, SourceProviderId } from '../../types'
+import type { CodeChannelInfo, SessionLink, SourceProviderId } from '../../types'
 
 export interface Slot {
   key: string
@@ -121,6 +121,8 @@ export interface Slot {
   last_message?: string
   slack_linked?: boolean
   links?: SessionLink[]
+  /** The Slack code channel this session runs in; absent for every other row. */
+  code_channel?: CodeChannelInfo
   color_index?: number | null
   color_hex?: string | null
   memory_mode?: 'persistent' | 'incognito' | 'temporary'

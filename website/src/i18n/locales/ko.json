@@ -9953,6 +9953,18 @@
       "session_queued": "이 세션: {{queued}}개 대기 중",
       "session_queued_hint": "동시에 실행되는 수가 줄어든 동안 이 세션이 시작한 에이전트가 빈 자리를 기다리고 있습니다.",
       "load_failed": "대기 중인 에이전트를 확인할 수 없습니다"
+    },
+    "codeChannelBadge": {
+      "label": "Slack 코드 채널",
+      "label_short": "코드 채널",
+      "archived": "보관됨",
+      "wrapped_up": "완료됨",
+      "open_named": "Slack에서 {{channel}} 열기",
+      "open_unnamed": "Slack에서 이 코드 채널 열기",
+      "opens_in_slack": "(Slack에서 열림)",
+      "about": "이 세션은 Slack 코드 채널에서 실행됩니다. 그곳과 이곳의 메시지는 하나의 대화입니다.",
+      "archived_hint": "Slack에서 보관되었습니다. 채널은 읽기 전용입니다.",
+      "wrapped_up_hint": "완료되었습니다. 작업이 끝났고 후속 대화를 위해 채널은 열려 있습니다."
     }
   },
   "hooks": {

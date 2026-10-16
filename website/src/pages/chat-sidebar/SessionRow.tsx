@@ -45,6 +45,7 @@ import { CrewOfflineContext } from './CrewGroups'
 import { useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
 import { DisclosureChevron, isOpenInTabModifierClick } from './chrome'
 import { SessionSourceChips } from './SessionSourceChips'
+import { CodeChannelBadge } from '../../components/CodeChannelBadge'
 
 /**
  * Session-row type scale, quantized to a 4px baseline grid.
@@ -1488,7 +1489,9 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                *  It replaces a `linked_to_slack` Link glyph that fired for ANY
                *  channel, because every non-Slack transport writes its id into
                *  slack_channel_id. */}
-              {connectedChannelLinks(s.links).map(link => (
+              {/* A code channel's own badge (below) carries the Slack mark for
+               *  that link, so the row shows one Slack mark, not two. */}
+              {connectedChannelLinks(s.links).filter(link => !(s.code_channel && link.channel === 'slack')).map(link => (
                 <span
                   key={link.channel}
                   className="inline-flex text-[10px]"
@@ -1504,6 +1507,10 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                *  so a user scanning the list should meet it before the per-session
                *  flags that only make sense once you know where the session is. */}
               {s.executor === 'remote' && !inCrewGroup && <ExecutorCrewChip instanceId={s.instance_id || ''} />}
+              {/* The Slack code channel this session IS, on the meta line so the
+               *  row keeps its height. Bounded and shrinkable like the agent
+               *  marker above: it yields width to the trailing time group. */}
+              {s.code_channel && <CodeChannelBadge info={s.code_channel} variant="row" />}
               {s.memory_mode === 'incognito' && <span className="text-muted" title={i18nT('pages.chatSidebar.incognito_no_memory_writes')}><EyeOff size={10} /></span>}
               {s.memory_mode === 'temporary' && <span className="text-aim" title={i18nT('pages.chatSidebar.temporary_no_memory_reads_or_writes')}><VenetianMask size={10} /></span>}
               {/* Trailing meta grouped under ONE ml-auto: two sibling auto

@@ -76,6 +76,12 @@ class TestRendering:
             "agent_session_stopped",
             "agent_session_title_changed",
             "app_context_changed",
+            "channel_archive",
+            "channel_rename",
+            "channel_unarchive",
+            "group_archive",
+            "group_rename",
+            "group_unarchive",
         )
         assert change.removed_scopes == () and not change.empty
         back = slack_manifest.diff_requirements(
