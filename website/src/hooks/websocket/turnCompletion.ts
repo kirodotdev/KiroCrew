@@ -107,11 +107,16 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
         const doneRow = store.getState().dashboard.slots.find(s => s.key === doneSlot)
         const doneTitle = doneRow ? sessionDisplayTitle(doneRow) : doneSlot
         // A toast that reads "Response ready" while the agent is waiting
-        // on the user misdescribes the handoff; two literal keys keep the
-        // reference statically checkable (see check-i18n-keys.mjs).
-        const doneBody = completionNeedsInput
-          ? i18nT('hooks.useWebSocket.waiting_for_input')
-          : i18nT('hooks.useWebSocket.response_ready')
+        // on the user misdescribes the handoff, and over a turn that ended in
+        // a terminal error it reports a stopped worker as finished. The
+        // failure wins: the worker has stopped whatever the frame hinted.
+        // Literal keys keep the reference statically checkable (see
+        // check-i18n-keys.mjs).
+        const doneBody = turnErrored
+          ? i18nT('hooks.useWebSocket.turn_failed')
+          : completionNeedsInput
+            ? i18nT('hooks.useWebSocket.waiting_for_input')
+            : i18nT('hooks.useWebSocket.response_ready')
         // Best-effort (same as approval): the helper swallows Android
         // Chrome's "Illegal constructor" and relays to the parent frame
         // when this dashboard is an embedded instance pane.

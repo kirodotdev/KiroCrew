@@ -10238,6 +10238,7 @@
     "useWebSocket": {
       "response_ready": "応答の準備ができました",
       "waiting_for_input": "入力をお待ちしています",
+      "turn_failed": "このターンは失敗しました。理由を確認するにはセッションを開いてください。",
       "tool_approval": "ツールの承認：{{name}}",
       "approval_waiting": "あなたの承認を待っています：{{name}}",
       "approval_wait_expired": "承認の待機時間が期限切れになったため、リクエストは拒否されました。",

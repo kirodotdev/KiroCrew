@@ -10238,6 +10238,7 @@
     "useWebSocket": {
       "response_ready": "回复已就绪",
       "waiting_for_input": "等待你的输入",
+      "turn_failed": "本轮失败。打开会话查看原因。",
       "tool_approval": "工具审批：{{name}}",
       "approval_waiting": "等待你的批准：{{name}}",
       "approval_wait_expired": "审批等待已超时，因此该请求已被拒绝。",
