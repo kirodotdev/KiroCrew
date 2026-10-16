@@ -211,7 +211,7 @@ Either one releases the microphone and ends the start.
 
 Client to server:
 
-- Binary frames: raw 16 kHz mono, little-endian Int16 PCM; `test/test_stt_stream.py` pins the transport format and frame limits.
+- Binary frames: raw 16 kHz mono, little-endian Int16 PCM; `test/test_stt_stream.py` and `test/test_stt_stream_local_session.py` pin the transport format and frame limits.
 - Text frame `{"type":"stop"}`: the user released the mic. The server finishes
   the utterance and closes, so trailing finals still arrive.
 
@@ -1306,9 +1306,10 @@ cancelling it would release the model store's transfer lock while its worker thr
 is still writing the staging file, and the next session would start a second write
 to the same path. Only the socket gives up; the bytes land for the next attempt.
 
-`test/test_stt_stream.py` pins the transport caps, `test/test_stt_session.py` the
-session ones, `test/test_stt_vad.py` the detector's thresholds and
-`test/test_stt_engine.py` the thread derivation and the availability codes.
+`test/test_stt_stream.py` and `test/test_stt_stream_local_session.py` pin the transport
+caps, `test/test_stt_session.py` the session ones, `test/test_stt_vad.py` the
+detector's thresholds and `test/test_stt_engine.py` the thread derivation and the
+availability codes.
 
 ## SEL audit pairing: emit before closing
 

@@ -3235,7 +3235,7 @@ went red, or the fix lands in the wrong file and the leak stays.
   `FileNotFoundError` before git runs, which every caller reads off `returncode`, so that
   descriptor is deliberately left. One production change: `browser_cli/install.py`'s
   staged node launcher now runs from the managed leaf its docstring already promised, and
-  `test_browser_cli_install.py` pins the `cwd` it is handed.
+  `test_browser_cli_install_gateway_command.py` pins the `cwd` it is handed.
 - **`fd_leak` at +3 per unclosed SQLite handle, and why refcounting never reclaims it.**
   On CPython 3.11+ every `sqlite3.Connection` is a self-cycle through its `lru_cache`
   statement cache, so an unreferenced connection holds `db` + `-wal` + `-shm` until the

@@ -200,7 +200,6 @@
 2170 test/test_aws_control_backup_composition_contract.py
 3322 test/test_aws_control_backup_retention.py
 4193 test/test_aws_control_routes.py
-3281 test/test_browser_cli_install.py
 3564 test/test_browser_cli_view.py
 4133 test/test_change_cards.py
 2032 test/test_channel_folders.py
@@ -318,7 +317,6 @@
 3579 test/test_overload_integration_glue.py
 2429 test/test_pinned_staging.py
 3402 test/test_pipeline_conductor_agent.py
-3316 test/test_pipeline_conductor_claim_preflight.py
 4048 test/test_pipeline_conductor_fleet_probe.py
 9045 test/test_platform_compat.py
 3331 test/test_platform_compat_coverage.py
@@ -363,7 +361,6 @@
 2629 test/test_slack_handler_coverage.py
 2730 test/test_slack_options_lifecycle.py
 2390 test/test_slack_transport_dispatch.py
-3315 test/test_slot_close_recreation_race.py
 2183 test/test_slot_ownership_checkpoint.py
 3265 test/test_snapshot.py
 11572 test/test_source_providers.py
@@ -373,7 +370,6 @@
 2008 test/test_steer_requeue.py
 2045 test/test_stop_clears_only_its_own_sender.py
 2211 test/test_stt_engine.py
-3291 test/test_stt_stream.py
 3093 test/test_subagent.py
 4522 test/test_subagent_continuable.py
 3158 test/test_subagent_coverage.py
