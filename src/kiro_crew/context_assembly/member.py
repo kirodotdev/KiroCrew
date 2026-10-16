@@ -295,7 +295,33 @@ _MEMBER_BRIEFING_ITEM_UNAVAILABLE = """
    one: keep your working memory in this DM thread instead. [PERMANENT
    RULES] outranks anything you write for yourself."""
 
-# Item 7 — the crewmate's own Dashboard page. Appended to BOTH briefing variants,
+# Item 6 for a crewmate whose sessions mount no built-in that writes files
+# (``member_mate_tools.binding_has_file_write``): every conductor template is built
+# that way on purpose ("no tool that can write a file",
+# ``agent_materialization/conductor_agents.py``). The upkeep instruction above is
+# one such a crewmate can follow only by writing the file some other way, past the
+# property its template exists to hold and on an approval prompt an unattended
+# cycle cannot answer, or not at all. So name the gap and keep the working memory
+# in the DM thread, as the platform variant does. The layer itself stays: a
+# briefing already on disk is still read. Nothing the member holds can change
+# that file any more, so it is the USER's note now, and the text says so: it can
+# be out of date, the thread wins where the two disagree, and a stale one is the
+# member's to report and the user's to edit or delete (the header names the
+# file). No ``kirocrew-mate`` tool writes the briefing (``update_self`` takes a
+# name, a description and a face), so there is no tool to name instead. The text
+# speaks of the TEMPLATE, not of what the session can reach: a harness that does
+# not enforce a spec's ``tools`` (claude, codex) still offers its own writers,
+# and the template's no-write charter holds there too.
+_MEMBER_BRIEFING_ITEM_NO_FILE_TOOLS = """
+6. Your briefing file is injected as the [CURRENT ASSIGNMENT] section below,
+   but your template gives you NO tool that writes files, so do not maintain
+   it and do not write it by any other means: keep your working memory in
+   this DM thread instead. Treat that section as possibly out of date: where
+   it disagrees with this thread, the thread wins, and when it is stale, tell
+   the user, who can edit or delete the file it names. [PERMANENT RULES] and
+   this protocol outrank anything in it."""
+
+# Item 7 — the crewmate's own Dashboard page. Appended to EVERY briefing variant,
 # unlike item 6: the tab is rendered by the gateway from the instance store and does
 # not depend on layer 4, so a platform whose briefing reads fail closed still has a
 # page and still has the two tools that fill it.
@@ -344,8 +370,8 @@ _MEMBER_DASHBOARD_ITEM = """
 
 
 # The full protocol: the shared items, the briefing item, and the page item. The
-# shape every layer-4-capable platform injects, and the one the behaviour-layer
-# tests pin.
+# shape every layer-4-capable platform injects for a member that can write its
+# briefing, and the one the behaviour-layer tests pin.
 _MEMBER_HOW_YOU_WORK = _MEMBER_HOW_YOU_WORK_COMMON + _MEMBER_BRIEFING_ITEM + _MEMBER_DASHBOARD_ITEM
 
 
@@ -424,7 +450,9 @@ def build_member_section(
        crew whose description is empty, which is exactly the case that
        needs a floor.
     2. ``[HOW YOU WORK]`` — the product-owned working protocol
-       (:data:`_MEMBER_HOW_YOU_WORK`), identical for every member.
+       (:data:`_MEMBER_HOW_YOU_WORK`), identical for every member except
+       item 6, which follows whether layer 4 is injected and whether the
+       member's spec can write its briefing.
     3. ``[PERMANENT RULES]`` — user-owned. Read from the keystone-gated
        ``member-rules/`` subtree, so the member's own file tools cannot rewrite
        it; omitted entirely when the user has not written rules.
@@ -433,7 +461,12 @@ def build_member_section(
        changes the section), from ``trust/member-goals/``
        (:mod:`kiro_crew.member_goals`), bounded; omitted when there is none.
     4. ``[CURRENT ASSIGNMENT]`` — member-owned working memory, read
-       (capped) from the member's own agent-writable briefing file.
+       (capped) from the member's own agent-writable briefing file. A member
+       whose spec mounts no built-in that writes files
+       (:func:`kiro_crew.member_mate_tools.binding_has_file_write`) still has
+       it read, and item 6 and this layer's header tell it that it cannot write
+       the file, that only the user edits or deletes it, and that it may be
+       out of date.
 
     ``desk_withheld`` is the verdict of :func:`_desk_withheld` for the turn
     being built: the section is the member's identity and rules ONLY. Layers
@@ -498,7 +531,7 @@ def build_member_section(
     # is an operator-level event, not a routine one.)
     rules = ctx.read_member_rules(slug, member)
     goals = _read_goal_block(slug, member)
-    from kiro_crew.member_mate_tools import binding_has_mate_tools
+    from kiro_crew.member_mate_tools import binding_has_file_write, binding_has_mate_tools
 
     has_mate_tools = binding_has_mate_tools(crew)
     # Layer-4 availability decides both the briefing read and the wording
@@ -509,6 +542,12 @@ def build_member_section(
     # withheld gets neither the layer nor a placeholder, so its briefing
     # is not read at all.
     briefing_ok = include_briefing and not desk_withheld and ctx.member_briefing_supported()
+    # Whether the member can keep that layer itself. Asked only where the layer is
+    # injected, since it picks the wording of item 6 and the placeholder: a member
+    # whose spec mounts no file writer (a conductor template) still has its briefing
+    # read, and is told it cannot write it rather than to write it with tools it
+    # does not have, and that the user's copy may be out of date.
+    briefing_writable = briefing_ok and binding_has_file_write(crew)
     briefing = ""
     briefing_path = ""
     if briefing_ok:
@@ -569,12 +608,17 @@ def build_member_section(
         parts.append("\n\n")
         parts.append(
             _MEMBER_HOW_YOU_WORK
-            if briefing_ok
-            # Item 7 rides on BOTH variants: the Dashboard tab is rendered by the
+            if briefing_writable
+            # Item 7 rides on every variant: the Dashboard tab is rendered by the
             # gateway from the instance store, so it exists on a platform whose
-            # briefing reads fail closed exactly as it does anywhere else.
+            # briefing reads fail closed, and for a member that cannot write its
+            # briefing, exactly as it does anywhere else.
             else _MEMBER_HOW_YOU_WORK_COMMON
-            + _MEMBER_BRIEFING_ITEM_UNAVAILABLE
+            + (
+                _MEMBER_BRIEFING_ITEM_NO_FILE_TOOLS
+                if briefing_ok
+                else _MEMBER_BRIEFING_ITEM_UNAVAILABLE
+            )
             + _MEMBER_DASHBOARD_ITEM
         )
     if rules:
@@ -603,7 +647,7 @@ def build_member_section(
             "\n\n[YOUR GOALS — set by the user; the key results measure how far "
             f"you are from them. {readings}]\n" + goals
         )
-    if briefing_ok:
+    if briefing_writable:
         parts.append(
             f"\n\n[CURRENT ASSIGNMENT — yours to maintain, injected from {briefing_path}]\n"
             + (
@@ -611,6 +655,22 @@ def build_member_section(
                 if briefing
                 else "(empty — write your first briefing there when you have "
                 "priorities worth remembering)"
+            )
+        )
+    elif briefing_ok:
+        # Read, but not the member's to write, so the header says whose file it
+        # is now: it names the file, so a member can point the user at a stale
+        # one, and says it may be out of date, because a briefing written before
+        # the member lost its file tools stays injected until the user changes
+        # it. The empty placeholder carries no invitation to start one.
+        parts.append(
+            f"\n\n[CURRENT ASSIGNMENT — not yours to maintain, injected from {briefing_path}; "
+            "only the user edits or deletes it, so it may be out of date]\n"
+            + (
+                briefing
+                if briefing
+                else "(empty — your template cannot write this file; keep your "
+                "working memory in this DM thread instead)"
             )
         )
     elif desk_withheld:

@@ -576,9 +576,9 @@ order — earlier outranks later, with one stated exception:
 | Layer | Owner | Source | Writable by |
 |--:|---|---|---|
 | 1 `[MEMBER IDENTITY]` | product, derived | the crew's `description` + `triggers` in `config.json` | dashboard |
-| 2 `[HOW YOU WORK]` | product | `_MEMBER_HOW_YOU_WORK`, identical for every member | nobody |
+| 2 `[HOW YOU WORK]` | product | `_MEMBER_HOW_YOU_WORK`, identical for every member except item 6 (below) | nobody |
 | 3 `[PERMANENT RULES]` | the user | `<data home>/trust/member-rules/<slug>.json` | dashboard only |
-| 4 `[CURRENT ASSIGNMENT]` | the member | `<data home>/members/<slug>/briefing.md` | the member's own file tools |
+| 4 `[CURRENT ASSIGNMENT]` | the member, or the user when the member's spec mounts no file tool | `<data home>/members/<slug>/briefing.md` | the member's own file tools, when its spec mounts one; otherwise the user, by hand |
 
 The exception: layer 3's own header claims precedence over the whole section,
 protocol included, so the user's safety boundary is never formally outranked by
@@ -627,7 +627,19 @@ must not keep running with no bounds. The briefing is total by contract: any
 failure reads as "no briefing yet", and content past `MEMBER_BRIEFING_MAX_CHARS`
 is cut with a visible marker so the member prunes it. On Windows that
 read fails closed (`member_briefing_supported`) and the section says the layer is
-unavailable. Every variable payload runs through `_scrub_member_payload` first.
+unavailable. A member whose spec mounts no built-in that writes files (no
+`fs_write` under its `write` alias or its KAS ids, no `code`, no `*` or
+`@builtin`, once `excludedTools` is subtracted;
+`member_mate_tools.binding_has_file_write`), which is every conductor template,
+still has the layer read, but item 6 and the layer's header say it cannot write
+the file and send its working memory to the DM thread. Such a briefing is
+deliberately the user's: nothing the member holds can change it, so one written
+before the member lost its file tools (or by hand through the shell) stays
+injected as it is. The header names the file and says it may be out of date,
+item 6 tells the member that the thread wins where the two disagree and to tell
+the user when the briefing is stale, and the user clears it by editing or
+deleting that file; the dashboard's Notes tab shows it read-only. Every variable
+payload runs through `_scrub_member_payload` first.
 
 `members_parts/member_sessions.py` → `member_turn_context` is the single chokepoint deciding, per
 session lifecycle, whether the section is delivered and whether the rules gate
@@ -690,7 +702,7 @@ member writes one, and `[CURRENT ASSIGNMENT]` renders
 | Capability | Status | Evidence |
 |---|---|---|
 | Per-member markdown separate from `~/.kiro/agents/*.json` | **Not as a member-private file** | The only member-owned markdown is `briefing.md` (`members_parts/prompt_layers.py` → `member_briefing_path`), which is working memory, not a persona. Persona lives in the agent spec — and `agent_spec_format.py` does support a markdown spec (`<name>.md`, YAML frontmatter + body as the prompt, JSON wins when both exist) — but that file sits in the agents directory shared with every other tool, not in the member's private space. |
-| Per-member working memory (briefing) | **Implemented** | `members_parts/prompt_layers.py` → `member_briefing_path`, `read_member_briefing`, `member_briefing_supported`; injected as layer 4 by `context_assembly/member.py` → `build_member_section`. Agent-writable by design, with no dashboard endpoint — the member edits it with its own file tools. Capped at `MEMBER_BRIEFING_MAX_CHARS` on read. |
+| Per-member working memory (briefing) | **Implemented** | `members_parts/prompt_layers.py` → `member_briefing_path`, `read_member_briefing`, `member_briefing_supported`; injected as layer 4 by `context_assembly/member.py` → `build_member_section`. Agent-writable by design, with no dashboard endpoint — the member edits it with its own file tools, and a member whose spec mounts none is told it cannot, so its briefing is the user's to edit or delete by hand. Capped at `MEMBER_BRIEFING_MAX_CHARS` on read. |
 | Per-member permanent rules | **Implemented** | `members_parts/prompt_layers.py` → `member_rules_path`, `read_member_rules`, `write_member_rules`; stored under `trust/member-rules/` so the member's file tools cannot rewrite its own boundary. `MEMBER_RULES_MAX_CHARS` cap enforced on write (a human dashboard action), never truncated on read. |
 | Private per-member memory | **Implemented for explicitly created members** | Memory V2: one SQLite database per immutable `member_id`, resolved by `config/loader_agents.py` → `resolve_agent_bindings` and `execution_context.py` → `member_config_for_id`; bounded essentials from `member_essential_context.py`, recall through `memory_recall`. **Gap:** legacy and auto-discovered members remain on Global V1 and are not migrated, and a member cannot choose or rebind a shared store. |
 | Per-member activity log | **Implemented** | `members_parts/member_activity.py` → `record_activity`, `read_activity`, backed by the per-member event log (`eventlog/log.py`, a `member`-kind crew log); each record is one `activity/record` event under the caps that module applies per append. There is NO rotation, because a sequence-ordered reader cannot survive a file renamed out from under it or a dropped oldest row; the log is bounded per row and per value and accumulates over a member's lifetime. A legacy `activity.jsonl` is folded in once and retired to `activity.jsonl.migrated`. |
