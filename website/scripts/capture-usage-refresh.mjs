@@ -37,7 +37,7 @@
  *   11-no-reading      the gateway holds no reading (`{available:false}`) on the KIRO
  *                      backend: the pill's dash stays on screen, the modal stays open
  *                      with its own no-reading sentence + Refresh. (On any other
- *                      harness that payload hides the pill; App.test.tsx pins that.)
+ *                      harness that payload hides the pill; App.topbarAndShortcuts.test.tsx pins that.)
  *   12-pill-no-reading the TOP BAR alone in that state: the dimmed dash with the
  *                      "no balance reading yet; open to refresh" label
  *   13-signin-required the modal when no live Kiro sign-in could be read: the
