@@ -51,10 +51,10 @@ RULE_SOURCES: tuple[str, ...] = (
 _PKG_ROOT = Path(__file__).resolve().parent.parent
 
 
-def display_battery(text: str) -> str:
+def display_battery(text: str, *, attested_sharepoint_digests: frozenset[str] = frozenset()) -> str:
     """Every display redactor, in order."""
     out, _ = redact_exfiltration_urls(text)
-    out, _ = redact_credentials(out)
+    out, _ = redact_credentials(out, attested_sharepoint_digests=attested_sharepoint_digests)
     return out
 
 

@@ -617,6 +617,11 @@ PEEK_CALLERS: "dict[str, str]" = {
         "value no earlier credential pass claimed, so an absent context cannot "
         "be the reason a credential survives."
     ),
+    "acp/locator_attestation.py::sharepoint_attestation_policy": (
+        "no-context answer is no locator attestation, so markerless credential "
+        "redaction stays fully enabled; only gateway-cached MCP identity and a "
+        "companion declaration can add one."
+    ),
     "security/exfil.py::_exempt_exact_hosts": (
         "no-context answer is the empty exempt-host set, which means MORE "
         "redaction: every host runs the base64-blob / query-length heuristics. "

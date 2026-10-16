@@ -8,7 +8,8 @@ from its key and config alone. A session a member CREATED has an ordinary
 source it stays refused until its owner acts -- the nested-conductor stall.
 
 This module is that second source. It keeps one small file per vouched session
-in its own top-level ``vouched-executions/`` directory under the data home. It is
+in the top-level ``vouched-executions/`` gateway-authority directory under the data
+home. The directory also encloses the SharePoint locator-attestation registry. It is
 NOT under ``trust/``, which sandboxes keep read-write for the SEL log. This leaf is
 on ``security._SENSITIVE_HOME_DIRS`` (agent file tools refuse it) AND on
 ``sandbox._CREW_HIDDEN_LEAVES`` (every sandbox bind-masks it, so a spawned shell

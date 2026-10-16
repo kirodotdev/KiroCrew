@@ -782,6 +782,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
+    from kiro_crew import locator_attestations  # noqa: F401
     from kiro_crew.dashboard import display_verdicts as _display_verdicts  # noqa: F401
     from kiro_crew.dashboard.display_battery import (  # noqa: F401
         display_battery,
