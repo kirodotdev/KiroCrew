@@ -69,7 +69,8 @@ delete leaves every other session untouched.
 cache-generation registries as class attributes, the thin delegates to the
 components, and every module name it bound before its owners existed (bound, or
 served from its owner for the two globals an owner rebinds at run time). A few
-members with real bodies stay on the class too: `has_messages`, `session_mtime`,
+members with real bodies stay on the class too: `init`, `has_log`, `has_messages`,
+`session_mtime`, `_cache_key_identities`,
 `delete_session` (with its durable-vouch cleanup), `delete_memory_consolidation_session`
 and `get_unconsolidated`. `get_unconsolidated` stays only because the derivation-seam
 fence's `PLAIN_READS` list keys on its name, so new consolidation-progress work goes to
