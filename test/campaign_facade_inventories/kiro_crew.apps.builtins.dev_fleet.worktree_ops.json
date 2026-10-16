@@ -1,0 +1,35 @@
+{
+ "base_public_names": [
+  "ConfigHookScanError",
+  "LoopBoundLock",
+  "dep_sync",
+  "fleet_state",
+  "frontend",
+  "hooks",
+  "live",
+  "npm_preflight",
+  "platform_compat",
+  "repository",
+  "runtime",
+  "sandboxed_spawn_argv",
+  "shielded_prepare_off_loop",
+  "subprocess_executor"
+ ],
+ "note": "A kiro_crew._facade_mirror facade over the worktree_ops_sync, worktree_ops_pods and worktree_ops_removal owners beside it; it keeps rebase, prune and the background tasks, and its BASE __all__ (server.py's re-export table).",
+ "rebound": {
+  "ConfigHookScanError": "kiro_crew.git_config_hooks",
+  "LoopBoundLock": "kiro_crew.loop_lock",
+  "dep_sync": "kiro_crew",
+  "fleet_state": "kiro_crew.apps.builtins.dev_fleet",
+  "frontend": "kiro_crew",
+  "hooks": "kiro_crew",
+  "live": "kiro_crew.apps.builtins.dev_fleet",
+  "npm_preflight": "kiro_crew.apps.builtins.dev_fleet",
+  "platform_compat": "kiro_crew",
+  "repository": "kiro_crew.apps.builtins.dev_fleet",
+  "runtime": "kiro_crew.apps.builtins.dev_fleet",
+  "sandboxed_spawn_argv": "kiro_crew.sandbox",
+  "shielded_prepare_off_loop": "kiro_crew.sandbox",
+  "subprocess_executor": "kiro_crew.executors"
+ }
+}

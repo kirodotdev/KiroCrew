@@ -13,7 +13,8 @@ The behavioral test pins the reachable tail-cut site (``_rebase_locked``'s
 conflict path) with the straddle layout: the secret is placed so the tail
 window's left edge falls INSIDE it, so a raw slice AND a slice-then-redact
 reorder both go red. The structural test then pins the whole module — the
-head-cut removal site included — without driving the full locked removal flow.
+head-cut removal site, which lives in its ``worktree_ops_removal`` owner, included —
+without driving the full locked removal flow.
 """
 
 from __future__ import annotations
@@ -30,7 +31,9 @@ import kiro_crew.apps.builtins.dev_fleet.worktree_ops as worktree_ops
 # The bound applied at the rebase-conflict tail site in _rebase_locked.
 _REBASE_TAIL_BOUND = 200
 
-_MODULE_PATH = Path(worktree_ops.__file__)
+#: The facade and every owner beside it: the removal head cut is in ``worktree_ops_removal``,
+#: the rebase-conflict tail stays in ``worktree_ops``.
+_MODULE_PATHS = tuple(sorted(Path(worktree_ops.__file__).parent.glob("worktree_ops*.py")))
 
 
 class TestRebaseConflictTailIsRedactedBeforeTheBound:
@@ -128,4 +131,8 @@ class TestNoRawBoundedStderrSliceInTheModule:
     expression is beyond this scan — the behavioral tests carry that case.)"""
 
     def test_no_slice_before_redaction(self) -> None:
-        assert _find_slice_before_redact_offenders(_MODULE_PATH) == []
+        assert [
+            offender
+            for path in _MODULE_PATHS
+            for offender in _find_slice_before_redact_offenders(path)
+        ] == []

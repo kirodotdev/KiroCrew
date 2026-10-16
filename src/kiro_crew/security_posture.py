@@ -2697,6 +2697,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/builtins/dev_fleet/repository.py",
         "apps/builtins/dev_fleet/live.py",
         "apps/builtins/dev_fleet/worktree_ops.py",
+        "apps/builtins/dev_fleet/worktree_ops_pods.py",
+        "apps/builtins/dev_fleet/worktree_ops_removal.py",
         # Same Dev Fleet surface: redacts a failed systemd/launchd command's
         # stderr at the point of capture, before its bounded tail becomes the
         # cutover failure reason the app's own routes render.

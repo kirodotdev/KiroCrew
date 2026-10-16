@@ -35,12 +35,23 @@ behind that facade is split by state and lifecycle ownership:
   subprocesses, and shutdown admission.
 - `repository.py` owns `MAIN_REPO`, repository discovery and validation, git/worktree
   access, and dirty-state inspection.
-- `live.py` owns live-target discovery, gateway restart backends, the Make Live lock and
-  committed-cutover latch, and rollback.
+- `live.py` owns the pointer-provider seam, live-target discovery (`_live_worktree_path`)
+  and its cache, the Make Live lock and committed-cutover latch, removal-lease acquisition
+  and the backend's lease client, the gateway restart, the cutover and its rollback. Its
+  owners hold the rest:
+  - `live_leases.py`: the gateway-held removal-lease and pod-start registries;
+  - `live_service.py`: the checkout probes discovery uses (own package, launchd program,
+    running checkout, staged target) and the live gateway as a service (unit and label,
+    systemd/launchd/foreground restart backend, service probes, the drop-in);
+  - `live_plan.py`: a cutover's dry-run plan, operator-facing text, and the Switch-back
+    undo-binding check (`_undo_binding_holds`).
 - `fleet_state.py` owns PR/context/resource caches, fleet projections and tombstones, and
   provision reattachment state.
-- `worktree_ops.py` owns pod actions, worktree remove/sync/rebase/prune orchestration, and
-  the background task handles.
+- `worktree_ops.py` owns rebase and prune orchestration and the background task handles.
+  Its owners hold the rest:
+  - `worktree_ops_pods.py`: pod actions and the per-worktree lock `_wt_lock`;
+  - `worktree_ops_removal.py`: removing one worktree, and `_GIT_MUTATION_LOCK`;
+  - `worktree_ops_sync.py`: Pull + Build sync of the main checkout.
 - `http_api.py` owns proxy HMAC verification, request/audit adapters, and response-shape
   translation.
 
@@ -50,6 +61,12 @@ the owning module, so mutable locks, registries, caches, and scalar state each h
 authoritative instance. The facade forwards legacy private attribute reads, writes, and
 deletes to that owner, but tests patch the actual owner rather than treating the facade as
 a dependency-injection namespace.
+
+`live.py` and `worktree_ops.py` are in turn `kiro_crew._facade_mirror` facades over their
+`live_*` and `worktree_ops_*` owners: a name is still reached as `live.<name>` or
+`worktree_ops.<name>`, a patch through the facade reaches every owner holding the name,
+and each facade keeps the code that rebinds the state it shares. Owners never import
+their facade; new work goes to the owner of its responsibility.
 
 The split does not change lifecycle ordering. Shutdown first closes admission and
 snapshots active runs under the runtime admission lock, then kills process trees before

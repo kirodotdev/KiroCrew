@@ -35,10 +35,16 @@ from kiro_crew.apps.builtins.dev_fleet import (
     fleet_state,
     http_api,
     live,
+    live_leases,
+    live_plan,
+    live_service,
     repository,
     runtime,
     server,
     worktree_ops,
+    worktree_ops_pods,
+    worktree_ops_removal,
+    worktree_ops_sync,
 )
 
 # The accessor is the ONLY function whose body may read the bare global: it IS
@@ -50,8 +56,14 @@ _DEV_FLEET_MODULES = (
     runtime,
     repository,
     live,
+    live_leases,
+    live_service,
+    live_plan,
     fleet_state,
     worktree_ops,
+    worktree_ops_sync,
+    worktree_ops_pods,
+    worktree_ops_removal,
     http_api,
     server,
 )
