@@ -772,7 +772,7 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     id: 'mcp_oauth',
     roles: ['mcp_oauth'],
     render: (m, ctx) => {
-      const banner = renderMcpOAuthMessage(m, ctx.hideCardOwnedOAuth)
+      const banner = renderMcpOAuthMessage(m, ctx.hideCardOwnedOAuth, ctx.handOff !== false)
       if (!banner) return null
       return ctx.row(banner)
     },

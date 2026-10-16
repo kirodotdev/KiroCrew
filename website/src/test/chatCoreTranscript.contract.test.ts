@@ -42,6 +42,16 @@ describe('chat-core transcript contract', () => {
     }
   })
 
+  it('the embed and the pane mount their list and earlier bar with the hand-off off', () => {
+    // Both hold state the hand-off's navigation would drop: the embed's whole
+    // composer, the pane's staged message quote.
+    for (const name of ['ChatEmbed', 'ChatPane'] as const) {
+      expect(HOSTS[name], `${name} turns the list's hand-off off`).toMatch(/<ChatMessageList\b[^>]*?\bhandOff=\{false\}/s)
+    }
+    expect(HOSTS.ChatPane).toContain('onLoad: loadOlder, handOff: false }')
+    expect(HOSTS.ChatPane).toContain('onLoad: loadOlderPane, handOff: false }')
+  })
+
   it('each host partitions the height/anchor caches under its own prefix', () => {
     expect(HOSTS.ChatPane).toContain('sessionId: `pane:${slotKey}`')
     expect(HOSTS.SideChat).toContain('sessionId: `side:${slot}`')

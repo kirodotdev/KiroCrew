@@ -63,9 +63,9 @@ describe('ChatPage – MCP OAuth banner wiring', () => {
     }
     expect(resolveRenderer(m, defaultMessageRenderers)?.id).toBe('mcp_oauth')
     // Under vitest's SSR transform the import reads as
-    // `(0,__vite_ssr_import_N__.renderMcpOAuthMessage)(m, ctx.hideCardOwnedOAuth)`,
+    // `(0,__vite_ssr_import_N__.renderMcpOAuthMessage)(m, ctx.hideCardOwnedOAuth, ctx.handOff !== false)`,
     // so match the call shape, not the bare identifier.
-    expect(entry!.render.toString()).toMatch(/renderMcpOAuthMessage\)?\(\s*m,\s*ctx\.hideCardOwnedOAuth\s*\)/)
+    expect(entry!.render.toString()).toMatch(/renderMcpOAuthMessage\)?\(\s*m,\s*ctx\.hideCardOwnedOAuth,\s*ctx\.handOff\s*!==\s*false\s*\)/)
   })
 
   it('ChatPage keeps no mcp_oauth entry of its own (P5-c): the row reaches the registry default', () => {

@@ -535,11 +535,11 @@ Three rules the registry relies on:
 
 ### Error hand-off inside the list
 
-A failed approval decision and a refused tool-output copy render an `ErrorNotice` with the "Ask the
-agent" hand-off, which navigates to the main chat. A host holding unsaved local state that the
+A failed approval decision, a refused tool-output copy and a failed MCP sign-in banner render an
+`ErrorNotice` with the "Ask the agent" hand-off, which navigates to the main chat. A host holding unsaved local state that the
 navigation would drop passes `handOff={false}` to `ChatMessageList`: those notices then render
 without the button, and renderers see `ctx.handOff === false`. `ChatEmbed` does this because its
-composer draft lives only in the embed. `ToolCallPill` takes the same switch as `askAgent`.
+composer draft lives only in the embed; `ChatPane` does too, for its staged message quote. `ToolCallPill` takes the same switch as `askAgent`.
 Default is `true`, so a host with nothing to lose keeps the hand-off.
 
 ### Exports

@@ -685,6 +685,11 @@ export default function ChatPane({
           running={running || !!paneSlot?.running}
           renderers={renderers}
           hideCardOwnedOAuth={connectionsUiOn}
+          // No "Ask the agent" on this list's notices: the hand-off navigates
+          // away and unmounts the pane. Its composer text, files and pastes are
+          // parked per slot (useChatPaneDraft), but a staged message quote
+          // (useMessageQuote) lives only in this pane's state and would be lost.
+          handOff={false}
           onDisplayItems={onDisplayItems}
           hiddenRow={pinHiddenRow}
           onQuote={onQuote}
@@ -705,7 +710,7 @@ export default function ChatPane({
             // pays for that strip too, plus the same clearance ChatPage keeps
             // between its last line and the glass.
             scrollerStyle: { paddingTop: 12 + topInset, paddingBottom: dockH + DOCK_CLEARANCE_PX, minHeight: 0 },
-            // handOff off: its navigation would discard this pane's unsaved draft.
+            // handOff off, like the list's own notices (see `handOff` above).
             earlier: pagesActiveSlot
               ? { hasMore: activeHasMore, loading: loadingOlder, failed: olderFailed, onLoad: loadOlder, handOff: false }
               : pagesPane
