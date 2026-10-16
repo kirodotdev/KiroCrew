@@ -11024,6 +11024,7 @@
         "regenerate_response": "レスポンスを再生成",
         "rendered_view": "レンダリング済みビュー",
         "speak": "読み上げ",
+        "stop_reading": "読み上げを停止",
         "copy_text": "テキストをコピー",
         "copy_as_rich_text": "リッチテキストとしてコピー",
         "copy_as_markdown": "Markdown としてコピー",
