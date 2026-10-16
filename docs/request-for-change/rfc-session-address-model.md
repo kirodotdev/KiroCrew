@@ -145,7 +145,7 @@ Six conditions the charset satisfies, three of them non-obvious:
 | not `(?:dashboard_)?chat-\d+-\d+$` | matched at `dashboard/state_parts/slot_session.py` (`_SLOT_KEY_TITLE_RE`) |
 | lowercase hex only | no path traversal, mirroring the artifact-slug guard at `artifact_store/rules.py` (`_SLUG_RE`) |
 
-`secrets.token_hex` rather than `uuid4().hex[:12]` because the id travels in an `X-Session-Key` header and is persisted into `open_slots.json`; a CSPRNG costs nothing here and removes the question. Width and the typed prefix follow existing convention — twelve-hex ids are minted in `dashboard/state.py` (`get_or_create_slot`) and other stores, `f"c_{secrets.token_hex(4)}"` appears at `apps/builtins/issue_radar/backend/crew_store.py` (`create_crew`), and the already-validated lowercase-hex job-id shape `^[a-f0-9]{1,16}$` is at `validation.py`.
+`secrets.token_hex` rather than `uuid4().hex[:12]` because the id travels in an `X-Session-Key` header and is persisted into `open_slots.json`; a CSPRNG costs nothing here and removes the question. Width and the typed prefix follow existing convention — twelve-hex ids are minted in `dashboard/state.py` (`get_or_create_slot`) and other stores, `f"c_{secrets.token_hex(4)}"` appears at `apps/builtins/issue_radar/backend/crew_store_records.py` (`create_crew`), and the already-validated lowercase-hex job-id shape `^[a-f0-9]{1,16}$` is at `validation.py`.
 
 ### 5.2 The record
 

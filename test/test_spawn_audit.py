@@ -964,7 +964,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         #     named, created 0600, and unlinked in a finally, so a body is neither
         #     visible in the process table nor left behind.
         # No binary or cwd is agent-selected.
-        "apps/builtins/issue_radar/backend/azure_client.py::_az_run",
+        "apps/builtins/issue_radar/backend/azure_client_cli.py::_az_run",
         "apps/builtins/design_tweak/backend/server.py::_h_pick_folder",
         "apps/builtins/design_tweak/backend/server.py::_lsof_fields",
         "apps/builtins/design_tweak/backend/server.py::_start_dev_proc",

@@ -79,7 +79,6 @@ src/kiro_crew/apps/builtins/design_critique/tests/test_manifest.py
 src/kiro_crew/apps/builtins/dev_fleet/gateway_service.py
 src/kiro_crew/apps/builtins/dev_fleet/skills/pod-e2e/scripts/pod-playwright.py
 src/kiro_crew/apps/builtins/issue_radar/backend/crew_routes.py
-src/kiro_crew/apps/builtins/issue_radar/backend/crew_store.py
 src/kiro_crew/apps/builtins/issue_radar/backend/gitlab_client.py
 src/kiro_crew/apps/builtins/issue_radar/backend/provider.py
 src/kiro_crew/apps/builtins/issue_radar/backend/watch.py

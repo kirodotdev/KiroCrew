@@ -1,7 +1,7 @@
 """Azure DevOps URL and ``az devops invoke`` transport helpers.
 
-The security-sensitive spawn remains in :mod:`azure_client`.  Helpers in this
-module build and interpret a call, while the facade injects its current spawn and
+The security-sensitive spawn remains in :mod:`azure_client_cli`.  Helpers in this
+module build and interpret a call, while ``azure_client_cli`` injects its current spawn and
 response bindings so the established ``azure_client`` monkeypatch seam remains
 authoritative.
 """

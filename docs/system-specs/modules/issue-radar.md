@@ -36,7 +36,7 @@ provider cannot be registered while the gate silently keeps comparing three.
 routes and tests continue to import `github_client`, `gitlab_client` and
 `azure_client`; those modules carry the protocol surface, exception aliases,
 the constants something actually binds, and patchable I/O chokepoints (`github_client`
-serves them from its owners, below). A mirror
+and `azure_client` serve them from their owners, below). A mirror
 NOTHING binds is not part of that surface: the sibling that owns the value reads
 its own module global, so a façade copy is never the seam it resembles and
 patching it changes nothing. Binding means the façade's own code, a test that
@@ -48,11 +48,12 @@ request and pagination mechanics; `*_normalization.py` converts provider payload
 into the shared GitHub-shaped records; and `github_queries.py` owns GitHub's
 GraphQL, dependency and search query plans. The façades inject their current
 bindings into those helpers so established monkeypatch seams remain authoritative
-(for `github_client`, its owners inject them, and the mirror keeps them patchable
-through the façade).
+(for `github_client` and `azure_client`, their owners inject them, and the mirror
+keeps them patchable through the façade).
 The reviewed real `glab` and `az` process spawns remain in
-`gitlab_client._glab_run` and `azure_client._az_run`, respectively, which keeps
-the spawn-audit allowlist tied to the same security chokepoints.
+`gitlab_client._glab_run` and `azure_client_cli._az_run` (served as
+`azure_client._az_run`), respectively, which keeps the spawn-audit allowlist tied
+to the same security chokepoints.
 
 **`github_client` is a mirror façade over six owners.** Its code lives in the
 `github_client_*.py` siblings, one responsibility each, and the façade serves every
@@ -69,6 +70,22 @@ actions and the failure watch use; `github_client_pulls` the PR lists, detail,
 checks, list-card enrichment and search; and `github_client_ci` the viewer's open-PR
 heads and each repo's recent workflow runs. New GitHub code goes to the owner of its
 responsibility, and an owner never imports the façade.
+
+**`azure_client` is a mirror façade over seven owners**, the same way. Its code lives in
+the `azure_client_*.py` siblings: `azure_client_cli` holds the exception aliases, the
+timeouts, the per-endpoint API versions and paging limits, the hardened `az` spawn
+`_az_run` and the `az devops invoke` runner `_az_invoke` with its paging;
+`azure_client_work_items` the project's GUID, the template's own state names, the
+signed-in identity, WIQL and the batched hydrate; `azure_client_repo_reads` the repo
+access check and permission read, the work-item lists and their change probe, tags as
+labels, members, the login and its default organization, and contributed repos;
+`azure_client_detail` work-item detail, reference summaries and the work-item and PR
+timelines; `azure_client_writes` the work-item triage writes and the issue and PR
+comments, whose bodies `_comment_text` redacts; `azure_client_pulls` the PR lists,
+detail with its mergeability and merge-strategy vocabulary, policy evaluations and
+builds read as checks, list-card enrichment and search; and `azure_client_pr_actions`
+close or reopen, review, merge, auto-complete and a PR's builds. New Azure DevOps code
+goes to the owner of its responsibility, and an owner never imports the façade.
 
 | | GitHub | GitLab | Azure DevOps |
 |---|---|---|---|
@@ -540,7 +557,8 @@ and the `now_iso` clock that stamps them), `store_deps` (the dependency-edge cac
 `store_issues` (the issue list,
 detail and reference caches, and the write-through patches a triage write applies)
 and `store_pulls` (the PR list and detail caches). New storage goes to the owner of
-its responsibility.
+its responsibility. The crew store, `crew_store.py`, is a mirror façade over its own
+`crew_store_*` owners the same way; `crew_ledger_spec.md` beside the backend names them.
 
 ## Permissions
 

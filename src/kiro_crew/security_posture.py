@@ -475,7 +475,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "Azure DevOps comment bodies",
-        "apps/builtins/issue_radar/backend/azure_client.py",
+        "apps/builtins/issue_radar/backend/azure_client_writes.py",
         "The text Issue Radar posts as a work-item or pull-request comment on Azure "
         "DevOps. A comment body is frequently model-authored -- a crew's reply, or an "
         "AI summary the user accepted -- and publishing it is irreversible: it lands "

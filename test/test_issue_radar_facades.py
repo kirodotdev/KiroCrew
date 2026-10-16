@@ -1,6 +1,6 @@
-"""Issue Radar's three split modules keep the patch seams each had as one module.
+"""Issue Radar's five split modules keep the patch seams each had as one module.
 
-``store``, ``github_client`` and ``crew_runtime`` under
+``store``, ``github_client``, ``crew_runtime``, ``azure_client`` and ``crew_store`` under
 ``kiro_crew.apps.builtins.issue_radar.backend`` are mirror facades
 (:mod:`kiro_crew._facade_mirror`) over the ``<stem>_<role>`` owners beside them. Callers and
 tests still reach every name as ``<stem>.<name>``, and the moved code reads its names as
@@ -10,7 +10,7 @@ mirror writes it into every module holding the name.
 ``test/test_facade_mirror_guards.py`` holds every mirrored facade to the shared rules: one
 object per name, the manifest, owners never importing their facade, ``create=True``
 patches, and the reach of every name the test trees patch through it. These tests pin what
-is particular to these three, one row each: the patch scan sees the seams each is known to
+is particular to these five, one row each: the patch scan sees the seams each is known to
 have, its owners are exactly its ``<stem>_*.py`` siblings loaded lowest layer first, every
 name it serves from outside its family stays visible to type checkers, and its family logs
 under the logger name the module had.
@@ -30,7 +30,13 @@ import pytest
 import source_corpus
 
 from kiro_crew import _facade_mirror
-from kiro_crew.apps.builtins.issue_radar.backend import crew_runtime, github_client, store
+from kiro_crew.apps.builtins.issue_radar.backend import (
+    azure_client,
+    crew_runtime,
+    crew_store,
+    github_client,
+    store,
+)
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_issue_radar_facades")
 
@@ -40,14 +46,16 @@ _THIS_FILE = Path(__file__).resolve()
 
 @dataclasses.dataclass(frozen=True)
 class Facade:
-    """One split module: the facade, the names tests are known to patch through it, and
-    the name its family logs under."""
+    """One split module: the facade, the names tests are known to patch through it, the
+    name its family logs under, and the exception classes it defines."""
 
     module: ModuleType
     #: Seams the scan must find, so a scan that stops matching goes red instead of letting
     #: the shared reach check pass over nothing.
     known_seams: frozenset[str]
-    logger: str
+    #: ``None`` for a module that bound no logger before the split.
+    logger: str | None
+    exceptions: tuple[str, ...] = ()
 
     @property
     def stem(self) -> str:
@@ -83,6 +91,7 @@ FACADES = (
             }
         ),
         f"{PKG}.store",
+        ("SettingsConflict",),
     ),
     Facade(
         github_client,
@@ -121,6 +130,54 @@ FACADES = (
             }
         ),
         "kirocrew.app.issue-radar",
+    ),
+    Facade(
+        azure_client,
+        # the ``az`` chokepoints every owner reads, imported names, each owner's calls
+        frozenset(
+            {
+                "_audit",
+                "_az_bin",
+                "_az_invoke",
+                "_az_run",
+                "_current_identity",
+                "_default_organization",
+                "_policy_evaluations",
+                "_resolve_host",
+                "add_pr_comment",
+                "list_repo_labels",
+                "minimal_env",
+                "quote",
+                "sanitize_cli_stderr",
+                "sel",
+            }
+        ),
+        None,
+    ),
+    Facade(
+        crew_store,
+        # the chain holds, the landed check, the carry, an imported name, owner writers
+        frozenset(
+            {
+                "_chain_depth_bound",
+                "_fold_checkpoint",
+                "_hold_chain_no_follow",
+                "_landed_since",
+                "_legacy_carry_rows",
+                "_recorded_unit_order_at",
+                "_unit_order_path",
+                "atomic_write",
+                "commit_work_progress",
+                "set_crew_model_held",
+            }
+        ),
+        f"{PKG}.crew_store",
+        (
+            "CrewLedgerEntryTooLarge",
+            "CrewLedgerNotRecorded",
+            "CrewLedgerUnavailable",
+            "CrewStoreError",
+        ),
     ),
 )
 _BY_STEM = {facade.stem: facade for facade in FACADES}
@@ -245,11 +302,19 @@ def test_every_name_served_from_outside_the_family_is_visible_to_type_checkers(
     assert _home_manifest(facade) == expected
 
 
-def test_a_moved_exception_is_named_by_the_path_callers_import_it_from() -> None:
-    """A traceback renders a raised class as ``module.qualname``, so ``SettingsConflict``,
-    the one class the three modules define, still names the store facade, not its owner."""
-    assert store.SettingsConflict.__module__ == store.__name__
-    assert store.SettingsConflict.__qualname__ == "SettingsConflict"
+@pytest.mark.parametrize(
+    ("facade", "name"),
+    [(facade, name) for facade in FACADES for name in facade.exceptions],
+    ids=[f"{facade.stem}.{name}" for facade in FACADES for name in facade.exceptions],
+)
+def test_a_moved_exception_is_named_by_the_path_callers_import_it_from(
+    facade: Facade, name: str
+) -> None:
+    """A traceback renders a raised class as ``module.qualname``, so each class these
+    modules define still names its facade, not its owner."""
+    cls = getattr(facade.module, name)
+    assert cls.__module__ == facade.module.__name__
+    assert cls.__qualname__ == name
 
 
 @each_facade
@@ -257,6 +322,9 @@ def test_the_family_logs_under_the_name_the_module_had(facade: Facade) -> None:
     """One logger, named as before the split, held by every member of the family that logs."""
     family = [facade.module, *(importlib.import_module(owner) for owner in facade.index.owners)]
     loggers = [vars(member)["logger"] for member in family if "logger" in vars(member)]
+    if facade.logger is None:
+        assert loggers == [], "the split gave a module that logged nothing a logger"
+        return
     assert loggers, "no member of the family binds a logger"
     assert {logger.name for logger in loggers} == {facade.logger}
     assert len({id(logger) for logger in loggers}) == 1

@@ -83,7 +83,7 @@ DECLARED_SITES = frozenset(
         ("apps/builtins/design_critique/backend/routes.py", "_served_signature"),
         ("apps/builtins/design_tweak/backend/preview_files.py", "scan_html.walk"),
         ("apps/builtins/dev_fleet/fleet_state.py", "_dir_size_bytes"),
-        ("apps/builtins/issue_radar/backend/crew_store.py", "_write_unit_order"),
+        ("apps/builtins/issue_radar/backend/crew_store_unit_order.py", "_write_unit_order"),
         ("apps/builtins/meetings/backend/routes/audio_import.py", "_snapshot_recording"),
         ("apps/manager.py", "_absence_is_genuine"),
         ("apps/manager.py", "_owned_data_dir"),
