@@ -1,9 +1,10 @@
 /**
  * Wire contracts the domain split of `api/client.ts` must carry over unchanged.
  *
- * `ApiClient.coverage.test.tsx` pins the transport and the non-trivial URL/body
- * builders. This file pins what moving an endpoint between modules could
- * quietly change and the generic sweep there cannot see: which methods talk
+ * `ApiClient.coverage.test.tsx` pins the transport and
+ * `ApiClient.coverage.construction.test.tsx` the non-trivial URL/body builders.
+ * This file pins what moving an endpoint between modules could quietly change
+ * and the generic sweep in `ApiClient.coverage.methods.test.tsx` cannot see: which methods talk
  * raw `fetch` and therefore send NO session key, the exact request of methods
  * whose bodies are caller-owned, and that the endpoints issue the same requests
  * as the blessed `apiTransport`.
@@ -146,7 +147,7 @@ describe('owner-only refusals stay errors', () => {
 })
 
 describe('the nested namespaces keep their wire', () => {
-  // The whole-surface sweep in ApiClient.coverage probes top-level functions
+  // The whole-surface sweep in ApiClient.coverage.methods probes top-level functions
   // only, so the two namespaces get their requests pinned here.
   it.each([
     ['teams.list', () => api.teams.list(), ['/api/teams']],

@@ -7,7 +7,7 @@
  * with `/api/project/git/status` answering the handler's own 503 body.
  *
  * The unit suites pin that both surfaces recognise the refusal code
- * (src/test/PierreWorkspaceTreeImpl.test.tsx). This exists for what a DOM
+ * (src/test/PierreWorkspaceTreeImpl.gitStatus.test.tsx). This exists for what a DOM
  * assertion cannot carry: whether a two-sentence refusal with a title READS at
  * rail and tree width, which is what a reviewer asked to see before believing
  * the copy fits there.

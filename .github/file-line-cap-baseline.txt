@@ -327,13 +327,10 @@
 3503 website/src/pages/settings/SecurityPanel.tsx
 2014 website/src/pages/settings/decisionsCard.test.tsx
 2259 website/src/test/AgentBackendTab.test.tsx
-2310 website/src/test/ApiClient.coverage.test.tsx
 2297 website/src/test/App.test.tsx
 2298 website/src/test/ChatInput.test.tsx
 2304 website/src/test/ConnectionsPage.coverage.test.tsx
 2181 website/src/test/DevFleetPage.test.tsx
 2004 website/src/test/InstancesViewport.test.tsx
 2166 website/src/test/MarkdownRenderer.test.tsx
-2750 website/src/test/PierreWorkspaceTreeImpl.test.tsx
-2664 website/src/test/uiPrefs.test.ts
 2166 website/src/types/index.ts
