@@ -7,8 +7,9 @@ Each function here whose first parameter is ``self`` is an ``AcpClient`` method:
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_claude_compaction_pending``, ``_codex_compaction_pending``,
-``_compaction_failed_at``, ``_mcp_notifications``, ``last_compaction_transient``.
+Instance fields written: ``_claude_compaction_pending``, ``_claude_native_compaction_id``,
+``_codex_compaction_pending``, ``_compaction_failed_at``, ``_mcp_notifications``,
+``_native_compaction_states``, ``last_compaction_transient``.
 
 Instance fields read: ``_model``, ``_resolved_model_id``, ``last_prompt_stats``,
 ``memory_mode``.
@@ -21,8 +22,12 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp._dispatch import (
+    NATIVE_COMPACTION_CANCELLED,
+    NATIVE_COMPACTION_ID_MAX_CHARS,
+    NativeCompactionStates,
     parse_claude_compaction_notice,
     parse_codex_compaction_update,
+    parse_native_compaction_update,
     parse_prompt_token_usage,
     parse_refusal,
     parse_usage_cost,
@@ -241,37 +246,41 @@ def _claude_compaction_event(self: AcpClient, chunk: str) -> AcpEvent | None:
 
 
 def _codex_compaction_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None:
-    """Reclassify a codex-acp context-compaction frame as an event.
+    """Translate native lifecycle updates and legacy Codex tool markers.
 
-    The codex-side twin of ``_handle_compaction_status`` and
-    ``_claude_compaction_event``: it applies the same state mutation (drop the
-    stale context counts on a terminal) and returns the
-    ``EVENT_COMPACTION_STATUS`` every consumer already understands -- the
-    dashboard notice and context-meter reset, the messaging drivers, and
-    ``wait_for_compaction``. ``None`` means the frame is an ordinary
-    ``tool_call`` and must be handled as one.
+    Native terminal-only frames are accepted; IDs suppress repeats and
+    late starts after a terminal. Legacy marker pairs
+    still require a live start before resetting the context meter.
+
+    Either way it applies the same state mutation as ``_handle_compaction_status``
+    and ``_claude_compaction_event`` (drop the stale context counts on a
+    ``completed``) and returns the ``EVENT_COMPACTION_STATUS`` every consumer
+    already understands -- the dashboard notice and context-meter reset, the
+    messaging drivers, and ``wait_for_compaction``. ``None`` means the frame is
+    not a compaction status: an ordinary ``tool_call``, a repeat, or a native
+    ``cancelled``, which closes the lifecycle without a verdict.
 
     Gated on ``ACP_BACKENDS_INLINE_COMPACTION``, the set of harnesses whose
-    compaction lands INSIDE the prompt turn -- so a harness that earns that
-    membership inherits the translation by joining the set. The MARKER is what
-    actually decides: ``_meta.contextCompaction`` is codex-acp's own, and
-    claude (a member) stamps nothing, so the parser declines its frames.
+    compaction lands INSIDE the prompt turn, so a harness that earns that
+    membership inherits the translation by joining the set. The FRAME is what
+    actually decides: a native ``compaction_update`` or codex-acp's own
+    ``_meta.contextCompaction`` marker; anything else is declined.
 
-    Reached on this class through the dormant codex seam -- a live codex
-    session is served by ``AcpRuntime``, whose ``AcpSessionHandle`` carries the
-    same method. Both implementations answer, rather than one, because a
-    capability the two transports disagree about is a capability that works on
-    whichever one a reader did not test (harness-parity H6).
+    Reached on this class through the dormant codex seam and the claude path -- a
+    live codex session is served by ``AcpRuntime``, whose ``AcpSessionHandle``
+    carries the same method. Both implementations answer, rather than one,
+    because a capability the two transports disagree about is a capability that
+    works on whichever one a reader did not test (harness-parity H6).
 
     Callers MUST still forward the frame. This is a SIDE EFFECT, never a
-    substitute: the frame is also a real tool call in the transcript, and a
-    layer that swallowed it would drop a row the user watched appear.
+    substitute: a legacy marker frame is also a real tool call in the transcript,
+    and a layer that swallowed it would drop a row the user watched appear.
 
-    There is no ``failed`` arm because codex-acp sends no such status -- see
-    ``parse_codex_compaction_update``. A compaction that errors leaves the
-    ``session/prompt`` request unanswered, which the prompt loop's own
-    deadline owns; this method neither invents a terminal nor arms the
-    post-failure budget on a guess.
+    Only a native frame can report ``failed``: codex-acp's legacy marker has no
+    such status (see ``parse_codex_compaction_update``), so a legacy compaction
+    that errors leaves the ``session/prompt`` request unanswered, which the
+    prompt loop's own deadline owns; nothing here arms the post-failure budget
+    on a guess.
     """
     if self.backend not in ACP_BACKENDS_INLINE_COMPACTION:
         return None
@@ -279,16 +288,42 @@ def _codex_compaction_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | 
     update = params.get("update")
     if not isinstance(update, dict):
         return None
-    status_type = parse_codex_compaction_update(update)
+    native = update.get("sessionUpdate") == "compaction_update"
+    if native:
+        if not hasattr(self, "_native_compaction_states"):
+            self._native_compaction_states = NativeCompactionStates()
+        status_type = parse_native_compaction_update(update, self._native_compaction_states)
+    else:
+        status_type = parse_codex_compaction_update(update)
     if status_type is None:
         return None
-    if status_type != "started" and not self._codex_compaction_pending:
+    if not native and status_type != "started" and not self._codex_compaction_pending:
         return None
-    logger.info("Compaction status (codex): %s", status_type)
-    self._codex_compaction_pending = status_type == "started"
+    if native and self._is_claude:
+        self._claude_compaction_pending = status_type == "started"
+        self._claude_native_compaction_id = (
+            update["compactionId"][:NATIVE_COMPACTION_ID_MAX_CHARS]
+            if self._claude_compaction_pending
+            else None
+        )
+    else:
+        self._codex_compaction_pending = status_type == "started"
+    if status_type == NATIVE_COMPACTION_CANCELLED:
+        # A stopped compaction gives no verdict: no count reset, no failure
+        # streak, and no synthesized failure at turn end -- the same silence
+        # ``_settle_claude_compaction`` keeps when a Stop ends the turn.
+        logger.info("Compaction status (native): cancelled, no verdict")
+        return None
+    logger.info("Compaction status (%s): %s", self.backend, status_type)
     if status_type == "completed":
         self._compaction_failed_at = None
         self.last_prompt_stats.reset_after_compaction()
+    elif status_type == "failed":
+        # Arm the bounded post-failure wait, as every other failure producer
+        # does: the backend may never answer the prompt this compaction was
+        # for. A native frame carries its reason in the update itself.
+        self._compaction_failed_at = time.monotonic()
+        self.last_compaction_transient = compaction_failure_is_transient(update)
     # No title: the adapter ships no summary with either frame, and an empty
     # string is what every consumer already renders for "compacted, no
     # summary offered".
@@ -360,6 +395,8 @@ def _settle_claude_compaction(self: AcpClient, reason: str) -> AcpEvent | None:
     case instead and emits only a ``usage_update``.  So the turn ends with a
     dangling ``started``.  Called at the turn's terminal, this closes it out
     so consumers leave their compacting state and the context meter resets.
+    A native start without a terminal keeps this same fallback; settling its
+    ID also prevents a delayed native terminal from resetting counts again.
 
     Reporting ``completed`` is a statement about what the backend did, not a
     guess — but ONLY for *reason* ``end_turn``.  The turn having reached its
@@ -376,6 +413,13 @@ def _settle_claude_compaction(self: AcpClient, reason: str) -> AcpEvent | None:
     if not self._claude_compaction_pending:
         return None
     self._claude_compaction_pending = False
+    native_id = getattr(self, "_claude_native_compaction_id", None)
+    if native_id is not None:
+        self._native_compaction_states.record(
+            native_id,
+            "completed" if reason == STOP_REASON_END_TURN else NATIVE_COMPACTION_CANCELLED,
+        )
+        self._claude_native_compaction_id = None
     if reason != STOP_REASON_END_TURN:
         logger.info(
             "Compaction status (claude): pending compaction abandoned, turn ended %r",

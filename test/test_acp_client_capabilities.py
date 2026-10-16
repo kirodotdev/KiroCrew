@@ -50,16 +50,19 @@ def test_both_acp_transports_send_capabilities() -> None:
     is where its half of the proof lives; every harness that serves a kiro-family
     host must name the constant itself.
     """
-    for rel in (
-        "src/kiro_crew/acp/client.py",
-        "src/kiro_crew/acp/harness/kiro.py",
-        "src/kiro_crew/acp/harness/kas.py",
-    ):
+    # The standalone transport picks its set per backend, and must send it from
+    # the per-backend helper; every harness names its constant directly.
+    required = {
+        "src/kiro_crew/acp/client.py": '"clientCapabilities": acp_client_capabilities(self.backend)',
+        "src/kiro_crew/acp/harness/kiro.py": "return ACP_CLIENT_CAPABILITIES\n",
+        "src/kiro_crew/acp/harness/kas.py": "return KAS_CLIENT_CAPABILITIES\n",
+    }
+    for rel, needle in required.items():
         src = Path(__file__).resolve().parents[1] / rel
         # encoding is explicit: read_text() defaults to the locale codec, which
         # is cp1252 on the Windows CI shards, and these files contain non-ASCII
         # (em dashes / arrows) in their comments.
-        assert "CLIENT_CAPABILITIES" in src.read_text(encoding="utf-8"), rel
+        assert needle in src.read_text(encoding="utf-8"), rel
 
 
 def test_the_shared_process_transport_reads_capabilities_from_its_host() -> None:

@@ -180,6 +180,8 @@ with no row here.
    * - ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL``
      - driver-internal (whether a kindless permission frame takes the preceding
        tool_call's ``kind``; read per frame by the session handle's wire accessor)
+   * - ``ACP_BACKENDS_NATIVE_COMPACTION``
+     - driver-internal (whether ``initialize`` advertises ``session.compaction``)
    * - ``ACP_BACKENDS_HOOKS_LIST``
      - driver-internal (whether this harness's agent asks its client for the hooks
        matching a trigger and to run one, read by the session dispatch loop that
@@ -1581,6 +1583,16 @@ ACP_BACKENDS_INLINE_COMPACTION = frozenset(
         ACP_BACKEND_PI,
     }
 )
+
+# Backends whose handshake advertises ``clientCapabilities.session.compaction``,
+# which switches the adapter to native ``compaction_update`` frames. Only
+# adapters observed emitting those frames, and a subset of
+# ``ACP_BACKENDS_INLINE_COMPACTION`` so every member's frames are translated:
+# codex-acp 2.0.0 and claude-agent-acp 0.84.0, both captured live.
+# opencode is not a member: no capture shows it emitting native frames, and the
+# advertisement replaces a legacy path that works rather than sitting inert.
+# kiro and kas are not members: they report compaction on their own channels.
+ACP_BACKENDS_NATIVE_COMPACTION = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX})
 
 # Backends carrying their OWN internal OS sandbox, which on macOS cannot nest
 # inside Kiro Crew's seatbelt (kernel EPERM) — so ``sandbox.wrap_argv`` skips

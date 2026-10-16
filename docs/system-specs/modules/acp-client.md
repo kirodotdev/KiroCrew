@@ -3517,3 +3517,34 @@ in the gateway's own environment (for a systemd user unit,
 `Environment=CODEX_SQLITE_HOME=%h/.codex` in a drop-in) gets the shared index
 with no seed, and gives up the isolation from other `codex app-server`
 processes that this section exists for.
+
+
+### Native adapter compaction lifecycle
+
+Only the Codex and Claude handshakes advertise `session.compaction = {}`
+(`ACP_BACKENDS_NATIVE_COMPACTION`, via `acp_client_capabilities()` and the Codex
+harness); kiro-cli, KAS and every other backend send the shared set unchanged.
+`acp.client.ACP_CLIENT_CAPABILITIES` remains the shared capability mapping exported
+from `acp.types`; backend-specific handshakes use `acp_client_capabilities()`.
+Codex ACP 2.0.0 and Claude ACP 0.84.0 emit native `compaction_update`
+frames, observed live for manual `/compact` on both. Both transports route these through the existing
+compaction event and context-reset handling. Native IDs deduplicate notices,
+retained per session in `NativeCompactionStates`: ids are truncated to
+`NATIVE_COMPACTION_ID_MAX_CHARS`, at most `NATIVE_COMPACTION_STATES_MAX` are
+kept, settled ids are evicted before in-flight ones, and each eviction is
+counted and logged. Failure preserves context counts and arms the bounded
+post-failure turn wait in both transports; its reason determines whether the
+existing transient-compaction retry applies. `cancelled` (a Stop
+mid-compaction) closes the lifecycle with no event, no failure streak and no
+synthesized failure at turn end.
+Claude native starts use Claude's own pending state on `AcpClient`, the only
+transport a Claude session runs on (Claude is not in `ACP_BACKENDS_ACP_RUNTIME`,
+so the runtime handle sees only Codex frames). If no explicit terminal arrives,
+natural `end_turn` synthesizes `completed` and resets the context counts; cancellation, refusal, or an error ending clears the pending
+state without a verdict or count reset. This preserves the documented Claude
+automatic-compaction fallback; no live native automatic-compaction capture is
+claimed. The settled native ID also suppresses a delayed terminal or replayed
+start after another ID. Codex retains its missing-terminal `failed` verdict.
+Legacy tool-marker/text paths remain available for older adapters. No AIR
+capability is advertised, so read, terminal and MCP output contracts remain
+unchanged. Unknown lifecycle statuses and summary chunks are tolerated.

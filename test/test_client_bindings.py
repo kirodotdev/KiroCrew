@@ -326,6 +326,7 @@ _DECLARED = frozenset(
         "_claude_shipped_restrictions",
         "_entitlement_probe_inflight",
         "_member_dispatch_mounted",
+        "_native_compaction_states",
         "_session_mcp_excludes_local",
         "_session_mcp_inline_settings",
         "_stdin_lock",

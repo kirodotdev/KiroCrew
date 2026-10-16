@@ -54,6 +54,7 @@ from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import (
     EVENT_COMPACTION_STATUS,
+    EVENT_COMPLETE,
     EVENT_TOOL_CALL,
     EVENT_TOOL_CALL_UPDATE,
     STOP_REASON_CANCELLED,
@@ -82,6 +83,7 @@ from kiro_crew.messaging.commands import compact_unsupported_backend
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.session import SessionManager
 from kiro_crew.session_compaction import CompactionCoordinator, _compact_unsupported_backend
+from kiro_crew.testing.wait import await_until
 
 
 def parse_codex_compaction_update(update: dict[str, Any]) -> str | None:
@@ -839,3 +841,270 @@ def _stub_provider(impl: Any, backend: str) -> Any:
     if "self.backend" in source:
         stub.backend = backend  # type: ignore[attr-defined]
     return stub
+
+
+@pytest.mark.parametrize(
+    ("backend", "transport"),
+    [(ACP_BACKEND_CODEX, "client"), (ACP_BACKEND_CODEX, "runtime"), (ACP_BACKEND_CLAUDE, "client")],
+)
+def test_native_compaction_lifecycle(backend: str, transport: str) -> None:
+    target = _bare_client(backend) if transport == "client" else _bare_handle(backend)
+
+    def deliver(status: str, identity: str = "native-1"):
+        update = {"sessionUpdate": "compaction_update", "compactionId": identity, "status": status}
+        payload = _update_msg(update) if transport == "client" else update
+        return target._codex_compaction_event(payload)
+
+    assert deliver("future_status") is None
+    assert deliver("in_progress").text == "started"
+    assert deliver("in_progress") is None
+    assert deliver("completed").text == "completed"
+    assert target.last_prompt_stats.context_pct_unknown
+    assert deliver("completed") is None
+    assert deliver("in_progress") is None
+    assert deliver("completed", "terminal-only").text == "completed"
+
+
+@pytest.mark.parametrize("transport", ["client", "runtime"])
+def test_native_compaction_failure_preserves_counts(transport: str) -> None:
+    target = _bare_client() if transport == "client" else _bare_handle()
+    target.last_prompt_stats.context_pct_unknown = False
+    update = {"sessionUpdate": "compaction_update", "compactionId": "failure", "status": "failed"}
+    payload = _update_msg(update) if transport == "client" else update
+    assert target._codex_compaction_event(payload).text == "failed"
+    assert not target.last_prompt_stats.context_pct_unknown
+    assert target._codex_compaction_event(payload) is None
+
+
+@pytest.mark.parametrize("transport", ["client", "runtime"])
+def test_native_compaction_failure_arms_the_post_failure_budget(transport: str) -> None:
+    """Like every other failure producer: the backend may never answer the prompt
+    the compaction was for, so the bounded post-failure wait is armed."""
+    target = _bare_client() if transport == "client" else _bare_handle()
+    target._compaction_failed_at = None
+    update = {"sessionUpdate": "compaction_update", "compactionId": "budget", "status": "failed"}
+    payload = _update_msg(update) if transport == "client" else update
+    assert target._codex_compaction_event(payload).text == "failed"
+    assert target._compaction_failed_at is not None
+
+
+@pytest.mark.parametrize("transport", ["client", "runtime"])
+def test_native_compaction_cancel_gives_no_verdict(transport: str) -> None:
+    """A Stop mid-compaction is not a failure: no event, no streak, no settle."""
+    target = _bare_client() if transport == "client" else _bare_handle()
+    target.last_prompt_stats.context_pct_unknown = False
+
+    def deliver(status: str):
+        update = {"sessionUpdate": "compaction_update", "compactionId": "stop", "status": status}
+        payload = _update_msg(update) if transport == "client" else update
+        return target._codex_compaction_event(payload)
+
+    assert deliver("in_progress").text == "started"
+    assert deliver("cancelled") is None
+    assert not target._codex_compaction_pending
+    assert not target.last_prompt_stats.context_pct_unknown
+    assert target._settle_codex_compaction("cancelled") is None
+    assert deliver("completed") is None
+
+
+def test_native_compaction_state_is_bounded() -> None:
+    from kiro_crew.acp._dispatch import (
+        NATIVE_COMPACTION_ID_MAX_CHARS,
+        NATIVE_COMPACTION_STATES_MAX,
+        NativeCompactionStates,
+        parse_native_compaction_update,
+    )
+
+    states = NativeCompactionStates()
+
+    def deliver(identity: str, status: str):
+        update = {"sessionUpdate": "compaction_update", "compactionId": identity, "status": status}
+        return parse_native_compaction_update(update, states)
+
+    long_id = "x" * (NATIVE_COMPACTION_ID_MAX_CHARS * 100)
+    assert deliver(long_id, "in_progress") == "started"
+    assert all(len(key) <= NATIVE_COMPACTION_ID_MAX_CHARS for key in states._states)
+    for index in range(NATIVE_COMPACTION_STATES_MAX + 5):
+        assert deliver(f"done-{index}", "completed") == "completed"
+    assert len(states) == NATIVE_COMPACTION_STATES_MAX
+    assert states.evicted == 6
+    assert states.get(long_id) == "started"
+    # Settled ids are evicted first, so the in-flight one still dedupes.
+    assert deliver(long_id, "completed") == "completed"
+    assert deliver(long_id, "completed") is None
+
+
+def test_compaction_negotiation_does_not_enable_air() -> None:
+    from kiro_crew.acp.types import ACP_CLIENT_CAPABILITIES_NATIVE_COMPACTION
+
+    assert ACP_CLIENT_CAPABILITIES_NATIVE_COMPACTION["session"]["compaction"] == {}
+    assert "_meta" not in ACP_CLIENT_CAPABILITIES_NATIVE_COMPACTION
+
+
+def test_native_compaction_is_advertised_only_where_translated() -> None:
+    """kiro-cli, KAS and every other backend keep the base handshake byte-identical."""
+    from kiro_crew.acp.harness.codex import CodexHarness
+    from kiro_crew.acp.harness.kiro import KiroHarness
+    from kiro_crew.acp.types import (
+        ACP_BACKENDS_INLINE_COMPACTION,
+        ACP_BACKENDS_NATIVE_COMPACTION,
+        ACP_CLIENT_CAPABILITIES,
+        KAS_CLIENT_CAPABILITIES,
+        acp_client_capabilities,
+    )
+
+    assert "session" not in ACP_CLIENT_CAPABILITIES
+    assert "session" not in KAS_CLIENT_CAPABILITIES
+    assert ACP_BACKENDS_NATIVE_COMPACTION <= ACP_BACKENDS_INLINE_COMPACTION
+    for backend in (ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX):
+        assert acp_client_capabilities(backend)["session"] == {"compaction": {}}
+    for backend in ("kiro", "kas", "opencode", "pi", "goose", "deepseek", None):
+        assert acp_client_capabilities(backend) is ACP_CLIENT_CAPABILITIES
+    assert "session" in CodexHarness.client_capabilities.fget(None)
+    assert "session" not in KiroHarness.client_capabilities.fget(None)
+
+
+def test_native_compaction_routes_without_tool_rows() -> None:
+    handle = _live_handle(ACP_BACKEND_CODEX)
+    update = {
+        "sessionUpdate": "compaction_update",
+        "compactionId": "routed",
+        "status": "in_progress",
+    }
+    events = handle._handle_update(_update_msg(update))
+    assert [event.kind for event in events] == [EVENT_COMPACTION_STATUS]
+    assert handle._handle_update(_update_msg(update)) == []
+    unknown = {
+        "sessionUpdate": "compaction_summary_chunk",
+        "compactionId": "routed",
+        "content": {"type": "text", "text": "summary"},
+    }
+    assert handle._handle_update(_update_msg(unknown)) == []
+
+
+async def _native_compaction_turn(transport, backend, statuses, reason, monkeypatch, tmp_path):
+    updates = [
+        JsonRpcMessage(
+            method="session/update",
+            params={
+                "sessionId": "sA",
+                "update": {
+                    "sessionUpdate": "compaction_update",
+                    "compactionId": "native-turn",
+                    "status": status,
+                },
+            },
+        )
+        for status in statuses
+    ]
+    if transport == "client":
+        target = AcpClient(work_dir=tmp_path, acp_backend=backend)
+
+        async def frames(req_id, timeout):
+            for update in updates:
+                yield "update", update
+            yield "complete", JsonRpcMessage(id=req_id, result={"stopReason": reason})
+
+        monkeypatch.setattr(target, "_prompt_loop", frames)
+        monkeypatch.setattr(target, "_read_new_tool_results", AsyncMock(return_value=[]))
+        stream = target._dispatch_events(7, 5.0)
+    else:
+        from test_acp_session_handle_stream_command import _make
+
+        target, _runtime = _make(
+            response_result={"stopReason": reason}, updates=updates, acp_backend=backend
+        )
+        stream = target.stream_command("/compact", timeout=5.0)
+
+    async def collect():
+        async with contextlib.aclosing(stream):
+            return [event async for event in stream]
+
+    return target, await await_until(asyncio.ensure_future(collect()), what="the native turn")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("transport", "backend"),
+    [("client", ACP_BACKEND_CLAUDE), ("client", ACP_BACKEND_CODEX), ("runtime", ACP_BACKEND_CODEX)],
+)
+@pytest.mark.parametrize(
+    "reason", [STOP_REASON_END_TURN, STOP_REASON_CANCELLED, "refusal", "error"]
+)
+async def test_native_pending_settles_with_its_harness_contract(
+    transport, backend, reason, monkeypatch, tmp_path
+):
+    target, events = await _native_compaction_turn(
+        transport, backend, ["in_progress"], reason, monkeypatch, tmp_path
+    )
+    statuses = [event for event in events if event.kind == EVENT_COMPACTION_STATUS]
+    expected = (
+        ["started", "failed"]
+        if backend == ACP_BACKEND_CODEX
+        else ["started", "completed"] if reason == STOP_REASON_END_TURN else ["started"]
+    )
+    assert [event.text for event in statuses] == expected
+    assert events[-1].kind == EVENT_COMPLETE
+    if len(statuses) > 1:
+        assert statuses[-1].synthesized
+    assert target.last_prompt_stats.context_pct_unknown is (
+        backend == ACP_BACKEND_CLAUDE and reason == STOP_REASON_END_TURN
+    )
+    assert target._compaction_failed_at is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["completed", "failed", "cancelled"])
+async def test_native_claude_explicit_terminal_prevents_a_second_verdict(
+    status, monkeypatch, tmp_path
+):
+    target, events = await _native_compaction_turn(
+        "client",
+        ACP_BACKEND_CLAUDE,
+        ["in_progress", status, status, "in_progress"],
+        STOP_REASON_END_TURN,
+        monkeypatch,
+        tmp_path,
+    )
+    statuses = [event for event in events if event.kind == EVENT_COMPACTION_STATUS]
+    assert [event.text for event in statuses] == (
+        ["started"] if status == "cancelled" else ["started", status]
+    )
+    assert all(not event.synthesized for event in statuses)
+    assert target.last_prompt_stats.context_pct_unknown is (status == "completed")
+    assert (target._compaction_failed_at is not None) is (status == "failed")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", [STOP_REASON_END_TURN, STOP_REASON_CANCELLED, "error"])
+async def test_native_claude_settle_suppresses_delayed_frames_after_another_id(
+    reason, monkeypatch, tmp_path
+):
+    target, _events = await _native_compaction_turn(
+        "client", ACP_BACKEND_CLAUDE, ["in_progress"], reason, monkeypatch, tmp_path
+    )
+
+    def deliver(identity, status):
+        update = {"sessionUpdate": "compaction_update", "compactionId": identity, "status": status}
+        return target._codex_compaction_event(_update_msg(update))
+
+    assert deliver("next", "in_progress").text == "started"
+    assert deliver("next", "completed").text == "completed"
+    target.last_prompt_stats.context_pct_unknown = False
+    assert deliver("native-turn", "completed") is None
+    assert deliver("native-turn", "in_progress") is None
+    assert not target.last_prompt_stats.context_pct_unknown
+
+
+def test_native_settled_id_still_dedupes_after_a_different_id():
+    states = _dispatch.NativeCompactionStates()
+
+    def deliver(identity):
+        return _dispatch.parse_native_compaction_update(
+            {"sessionUpdate": "compaction_update", "compactionId": identity, "status": "completed"},
+            states,
+        )
+
+    assert deliver("first") == "completed"
+    assert deliver("second") == "completed"
+    assert deliver("first") is None

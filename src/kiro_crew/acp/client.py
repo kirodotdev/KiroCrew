@@ -85,8 +85,11 @@ from kiro_crew.acp._dispatch import (  # noqa: F401
     ACP_BACKENDS_META_IDENTITY,
     DRAIN_YIELD_AFTER_S,
     MAX_ACTIVE_TOOL_CALLS,
+    NATIVE_COMPACTION_CANCELLED,
+    NATIVE_COMPACTION_ID_MAX_CHARS,
     BackgroundLaunchRecord,
     InFlightIdSet,
+    NativeCompactionStates,
     _dumps_degraded,
     _loggable_request_id,
     _measure_tool_output,
@@ -109,6 +112,7 @@ from kiro_crew.acp._dispatch import (  # noqa: F401
     parse_claude_compaction_notice,
     parse_codex_compaction_update,
     parse_message_id,
+    parse_native_compaction_update,
     parse_prompt_token_usage,
     parse_refusal,
     parse_session_modes,
@@ -372,6 +376,7 @@ from kiro_crew.acp.types import (  # noqa: F401
     AcpPromptStats,
     JsonRpcMessage,
     JsonRpcRequest,
+    acp_client_capabilities,
     effort_config_option_id,
     effort_config_option_value,
     model_registry_namespace,
@@ -660,6 +665,7 @@ class AcpClient:
     _claude_shipped_restrictions: frozenset[tuple[str, str]]
     _entitlement_probe_inflight: asyncio.Future[tuple[list[dict[str, str]], float]] | None
     _member_dispatch_mounted: bool
+    _native_compaction_states: NativeCompactionStates
     _session_mcp_excludes_local: bool
     _session_mcp_inline_settings: dict[str, Any] | None
     _stdin_lock: asyncio.Lock
@@ -1182,6 +1188,7 @@ class AcpClient:
         # settles it with a synthetic `completed` at turn end. Without that, a
         # consumer showing a compacting state would never leave it.
         self._claude_compaction_pending: bool = False
+        self._claude_native_compaction_id: str | None = None
         # The codex twin of the flag above. It guards TWO directions, and the
         # second is why it is read on the way in as well as at turn end. A loaded
         # session replays a past compaction as a ``tool_call`` that is already
@@ -2304,7 +2311,7 @@ class AcpClient:
         return {
             "protocolVersion": protocol_version,
             "clientInfo": {"name": CLIENT_NAME, "version": CLIENT_VERSION},
-            "clientCapabilities": ACP_CLIENT_CAPABILITIES,
+            "clientCapabilities": acp_client_capabilities(self.backend),
         }
 
     async def _fork_session(
@@ -3040,6 +3047,7 @@ class AcpClient:
             self._compaction_failed_at = None
             self._compaction_failed_turn = False
             self._claude_compaction_pending = False
+            self._claude_native_compaction_id = None
             self._codex_compaction_pending = False
             deadline = time.monotonic() + timeout
             consecutive_empty = 0
