@@ -8,7 +8,10 @@ const FOLDERS: CronFolder[] = [
 ]
 
 function openMenu() {
-  fireEvent.keyDown(screen.getByLabelText('Move to folder'), { key: 'Enter' })
+  // The trigger now carries a VISIBLE "Move to folder…" label (not just an
+  // aria-label), so its accessible name comes from that text. Match it by role
+  // + name rather than getByLabelText, and tolerate the ellipsis with a regex.
+  fireEvent.keyDown(screen.getByRole('button', { name: /move to folder/i }), { key: 'Enter' })
 }
 
 function item(label: string | RegExp) {
