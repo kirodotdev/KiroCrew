@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         _VIA_PROXY_SUFFIX,
         AUDIT_CLAIMED_KEY,
         PROBE_PATHS,
+        bind_request_forwarded,
         check_host,
         check_origin,
         current_context,
@@ -62,10 +63,10 @@ def audit_actor(request: web.Request, caller: str) -> str:
     as the person's own.
 
     The suffix is the older of two spellings of the same fact. The uniform one
-    is ``metadata["forwarded"]``, which the gateway's auth and audit layers
-    record from the same predicate (these three sites and ``token_auth``'s
-    request-bound rows); see ``_VIA_PROXY_SUFFIX`` for what a missing key means.
-    The suffix stays so the readers already keyed on it keep working.
+    is ``metadata["forwarded"]``, recorded from the same predicate on every
+    request-bound row, handlers' own included; see ``_VIA_PROXY_SUFFIX`` for
+    what a missing key means. The suffix stays so the readers already keyed on
+    it keep working.
 
     Its known limit is the same one :func:`origin.is_direct_local_request`
     documents: a forwarder that strips every forwarding header is invisible
@@ -209,6 +210,13 @@ def _make_deny_audit_middleware(caller: str) -> Callable:
         request: web.Request,
         handler: object,
     ) -> web.StreamResponse:
+        # Bound for the whole request, every method and path, so a handler's own
+        # ``log_api_access`` row records the same ``forwarded`` verdict the audit
+        # layers pass explicitly (see ``sel_request_provenance``).
+        with bind_request_forwarded(is_proxied_request(request)):
+            return await _audited(request, handler)
+
+    async def _audited(request: web.Request, handler: object) -> web.StreamResponse:
         try:
             return await handler(request)  # type: ignore[operator]
         except web.HTTPException as exc:

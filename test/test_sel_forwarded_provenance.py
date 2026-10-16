@@ -5,7 +5,9 @@
 rows -- including the returned 401/403 refusals -- with its own ``caller``.
 
 Every row those layers write while holding the request records
-``metadata["forwarded"]`` from the same predicate, whichever of them wrote it.
+``metadata["forwarded"]`` from the same predicate, whichever of them wrote it,
+and a handler's own row takes the verdict the deny-audit boundary binds for the
+request.
 ``caller`` keeps its value on every row, and the ``_via_proxy`` suffix stays
 where it is, so readers keyed on either keep matching.
 """
@@ -220,3 +222,109 @@ def test_every_request_bound_sel_writer_records_forwarded(rel: str) -> None:
     checked, missing = _calls_missing_forwarded(path)
     assert checked, f"{rel}: found no request-bound log_api_access call; the walk is broken"
     assert not missing, f"{rel}: log_api_access without forwarded= at lines {missing}"
+
+
+class _RealHelperCapture(_Capture):
+    """Runs the real ``log_api_access`` body and captures the event it builds."""
+
+    log_api_access = SecurityEventLog.log_api_access
+
+
+def _boundary_app(monkeypatch, cap: _RealHelperCapture, handler) -> web.Application:
+    from kiro_crew.dashboard import server as server_mod
+
+    monkeypatch.setattr(server_mod, "sel", lambda: cap)
+    app = web.Application(middlewares=[server_mod._make_deny_audit_middleware("dashboard_user")])
+    app.router.add_get("/api/x", handler)
+    return app
+
+
+@pytest.mark.asyncio
+async def test_a_handler_row_records_forwarded_without_passing_it(monkeypatch) -> None:
+    """A handler's own row takes the boundary's verdict, explicit values still win.
+
+    Red before the boundary bound it: both rows carried no ``forwarded`` key.
+    """
+    from aiohttp.test_utils import TestClient, TestServer
+
+    cap = _RealHelperCapture()
+
+    async def handler(request: web.Request) -> web.Response:
+        cap.log_api_access(caller="dashboard_user", operation="implicit", outcome="ok")
+        cap.log_api_access(
+            caller="dashboard_user", operation="explicit", outcome="ok", forwarded=False
+        )
+        return web.Response(text="ok")
+
+    async with TestClient(TestServer(_boundary_app(monkeypatch, cap, handler))) as client:
+        assert (await client.get("/api/x", headers=_FORWARDED_HEADERS)).status == 200
+        assert (await client.get("/api/x")).status == 200
+
+    rows = [(e.operation, e.metadata) for e in cap.events]
+    assert rows == [
+        ("implicit", {"forwarded": True}),
+        ("explicit", {"forwarded": False}),
+        ("implicit", {"forwarded": False}),
+        ("explicit", {"forwarded": False}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_provenance_lives_as_long_as_the_request(monkeypatch) -> None:
+    """Awaited work inside the request records it; work outliving it stays keyless.
+
+    ``to_thread`` and an awaited task copy the context and run inside the
+    request. A task the handler leaves running copies the same context but writes
+    after the response, and a plain thread copies no context at all.
+    """
+    import asyncio
+    import threading
+
+    from aiohttp.test_utils import TestClient, TestServer
+
+    cap = _RealHelperCapture()
+    release = asyncio.Event()
+    background: list[asyncio.Task] = []
+
+    def write(op: str) -> None:
+        cap.log_api_access(caller="dashboard_user", operation=op, outcome="ok")
+
+    async def late() -> None:
+        await release.wait()
+        write("task_after_response")
+
+    async def handler(request: web.Request) -> web.Response:
+        await asyncio.to_thread(write, "to_thread")
+        await asyncio.create_task(asyncio.to_thread(write, "awaited_task"))
+        thread = threading.Thread(target=write, args=("plain_thread",))
+        thread.start()
+        thread.join()
+        background.append(asyncio.create_task(late()))
+        return web.Response(text="ok")
+
+    async with TestClient(TestServer(_boundary_app(monkeypatch, cap, handler))) as client:
+        assert (await client.get("/api/x", headers=_FORWARDED_HEADERS)).status == 200
+        release.set()
+        await background[0]
+
+    assert {e.operation: e.metadata for e in cap.events} == {
+        "to_thread": {"forwarded": True},
+        "awaited_task": {"forwarded": True},
+        "plain_thread": {},
+        "task_after_response": {},
+    }
+
+
+def test_the_binding_is_closed_and_restored_when_the_request_ends() -> None:
+    """Nested binds restore the outer verdict; leaving the last one leaves none."""
+    from kiro_crew.sel_request_provenance import (
+        bind_request_forwarded,
+        current_request_forwarded,
+    )
+
+    assert current_request_forwarded() is None
+    with bind_request_forwarded(True):
+        with bind_request_forwarded(False):
+            assert current_request_forwarded() is False
+        assert current_request_forwarded() is True
+    assert current_request_forwarded() is None

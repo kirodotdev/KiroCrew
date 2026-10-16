@@ -56,6 +56,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.credential_patterns import AWS_KEY_ID_PREFIXES
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.sel_request_provenance import current_request_forwarded
 
 logger = logging.getLogger(__name__)
 
@@ -2646,13 +2647,10 @@ class SecurityEventLog:
         activation): the event is written synchronously and a filesystem
         failure is re-raised so the caller can refuse the audited action.
 
-        ``forwarded`` records whether the audited HTTP request reached the
-        gateway through a forwarder (``dashboard.origin.is_proxied_request``).
-        It lands as ``metadata["forwarded"]``, so provenance has its own field
-        and ``caller_identity`` keeps the value the caller passed. ``None`` (the
-        default) writes no key, which means "provenance not recorded by this
-        writer" and never "made directly". A writer that holds the request
-        passes the predicate's result, ``True`` or ``False``.
+        ``forwarded`` (``origin.is_proxied_request``) lands as ``metadata["forwarded"]``.
+        ``None`` takes the verdict the deny-audit boundary bound for the live request
+        (``sel_request_provenance``); outside one no key is written, which means
+        "not recorded", never "made directly". ``caller_identity`` stays as passed.
 
         ``outcome`` is redacted and clipped like ``resources`` and ``error``,
         even though it reads as a constrained vocabulary. It is not one at this
@@ -2666,6 +2664,8 @@ class SecurityEventLog:
         writer's own pass is not the backstop: ``_REDACTED_TEXT_FIELDS`` omits
         ``outcome`` because identity-shaped fields stay verbatim there.
         """
+        if forwarded is None:
+            forwarded = current_request_forwarded()
         self.log(
             SecurityEvent(
                 event_id=uuid.uuid4().hex[:16],
