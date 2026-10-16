@@ -1982,12 +1982,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         exfil_query_min_len,
     )
 if TYPE_CHECKING:  # project names it serves from outside its owners, from their homes
-    from kiro_crew.credential_patterns import (  # noqa: F401
-        AWS_KEY_ID,
-    )
+    from kiro_crew.credential_patterns import AWS_KEY_ID  # noqa: F401
     from kiro_crew.security.denied_rules import (  # noqa: F401
         _INERT_SEARCH_VERBS,
         _exception_eligible,
+    )
+    from kiro_crew.security.gh_file_body import (  # noqa: F401
+        _GH_FILE_BODY_RULE,
+        _gh_file_body_flag,
+        _may_run_gh,
     )
     from kiro_crew.security.shell_commands import read_commands as _read_commands  # noqa: F401
     from kiro_crew.sel import (  # noqa: F401

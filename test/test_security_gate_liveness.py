@@ -703,7 +703,18 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 43, from 34,802, for ``redaction_switch.owner_may_disable``: the governance
 #: gate on the owner's Files-view redaction switch and the stored-OFF read that obeys it
 #: (55 lines; the rest fit in the headroom main had left). Re-measured.
-_PACKAGE_LINE_BUDGET = 34_845
+#: Raised by 269 more, from 34,855 (the package's measured size on main, 10 over the
+#: budget above), for gh's body-from-file flags in ``gh_file_body``
+#: (`--input`, `--field k=@f`, `release --notes-file`): one matcher keyed to a plain
+#: `gh` program word, reading each command's argv through ``shell_commands`` (so a
+#: redirection, a leading one included, is never the program word); gh's own flag
+#: parsing (short-flag clusters, `release download -p`); its catalog row, kept out of
+#: the regex tier; and the ``is_denied`` floor that runs the same matcher for script
+#: hooks. Its argv comes from the shared ``read_commands(heredocs=True,
+#: whole_words=True)``: an opt-in reading that keeps an unquoted substitution one word
+#: of its command, which only this matcher sets. A ``$'…'`` word is decoded by the
+#: shared ANSI-C decoder before it is judged. No pattern moved.
+_PACKAGE_LINE_BUDGET = 35_124
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

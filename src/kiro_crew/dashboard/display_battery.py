@@ -13,7 +13,7 @@ What is NOT in the list, and why that is safe:
   allowed hosts): their OUTPUT, the host set, is part of every verdict tag;
 * ``kiro_crew.sel`` and ``security.denied_rules``: imported by ``exfil``'s owners
   ``exfil_oauth`` for the SEL audit and ``exfil_bash`` for the bash audit, which
-  the battery never calls; ``exfil_bash`` itself, for the same reason;
+  the battery never calls; ``exfil_bash`` and ``gh_file_body``, for the same reason;
 * everything else in the package: the battery does not execute it.
 
 ``test_display_battery_rules_version.py`` traces the battery and fails when it
