@@ -924,7 +924,7 @@ Two mechanisms, both in `registry`:
   nothing polls CloudWatch until the operator turns it on — at which point a credential
   fault is exactly what they need to be told. `configured()` remains the honest place to
   say "no AWS here". Pinned by
-  `test_providers.py::TestACloudWatchFaultIsNotAQuietEstate`, which asserts the registry
+  `test_providers_adapters.py::TestACloudWatchFaultIsNotAQuietEstate`, which asserts the registry
   records the fault as unhealthy rather than asserting only that an exception escapes.
 
   **Rule for any new adapter:** catching an exception inside `poll()` to keep the cycle
@@ -1822,7 +1822,7 @@ not there" is visible and harmless, while sending credentials to an unvetted hos
 neither. The monitor *link* is gated by the same function — no credential rides it, but an
 attacker-controlled URL rendered as a clickable link on the incident board is a phishing
 target inside the operator's own tooling. Pinned by
-`test_providers.py::TestDatadogCredentialsOnlyReachDatadog`, including the userinfo
+`test_providers_adapters.py::TestDatadogCredentialsOnlyReachDatadog`, including the userinfo
 (`datadoghq.com@attacker.example`) and path/port injection shapes.
 
 **The general rule this establishes:** when adding a `config_fields` entry, ask whether it
@@ -2152,7 +2152,7 @@ and tier arming would be entirely inert. `test_tier_cron_names_match_the_manifes
 breaking arming.
 
 `rotation-check` lives on the `always` tier by necessity — on the gated tier an
-off-shift instance could never re-arm itself (`test_store_and_gate.py` asserts this).
+off-shift instance could never re-arm itself (`test_store_and_gate_arming.py` asserts this).
 
 **Only an `on_shift` cron may ship paused.** Nothing in the codebase flips a manifest
 `enabled: false`, and `POST /rotation/arm` arms *only* the `on_shift` tier — it cannot
@@ -3127,21 +3127,32 @@ line-anchored so a genuinely internal reference in that file is still caught.
 
 ## Tests
 
-`src/kiro_crew/apps/builtins/ops_mission_control/tests/` — 24 test files, including:
+`src/kiro_crew/apps/builtins/ops_mission_control/tests/` — 34 test files, including:
 
 - `test_models.py` — fingerprint stability, normalization fallbacks, transition
   grammar, mode algebra
 - `test_security.py` — keystone floor incl. bash forms, redaction, write-only
   secret store, owner-only mode
 - `test_store_and_gate.py` — claim atomicity, illegal transitions, stale sweep,
-  autonomy gate incl. blanket-rule refusal, ledger dedupe/decay
+  autonomy gate incl. blanket-rule refusal; beside it, `test_store_and_gate_ledger.py`
+  (ledger dedupe/decay), `test_store_and_gate_arming.py` (tier arming),
+  `test_store_and_gate_write_gate.py` (every rotation consulted, malformed action scopes
+  refused) and `test_store_and_gate_index_writes.py` (the index's read-modify-writes), which
+  share `_HomeIsolated` from `store_and_gate_helpers.py`
 - `test_providers.py` — ADD-only registry, fan-out resilience, central redaction,
-  adapters unconfigured-not-raising, webhook fail-closed
-- `test_routes.py` — namespace containment, every-route-gated, secrets never echoed; its
-  source guards (permit minting, the single `sink.execute` caller, off-loop reads, the note
-  floor, the slot key, verification convergence) scan the whole HTTP surface — `routes.py`
-  plus every `http_routes` module, enumerated from the package directory — and carry floors
-  on what they must find, so a moved call site cannot turn one into a vacuous pass
+  adapters unconfigured-not-raising, webhook fail-closed; `test_providers_adapters.py` pins
+  what each vendor adapter may reach and report, and `test_providers_config_store.py` the
+  config and secret stores' read-modify-writes
+- `test_routes.py` — namespace containment, every-route-gated, secrets never echoed. The
+  other route tests sit beside it by behaviour, and a new one goes in the part for its
+  behaviour: `test_routes_actions.py` (actions, proposals, verification),
+  `test_routes_event_loop.py` (nothing blocks the loop), `test_routes_claim_and_slot.py`
+  (manual claim, the chat slot) and `test_routes_refused_writes.py`. Their source guards
+  (permit minting, the single `sink.execute` caller, off-loop reads, the note floor, the slot
+  key, verification convergence) scan the whole HTTP surface — `routes.py` plus every
+  `http_routes` module, enumerated from the package directory by `routes_helpers.py` — and
+  carry floors on what they must find, so a moved call site cannot turn one into a vacuous
+  pass
 - `test_routes_composition_contract.py` — the facade/projection contract: the frozen
   registration table, the enable gate answering before any body is read on every route,
   webhook ingress order (size before enqueue, signature before parse, a retriable 503 with
@@ -3157,7 +3168,7 @@ line-anchored so a genuinely internal reference in that file is still caught.
   reaches no verdict. That last one is the important guard — the property is invisible in
   the code, so a later "simplify the health check" would look harmless and would start
   reporting every unreachable source as a confirmed fix.
-- `test_store_and_gate.py::TestLedger` also pins the **track record** (contract 2b): the
+- `test_store_and_gate_ledger.py::TestLedger` also pins the **track record** (contract 2b): the
   use floor, one-miss re-lock, and the three laundering doors — a re-POST, a simulated real
   `git merge` producing duplicate ids, and hygiene's own dedupe — each of which must take
   the MAX rather than the incoming value.

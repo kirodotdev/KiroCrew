@@ -87,7 +87,7 @@ _BACKEND_GUARDS = (
     # src/kiro_crew/apps/builtins was added to _BACKEND_ROOTS.
     "src/kiro_crew/apps/builtins/design_critique/tests/test_manifest.py",
     "src/kiro_crew/apps/builtins/crew_companion/tests/test_manifest.py",
-    "src/kiro_crew/apps/builtins/ops_mission_control/tests/test_routes.py",
+    "src/kiro_crew/apps/builtins/ops_mission_control/tests/test_routes_claim_and_slot.py",
 )
 
 _FRONTEND_GUARDS = (

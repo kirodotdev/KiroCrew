@@ -1,6 +1,7 @@
 """Datadog adapter paths the provider-seam suite never reaches.
 
-``test_providers.py`` covers the mute/comment bodies and the ``site`` allowlist.
+``test_providers.py`` covers the mute/comment bodies and ``test_providers_adapters.py`` the
+``site`` allowlist.
 What is left uncovered is everything that decides whether a call happens at all:
 the unconfigured short-circuits on ``poll`` / ``execute`` / ``gather``, the
 monitor-filter params, the three ``_poll_sync`` skip guards, and the whole
