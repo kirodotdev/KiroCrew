@@ -133,7 +133,7 @@ def _pinned_kiro_cli_version(monkeypatch):
 
 
 class TestAgentConfigResolver:
-    """The persist site: what ``_resolve_command`` returns is written to disk.
+    """The persist site: what ``_resolve_mcp_command`` returns is written to disk.
 
     An absolute ``command`` is accepted verbatim on every later pass, so an
     uppercase spelling written once would read as the operator's own forever.
@@ -160,7 +160,7 @@ class TestAgentConfigResolver:
 
         assert (
             emitted["demo"]["command"] == actual
-        ), "the PATH-search branch of _resolve_command persisted the PATHEXT spelling"
+        ), "the PATH-search branch of _resolve_mcp_command persisted the PATHEXT spelling"
         spec = json.loads((tmp_path / "kiro_agents" / "kirocrew.json").read_text())
         assert spec["mcpServers"]["demo"]["command"] == actual
 
@@ -191,7 +191,7 @@ class TestAgentConfigResolver:
 
         assert (
             emitted["demo"]["command"] == actual
-        ), "the directory-component branch of _resolve_command persisted the PATHEXT spelling"
+        ), "the directory-component branch of _resolve_mcp_command persisted the PATHEXT spelling"
 
 
 class TestDashboardProbe:

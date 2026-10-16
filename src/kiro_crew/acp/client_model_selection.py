@@ -50,6 +50,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.agent import require_unchanged_derived_spec
 from kiro_crew.agent_sdk.backends import model_refusal_phrase
 from kiro_crew.platform.context import redact_log_via_context
+from kiro_crew.providers.mirrors import MIRRORS
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
@@ -512,8 +513,12 @@ async def _entitlement_probe_answer(self: AcpClient) -> tuple[list[dict[str, str
         # The pooled broker stubs, for cost alone: they outrank the spec entries,
         # so the probe does not start a private copy of every pooled server.
         # Isolation does not depend on it -- whatever this process starts is
-        # confined to its own transport and reaped with it.
-        mcp_servers=await asyncio.to_thread(self._pooled_mcp_servers),
+        # confined to its own transport and reaped with it. The stubs alone, not
+        # _pooled_mcp_servers: that also carries refused-home mcp.json servers,
+        # which the probe would otherwise start for nothing.
+        mcp_servers=(
+            [] if self.backend in MIRRORS else await asyncio.to_thread(self._pooled_broker_stubs)
+        ),
     )
     req_id = await self._send_request(METHOD_SESSION_NEW, params)
     resp = await self._wait_for_response(

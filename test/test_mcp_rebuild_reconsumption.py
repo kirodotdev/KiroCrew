@@ -2,7 +2,7 @@
 
 The agent spec is this rebuild's output AND one of its inputs. The resolved
 absolute ``command`` in it is computed, not authored, so reading it back as the
-user's makes it permanent: ``_resolve_command`` accepts an absolute existing
+user's makes it permanent: ``_resolve_mcp_command`` accepts an absolute existing
 executable with no PATH search, so a command resolved once can never be rebound.
 
 These run the REAL rebuild repeatedly against one on-disk config, which is the
@@ -69,7 +69,7 @@ class TestAnAgentOnlyCommandIsReDerived:
     def test_a_relocated_binary_is_re_resolved(self, tmp_path: Path, monkeypatch) -> None:
         """A stored absolute path must not pin a command whose location moved.
 
-        ``_resolve_command`` accepts an absolute existing executable without a PATH
+        ``_resolve_mcp_command`` accepts an absolute existing executable without a PATH
         search, so an emitted path still on disk short-circuits every later
         resolution. Re-deriving from the recorded source is what lets a changed
         search path rebind it.

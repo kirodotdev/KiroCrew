@@ -385,6 +385,7 @@ class CodexHarness(MembershipHarness):
         member_dispatch: bool = False,
         crew_panel: bool = False,
         session_key: str = "",
+        session_work_dir: str | Path | None = None,
     ) -> SessionExtras:
         """Empty. codex has no custom-agent channel to register anything on.
 

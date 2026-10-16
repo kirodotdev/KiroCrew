@@ -181,6 +181,121 @@ fork whose `includeMcpJson` was `true` or unset, the gateway logs a warning that
 names the fork and writes a `fork_mcp_json_merge_disabled` SEL record with the
 same text. A fork already at `false` records nothing.
 
+### Refused shared agent home: the session channel
+
+Because the flag is pinned false, a rebuild is the only way an `mcp.json`
+server reaches the primary agent's sessions. An instance on a non-default
+`KIROCREW_HOME` that shares `~/.kiro/agents` with another install has every
+rebuild refused (`_decline_shared_agent_home`), so the other install's spec is
+never written. On that refusal the rebuild still runs its MCP passes in memory
+(`mcp_declined_home.refresh_projection`) over this instance's own sources and
+keeps what a written spec would have mounted in process memory, keyed by the
+sources' fingerprint. Nothing is persisted: a file in the data home would let
+anything that can write there choose the next session's launched command. Both
+`session/new` paths (`AcpClient._pooled_mcp_servers` and
+`AcpRuntime._with_declined_home_servers`) recompute it when the sources moved
+and append those stdio servers after the gateway stubs. Delivery is kiro only.
+KAS needs no delivery: it mounts `~/.kiro/settings/mcp.json` itself, each
+server with its own declared environment, whatever the agent's `includeMcpJson`,
+and withholds only the grant, which comes from the agent's `tools` (measured on
+`kiro-cli acp --agent-engine v3`: an ungranted server connects and lists its
+tools, and the model cannot call them; a same-named session element shadows
+the native mount). So `KasHarness.session_extras` adds `@name` to the projected
+agent's `tools` (`mcp_declined_home.kas_tool_grants`) and puts nothing on the
+wire. The grant adds no approval: `allowedTools` is untouched and applies as it
+would to a written spec. It is limited to names KAS mounts from that file under the projected
+name (not renamed by the alias pass, not overridden by another scope), and
+withholds a name the session's workspace `mcp.json` also declares (read from
+the directory the session opens in, not the runtime's first one, so a session in
+another checkout is judged against that checkout), a stubbed
+name, and any server `tools` already names in any form -- `@name`,
+`@name/<tool>` or a glob segment such as `@out*/read_mail` -- so a per-tool
+allowlist is never widened to the whole server (a `"*"` list gets nothing). The entitlement
+probe takes the broker stubs alone, so it never starts a delivered server. A
+pass that left a command unresolved is not memoized, so the next session start
+re-resolves it, and the in-memory pass writes no SEL grant record
+(`sync_shared_server_refs(..., audit=False)`), since no spec was written; what
+sessions are supplied is recorded instead, per channel and once per change, as
+one `mcp_declined_home_supplied` SEL record, which also names the servers a
+change withdrew.
+
+The projection is filtered by the same predicates as the written spec:
+user-installed sources only (by the alias the rebuild actually mounted, so a
+collision-suffixed name still counts), muted servers dropped, a server with a
+non-empty `disabledTools` dropped (a session-level element mounts every tool,
+so it cannot carry the restriction), a server with a `timeout` still delivered
+on kiro-cli's default timeout with a gateway warning naming it (the element has
+no timeout field, and withholding would leave the server unmounted), nothing in
+registry mode, primary agent only, and no name the shared spec or a stub
+already mounts. On kiro, a server the shared spec's `allowedTools` already
+covers (`*`, `@name`, `@name/<tool>`, or a glob such as `@*`, `@out*` or
+`*_delete` that can match it, since kiro-cli expands those entries as globs) is
+also not delivered when this
+instance's ceiling (`may_skip_gate_now`) would not keep that grant: the other
+install's `allowedTools` never passed this instance's ceiling, and a delivered
+server would run under it without reaching the PreToolUse gate. Both that check
+and the already-mounted names are read from the spec the session loads: the
+native view's frozen copy when one was prepared (`session_spec`), so a later
+edit to the shared file cannot decide what runs under it, and nothing when the
+projection has no view for the agent. Each session start builds ONE decision
+record from that single read (`_kiro_decision` on kiro, `_kas_decision` on KAS
+from the spec `KasHarness.session_extras` loaded): what it supplies and every
+refusal it makes, the projection's own included. Delivery returns exactly that
+record's servers and the SEL audit (`_record_decision`) records exactly that
+record; neither reads a spec, and the refresh path records nothing, so the trail
+cannot say a server was supplied that the session was refused, or the reverse.
+Each record is marked written only after the SEL write succeeds, so a write
+that failed (SEL not yet up, a submit error) is retried by the next identical
+session start rather than dropped.
+The kiro decision record travels with the session: `session_delivery` returns it
+beside the servers, `create_session` and `load_session` (late adoption included)
+hand it to the start bracket's `set_mode` (`_activate_mode_bracketed`) and store
+it on the session handle for a later `AcpSessionHandle.set_mode`. A mode switch
+activates a newer spec but delivers nothing, so it does not decide again: what
+the session was supplied and refused, and what the trail says about it, stay
+that record's. The switch is instead judged against the record
+(`replacement_refusal`): before each `set_mode` send, the spec it activates (the
+adopted view's copy for that agent, or the shared file with no projection) is
+asked the ceiling question for every server the record supplied. A grant past
+the ceiling, or a spec that cannot be read, ends the session before the send
+with one `mcp_declined_home_withheld` record (scope `a kiro session's mode
+switch`). A mid-session switch is checked again after its send, since the send
+names the view adopted at that moment; a refusal there ends the session.
+A server the ceiling withholds gets one `mcp_declined_home_withheld` SEL record
+(outcome `denied`) naming it and the reason, and is never listed as supplied.
+The KAS grant derives `tools` and mounted names from the spec
+`KasHarness.session_extras` already loaded, and reads the workspace `mcp.json`
+through the credential gate (`hooks.validate_file_path` +
+`safe_read_file_bytes`); a refused read grants nothing. Only `command`, `args`
+and `env` are retained, so no `autoApprove` rides along.
+
+The security bar for both channels is parity with the written spec: a delivered
+or granted server is reachable exactly as it would be had the rebuild written it
+into the spec, under the same `allowedTools`, and the written spec additionally
+grants each such server in `allowedTools` (`@name`) while delivery grants nothing,
+so delivery is never the more permissive channel. That is why there is no
+`allowedTools` name filter and no spec-generation check here: the written spec
+has neither, and each made the fix fail for real users. The projection does
+bound what it retains in memory (`MAX_DELIVERED_SERVERS`, `MAX_SERVER_ARGS`,
+`MAX_SERVER_ENV`, `MAX_FIELD_CHARS`), as every retained field in this codebase
+is bounded; the bounds sit far above any real `mcp.json` (256 servers, 1024 args
+or env entries, 64 KiB per field), and an entry past one is refused whole and
+counted in a gateway warning.
+
+Remote (`url`) servers are not delivered
+and are named in a gateway warning instead. Every refusal writes the same
+`mcp_declined_home_withheld` record (outcome `denied`) as the ceiling's, once
+per change to what it refuses, from the session start's decision record
+(`_record_decision`): a remote, past-the-bounds or
+`disabledTools` server (on both channels: the KAS decision carries the
+projection's refusals too), an unreadable shared spec, a KAS grant withheld for
+a workspace name or for a server KAS does not mount under that name, and a
+delivery or grant that failed and so refused everything.
+`resources` names the channel (kiro session-level delivery or KAS session tool
+grants). A rebuild that does write a spec
+clears the projection, so the two channels never both mount a server. Change
+the spec-mounting predicates here and in `mcp_declined_home` together.
+
 ### Managed servers
 
 `agent._MANAGED_MCP_SERVERS` holds the ten servers the gateway owns end to
@@ -1259,7 +1374,7 @@ directory and substitutes the unique case-insensitive basename match instead of
 canonicalizing the full path.
 
 The three MCP server command resolvers share it, next to the `mcp_search_path`
-they already share: the agent-config resolver (`agent._resolve_command`), the
+they already share: the agent-config resolver (`agent._resolve_mcp_command`), the
 dashboard probe (`mcp_discovery`) and the rewriter. The respawn lookup of a
 gateway restart in `cli_server` (`_own_console_script` and the PATH fallback in
 `_spawn_detached_gateway`) uses it too. Other resolvers of Kiro Crew's own

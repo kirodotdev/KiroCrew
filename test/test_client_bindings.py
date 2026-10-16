@@ -128,6 +128,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_judge_activated_model": ("function", True, "b60c5fea256e", "client_model_selection"),
     "_judges_permission_requests": ("property", False, "a6632a57e602", "client"),
     "_kill_process": ("function", True, "352add48ee4e", "client_lifecycle"),
+    "_kiro_session_servers": ("function", False, "7eb96c2fda05", "client_mcp_array"),
     "_last_steer_monotonic": ("data", False, "", ""),
     "_log_claude_adapter_below_floor": ("function", False, "0453b971e505", "client_claude_session"),
     "_log_declined_share": ("function", False, "276d416344a7", "client_claude_seed"),

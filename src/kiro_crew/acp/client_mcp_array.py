@@ -29,7 +29,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Collection
 
-from kiro_crew import acp_tool_gate
+from kiro_crew import acp_tool_gate, mcp_declined_home
 from kiro_crew.acp.mcp_ref_guard import warn_remote_header_secret_refs, warn_unresolved_server_refs
 from kiro_crew.acp.mcp_session_report import BUCKET_CAP as MCP_REPORT_BUCKET_CAP
 from kiro_crew.acp.mcp_session_report import ERROR_CAP as MCP_REPORT_ERROR_CAP
@@ -38,6 +38,7 @@ from kiro_crew.acp.mcp_session_report import McpSessionReport, sanitize_sink_tex
 from kiro_crew.acp.mcp_startable import PrunedServer, prune_unstartable
 from kiro_crew.acp.session_mcp import agent_spec_snapshot
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KIRO,
     ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_MEMBER_PANEL,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
@@ -157,8 +158,17 @@ def _pooled_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
     RAISES for a backend registered in neither map, and kiro's construction
     path must not gain a failure mode in service of an adapter (H13).
     """
-    if self.backend in MIRRORS:
-        return []
+    return [] if self.backend in MIRRORS else self._kiro_session_servers()
+
+
+def _kiro_session_servers(self: AcpClient) -> list[dict[str, Any]]:
+    """The broker stubs plus any ``mcp.json`` server the shared spec cannot carry.
+
+    The second half is empty unless this instance is refused the shared agent
+    home (:mod:`kiro_crew.mcp_declined_home`). It is
+    appended AFTER the stub session token is attached, so a third-party
+    server's environment never receives that token.
+    """
     # A mirror-less member backend's own array (``_mirrorless_member_mounts``)
     # sits beside these stubs on the wire. Its entry carries the member's
     # identity, so a same-named stub is dropped rather than sent twice.
@@ -167,7 +177,21 @@ def _pooled_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
         for element in (getattr(self, "_session_mcp_cache", None) or [])
         if isinstance(element, dict)
     }
-    return [s for s in self._pooled_broker_stubs() if s.get("name") not in mounted]
+    stubs = [s for s in self._pooled_broker_stubs() if s.get("name") not in mounted]
+    if self.backend == ACP_BACKEND_KIRO:
+        return stubs + mcp_declined_home.session_servers(
+            self._agent,
+            work_dir=self._work_dir,
+            present={str(e.get("name")) for e in stubs} | {str(n) for n in mounted},
+            spec=mcp_declined_home.session_spec(
+                getattr(self, "_native_skill_projection", None), self._agent
+            ),
+        )
+    # Kiro only: KAS mounts mcp.json itself and lacks only the tools grant,
+    # which its harness adds; a delivered copy would shadow that native mount
+    # with one the wire carried. Any other host's array is composed from what
+    # it supports.
+    return stubs
 
 
 def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:

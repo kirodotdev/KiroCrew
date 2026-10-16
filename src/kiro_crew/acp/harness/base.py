@@ -524,6 +524,7 @@ class HarnessAdapter(LaunchAdapter):
         member_dispatch: bool = False,
         crew_panel: bool = False,
         session_key: str = "",
+        session_work_dir: str | Path | None = None,
     ) -> SessionExtras:
         """Per-session payload for this host, for both session start paths.
 
@@ -532,6 +533,10 @@ class HarnessAdapter(LaunchAdapter):
         session-level entries -- declaring one twice lets the weaker declaration
         shadow the keyed one. Empty extras is the normal answer for a host that
         took its agent at spawn time.
+
+        ``session_work_dir`` is the directory THIS session opens in, which can
+        differ from the runtime's *work_dir*. A check about the session's own
+        checkout reads it; None means the session has no directory of its own.
         """
 
     def record_session_projection(self, handle: Any, custom_agents: Any, active_agent: str) -> None:

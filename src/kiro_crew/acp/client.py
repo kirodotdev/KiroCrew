@@ -1249,6 +1249,7 @@ class AcpClient:
     authored_spec_declares_zero_tools = _client_mcp_array.authored_spec_declares_zero_tools
     effective_spec_declares_zero_tools = _client_mcp_array.effective_spec_declares_zero_tools
     _pooled_mcp_servers = _client_mcp_array._pooled_mcp_servers
+    _kiro_session_servers = _client_mcp_array._kiro_session_servers
     _resolve_session_mcp_servers = _client_mcp_array._resolve_session_mcp_servers
     _mirrorless_member_mounts = _client_mcp_array._mirrorless_member_mounts
     _pooled_broker_stubs = _client_mcp_array._pooled_broker_stubs

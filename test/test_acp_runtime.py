@@ -29,7 +29,7 @@ share the harness in ``acp_runtime_helpers.py``.
 import asyncio
 import json
 import time
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 import pytest
 from acp_runtime_helpers import _fast_no_report_ceiling  # noqa: F401
@@ -373,7 +373,11 @@ async def test_derived_worker_identity_keeps_freshness_and_readiness(
             agent_name="kirocrew-worker",
         )
         wire.runtime._kas_custom_agents.assert_awaited_once_with(
-            "kirocrew-worker", member_dispatch=False, crew_panel=False, session_key=key
+            "kirocrew-worker",
+            member_dispatch=False,
+            crew_panel=False,
+            session_key=key,
+            session_work_dir=ANY,
         )
         if revoked:
             wire.status("connected", extra_servers=("kirocrew-work",))
@@ -509,6 +513,7 @@ async def test_kas_readiness_delays_prompt_until_active_managed_tools(
             member_dispatch=False,
             crew_panel=False,
             session_key="subagent:readiness-worker",
+            session_work_dir=ANY,
         )
         # Two pre-mode snapshots must be consumed without satisfying this activation.
         for _ in range(3 if pre_ready else 1):

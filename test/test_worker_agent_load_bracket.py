@@ -584,7 +584,14 @@ def test_a_revocation_between_the_payload_build_and_activation_is_caught(tmp_pat
     revoked = json.loads(json.dumps(_DEFAULT_SPEC_ON_DISK))
     revoked["mcpServers"].pop("builder-mcp")
 
-    async def _payload(agent_name, *, member_dispatch=False, crew_panel=False, session_key=""):
+    async def _payload(
+        agent_name,
+        *,
+        member_dispatch=False,
+        crew_panel=False,
+        session_key="",
+        session_work_dir=None,
+    ):
         # The projection's gate, then the payload built from what it verified -- spec A.
         snapshot = agent.require_fresh_derived_spec(agent_name, str(tmp_path / "wd"))
         # The revocation lands AFTER the definition is registered and BEFORE activation.
@@ -789,7 +796,9 @@ def _runtime_for_create_session(monkeypatch, tmp_path, sent, terminated):
         sent.append(method)
         return resp
 
-    async def _kas_custom_agents(agent, *, member_dispatch=False, crew_panel=False, session_key=""):
+    async def _kas_custom_agents(
+        agent, *, member_dispatch=False, crew_panel=False, session_key="", session_work_dir=None
+    ):
         # The kiro backend builds no wire surface, so it carries no payload and no payload
         # snapshot -- which is what makes the set_mode line itself the consumed load.
         from kiro_crew.acp.harness import SessionExtras

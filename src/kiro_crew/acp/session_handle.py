@@ -1208,6 +1208,11 @@ class AcpSessionHandle:
         # session's on the shared runtime. Empty when the gateway injected no
         # stubs. Never logged: it is a bearer name for this session's identity.
         self.stub_session_token: str = ""
+        # The refused-home decision record this session started under
+        # (``mcp_declined_home.session_delivery``), set by the runtime. A later
+        # ``set_mode`` is judged against it rather than deciding again. ``None``
+        # when the session was delivered nothing that way.
+        self.declined_decision: Any = None
         # Watchdog windows are snapshotted here (construction time) so the
         # dispatch loop never reads config; the liveness oracle carries the
         # per-session evidence state (tracked child, counter samples).
@@ -3037,6 +3042,15 @@ class AcpSessionHandle:
             agent_name = await resolve_source_agent(agent_name)
         except RetiredSkillView as exc:
             raise AcpRuntimeError(str(exc)) from exc
+        # The spec this switch activates is judged against the decision the
+        # session was delivered under: refused before the send, so the session
+        # stays on the spec it has, and again after it, because the send names the
+        # view adopted at send time and a newer one may land in between -- that
+        # answer ends the session, whose host may already have activated it.
+        refuse = getattr(self._runtime, "refuse_mode_beyond_delivery", None)
+        decision = getattr(self, "declined_decision", None)
+        if decision is not None and refuse is not None:
+            await refuse(decision, agent_name)
         # send_request only queues the request; it does not await a mode ACK.
         self.active_agent = ""
         take = getattr(self._runtime, "take_switched_model", None)
@@ -3049,6 +3063,12 @@ class AcpSessionHandle:
         )
         if take is not None:
             self._mode_model_unjudged = True
+        if decision is not None and refuse is not None:
+            try:
+                await refuse(decision, agent_name)
+            except AcpRuntimeError:
+                await self._runtime.terminate_session(self._session_id)
+                raise
 
     async def _served_default_after_set_mode(self) -> None:
         """Judge the model a mid-session :meth:`set_mode` put the session on.
