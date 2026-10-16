@@ -46,7 +46,7 @@ from typing import TYPE_CHECKING
 # (other names on it may still be read here). The facade keeps binding them, so
 # ``kiro_crew.cli.<name>`` stays the object callers import, type checkers see and patches
 # replace (the mirror at the end of this file sends such a patch to every owner holding it).
-from kiro_crew import __version__, _facade_mirror, cli_help, platform_compat
+from kiro_crew import _facade_mirror, cli_help, platform_compat, version_line
 from kiro_crew.apps import builtins as _builtins_pkg
 from kiro_crew.apps.builtins import BUILTIN_NAMES as _BUILTIN_NAMES
 from kiro_crew.cli_log_files import (  # noqa: F401 -- re-exported for existing callers
@@ -281,7 +281,7 @@ def main() -> None:
         epilog=cli_help.render_epilog(),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--version", action="version", version=f"kirocrew {__version__}")
+    parser.add_argument("--version", action="version", version=version_line())
     parser.add_argument(
         "--verbose",
         "-v",

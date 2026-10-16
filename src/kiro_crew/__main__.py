@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import sys
 
-from kiro_crew import __version__, platform_compat
+from kiro_crew import platform_compat, version_line
 from kiro_crew._llama_lib_path import drop_inherited_lib_path
 from kiro_crew._ssl_compat import _ensure_ssl_certs
 from kiro_crew.stdlib_shadow import refuse_if_stdlib_shadowed
@@ -46,7 +46,7 @@ if __name__ == "__main__":
     # script; only the bare form fast-paths to preserve
     # `artifact show --version N` semantics.
     if len(sys.argv) == 2 and sys.argv[1] == "--version":
-        print(f"kirocrew {__version__}")
+        print(version_line())
         raise SystemExit(0)
 
     # Same slim start for the stdio MCP servers as the console script's

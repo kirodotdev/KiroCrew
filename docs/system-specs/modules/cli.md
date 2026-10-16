@@ -94,7 +94,7 @@ present in `sys.modules`, and every deferred dispatch import must resolve.
 Bare `kirocrew --version` (exactly one argv entry) is answered by pre-dispatch
 fast-path guards — `_bootstrap.main` (which then skips importing `cli` on the
 console-script path) and `__main__` (same for the `python -m` path, which also
-covers the desktop launchers) — printing `kirocrew <version>` and exiting 0.
+covers the desktop launchers) — printing `kiro_crew.version_line()` and exiting 0.
 It is the one invocation that never reaches `cli.main()`: no platform boot, no
 sandbox hygiene, no project-dir resolution, no logging or data-home setup, and
 no editable-install self-heal (a broken checkout answers `--version` instead
@@ -541,7 +541,7 @@ module outside the snapshot family imports an owner.
 | `kirocrew mcp-cron` | MCP server for cron tools (spawned by kiro-cli) |
 | `kirocrew mcp-core` | MCP server for spawn, learn, task tools (spawned by kiro-cli) |
 | `kirocrew mcp-computer` | MCP server for computer-use tools (spawned by kiro-cli; hidden — registered with no `help`, so it is in neither listing). A **thin shim** — it forwards to the gateway over loopback and does no accessibility work itself. |
-| `kirocrew --version` | Print version |
+| `kirocrew --version` | Print version. Every entry (both fast paths and argparse) prints `kiro_crew.version_line()`: `kirocrew <version>`, followed by `(source checkout, not a release build)` when the package resolves inside `<repo>/src/kiro_crew` (a `setup.cfg` two levels up) and carries no `BUILD_VERSION` stamp. There the number is the tree's own literal, which no release lane rewrote, so the note travels with it into a pasted bug report. |
 
 ## Token Command Output Streams
 
