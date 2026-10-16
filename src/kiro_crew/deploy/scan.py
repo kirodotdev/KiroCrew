@@ -5,7 +5,7 @@ scanned for secrets + internal-data leaks. On any finding the caller
 **blocks-and-warns** (shows what/where, requires explicit "publish anyway") —
 it never silently redacts. Best-effort detection, not a guarantee.
 
-Reuses KiroCrew's existing credential regexes (``security.get_credential_patterns()``)
+Reuses the existing credential scan (``security.redaction``, linear on repeated PEM headers)
 and adds internal-data heuristics (internal hosts, ARNs, account ids) plus
 deploy-specific patterns (private-key headers, GitHub PATs, OpenAI/Stripe keys).
 """
@@ -15,12 +15,9 @@ import logging
 import re
 from dataclasses import dataclass
 
-from kiro_crew.security import get_credential_patterns
+from kiro_crew.security.redaction import _credential_matches
 
 logger = logging.getLogger(__name__)
-
-# Canonical credential patterns from the security module (single combined regex).
-_CANONICAL_CRED = get_credential_patterns()
 
 # Deploy-specific patterns that MUST be covered even if the canonical set evolves.
 # These are a SUPERSET of the canonical set — covers base64-encoded AKIA keys,
@@ -119,15 +116,12 @@ def scan_content(text: str) -> list[Finding]:
     def _capped() -> bool:
         return len(findings) >= _MAX_FINDINGS
 
-    # Canonical credential patterns (from kiro_crew.security).
-    for pat in _CANONICAL_CRED:
-        for m in pat.finditer(text):
-            if _capped():
-                break
-            findings.append(Finding("credential", _mask_credential(m.group(0)),
-                                    _line_of_fast(line_offsets, m.start()), severity="credential"))
+    # Canonical credential patterns (from kiro_crew.security), scanned in linear time.
+    for m in _credential_matches(text):
         if _capped():
             break
+        findings.append(Finding("credential", _mask_credential(m.group(0)),
+                                _line_of_fast(line_offsets, m.start()), severity="credential"))
 
     # Deploy-specific extras (private key header, GitHub PAT, Stripe/OpenAI).
     if not _capped():
