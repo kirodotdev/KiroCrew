@@ -557,7 +557,12 @@ def _url_payload_command(n: int) -> str:
 #: ``_CREW_SECRET_LEAVES`` entry in ``paths_lists``:
 #: the mediated-secret request directory (``secret-request-policy``), denied to the
 #: agent file tools as a whole. Data, not rule logic: the matcher is unchanged.
-_PACKAGE_LINE_BUDGET = 32_802
+#:
+#: Raised again, from 32,802, for provider-attested SharePoint locator validation
+#: and its fail-closed credential-redaction boundary, including the optional digest
+#: snapshot ``redact`` and ``redact_with_findings`` hand to every credential pass of
+#: the composed pass. No deny rule or threshold moved.
+_PACKAGE_LINE_BUDGET = 32_862
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

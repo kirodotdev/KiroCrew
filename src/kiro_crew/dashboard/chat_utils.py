@@ -142,9 +142,13 @@ def _redact_tool_field(text: str | None, *, limit: int = _MAX_TOOL_FIELD) -> str
                 encoded[:limit].decode("utf-8", errors="ignore")
                 + f"\n… [truncated at {limit:,} bytes]"
             )
+    from kiro_crew.locator_attestations import digests_for_text
     from kiro_crew.security import redact
 
-    text = redact(text)
+    # The attested SharePoint locator view, read once for this text: a tool result
+    # keeps the link the gateway's own result redaction kept. Text naming no
+    # SharePoint host reads nothing, and an empty view attests nothing.
+    text = redact(text, attested_sharepoint_digests=digests_for_text(text))
     return text
 
 
@@ -834,6 +838,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
+    from kiro_crew import locator_attestations  # noqa: F401
     from kiro_crew.dashboard import display_verdicts as _display_verdicts  # noqa: F401
     from kiro_crew.dashboard.display_battery import (  # noqa: F401
         display_battery,

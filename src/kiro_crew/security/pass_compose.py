@@ -78,8 +78,12 @@ def _url_spans(text: str) -> tuple[list[_Span], list[str]]:
     return spans, list(warnings)
 
 
-def _credential_spans(text: str) -> tuple[list[_Span], list[str]]:
-    spans, warnings, _rules = redaction._credential_redaction_plan(text)
+def _credential_spans(
+    text: str, attested_sharepoint_digests: frozenset[str]
+) -> tuple[list[_Span], list[str]]:
+    spans, warnings, _rules = redaction._credential_redaction_plan(
+        text, attested_sharepoint_digests=attested_sharepoint_digests
+    )
     return list(spans), list(warnings)
 
 
@@ -179,10 +183,17 @@ def _merge_warnings(first: list[str], second: list[str]) -> list[str]:
     return first + [w for w in second if w not in first]
 
 
-def compose(text: str) -> tuple[str, list[str], list[str]]:
-    """``(text, credential_warnings, url_warnings)`` with both passes applied once."""
+def compose(
+    text: str, *, attested_sharepoint_digests: frozenset[str] = frozenset()
+) -> tuple[str, list[str], list[str]]:
+    """``(text, credential_warnings, url_warnings)`` with both passes applied once.
+
+    ``attested_sharepoint_digests`` reaches every credential pass here, the last one
+    over the merged text included; the empty default attests none.
+    """
+    digests = attested_sharepoint_digests
     url_spans, url_warnings = _url_spans(text)
-    cred_spans, cred_warnings = _credential_spans(text)
+    cred_spans, cred_warnings = _credential_spans(text, digests)
     if not url_spans and not cred_spans:
         # Either order is then a no-op on the first pass, so the second pass sees
         # the same text and finds nothing either.
@@ -191,7 +202,7 @@ def compose(text: str) -> tuple[str, list[str], list[str]]:
     spans = url_spans + cred_spans
     if url_spans:  # URL pass first, then the credential pass on what is left
         after_urls, rows = _splice(text, url_spans)
-        found, warnings = _credential_spans(after_urls)
+        found, warnings = _credential_spans(after_urls, digests)
         spans += _map_back(found, rows)
         cred_warnings = _merge_warnings(cred_warnings, warnings)
     if cred_spans:  # credential pass first, then the URL pass on what is left
@@ -201,5 +212,5 @@ def compose(text: str) -> tuple[str, list[str], list[str]]:
         url_warnings = _merge_warnings(url_warnings, warnings)
 
     merged = _splice_union(text, _hide_hosts_with_credentials(text, spans))
-    merged, again = redaction.redact_credentials(merged)
+    merged, again = redaction.redact_credentials(merged, attested_sharepoint_digests=digests)
     return merged, _merge_warnings(cred_warnings, list(again)), url_warnings

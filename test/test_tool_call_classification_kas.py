@@ -1096,7 +1096,7 @@ class TestKasMcpServedIdentity:
         else:
             assert over not in (identity.mcp_server_name, identity.tool_name)
         parse_session_update(frame, **caches)
-        assert caches["identity_unreadable_cache"].get("tc-mcp") is (True if kas_marked else None)
+        assert caches["identity_unreadable_cache"].get("tc-mcp") is kas_marked
         if first_class:
             return
         msg = JsonRpcMessage(
@@ -1115,7 +1115,7 @@ class TestKasMcpServedIdentity:
         # The clean shape is untouched: nothing presented, nothing unreadable.
         clean: dict[str, Any] = {k: {} for k in caches}
         parse_session_update(dict(self._TOOL_CALL), **clean)
-        assert clean["identity_unreadable_cache"] == {}
+        assert clean["identity_unreadable_cache"] == {"tc-mcp": False}
         ok_msg = JsonRpcMessage(id=48, method="session/request_permission", params=dict(msg.params))
         ok_msg.params["_meta"] = self._PERMISSION_META
         ok_event, _ = build_permission_event(ok_msg, **clean)
@@ -1244,25 +1244,37 @@ class TestKasMcpServedIdentity:
             )
             assert ok is not None and ok.mcp_identity_unreadable is False
             assert await handle._refuse_unreadable_mcp_identity(ok) is False
-        # A first-class harness's handle is handed no store: the KAS-spelled frame
-        # would mark, but nothing records it and nothing refuses (H13).
-        rt2 = MagicMock()
-        rt2.acp_backend = "kiro"
-        rt2.pid = None
-        rt2.is_alive = MagicMock(return_value=True)
-        rt2.send_notification = AsyncMock()
-        rt2.supports_image_prompt = False
-        kiro_handle = AcpSessionHandle("s-1", asyncio.Queue(), rt2)
-        assert kiro_handle._identity_unreadable_cache_for_wire() is None
-        kiro_handle._handle_update(
-            JsonRpcMessage(method="session/update", params={"sessionId": "s-1", "update": frame})
+        # Every other shared-runtime harness records the readability verdict for
+        # locator attestation, while its permission path receives no KAS-only view.
+        from kiro_crew.agent_sdk.backends import (
+            ACP_BACKEND_KAS,
+            ACP_BACKENDS_ACP_RUNTIME,
         )
-        assert kiro_handle._tool_call_identity_unreadable == {}
-        kiro_event = kiro_handle._build_permission_event(
-            JsonRpcMessage(id=51, method="session/request_permission", params=dict(msg.params))
-        )
-        assert kiro_event is not None and kiro_event.mcp_identity_unreadable is False
-        assert await kiro_handle._refuse_unreadable_mcp_identity(kiro_event) is False
+
+        for backend in sorted(ACP_BACKENDS_ACP_RUNTIME - {ACP_BACKEND_KAS}):
+            runtime = MagicMock()
+            runtime.acp_backend = backend
+            runtime.pid = None
+            runtime.is_alive = MagicMock(return_value=True)
+            runtime.send_notification = AsyncMock()
+            runtime.supports_image_prompt = False
+            other_handle = AcpSessionHandle("s-1", asyncio.Queue(), runtime)
+            assert (
+                other_handle._identity_unreadable_cache_for_wire()
+                is other_handle._tool_call_identity_unreadable
+            )
+            assert other_handle._identity_unreadable_cache_for_permission() is None
+            other_handle._handle_update(
+                JsonRpcMessage(
+                    method="session/update", params={"sessionId": "s-1", "update": frame}
+                )
+            )
+            assert list(other_handle._tool_call_identity_unreadable.values()) == [True]
+            other_event = other_handle._build_permission_event(
+                JsonRpcMessage(id=51, method="session/request_permission", params=dict(msg.params))
+            )
+            assert other_event is not None and other_event.mcp_identity_unreadable is False
+            assert await other_handle._refuse_unreadable_mcp_identity(other_event) is False
         # Wired before the consumer yield, after the unidentifiable-MCP refusal.
         import inspect
 

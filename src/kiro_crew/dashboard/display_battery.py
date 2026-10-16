@@ -56,14 +56,21 @@ RULE_SOURCES: tuple[str, ...] = (
 _PKG_ROOT = Path(__file__).resolve().parent.parent
 
 
-def display_battery(text: str, *, exempt_hosts: frozenset[str] | None = None) -> str:
+def display_battery(
+    text: str,
+    *,
+    exempt_hosts: frozenset[str] | None = None,
+    attested_sharepoint_digests: frozenset[str] = frozenset(),
+) -> str:
     """Every display redactor, in order.
 
     ``exempt_hosts`` is the caller's snapshot of the exempt-host set (see
     ``redact_exfiltration_urls``); ``None`` is the live read.
+    ``attested_sharepoint_digests`` is the caller's snapshot of the attested
+    SharePoint locator digests, handed to ``redact_credentials``; empty attests none.
     """
     out, _ = redact_exfiltration_urls(text, exempt_hosts=exempt_hosts)
-    out, _ = redact_credentials(out)
+    out, _ = redact_credentials(out, attested_sharepoint_digests=attested_sharepoint_digests)
     return out
 
 

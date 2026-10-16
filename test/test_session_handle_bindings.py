@@ -109,10 +109,16 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     ),
     "_handle_kas_update": ("function", False, "761fcd4d2d41", "session_handle_kas"),
     "_handle_update": ("function", False, "74878d3f1402", "session_handle_updates"),
-    "_identity_unreadable_cache_for_wire": (
+    "_identity_unreadable_cache_for_permission": (
         "function",
         False,
         "931b07357dc9",
+        "session_handle_updates",
+    ),
+    "_identity_unreadable_cache_for_wire": (
+        "function",
+        False,
+        "6be7b7bf6ed0",
         "session_handle_updates",
     ),
     "_inflight_interactive": ("property", False, "55d13eb29157", "session_handle_class"),

@@ -378,7 +378,7 @@ def test_the_shared_state_keeps_its_identity() -> None:
 #: gateway's boot path or close an import cycle, so each stays where the one-module
 #: file had it: inside the function that needs it.
 _LAZY_IMPORTS = {
-    "kiro_crew": "_hist_mod _rs model_registry stt",
+    "kiro_crew": "_hist_mod _rs locator_attestations model_registry stt",
     "kiro_crew.agent": "rebuild_agent_config rebuild_agent_config_reporting",
     "kiro_crew.change_card_catalog": "HOOKED_ROUTES",
     "kiro_crew.apps.bridges": "reconcile_enabled_app_resources",
@@ -464,7 +464,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 101
+    assert len(expected) == 102
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
