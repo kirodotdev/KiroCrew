@@ -1,7 +1,7 @@
 """Windows support for the Notes app: the manifest declaration and the four
 places the app behaved differently on a native Windows host.
 
-The manifest pair is the accepted paradigm from ``test/test_dev_fleet_app.py``:
+The manifest pair is the accepted paradigm from ``test/test_dev_fleet_app_fleet_cache.py``:
 one test pins the declared list, the other proves every name in it maps to a real
 ``sys.platform`` so a declaration cannot claim a platform the gate then rejects.
 

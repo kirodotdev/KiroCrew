@@ -447,6 +447,15 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
         "test_file_office_preview.py",
         "test_dashboard_file_io.py",
         "test_dev_fleet_app.py",
+        "test_dev_fleet_app_make_live.py",
+        "test_dev_fleet_app_make_live_cutover.py",
+        "test_dev_fleet_app_trusted_helpers.py",
+        "test_dev_fleet_app_context.py",
+        "test_dev_fleet_app_prune.py",
+        "test_dev_fleet_app_fleet_cache.py",
+        "test_dev_fleet_app_teardown.py",
+        "test_dev_fleet_app_foreground.py",
+        "test_dev_fleet_app_pull_build.py",
         "test_pod_windows_boot.py",
     }
 

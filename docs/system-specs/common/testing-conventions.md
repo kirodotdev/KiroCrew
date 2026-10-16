@@ -3174,7 +3174,7 @@ went red, or the fix lands in the wrong file and the leak stays.
 
 - **A test that plants a fixture under `tmp_path` and asserts a "not under `$HOME`"
   refusal does NOT fire is asserting where the host's `TMPDIR` lives.**
-  `test_dev_fleet_app.py::test_trusted_bin_pins_the_resolved_target_not_the_symlink` built
+  `test_dev_fleet_app_trusted_helpers.py::test_trusted_bin_pins_the_resolved_target_not_the_symlink` built
   a fake Homebrew cellar under `tmp_path` and expected `_trusted_bin` to accept it; on this
   host `TMPDIR` sits under `~/.kiro/crew/scratch`, so the production check that refuses
   anything under `Path.home()` correctly refused the fixture, 5/5, and the same test is

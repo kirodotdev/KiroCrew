@@ -155,7 +155,10 @@
  1 test_decisions_points.py
  2 test_denied_commands_security.py
  1 test_dependency_coordinator.py
-11 test_dev_fleet_app.py
+ 5 test_dev_fleet_app.py
+ 3 test_dev_fleet_app_make_live_cutover.py
+ 1 test_dev_fleet_app_prune.py
+ 2 test_dev_fleet_app_teardown.py
 14 test_dev_fleet_removal_pod_start.py
  7 test_dev_fleet_server_coverage.py
  8 test_devfleet_prune_shutdown_drain.py

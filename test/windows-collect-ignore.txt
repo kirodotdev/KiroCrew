@@ -70,6 +70,15 @@ test_file_raw.py                   # 0o600/0o644 mode-bit assertions
 test_file_download.py              # 0o600/0o644 mode-bit assertions
 test_dashboard_file_io.py          # 0o600/0o644 mode-bit assertions
 test_dev_fleet_app.py              # POSIX app-runner assumptions
+test_dev_fleet_app_make_live.py    # POSIX app-runner assumptions
+test_dev_fleet_app_make_live_cutover.py # POSIX app-runner assumptions
+test_dev_fleet_app_trusted_helpers.py # POSIX app-runner assumptions
+test_dev_fleet_app_context.py      # POSIX app-runner assumptions
+test_dev_fleet_app_prune.py        # POSIX app-runner assumptions
+test_dev_fleet_app_fleet_cache.py  # POSIX app-runner assumptions
+test_dev_fleet_app_teardown.py     # POSIX app-runner assumptions
+test_dev_fleet_app_foreground.py   # POSIX app-runner assumptions
+test_dev_fleet_app_pull_build.py   # POSIX app-runner assumptions
 test_file_office_preview.py        # FILE_READ_SCHEMA rejects C:\ paths (POSIX-only pattern)
 
 # Runs ONLY as the dedicated pod-boot canary in ci.yml, never in a shard: it
