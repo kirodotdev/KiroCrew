@@ -477,6 +477,99 @@ class TestSessionManagerPluginProbe:
         assert refusal.remedy_command == ""
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics")
+    def test_the_real_check_third_account_refusal_carries_its_code_and_owner(
+        self, monkeypatch, tmp_path
+    ):
+        """The code is read from the check's own wording, so these run the check:
+        a wording change that broke the match fails here, not in a translation."""
+        import pwd
+
+        from kiro_crew import github_runner
+
+        _prefix, binary = self._aws_package_install(monkeypatch, tmp_path)
+        monkeypatch.setattr(github_runner, "strict_provider_bins", lambda: False)
+        monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
+        owner_uid = binary.stat().st_uid
+        monkeypatch.setattr(os, "geteuid", lambda: owner_uid + 1)
+
+        refusal = ssm.session_manager_plugin_refusal()
+        assert refusal is not None
+        assert refusal.code == "other_owner"
+        assert refusal.owner_uid == owner_uid
+        # The owner is the account running the tests, named when this host knows it.
+        try:
+            expected_name = pwd.getpwuid(owner_uid).pw_name
+        except KeyError:
+            expected_name = ""
+        assert refusal.owner == expected_name
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics")
+    def test_the_real_check_root_gateway_refusal_carries_its_code(self, monkeypatch, tmp_path):
+        self._aws_package_install(monkeypatch, tmp_path)
+        monkeypatch.setattr(os, "geteuid", lambda: 0)
+
+        refusal = ssm.session_manager_plugin_refusal()
+        assert refusal is not None
+        assert (refusal.code, refusal.owner, refusal.owner_uid) == ("root_gateway", "", None)
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics")
+    def test_the_real_check_strict_policy_refusal_carries_its_code(self, monkeypatch, tmp_path):
+        from kiro_crew import github_runner
+
+        _prefix, binary = self._aws_package_install(monkeypatch, tmp_path)
+        monkeypatch.setattr(github_runner, "strict_provider_bins", lambda: True)
+        monkeypatch.setattr(os, "geteuid", lambda: binary.stat().st_uid + 1)
+
+        refusal = ssm.session_manager_plugin_refusal()
+        assert refusal is not None
+        assert refusal.code == "strict_policy"
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics")
+    def test_the_real_check_world_writable_refusal_carries_its_code(self, monkeypatch, tmp_path):
+        from kiro_crew import github_runner
+
+        _prefix, binary = self._aws_package_install(monkeypatch, tmp_path)
+        monkeypatch.setattr(github_runner, "strict_provider_bins", lambda: False)
+        monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
+        binary.chmod(0o777)
+
+        refusal = ssm.session_manager_plugin_refusal()
+        assert refusal is not None
+        assert refusal.reason == "executable is world-writable"
+        assert refusal.code == "world_writable"
+
+    @pytest.mark.parametrize(
+        ("reason", "expected"),
+        [
+            ("executable is owned by another user (uid 502)", ("other_owner", 502)),
+            ("executable parent is owned by another user (uid 1501)", ("other_owner", 1501)),
+            ("executable parent is world-writable", ("world_writable", None)),
+            ("provider execution is disabled for a root gateway", ("root_gateway", None)),
+            ("executable is not root-owned", ("strict_policy", None)),
+            ("executable parent is writable by the gateway user", ("strict_policy", None)),
+            ("path must be canonical and contain no symlinks", ("strict_policy", None)),
+            ("executable hierarchy is not accessible", ("", None)),
+            ("executable is inside the agent-writable tree /work", ("", None)),
+            # Matched whole: a reason that only contains a known one is not it.
+            ("note: executable is world-writable", ("", None)),
+            ("executable is owned by another user (uid 502) and more", ("", None)),
+        ],
+    )
+    def test_refusal_reasons_map_to_stable_codes(self, reason, expected):
+        assert ssm._classify_refusal(reason) == expected
+
+    def test_an_owner_uid_with_no_account_has_no_name(self, monkeypatch):
+        """AWS's macOS package stamps its tree with the packager's uid, which
+        usually names no account on the user's Mac."""
+        pwd = pytest.importorskip("pwd")
+
+        def _missing(uid):
+            raise KeyError(uid)
+
+        monkeypatch.setattr(pwd, "getpwuid", _missing)
+        assert ssm._account_name(1501) == ""
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics")
     def test_a_refusal_with_the_chown_remedy_names_the_file_inside_that_folder(
         self, monkeypatch, tmp_path
     ):

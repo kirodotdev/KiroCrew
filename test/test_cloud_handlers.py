@@ -218,6 +218,9 @@ class TestReadEndpoints:
         assert body["session_manager_plugin_command"] == "sudo dnf x"
         assert body["session_manager_plugin_refused_path"] == ""
         assert body["session_manager_plugin_refused_reason"] == ""
+        assert body["session_manager_plugin_refused_code"] == ""
+        assert body["session_manager_plugin_refused_owner"] == ""
+        assert body["session_manager_plugin_refused_owner_uid"] is None
 
     async def test_preflight_reports_a_refused_plugin_with_its_reason(self, tmp_path, monkeypatch):
         # A plugin the provenance check refused is installed: the row carries the
@@ -232,6 +235,9 @@ class TestReadEndpoints:
                 path="/usr/local/sessionmanagerplugin/bin/session-manager-plugin",
                 reason="executable parent is owned by another user (uid 1501)",
                 remedy_command="sudo chown -R root:wheel /usr/local/sessionmanagerplugin",
+                code="other_owner",
+                owner="",
+                owner_uid=1501,
             ),
         )
 
@@ -248,6 +254,9 @@ class TestReadEndpoints:
             "/usr/local/sessionmanagerplugin/bin/session-manager-plugin"
         )
         assert "owned by another user (uid 1501)" in body["session_manager_plugin_refused_reason"]
+        assert body["session_manager_plugin_refused_code"] == "other_owner"
+        assert body["session_manager_plugin_refused_owner"] == ""
+        assert body["session_manager_plugin_refused_owner_uid"] == 1501
         assert body["session_manager_plugin_command"] == (
             "sudo chown -R root:wheel /usr/local/sessionmanagerplugin"
         )
