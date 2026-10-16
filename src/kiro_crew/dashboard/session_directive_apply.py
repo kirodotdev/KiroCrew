@@ -177,7 +177,7 @@ def _surface_arm_refusal(
 
     The directive consumer runs AFTER the model received the tool's own
     non-committal ack ("Monitor loop requested ...", see
-    ``mcp_tools/control.py``), and gateway-off the applier's string cannot
+    ``mcp_tools/control_parts/monitor.py``), and gateway-off the applier's string cannot
     replace that ack -- it only overwrites the tool_result row. The one surface
     that reliably reaches whoever is watching the session (the user, a member
     thread's reader, the next turn's transcript replay) is a row of its own, so

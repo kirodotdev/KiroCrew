@@ -296,6 +296,7 @@ REFLEXIVE_TOOL_MODULES: frozenset[str] = frozenset(
         "mcp_mate.py",
         "mcp_tools/apps.py",
         "mcp_tools/control.py",
+        "mcp_tools/control_parts/monitor.py",
         "mcp_tools/learn.py",
         "mcp_tools/ledger.py",
         "mcp_tools/logs.py",

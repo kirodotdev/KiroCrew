@@ -136,7 +136,11 @@ class TestNoSurfaceReimplementsThePipeline:
             path.read_text(encoding="utf-8")
             for path in (family, *sorted(family.with_name("subagent_parts").glob("*.py")))
         )
-        spawn_src = pathlib.Path(spawn_tools.__file__).read_text(encoding="utf-8")
+        spawn_family = pathlib.Path(spawn_tools.__file__)
+        spawn_src = "".join(
+            path.read_text(encoding="utf-8")
+            for path in (spawn_family, *sorted(spawn_family.with_name("spawn_parts").glob("*.py")))
+        )
         assert (
             subagent_src.count("is_registered_agent_name(n)") == 1
         ), "the roster's grammar filter belongs to visible_agent_names alone"

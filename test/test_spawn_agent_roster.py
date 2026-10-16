@@ -137,7 +137,7 @@ class TestPredicateReadsTheWireCode:
             paths = (
                 [path, *sorted(path.with_name("subagent_parts").glob("*.py"))]
                 if module is sa
-                else [path]
+                else [path, *sorted(path.with_name("spawn_parts").glob("*.py"))]
             )
             src = "".join(p.read_text(encoding="utf-8") for p in paths)
             assert src.count('"agent_not_found"') == expected, (
@@ -271,7 +271,7 @@ class TestSpawnListUsesTheSameFilter:
             paths = (
                 [path, *sorted(path.with_name("subagent_parts").glob("*.py"))]
                 if module is sa
-                else [path]
+                else [path, *sorted(path.with_name("spawn_parts").glob("*.py"))]
             )
             src = "".join(p.read_text(encoding="utf-8") for p in paths)
             expected = 1 if module is sa else 0

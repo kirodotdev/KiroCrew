@@ -404,7 +404,7 @@ Guards on `next_wake`:
   (`cron:{job.id}`) and may mutate **only that job**. It is refused outright
   from any non-`cron:` session, and from a subagent, using the strict env-only
   resolution `monitor_start` already uses for the same reason
-  (`mcp_tools/control.py` (`monitor_start`), resolving via `mcp_core_parts/identity.py`
+  (`mcp_tools/control_parts/monitor.py` (`monitor_start`), resolving via `mcp_core_parts/identity.py`
   (`_resolve_session_key_strict`)) — a child process must not be able to
   PID-walk into its parent's identity and reschedule it.
 

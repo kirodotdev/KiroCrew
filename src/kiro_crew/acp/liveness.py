@@ -271,7 +271,7 @@ EVIDENCE_REMOTE_FLAT = "remote_flat"
 EVIDENCE_MCP_SUBTREE_ACTIVE = "mcp subtree active"
 
 # kirocrew-core tools that ping ``/api/session-keepalive`` for their whole run
-# and can read ``mcp subtree active``: ``mcp_tools/spawn.py``
+# and can read ``mcp subtree active``: ``mcp_tools/spawn_parts/wave.py``
 # ``spawn_sub_agents``, bounded by its own collection timeout, so the tool
 # branch never cuts it off on the opaque-MCP bound. The core ``wait`` pings too
 # but never reaches that reading (``wait_tool_verdict`` answers first), so it
