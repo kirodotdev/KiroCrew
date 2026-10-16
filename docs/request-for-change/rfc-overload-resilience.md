@@ -312,7 +312,7 @@ bounded by the 600s total budget; those control frames are consumed, never
 forwarded to kiro-cli. Bridge pings continue to be answered from the connection's
 read loop while a spawn waits, by moving the wait off the sequential reader into
 a per-connection task (GPT-6 hazard 8). The same negotiation applies to
-`_reconnect` (`stub.py`) and to `_respawn_backend_for_stub`, so all three stub
+`_reconnect` (`stub_link.py`) and to `_respawn_backend_for_stub`, so all three stub
 paths are queue-aware (GPT-6 must-fix 3). Daemon drain closes the gate first,
 cancels queued futures and watcher tasks, then proceeds with today's teardown.
 

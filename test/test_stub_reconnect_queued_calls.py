@@ -846,9 +846,15 @@ def test_the_serve_loop_reconnects_only_through_the_paired_function() -> None:
     serve loop that called it directly would reconnect with nothing reading
     kiro-cli's stream, which is the defect this file exists for.
     """
+    import importlib
     import inspect
 
-    source = inspect.getsource(stub_mod)
+    # The facade joined with its owners: ``_reconnect_while_draining`` lives in
+    # ``stub_link``, which the facade imports.
+    source = "".join(
+        inspect.getsource(importlib.import_module(name))
+        for name in (stub_mod.__name__, *stub_mod._STUB_OWNERS)
+    )
     assert source.count("await _reconnect(") == 1
     assert "await _reconnect_while_draining(" in source
     assert "_drain_while_disconnected(" in inspect.getsource(stub_mod._reconnect_while_draining)

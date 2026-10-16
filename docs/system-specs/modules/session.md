@@ -4626,7 +4626,7 @@ a trust root on its own; publication therefore also writes a
   the file family. The client-side ladder is `mcp_caller.resolve_own_identity`
   (host-pid + walk, with the co-tenant refusal), which `mcp_core._resolve_session_key`
   and `mcp_shared._policy_session_key` (the policy walk, called by
-  `_resolve_tool_policy`) delegate to and which also serves `mcp_gateway/stub.py`;
+  `_resolve_tool_policy`) delegate to and which also serves `mcp_gateway/stub_register.py`;
   the server-side peer walk is `peer_resolve.resolve_peer_identity`. The sidecar
   is additive. These readers are pid-keyed and therefore answer with the PARENT
   for a session-sharing subagent, which is why each

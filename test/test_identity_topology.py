@@ -1239,7 +1239,11 @@ _REGISTERED_CALL_SITES: dict[str, str] = {
         "session_pid_sig.verify_session_pid (HMAC-verified, direct "
         "KIROCREW_HOST_PID lookup, no walk)"
     ),
-    "mcp_gateway/stub.py": "reader via CallerContext.from_env; register-time caller block — assumes HOST pids",
+    "mcp_gateway/stub.py": (
+        "warm-pool caller repair: polls until the claimed session's key resolves, then "
+        "re-sends the caller block stub_register builds — assumes HOST pids"
+    ),
+    "mcp_gateway/stub_register.py": "reader via CallerContext.from_env; register-time caller block — assumes HOST pids",
     "peer_resolve.py": (
         "reader: the SERVER-side /proc ancestry walk (extracted from "
         "mcp_gateway/gatewayd._resolve_peer_identity, which now delegates "

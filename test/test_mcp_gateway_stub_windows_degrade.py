@@ -261,4 +261,7 @@ def test_the_module_still_exposes_the_real_subprocess_and_exit_calls() -> None:
     """
     assert stub.subprocess is subprocess
     assert stub.os is os
-    assert "subprocess.Popen(" in Path(stub.__file__).read_text(encoding="utf-8")
+    # The spawn lives in the fallback owner, beside the ``subprocess`` it calls.
+    assert "subprocess.Popen(" in Path(stub.__file__).with_name("stub_fallback.py").read_text(
+        encoding="utf-8"
+    )

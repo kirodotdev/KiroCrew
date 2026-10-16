@@ -49,7 +49,7 @@ This module defines a **namespaced, versioned, typed** protocol extension:
    that never advertises is pooled all the same, and simply never receives an
    identity -- pooled and identity-blind, which is worse than either alone.
    The "refuse to pool an unadvertised backend" behaviour described in earlier
-   revisions of this docstring was never implemented; ``rewriter.py`` records
+   revisions of this docstring was never implemented; ``rewriter_spec.py`` records
    the same fact next to ``UNPOOLABLE_SERVERS``, which is empty and remains the
    only mechanism of its kind. A backend that cannot consume the block must be
    listed there.

@@ -1543,7 +1543,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # merely pointless -- the child must inherit THIS process's stdio fds to
         # keep serving kiro-cli's existing pipe, which is the whole fix, and a
         # scrubbed env would drop the credentials the sidecar exists to restore.
-        "mcp_gateway/stub.py::_fallback_spawn_child",
+        "mcp_gateway/stub_fallback.py::_fallback_spawn_child",
         # The update seam's one read-only git chokepoint: `git config` (the
         # `updates.source` pin's remote, the repo-driver probe, and which remote a
         # branch tracks) and `git ls-remote --get-url`. Fixed list-argv (no

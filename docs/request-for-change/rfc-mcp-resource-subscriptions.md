@@ -83,7 +83,7 @@ that push.
 | Gap | Evidence |
 |---|---|
 | A subscription ends with the chat's kiro-cli connection | `Backend.detach_stub` releases the upstream subscription when the last subscriber leaves. A reaped kiro-cli detaches its stub, and the backend is evicted `mcp_gateway.idle_timeout_secs` later (default 300, `src/kiro_crew/config/integration_sections.py`). |
-| A subscription does not survive a daemon restart | The subscription tables live in the daemon process. A kiro-cli stub that ever subscribed refuses to reconnect (`has_live_subscriptions` in `src/kiro_crew/mcp_gateway/stub.py`). The daemon exits when the Kiro Crew server that spawned it exits (`_owner_liveness_sweeper` in `src/kiro_crew/mcp_gateway/daemon/sweepers.py`), so every server restart is also a daemon restart. |
+| A subscription does not survive a daemon restart | The subscription tables live in the daemon process. A kiro-cli stub that ever subscribed refuses to reconnect (`has_live_subscriptions` in `src/kiro_crew/mcp_gateway/stub_bridge.py`). The daemon exits when the Kiro Crew server that spawned it exits (`_owner_liveness_sweeper` in `src/kiro_crew/mcp_gateway/daemon/sweepers.py`), so every server restart is also a daemon restart. |
 | An update cannot start a turn | On the kiro-cli backend a turn starts only when Kiro Crew sends a prompt. Nothing turns an update into one. |
 
 ## 3. Goals and non-goals
@@ -119,7 +119,7 @@ the session's own stub's Register payload for that server, so it attaches to the
 same pooled backend, but under a `stub_uuid` of its own. The daemon keys attach,
 refcount and routing on that id, and `Backend.attach_stub` refuses one that is
 already attached, so the holder mints a fresh `stub_uuid` for every registration,
-as the stub's own `_reconnect` does (`src/kiro_crew/mcp_gateway/stub.py`). It then
+as the stub's own `_reconnect` does (`src/kiro_crew/mcp_gateway/stub_link.py`). It then
 sends `initialize`, sends `resources/subscribe` for each URI, and reads updates on
 its own socket.
 

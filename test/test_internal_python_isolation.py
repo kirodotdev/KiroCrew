@@ -34,7 +34,7 @@ _INTERNAL_PYTHON_SPAWN_SITES = (
     ("dashboard/handlers/memory.py", "_ensure_pip_available"),
     ("dashboard/handlers/memory.py", "api_memory_enable_embeddings"),
     ("mcp_gateway/manager.py", "GatewayManager._spawn_once"),
-    ("mcp_gateway/rewriter.py", "_build_stub_entry"),
+    ("mcp_gateway/rewriter_spec.py", "_build_stub_entry"),
     ("piper_runtime.py", "PiperRuntime._start"),
     ("pod/unit.py", "_kirocrew_argv"),
     ("slack/gateway_runtime/install_repair.py", "_check_missing_deps"),
