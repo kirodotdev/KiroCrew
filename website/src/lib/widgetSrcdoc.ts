@@ -853,26 +853,59 @@ const LIGHT_CANVAS_FALLBACK_VARS: Readonly<Record<(typeof THEME_VAR_NAMES)[numbe
   '--info': '#1d4ed8',
 }
 
+// The Tailwind token grammar the class regexes below share, kept in one place
+// so a new hue, stop or variant form is added once. Each piece is written as a
+// regex literal and read back through `.source`, so the escapes are exactly
+// what a hand-written literal would hold.
+//
+// TW_VARIANT_PREFIX: a token boundary, then optional variant prefixes in
+// Tailwind's full token syntax -- `hover:`, `md:`, `@md:`, `*:`, and bracketed
+// arbitrary variants such as `min-[300px]:` or `[&:hover]:` (name capped at 64
+// chars, bracket body at 256, so a long attribute value cannot make the scan
+// quadratic).
+const TW_VARIANT_PREFIX = /(?:^|[\s"'`])(?:(?=[a-zA-Z0-9@*\[-])[a-zA-Z0-9@*-]{0,64}(?:\[[^\]\s"'`]{1,256}\])?:)*/.source
+// Every default Tailwind hue, as a regex alternation.
+const TW_HUES =
+  /slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose/.source
+// The end of a class token: end of input, a separator, or an opacity `/`.
+const TW_CLASS_END = /(?=$|[\s"'`\/])/.source
+
+/** A Tailwind background-class detector: `bg-<solid>` or `bg-<hue>-<stop>` for
+ * every default hue, behind any variant prefix. `solid` and `stops` are regex
+ * alternations (`'white'`, `'50|100|200'`). No flags: callers only `.test()`. */
+function twBgClassRe(solid: string, stops: string): RegExp {
+  return new RegExp(`${TW_VARIANT_PREFIX}bg-(?:${solid}|(?:${TW_HUES})-(?:${stops}))${TW_CLASS_END}`)
+}
+
 // Tailwind utility classes that paint a light background: `bg-white` and the
-// 50/100/200 stops of every default hue. Optional variant prefixes are
-// allowed in Tailwind's full token syntax -- `hover:`, `md:`, `@md:`, `*:`, and
-// bracketed arbitrary variants such as `min-[300px]:` or `[&:hover]:` (name
-// capped at 64 chars, bracket body at 256, so a long attribute value cannot
-// make the scan quadratic); `dark:` is handled separately below.
-const LIGHT_TAILWIND_BG_RE =
-  /(?:^|[\s"'`])(?:(?=[a-zA-Z0-9@*\[-])[a-zA-Z0-9@*-]{0,64}(?:\[[^\]\s"'`]{1,256}\])?:)*bg-(?:white|(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(?:50|100|200))(?=$|[\s"'`\/])/
+// 50/100/200 stops of every default hue; `dark:` is handled separately below.
+const LIGHT_TAILWIND_BG_RE = twBgClassRe('white', '50|100|200')
 // The mirror of LIGHT_TAILWIND_BG_RE: `bg-black` and the 700-950 stops. A
 // widget carrying one of these next to a light card is a mixed palette, and
 // flipping it wholesale to light would only trade which half is unreadable.
-const DARK_TAILWIND_BG_RE =
-  /(?:^|[\s"'`])(?:(?=[a-zA-Z0-9@*\[-])[a-zA-Z0-9@*-]{0,64}(?:\[[^\]\s"'`]{1,256}\])?:)*bg-(?:black|(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(?:700|800|900|950))(?=$|[\s"'`\/])/
+const DARK_TAILWIND_BG_RE = twBgClassRe('black', '700|800|900|950')
+// A `dark:` variant, bare or behind chained prefixes such as `md:dark:`.
+const DARK_VARIANT_RE = new RegExp(`${TW_VARIANT_PREFIX}dark:`)
 // Inline `background` / `background-color` declarations carrying a literal
 // color. Captures the value for a luminance check.
 const INLINE_BG_DECL_RE = /background(?:-color)?\s*:\s*(#[0-9a-f]{3,8}\b|rgba?\([^)]*\)|white\b)/gi
 // Tailwind arbitrary-value backgrounds (`bg-[#f0fdf4]`, `bg-[rgb(250,250,250)]`,
 // `bg-[white]`), which neither regex above sees. Captures the literal for the
 // same luminance check; `_` inside the brackets is Tailwind's space escape.
-const ARBITRARY_BG_CLASS_RE = /(?:^|[\s"'`])(?:(?=[a-zA-Z0-9@*\[-])[a-zA-Z0-9@*-]{0,64}(?:\[[^\]\s"'`]{1,256}\])?:)*bg-\[(#[0-9a-f]{3,8}|rgba?\([^\]]*\)|white)\]/gi
+const ARBITRARY_BG_CLASS_RE = new RegExp(
+  `${TW_VARIANT_PREFIX}${/bg-\[(#[0-9a-f]{3,8}|rgba?\([^\]]*\)|white)\]/.source}`,
+  'gi',
+)
+
+/** Test-only: the light-canvas detector's composed regexes, so a parity test
+ * can pin each `.source` and `.flags` to the hand-written literals they
+ * replaced. Not used at runtime. */
+export const __lightCanvasRegexesForTests = {
+  LIGHT_TAILWIND_BG_RE,
+  DARK_TAILWIND_BG_RE,
+  DARK_VARIANT_RE,
+  ARBITRARY_BG_CLASS_RE,
+} as const
 
 /** Relative luminance (0..1) of a CSS `#hex` / `rgb()` / `white` literal, or
  * null when it cannot be parsed. `parseCssColor` (the favicon-contrast parser)
@@ -946,7 +979,7 @@ function isLightCanvasAuthored(html: string): boolean {
   if (!html) return false
   const styled = styledSurfaces(html)
   if (/var\(\s*--/.test(styled)) return false
-  if (/(?:^|[\s"'`])(?:(?=[a-zA-Z0-9@*\[-])[a-zA-Z0-9@*-]{0,64}(?:\[[^\]\s"'`]{1,256}\])?:)*dark:/.test(styled)) return false
+  if (DARK_VARIANT_RE.test(styled)) return false
   if (DARK_TAILWIND_BG_RE.test(styled)) return false
   let sawLight = LIGHT_TAILWIND_BG_RE.test(styled)
   for (const re of [INLINE_BG_DECL_RE, ARBITRARY_BG_CLASS_RE]) {
