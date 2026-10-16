@@ -25,13 +25,14 @@ code channels to the feature's process latch.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
 import os
 import subprocess
 from types import SimpleNamespace
-from typing import Any, Awaitable, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.security import is_sensitive_path
@@ -157,6 +158,9 @@ _ADOPTED_FIELDS = ("folder_id", "pointed_session", "view_id", "diff_hash")
 #: diff opened.
 _CHANNEL_FIELDS = ("view_id",)
 
+#: Longest the archive's cleanup waits for a bind still cutting the worktree.
+_QUIET_WAIT_SECS = 120.0
+
 #: Points a dashboard session at a directory; returns whether it was applied.
 ProjectSetter = Callable[[str, str], Awaitable[bool]]
 #: Reads the project a dashboard session currently has ("" when unknown).
@@ -229,6 +233,24 @@ def _classify_version(text: str) -> str:
     if redacted == "\n".join(redact_via_context(line) for line in text.split("\n")):
         return MASK_LINES
     return WITHHOLD
+
+
+def _stamped_archived(channel_id: str) -> bool:
+    """Whether the STORED binding is stamped archived, for refusing a new worktree.
+
+    Unlike :func:`_archived` (which decides whether to publish, and lets the
+    caller's copy stand in), only the store counts here, and an unreadable store
+    counts as archived: cutting a worktree is the action to refuse, since the one
+    an Archive removed would be cut again and orphaned. Blocking.
+    """
+    from kiro_crew.slack.code_channels.store import store as channel_store
+
+    try:
+        stored = channel_store().get_binding(channel_id)
+    except Exception:
+        logger.debug("code channel %s: binding unreadable", channel_id, exc_info=True)
+        return True
+    return stored is not None and bool(stored.archived_at)
 
 
 def _gate_open() -> bool:
@@ -489,6 +511,12 @@ class WorkspaceService:
         key = f"{team}:{channel}"
         try:
             async with self._lock(key):
+                if await asyncio.to_thread(_stamped_archived, channel):
+                    # Every path to a workspace comes through here (a bind, a
+                    # message, a turn's start or end, a resume): an archived
+                    # channel gets no tree back, or the one its Archive removed
+                    # would be cut again and orphaned (no cleanup runs after).
+                    return None
                 record = await asyncio.to_thread(self._store.get, team, channel)
                 fresh = record is None or not await asyncio.to_thread(
                     self._record_matches, record, binding
@@ -933,6 +961,46 @@ class WorkspaceService:
         watcher's record of having written ``processing`` is stale after it."""
         self._working.discard(record_key(binding.team_id or "", binding.channel_id or ""))
 
+    @property
+    def store(self) -> WorkspaceStore:
+        """The service's record store (one lock for every writer of it)."""
+        return self._store
+
+    async def republish_bar(self, binding: Any) -> str | None:
+        """Publish the context bar now (the agent changed its own items).
+
+        Returns ``""`` when the bar is current, a Slack error code (or
+        ``publish_failed``) when it is not, and ``None`` when there is no
+        workspace record to publish from (the caller publishes the agent's items).
+        """
+        team, channel = str(binding.team_id or ""), str(binding.channel_id or "")
+        if not channel or not _gate_open():
+            return None
+        async with self._lock(f"{team}:{channel}"):
+            record = await asyncio.to_thread(self._store.get, team, channel)
+            if record is None:
+                return None
+            published = await self._publish_bar(record)
+            await asyncio.to_thread(self._store.put, record)
+            return "" if published else (record.slack_off or "publish_failed")
+
+    @contextlib.asynccontextmanager
+    async def channel_quiet(self, team_id: str, channel_id: str) -> AsyncIterator[None]:
+        """Hold the channel's lock with no bind in flight (the archive's cleanup).
+
+        A bind still cutting the worktree is waited for first (bounded), so the
+        cleanup sees what it made; a refresh in flight finishes before the lock
+        is granted.
+        """
+        key = f"{team_id}:{channel_id}"
+        for _ in range(2):
+            bind = self._binds.get(key)
+            if bind is None:
+                break
+            await asyncio.wait({bind}, timeout=_QUIET_WAIT_SECS)
+        async with self._lock(key):
+            yield
+
     async def on_turn_start(self, binding: Any, _event: Any = None) -> None:
         """Turn-start hook: make sure the workspace exists before the model runs."""
         self._forget_worker_status(binding)
@@ -1087,19 +1155,25 @@ class WorkspaceService:
             pr=pr,
         )
 
-    async def _publish_bar(self, record: WorkspaceRecord) -> None:
+    async def _publish_bar(self, record: WorkspaceRecord) -> bool:
+        """Publish the bar when it changed; False when a needed write failed."""
         if record.slack_off:
-            return
+            return False
         try:
             state = await self._bar_state(record)
         except git_ops.SandboxUnavailable:
             state = BarState(folder=record.project_dir)
-        items = build_items(state)
+        from kiro_crew.slack.code_channels.agent_bar import merge_for_channel
+
+        # The agent's own items (code_channel_set_context_bar) ride after these.
+        items = await asyncio.to_thread(merge_for_channel, build_items(state), record.channel_id)
         digest = _digest(items)
         if digest == record.bar_hash or (not items and not record.bar_hash):
-            return
+            return True
         if await self._call("set_context_bar", record, items) is not None:
             record.bar_hash = digest
+            return True
+        return False
 
     async def _publish_diff(self, record: WorkspaceRecord) -> None:
         if record.slack_off:
