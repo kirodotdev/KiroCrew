@@ -538,6 +538,9 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
                     session_key,
                     source="slack" if slot._turn_channel_origin else "dashboard",
                     on_bound=_owe_code_channel_turn_end,
+                    # What the person asked, without this runner's prepends: a
+                    # cancelled-turn preamble may quote an older prompt.
+                    prompt=str(turn._jev_route_text or ""),
                 )
             except Exception:
                 logger.debug("code channel turn-start hooks failed", exc_info=True)
