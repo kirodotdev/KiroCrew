@@ -449,6 +449,8 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
         "test_deploy_web_handlers.py",
         "test_snapshot.py",
         "test_theme_install.py",
+        "test_theme_install_declarations.py",
+        "test_theme_install_identity.py",
         "test_webapp_preview.py",
         "test_file_raw.py",
         "test_file_download.py",

@@ -1533,8 +1533,9 @@ measures, never above.
   no tool state and **spins forever instead of exec'ing an interpreter**. Nine such
   processes were measured reparented to init at 1464% CPU between them for six days;
   another site turned it into a permanently blocked xdist worker. Either pin the real
-  interpreter's own directory first on `PATH` (`test_security_conductor_scripts.runnable_python`
-  is the shape) or resolve the tool to its real executable before building the env. Do
+  interpreter's own directory first on `PATH`
+  (`test_security_conductor_scripts_verify_finding.runnable_python` is the shape) or
+  resolve the tool to its real executable before building the env. Do
   NOT drop the `HOME` substitution to fix it — that is usually a blast-radius bound
   somebody chose on purpose.
 
@@ -2205,7 +2206,8 @@ carrying forward:
   `killpg` (POSIX) or `taskkill /T` (Windows), which is what
   `test/installer_test_helpers.run_bounded` already did one layer up. **And a test that
   lets a proof actually RUN pins the interpreter's own directory first on PATH**
-  (`runnable_python`). It cannot be fixed by spelling `sys.executable` in the proof
+  (`test_security_conductor_scripts_verify_finding.runnable_python`). It cannot be fixed by
+  spelling `sys.executable` in the proof
   itself: the verifier refuses a proof whose argv names an absolute path outside the
   worktree, and that refusal is correct and stays.
 

@@ -69,6 +69,8 @@ test_outbox_binary.py              # hardcoded /tmp outbox paths
 test_deploy_web_handlers.py        # deploy staging is POSIX-shaped (/tmp, uid)
 test_snapshot.py                   # replace-while-open (WinError 32) semantics
 test_theme_install.py              # POSIX readable/mode gate rejects NTFS modes
+test_theme_install_declarations.py  # a test_theme_install.py topic part; same suite
+test_theme_install_identity.py     # a test_theme_install.py topic part; same suite
 test_webapp_preview.py             # preview routes 404 on Windows backends
 test_file_raw.py                   # 0o600/0o644 mode-bit assertions
 test_file_download.py              # 0o600/0o644 mode-bit assertions

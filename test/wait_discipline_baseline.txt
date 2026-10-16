@@ -295,7 +295,7 @@
  1 test_sandbox_argv.py
  2 test_sandbox_mount_source_sweep.py
  1 test_scenarios_v2_logic.py
- 2 test_security_conductor_scripts.py
+ 2 test_security_conductor_scripts_verify_finding.py
  4 test_security_path_resolve_bounded.py
  2 test_sel.py
  2 test_sel_prune_streaming.py

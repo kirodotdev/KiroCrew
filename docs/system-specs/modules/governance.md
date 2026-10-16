@@ -3701,8 +3701,10 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
 ## Tests
 
 `test_governance_policy.py` (archetypes + loader + evaluator + E1–E13 vectors +
-extensibility + the `identity.signature` states, the opt-in fail-closed gate, and
-the `policy show` provenance reporting),
+extensibility), `test_governance_policy_signatures.py` (the `identity.signature`
+states, the opt-in fail-closed gate, and the `policy show` provenance reporting),
+`test_governance_policy_decisions.py` (an unnamed capability is ungoverned, `policy
+validate` names the ungoverned rows, and an alias group is one gate question),
 `test_governance_tier_ladder.py` (the tier ladder: that the central document
 outranks every local one, that a lower tier can only tighten it, that the reserved
 sandbox boot flags compose across tiers, that an env document beneath an authority
