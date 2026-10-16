@@ -750,6 +750,7 @@ class SessionAllocationService:
     _is_member_key = staticmethod(_sa_get_or_create._is_member_key)
     _crew_pins_effort = _sa_get_or_create._crew_pins_effort
     _dispatch_hard_kill = _sa_get_or_create._dispatch_hard_kill
+    _record_scratch_tree = _sa_get_or_create._record_scratch_tree
     _remove_reservation_now = _sa_get_or_create._remove_reservation_now
     _remove_reservation_cancellation_drained = (
         _sa_get_or_create._remove_reservation_cancellation_drained

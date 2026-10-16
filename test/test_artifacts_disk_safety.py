@@ -93,7 +93,7 @@ class TestDiskFullFailsClosed:
         def refusing_prepare(resolved: Path, *, owner_only: bool) -> Any:
             real_prepare(resolved, owner_only=owner_only)
 
-            def opener(path: str, flags: int) -> int:
+            def opener(path: str, flags: int, **_anchor: Any) -> int:
                 raise OSError(errno.ENOSPC, "No space left on device")
 
             return opener

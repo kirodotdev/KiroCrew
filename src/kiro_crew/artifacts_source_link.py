@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kiro_crew import hooks
+from kiro_crew.agent_scratch import is_tree_index_path as _is_tree_index_path
 from kiro_crew.artifact_source import is_verifiable_root
 from kiro_crew.artifact_store import dashboard_package as _dashboard
 from kiro_crew.artifact_store.model import Artifact, ArtifactValidationError
@@ -116,6 +117,12 @@ def _try_read_source_path(
             return None
         if is_sensitive_path(str(p)):
             return None
+        if _is_tree_index_path(p):
+            # The scratch tree index maps session keys to work trees: a
+            # read would expose every tree name and a write would remap a
+            # later resume onto another session's directory. Host-side
+            # artifact access on an agent's behalf must never reach it.
+            return None
         # Root-confinement re-check on every read: a symlink replacement
         # after relocate could escape the allowed roots if we only checked
         # at set time. Re-validate that the RESOLVED path is under the
@@ -199,6 +206,11 @@ def _try_write_source_path(
         if not p.is_absolute():
             return False
         if is_sensitive_path(str(p)):
+            return False
+        if _is_tree_index_path(p):
+            # Same fence as the read side: an artifact write through the
+            # index would remap the next resume onto another session's
+            # tree.
             return False
         # Root-confinement re-check (same set as _try_read_source_path, via
         # the single producer): a symlink swap after relocate must not allow

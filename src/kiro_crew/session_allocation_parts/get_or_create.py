@@ -28,12 +28,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import itertools
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from kiro_crew import agent_scratch
 from kiro_crew.aws_project_profiles import (
     AWS_PROFILE_ENV,
     bound_profile_env,
@@ -47,6 +49,7 @@ from kiro_crew.metrics.sessions import (
     record_session_started,
 )
 from kiro_crew.runtime_ownership import acquire_session_lease, release_session_lease
+from kiro_crew.session_allocation_parts.companions import parent_work_scratch_dir
 from kiro_crew.session_allocation_parts.errors import (
     SessionBusyError,
     SessionClosingError,
@@ -63,6 +66,10 @@ from kiro_crew.start_priority import (
 
 if TYPE_CHECKING:
     from kiro_crew.session_allocation import LLMProvider, ProviderFactory, SessionAllocationService
+
+#: Registration-order ticket for scratch tree records: handed out at CALL time
+#: (registration order), so a delayed executor write cannot retire a successor.
+_scratch_record_tickets = itertools.count()
 
 
 async def _reacquire_and_validate(
@@ -202,6 +209,23 @@ def _dispatch_hard_kill(self: SessionAllocationService, provider: LLMProvider) -
         # During executor shutdown, a daemon thread is safer than running
         # waitpid/taskkill inline and wedging the event loop.
         threading.Thread(target=kill, args=(provider,), daemon=True).start()
+
+
+async def _record_scratch_tree(self: SessionAllocationService, key: str, tree: Path) -> None:
+    """Attempt persistence off-loop; index failures must not prevent session start."""
+    persisted = await asyncio.to_thread(
+        agent_scratch.record_tree,
+        key,
+        tree,
+        ticket=next(_scratch_record_tickets),
+    )
+    if not persisted:
+        self._deps.logger.warning(
+            "Could not persist scratch binding for session %r; continuing with an "
+            "admitted in-process binding when available. A resume or gateway restart "
+            "may start a fresh scratch tree.",
+            key,
+        )
 
 
 def _remove_reservation_now(self: SessionAllocationService, key: str, token: object) -> None:
@@ -571,6 +595,18 @@ async def _get_or_create_impl(
         stored_cwd = owner._session_map.get_cwd(key)
         if stored_cwd and await asyncio.to_thread(Path(stored_cwd).is_dir):
             effective_cwd = stored_cwd
+    # A conversation resumed after its process ended (gateway restart, a
+    # transient backend exit) rejoins the work directory it had, instead of
+    # starting an empty one while the old tree waits for the sweep. The
+    # binding is read from this process first and only then from the index,
+    # so a successor whose persistence failed is not read as its
+    # predecessor. The spawn re-validates the path
+    # (``agent_scratch.shared_scratch_window``) and falls back to its own
+    # directory if the tree is gone.
+    if resume_sid and extra_factory_kwargs.get("shared_scratch") is None:
+        tree = await asyncio.to_thread(agent_scratch.recorded_tree, key)
+        if tree is not None:
+            extra_factory_kwargs["shared_scratch"] = tree
     claim_crew = extra_factory_kwargs.get("crew_agent")
     session_agent = agent
     preparation = await asyncio.to_thread(prepare_runtime, agent, claim_crew, effective_cwd)
@@ -1081,6 +1117,14 @@ async def _get_or_create_impl(
                 # earlier cleanup path may kill unconditionally.
                 await acquire_session_lease(provider)
                 try:
+                    work_scratch = parent_work_scratch_dir(owner, key)
+                    if not is_stateless and isinstance(work_scratch, Path):
+                        await self._record_scratch_tree(key, work_scratch)
+                    if self._closing:
+                        raise SessionClosingError(
+                            "SessionManager began closing during scratch persistence"
+                        )
+                    self._refuse_if_ending(key, _reservation)
                     await record_session_started(key)
                 except BaseException:
                     # See open_task_session: a cancellation here would leave a

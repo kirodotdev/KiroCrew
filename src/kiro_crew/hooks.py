@@ -41,6 +41,7 @@ from typing import Any, Literal, NamedTuple
 # of their functions on these globals. See :mod:`kiro_crew.hook_runtime`.
 from kiro_crew import hook_runtime as _hook_runtime
 from kiro_crew import jsonl_util, pinned_fs, platform_compat, security, webhooks  # noqa: F401
+from kiro_crew.agent_scratch import is_tree_index_path  # noqa: F401
 
 # The xattr ACL-carry policy is shared with atomic_write.atomic_write: both
 # install a fresh inode and must reproduce the source's access controls or

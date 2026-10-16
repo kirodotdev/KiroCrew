@@ -14,11 +14,14 @@ and the ``_bg`` successor (inherit + adopt).
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import inspect
+import json
 import os
 import re
 import shutil
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,6 +30,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew import agent_scratch as sc
+from kiro_crew.testing.wait import await_until
 
 #: A pid no live process can own on any supported platform (above every pid_max),
 #: so a cleanup path that signals a fake reaches nothing on the runner.
@@ -36,6 +40,15 @@ _UNALLOCATABLE_PID = 99_999_999_999
 # refuses a spawn on a memory-pressured runner; pin the host reading so the
 # test asserts on the seam, not on the runner (test_subagent_spawn_host_pin).
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
+
+
+@pytest.fixture(autouse=True)
+def isolated_tree_bindings(_floor_monkeypatch) -> None:
+    _floor_monkeypatch.setattr(sc, "_TREE_INDEX_LIVE", {})
+    _floor_monkeypatch.setattr(sc, "_TREE_INDEX_TICKETS", {})
+    _floor_monkeypatch.setattr(sc, "_TREE_INDEX_UNPERSISTED", set(), raising=False)
+    _floor_monkeypatch.setattr(sc, "_TREE_INDEX_RETIRED_TICKET", -1, raising=False)
+    _floor_monkeypatch.setattr(sc, "_TREE_INDEX_DISK_FALLBACK", True, raising=False)
 
 
 @pytest.fixture
@@ -1174,6 +1187,497 @@ class TestBgRuntimeSuccessorInheritsTheTree:
             await mgr.get_bg_session()
         assert ctor.call_args.kwargs["shared_scratch"] == tree
         await mgr.close_all()
+
+
+class TestAResumedKeyRejoinsItsTree:
+    """A resumed conversation rejoins the scratch tree recorded for its key.
+
+    The gateway keeps the index inside the masked root and passes the recorded
+    tree as ``shared_scratch`` when the conversation's process starts.
+    """
+
+    def test_the_index_round_trips_and_prunes_reclaimed_trees(self, scratch_root: Path) -> None:
+        scratch_root.mkdir(parents=True)
+        old = scratch_root / "dashboard-chat-1-abcdef01"
+        old.mkdir()
+        sc.record_tree("dashboard:chat-1", old)
+        assert sc.recorded_tree("dashboard:chat-1") == old
+        old.rmdir()  # swept
+        new = scratch_root / "dashboard-chat-2-12345678"
+        new.mkdir()
+        sc.record_tree("dashboard:chat-2", new)
+        assert sc.recorded_tree("dashboard:chat-1") is None
+        assert sc.recorded_tree("dashboard:chat-2") == new
+
+    def test_index_overflow_preserves_existing_bindings(self, scratch_root: Path) -> None:
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        row_size = len(json.dumps({"dashboard:chat-00000": tree.name}).encode("utf-8"))
+        count = (sc._TREE_INDEX_MAX_BYTES - 2) // row_size
+        rows = {f"dashboard:chat-{i:05d}": tree.name for i in range(count)}
+        original = json.dumps(rows, sort_keys=True).encode("utf-8")
+        assert len(original) <= sc._TREE_INDEX_MAX_BYTES
+        index = scratch_root / sc.TREE_INDEX_FILENAME
+        index.write_bytes(original)
+        key = f"dashboard:chat-{count:05d}"
+        assert len(json.dumps({**rows, key: tree.name}).encode("utf-8")) > sc._TREE_INDEX_MAX_BYTES
+
+        assert not sc.record_tree(key, tree, ticket=1)
+        assert index.read_bytes() == original
+        assert sc.recorded_tree("dashboard:chat-00000") == tree
+        assert sc.recorded_tree(key) == tree
+
+    def test_only_a_direct_child_of_the_root_is_recorded(
+        self, scratch_root: Path, tmp_path: Path
+    ) -> None:
+        scratch_root.mkdir(parents=True)
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        sc.record_tree("dashboard:chat-1", outside)
+        assert sc.recorded_tree("dashboard:chat-1") is None
+
+    def test_a_delayed_predecessor_record_cannot_retire_its_successor(
+        self, scratch_root: Path
+    ) -> None:
+        # Executor writes can acquire the lock out of submission order.
+        # The ticket fence skips an older record,
+        # so a delayed predecessor cannot overwrite the successor's mapping.
+        scratch_root.mkdir(parents=True)
+        first = scratch_root / "dashboard-chat-fence-11111111"
+        second = scratch_root / "dashboard-chat-fence-22222222"
+        first.mkdir()
+        second.mkdir()
+        sc.record_tree("dashboard:chat-fence", second, ticket=2)
+        sc.record_tree("dashboard:chat-fence", first, ticket=1)
+        assert sc.recorded_tree("dashboard:chat-fence") == second
+
+    def test_a_row_naming_a_path_is_not_a_tree(self, scratch_root: Path) -> None:
+        scratch_root.mkdir(parents=True)
+        (scratch_root / sc.TREE_INDEX_FILENAME).write_text(
+            '{"dashboard:chat-1": "../../etc", "dashboard:chat-2": ".."}'
+        )
+        assert sc.recorded_tree("dashboard:chat-1") is None
+        assert sc.recorded_tree("dashboard:chat-2") is None
+
+    def test_the_sweep_leaves_the_index_alone(self, scratch_root: Path) -> None:
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        sc.record_tree("dashboard:chat-1", tree)
+        sc.sweep_dead_scratch()
+        assert (scratch_root / sc.TREE_INDEX_FILENAME).is_file()
+
+    def _manager(self, resume_sid: str, work_scratch: Path | None):
+        from kiro_crew.session import SessionManager
+
+        cfg = MagicMock()
+        cfg.session.pool_size = 0
+        cfg.session.pool_agent = "kirocrew"
+        cfg.session.pool_ttl_secs = 1800
+        cfg.session.timeout_secs = 3600
+        cfg.agent.default_agent = ""
+        cfg.agent.model = "auto"
+
+        def _provider():
+            p = MagicMock()
+            p.start = AsyncMock()
+            p.shutdown = AsyncMock()
+            p.is_process_alive = MagicMock(return_value=True)
+            p.exit_code = None
+            p.cwd = ""
+            p.work_scratch_dir = work_scratch
+            return p
+
+        factory = MagicMock(side_effect=lambda *a, **kw: _provider())
+        with patch("kiro_crew.session.default_project_dir", return_value=""):
+            mgr = SessionManager(cfg, provider_factory=factory)
+        mgr._session_map = MagicMock()
+        mgr._session_map.get = MagicMock(return_value=resume_sid or None)
+        mgr._session_map.get_cwd = MagicMock(return_value="")
+        return mgr, factory
+
+    @pytest.mark.asyncio
+    async def test_a_resume_is_handed_the_recorded_tree(self, scratch_root: Path) -> None:
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        sc.record_tree("dashboard:chat-1", tree)
+        mgr, factory = self._manager("sid-1", None)
+        try:
+            await mgr.get_or_create("dashboard:chat-1", agent="kirocrew")
+        finally:
+            await mgr.close_all()
+        assert factory.call_args.kwargs["shared_scratch"] == tree
+
+    @pytest.mark.asyncio
+    async def test_a_fresh_conversation_starts_its_own_tree(self, scratch_root: Path) -> None:
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        sc.record_tree("dashboard:chat-1", tree)
+        mgr, factory = self._manager("", None)
+        try:
+            await mgr.get_or_create("dashboard:chat-1", agent="kirocrew")
+        finally:
+            await mgr.close_all()
+        assert "shared_scratch" not in factory.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_a_new_process_records_the_tree_it_exposes(self, scratch_root: Path) -> None:
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-12345678"
+        tree.mkdir()
+        mgr, _factory = self._manager("", tree)
+        try:
+            await mgr.get_or_create("dashboard:chat-1", agent="kirocrew")
+        finally:
+            await mgr.close_all()
+        assert sc.recorded_tree("dashboard:chat-1") == tree
+
+    def test_a_cached_binding_takes_precedence_over_its_predecessor(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        # Failed persistence can leave the predecessor on disk; the live
+        # successor still owns this process's resumed conversation.
+        scratch_root.mkdir(parents=True)
+        predecessor = scratch_root / "dashboard-chat-1-aaaaaaaa"
+        successor = scratch_root / "dashboard-chat-1-bbbbbbbb"
+        predecessor.mkdir()
+        successor.mkdir()
+        sc.record_tree("dashboard:chat-1", predecessor)  # persisted
+        monkeypatch.setattr(sc, "atomic_write", MagicMock(side_effect=OSError("full disk")))
+        assert not sc.record_tree("dashboard:chat-1", successor)
+        assert sc.recorded_tree("dashboard:chat-1") == successor
+
+    def test_a_reclaimed_failed_successor_never_resurrects_the_disk_predecessor(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        scratch_root.mkdir(parents=True)
+        predecessor = scratch_root / "dashboard-chat-1-aaaaaaaa"
+        successor = scratch_root / "dashboard-chat-1-bbbbbbbb"
+        predecessor.mkdir()
+        successor.mkdir()
+        sc.record_tree("dashboard:chat-1", predecessor)
+        monkeypatch.setattr(sc, "atomic_write", MagicMock(side_effect=OSError("full disk")))
+        assert not sc.record_tree("dashboard:chat-1", successor)
+        successor.rmdir()  # swept
+        assert sc.recorded_tree("dashboard:chat-1") is None
+        assert not sc._TREE_INDEX_LIVE
+
+    @pytest.mark.parametrize("failure", ["unwritable", "overflow"])
+    def test_failed_bindings_have_bounded_admission_and_keep_existing_guards(
+        self, scratch_root: Path, monkeypatch, caplog, failure: str
+    ) -> None:
+        scratch_root.mkdir(parents=True)
+        predecessor = scratch_root / "predecessor"
+        successor = scratch_root / "successor"
+        predecessor.mkdir()
+        successor.mkdir()
+        keys = [f"chat:{i}" for i in range(4)]
+        (scratch_root / sc.TREE_INDEX_FILENAME).write_text(
+            json.dumps(dict.fromkeys(keys, predecessor.name))
+        )
+        monkeypatch.setattr(sc, "_TREE_INDEX_MAX_ENTRIES", 2, raising=False)
+        if failure == "unwritable":
+            monkeypatch.setattr(sc, "atomic_write", MagicMock(side_effect=OSError("full disk")))
+        else:
+            monkeypatch.setattr(sc, "_TREE_INDEX_MAX_BYTES", 2)
+        for ticket, key in enumerate(keys):
+            assert not sc.record_tree(key, successor, ticket=ticket)
+            assert len(sc._TREE_INDEX_LIVE) <= 2
+            assert len(sc._TREE_INDEX_TICKETS) <= 2
+            assert sc._TREE_INDEX_UNPERSISTED <= sc._TREE_INDEX_LIVE.keys()
+        assert sc.recorded_tree(keys[0]) == successor
+        assert sc.recorded_tree(keys[1]) == successor
+        assert sc.recorded_tree(keys[2]) is None
+        assert sc.recorded_tree(keys[3]) is None
+        warnings = [r for r in caplog.records if "uncached scratch resumes" in r.message]
+        assert len(warnings) == 1
+
+    def test_admission_retires_reclaimed_bindings_and_their_tickets(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "tree"
+        tree.mkdir()
+        monkeypatch.setattr(sc, "_TREE_INDEX_MAX_ENTRIES", 1, raising=False)
+        assert sc.record_tree("chat:1", tree, ticket=2)
+        tree.rmdir()
+        successor = scratch_root / "successor"
+        successor.mkdir()
+        assert sc.record_tree("chat:2", successor, ticket=3)
+        assert set(sc._TREE_INDEX_LIVE) == {"chat:2"}
+        assert set(sc._TREE_INDEX_TICKETS) == {"chat:2"}
+        tree.mkdir()
+        assert not sc.record_tree("chat:1", tree, ticket=1)
+        assert sc.recorded_tree("chat:1") is None
+        assert sc.recorded_tree("chat:2") == successor
+
+    def test_successful_retirement_keeps_unrelated_disk_only_resumes(
+        self, scratch_root: Path
+    ) -> None:
+        scratch_root.mkdir(parents=True)
+        retired = scratch_root / "retired"
+        disk_only = scratch_root / "disk-only"
+        retired.mkdir()
+        disk_only.mkdir()
+        (scratch_root / sc.TREE_INDEX_FILENAME).write_text(
+            json.dumps({"chat:disk-only": disk_only.name})
+        )
+        assert sc.record_tree("chat:retired", retired, ticket=1)
+        assert not sc._TREE_INDEX_UNPERSISTED
+        retired.rmdir()
+        assert sc.recorded_tree("chat:retired") is None
+        assert not sc._TREE_INDEX_TICKETS
+        assert sc.recorded_tree("chat:disk-only") == disk_only
+
+    @pytest.mark.asyncio
+    async def test_allocation_admission_bounds_failed_persistence_history(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "tree"
+        tree.mkdir()
+        monkeypatch.setattr(sc, "_TREE_INDEX_MAX_ENTRIES", 2)
+        monkeypatch.setattr(sc, "atomic_write", MagicMock(side_effect=OSError("full disk")))
+        mgr, _factory = self._manager("", tree)
+        try:
+            for i in range(4):
+                await mgr._allocation_boundary()._record_scratch_tree(f"chat:{i}", tree)
+                assert len(sc._TREE_INDEX_LIVE) <= 2
+                assert len(sc._TREE_INDEX_TICKETS) <= 2
+                assert sc._TREE_INDEX_UNPERSISTED <= sc._TREE_INDEX_LIVE.keys()
+            assert sc.recorded_tree("chat:0") == tree
+            assert sc.recorded_tree("chat:2") is None
+        finally:
+            await mgr.close_all()
+
+    def test_delayed_writer_is_refused_after_failed_successor_and_guard_retirement(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        scratch_root.mkdir(parents=True)
+        predecessor = scratch_root / "predecessor"
+        successor = scratch_root / "successor"
+        predecessor.mkdir()
+        successor.mkdir()
+        assert sc.record_tree("chat:1", predecessor, ticket=1)
+        with monkeypatch.context() as failed:
+            failed.setattr(sc, "atomic_write", MagicMock(side_effect=OSError("full disk")))
+            assert not sc.record_tree("chat:1", successor, ticket=3)
+        assert not sc.record_tree("chat:1", predecessor, ticket=2)
+        assert sc.recorded_tree("chat:1") == successor
+        assert sc.record_tree("chat:1", successor, ticket=4)
+        successor.rmdir()
+        assert sc.recorded_tree("chat:1") is None
+        assert not sc.record_tree("chat:1", predecessor, ticket=2)
+        assert sc.recorded_tree("chat:1") is None
+        assert sc.record_tree("chat:1", predecessor, ticket=5)
+        assert sc.recorded_tree("chat:1") == predecessor
+
+    def test_cross_key_out_of_order_write_can_persist_a_retained_binding(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "tree"
+        tree.mkdir()
+        with monkeypatch.context() as failed:
+            failed.setattr(sc, "atomic_write", MagicMock(side_effect=OSError("full disk")))
+            assert not sc.record_tree("chat:older", tree, ticket=1)
+        assert sc.record_tree("chat:newer", tree, ticket=3)
+        assert sc.record_tree("chat:older", tree, ticket=2)
+        assert sc.recorded_tree("chat:older") == tree
+        assert sc.record_tree("chat:older", tree, ticket=4)
+        assert "chat:older" not in sc._TREE_INDEX_UNPERSISTED
+
+    def test_retired_floor_refuses_unknown_older_keys_but_keeps_retained_ordering(
+        self, scratch_root: Path
+    ) -> None:
+        scratch_root.mkdir(parents=True)
+        retained = scratch_root / "retained"
+        retired = scratch_root / "retired"
+        retained.mkdir()
+        retired.mkdir()
+        assert sc.record_tree("chat:retained", retained, ticket=1)
+        assert sc.record_tree("chat:retired", retired, ticket=3)
+        retired.rmdir()
+        assert sc.recorded_tree("chat:retired") is None
+        assert not sc.record_tree("chat:unknown", retained, ticket=2)
+        assert sc.recorded_tree("chat:unknown") is None
+        assert sc.record_tree("chat:retained", retained, ticket=2)
+        assert sc.record_tree("chat:unknown", retained, ticket=4)
+        assert sc.recorded_tree("chat:unknown") == retained
+
+    def test_disk_reader_rechecks_a_successor_admitted_while_waiting_for_the_lock(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        scratch_root.mkdir(parents=True)
+        predecessor = scratch_root / "predecessor"
+        successor = scratch_root / "successor"
+        predecessor.mkdir()
+        successor.mkdir()
+        (scratch_root / sc.TREE_INDEX_FILENAME).write_text(json.dumps({"chat:1": predecessor.name}))
+
+        class AdmitBeforeDiskRead:
+            def __enter__(self):
+                monkeypatch.setitem(sc._TREE_INDEX_LIVE, "chat:1", successor)
+
+            def __exit__(self, *_exc):
+                return False
+
+        monkeypatch.setattr(sc, "_TREE_INDEX_LOCK", AdmitBeforeDiskRead())
+        assert sc.recorded_tree("chat:1") == successor
+
+    def test_oversized_directory_name_is_not_retained(self, scratch_root: Path, monkeypatch):
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "long-name"
+        tree.mkdir()
+        monkeypatch.setattr(sc, "_TREE_INDEX_MAX_NAME_CHARS", len(tree.name) - 1)
+        assert not sc.record_tree("chat:1", tree, ticket=1)
+        assert not sc._TREE_INDEX_LIVE
+        assert not sc._TREE_INDEX_TICKETS
+        assert sc.recorded_tree("chat:1") is None
+
+    def test_oversized_full_path_is_not_retained(self, scratch_root: Path, monkeypatch):
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "tree"
+        tree.mkdir()
+        monkeypatch.setattr(sc, "_TREE_INDEX_MAX_PATH_CHARS", len(str(tree)) - 1)
+        assert not sc.record_tree("chat:1", tree, ticket=1)
+        assert not sc._TREE_INDEX_LIVE
+        assert not sc._TREE_INDEX_TICKETS
+
+    def test_data_home_change_cannot_remap_a_cached_basename(
+        self, scratch_root: Path, tmp_path: Path, monkeypatch
+    ) -> None:
+        scratch_root.mkdir(parents=True)
+        original = scratch_root / "tree"
+        original.mkdir()
+        assert sc.record_tree("chat:1", original, ticket=1)
+        other_home = tmp_path / "other-home"
+        unrelated = other_home / "scratch" / original.name
+        unrelated.mkdir(parents=True)
+        monkeypatch.setattr(sc, "config_dir", lambda: other_home)
+        assert sc.recorded_tree("chat:1") is None
+        assert "chat:1" not in sc._TREE_INDEX_LIVE
+        assert "chat:1" not in sc._TREE_INDEX_TICKETS
+        assert sc.record_tree("chat:1", unrelated, ticket=2)
+        assert sc.recorded_tree("chat:1") == unrelated
+
+    def test_oversized_failed_key_is_not_retained_or_resumed_from_disk(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        scratch_root.mkdir(parents=True)
+        predecessor = scratch_root / "predecessor"
+        successor = scratch_root / "successor"
+        predecessor.mkdir()
+        successor.mkdir()
+        key = "chat:" + "x" * 32
+        (scratch_root / sc.TREE_INDEX_FILENAME).write_text(json.dumps({key: predecessor.name}))
+        monkeypatch.setattr(sc, "_TREE_INDEX_MAX_KEY_CHARS", len(key) - 1, raising=False)
+        monkeypatch.setattr(sc, "atomic_write", MagicMock(side_effect=OSError("full disk")))
+        assert not sc.record_tree(key, successor, ticket=1)
+        assert not sc._TREE_INDEX_LIVE
+        assert sc.recorded_tree(key) is None
+
+    def test_only_a_direct_child_of_the_root_is_bound(
+        self, scratch_root: Path, tmp_path: Path
+    ) -> None:
+        scratch_root.mkdir(parents=True)
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        assert not sc.record_tree("dashboard:chat-1", outside)
+        assert sc.recorded_tree("dashboard:chat-1") is None
+
+    @pytest.mark.asyncio
+    async def test_the_tree_is_bound_before_the_sid_is_published(self, scratch_root: Path) -> None:
+        scratch_root.mkdir(parents=True)
+        predecessor = scratch_root / "dashboard-chat-1-aaaaaaaa"
+        predecessor.mkdir()
+        sc.record_tree("dashboard:chat-1", predecessor)
+        successor = scratch_root / "dashboard-chat-1-bbbbbbbb"
+        successor.mkdir()
+
+        mgr, _factory = self._manager("", successor)
+        service = mgr._allocation_boundary()
+        service._deps = dataclasses.replace(
+            service._deps, is_acp_provider=MagicMock(return_value=True)
+        )
+        observed: list[Path | None] = []
+
+        def read_after_restart(*args, **kwargs):
+            sc._TREE_INDEX_LIVE.clear()
+            observed.append(sc.recorded_tree("dashboard:chat-1"))
+
+        mgr._session_map.set = MagicMock(side_effect=read_after_restart)
+        try:
+            await mgr.get_or_create("dashboard:chat-1", agent="kirocrew")
+        finally:
+            await mgr.close_all()
+        assert observed == [successor], "the SID was published before the tree was bound"
+
+    @pytest.mark.asyncio
+    async def test_sid_waits_for_the_off_loop_write(self, scratch_root: Path, monkeypatch) -> None:
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-12345678"
+        tree.mkdir()
+        mgr, _factory = self._manager("", tree)
+        started = asyncio.Event()
+        release = threading.Event()
+        loop = asyncio.get_running_loop()
+        loop_thread = threading.get_ident()
+        record = sc.record_tree
+
+        def paused_record(*args, **kwargs):
+            assert threading.get_ident() != loop_thread
+            loop.call_soon_threadsafe(started.set)
+            assert release.wait(5), "test did not release the scratch writer"
+            return record(*args, **kwargs)
+
+        monkeypatch.setattr(sc, "record_tree", paused_record)
+        task = asyncio.create_task(mgr.get_or_create("dashboard:chat-1", agent="kirocrew"))
+        try:
+            await await_until(started, what="the off-loop scratch write to start")
+            assert not task.done()
+            mgr._session_map.set.assert_not_called()
+        finally:
+            release.set()
+            await task
+            await mgr.close_all()
+        sc._TREE_INDEX_LIVE.clear()
+        assert sc.recorded_tree("dashboard:chat-1") == tree
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("write_failure", ["raises", "missing_row"])
+    async def test_unwritable_index_does_not_prevent_session_start(
+        self, scratch_root: Path, monkeypatch, write_failure: str
+    ) -> None:
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-12345678"
+        tree.mkdir()
+        mgr, _factory = self._manager("", tree)
+        service = mgr._allocation_boundary()
+        service._deps = dataclasses.replace(
+            service._deps, is_acp_provider=MagicMock(return_value=True)
+        )
+
+        def failed_write(*args, **kwargs):
+            if write_failure == "raises":
+                raise OSError("scratch index is unwritable")
+
+        monkeypatch.setattr(sc, "atomic_write", failed_write)
+        try:
+            provider, created, _resumed = await mgr.get_or_create(
+                "dashboard:chat-1", agent="kirocrew"
+            )
+            assert created
+            assert provider is mgr.get_provider("dashboard:chat-1")
+            mgr._session_map.set.assert_called_once()
+            assert sc.recorded_tree("dashboard:chat-1") == tree
+            sc._TREE_INDEX_LIVE.clear()
+            assert sc.recorded_tree("dashboard:chat-1") is None
+        finally:
+            await mgr.close_all()
 
 
 class TestEveryProcessSpawnSeamIsAccountedFor:

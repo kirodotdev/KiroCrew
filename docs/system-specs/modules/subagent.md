@@ -4175,7 +4175,8 @@ The mechanism is one extra window plus one env value, applied at three seams:
   `$KIROCREW_SCRATCH` — the one it inherited when it joined a tree, else its
   own allocation. `session_allocation.parent_work_scratch_dir(owner, parent_key)`
   reads the capability off the parent's live provider, never probes a client
-  attribute (`None` when the parent has none).
+  attribute (`None` when the parent has none); session scratch recording uses
+  the same helper.
 - **How a spawn takes it.** `AcpRuntime(shared_scratch=…)` and
   `AcpClient(shared_scratch=…)`, threaded through `AcpProvider` and the `_acp`
   provider factory. `AcpProvider` keeps the value itself, because on the kiro
@@ -4228,6 +4229,39 @@ The mechanism is one extra window plus one env value, applied at three seams:
   spawns with the replacement's own directory — the sessions lose their staged
   files to the tampering, the tree stays on disk unowned for a human, and the
   `_bg` slot is never locked out of a runtime.
+- **A resumed conversation rejoins its tree.** A key whose process ended (a
+  gateway restart, a transient backend exit) used to resume on a fresh
+  allocation, and its old tree, now ownerless, was swept an hour later with the
+  work in it. `get_or_create` awaits `agent_scratch.record_tree` off-loop and
+  attempts persistence before publishing the session's SID. A failed write is
+  logged and session start continues with an in-process binding; a gateway
+  restart may then start a fresh tree. Shutdown and end-of-session fences are
+  checked again after the write attempt. A resume
+  (`resume_sid` set) reads the binding with `agent_scratch.recorded_tree` as
+  `shared_scratch`; the in-process cache is optional for restart durability.
+  A fresh conversation on a reused key starts its own tree. The
+  index is `.trees.json` in the managed root, not `session_map.json`: the root is
+  masked from every sandboxed process, while the session map is agent-writable,
+  and a tree name an agent could rewrite would let it mount another session's
+  directory on its next resume. The sweep removes directories only, so it never
+  touches the index, rows whose tree is gone are dropped on each write, and an
+  update exceeding the 1 MiB read limit leaves the existing index untouched.
+  Live bindings, registration tickets and persistence guards share admission capped at 4096 keys,
+  with keys at most 1024 characters, directory names at most 255, and retained
+  full paths at most 32768. A cached path from a different data home is retired,
+  never remapped by basename under the current root.
+  Admission retires reclaimed bindings and their tickets. A scalar retired-ticket
+  floor refuses delayed writers for unretained keys; retained keys keep their
+  own ticket ordering, including after a failed persistence attempt. A verified
+  matching disk row clears the persistence guard, so retiring a successfully
+  persisted binding preserves other disk-only resumes. Retiring an unresolved
+  guard or refusing admission disables disk fallback for uncached keys until
+  gateway restart, with one warning on that transition: these resumes start a
+  fresh tree rather than resurrect a persisted predecessor. Retained bindings
+  still resume normally, and a newer registration can use capacity freed by
+  reclamation. Session start remains fail-open when either admission or disk
+  persistence fails; persistence failure still loses restart durability.
+  The artifact store refuses the index on both its read and its write side.
 - **Every process seam is enumerated.** A seam that starts a kiro-cli process
   and forgets `shared_scratch` reproduces the bug with no red test, so
   `test_subagent_shared_scratch.py::TestEveryProcessSpawnSeamIsAccountedFor`
