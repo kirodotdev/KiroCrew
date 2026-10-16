@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib as _importlib
 import os
 import re
 import secrets
@@ -32,12 +33,49 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import AsyncIterator, Awaitable, Callable, Iterator
+from typing import TYPE_CHECKING, AsyncIterator, Awaitable, Callable, Iterator
 
-from kiro_crew import platform_compat
+from kiro_crew import _facade_mirror
 from kiro_crew.apps.builtins.dev_fleet import gateway_service, repository, runtime
+from kiro_crew.apps.builtins.dev_fleet.live_leases import (
+    _LEASE_CONFIRMS,
+    _LEASE_LOSS_EVENTS,
+    _POD_STARTS,
+    _REMOVAL_LEASE_MAX_OUTSTANDING,
+    _REMOVAL_LEASE_RENEW_SECS,
+    _REMOVAL_LEASE_TTL_SECS,
+    _REMOVAL_LEASES,
+    LeaseOutcome,
+    _lease_names,
+    _RemovalLease,
+    _sweep_removal_leases,
+    _worktree_key,
+    release_removal_lease,
+    removal_in_progress,
+    renew_removal_lease,
+)
+from kiro_crew.apps.builtins.dev_fleet.live_plan import (
+    _make_live_plan,
+    _make_live_status_error,
+    _manual_restart_command,
+    _staged_notice,
+    _undo_binding_holds,
+)
+from kiro_crew.apps.builtins.dev_fleet.live_service import (
+    _LIVE_GATEWAY_UNIT,
+    _foreground_backend,
+    _foreground_eligible,
+    _gateway_backend,
+    _gateway_service_active,
+    _gateway_start_id,
+    _in_pod,
+    _launchd_live_worktree,
+    _live_user_unit_status,
+    _running_checkout,
+    _staged_cancel_available_local,
+    _staged_target,
+)
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.instances import run_marker
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.service import live_target
 
@@ -139,89 +177,6 @@ async def pointer_state(*, fresh: bool = False) -> PointerState:
     )
 
 
-# --- cutover / removal exclusion across the two processes ---
-#: ``_MAKE_LIVE_LOCK`` below is an asyncio lock and so serialises only within one
-#: process. Since the cutover runs in the gateway and a worktree removal runs in the
-#: backend, the TOCTOU a single lock closes ("stage this worktree between the removal's
-#: live-check and its ``git worktree remove``", and "restart the gateway — tree-killing
-#: the backend — mid-removal") needs exclusion both processes see.
-#:
-#: NOT a lock file. A file in the crew data home is replaceable by any same-uid process
-#: in the backend's namespace (its build children included): unlink-and-recreate the leaf
-#: while one side holds the old inode and the other side locks the new one, and the two
-#: stop excluding each other. The state lives in the GATEWAY's memory instead — the
-#: process that already owns the cutover — as REMOVAL LEASES.
-#:
-#: A lease is a CAPABILITY, not a path claim: acquisition returns an unguessable token,
-#: and renewal and release must present it. The Dev Fleet app credential the backend
-#: uses to reach the gateway is readable by the build children in its namespace, so a
-#: path-only release would let any of them cancel a removal's lease from under it; the
-#: token is minted by the gateway and travels only in the lease reply, so a child that
-#: never saw it cannot forge a release. It can still ACQUIRE leases of its own — and so
-#: delay a cutover or a restart, which the same child could already cause by running
-#: ``git worktree remove`` itself — so the exposure it keeps is delay, not escalation.
-#:
-#: A lease is short-lived and RENEWED by its holder for as long as the removal runs
-#: (``removal_lease`` heartbeats at a third of the TTL, through ``_GIT_MUTATION_LOCK``
-#: queueing and the ``git worktree remove`` itself); a forgotten lease therefore expires
-#: on its own, while a live one never lapses mid-removal. The gateway refuses a NEW lease
-#: while a cutover is in flight or a pod start on its worktree is running in the gateway
-#: (:func:`pod_start_reservation`), and ``_make_live`` / ``_restart_gateway`` refuse ``busy``
-#: while any lease is live.
-_REMOVAL_LEASE_TTL_SECS = 30.0
-_REMOVAL_LEASE_RENEW_SECS = _REMOVAL_LEASE_TTL_SECS / 3
-#: How long a LAPSED lease (expired without release) keeps blocking cutovers and restarts.
-#: A lease lapses only when its holder stopped heartbeating — the backend died, or the
-#: gateway forgot it and refused renewal — and the holder may be inside its
-#: uninterruptible ``git worktree remove`` (``worktree_ops``, 60 s timeout) with no way
-#: to be told. Renewal is refused the moment the TTL passes (so a live holder learns the
-#: lease is lost and never STARTS a new mutation), but the barrier itself outlives the
-#: TTL by the mutation's timeout plus margin, so a mutation already under way cannot be
-#: overlapped by a cutover or a restart. Only an explicit release ends it early.
-_REMOVAL_LEASE_GRACE_SECS = 90.0
-#: Ceiling on leases the gateway holds at once (live or inside their grace barrier).
-#: A legitimate backend holds one per in-flight removal — a parallel prune runs at most
-#: ``worktree_ops._PRUNE_CONCURRENCY`` (4) — so this is an order of magnitude of headroom,
-#: not a budget. It exists because the app token that acquires leases is readable by
-#: every build child in the backend's namespace: without a cap, a child looping on the
-#: acquire route could grow this table without bound (each entry outlives its TTL by the
-#: grace barrier) and make every sweep quadratic. At the cap the gateway refuses, which
-#: is a normal ``busy`` answer, never an error.
-_REMOVAL_LEASE_MAX_OUTSTANDING = 32
-
-
-@dataclass
-class _RemovalLease:
-    path: str
-    token: str
-    expires_at: float
-
-    def blocks_until(self) -> float:
-        return self.expires_at + _REMOVAL_LEASE_GRACE_SECS
-
-
-#: token -> lease. Gateway-process state.
-_REMOVAL_LEASES: dict[str, _RemovalLease] = {}
-
-
-def _sweep_removal_leases(now: float | None = None) -> float:
-    """Drop leases whose grace barrier has passed; return *now* (gateway-local)."""
-    now = time.monotonic() if now is None else now
-    for token, lease in list(_REMOVAL_LEASES.items()):
-        if lease.blocks_until() <= now:
-            del _REMOVAL_LEASES[token]
-    return now
-
-
-def _renewable_removal_lease(token: str) -> _RemovalLease | None:
-    """The lease *token* names, if it is still within its TTL (renewable)."""
-    now = _sweep_removal_leases()
-    lease = _REMOVAL_LEASES.get(token)
-    if lease is None or lease.expires_at <= now:
-        return None
-    return lease
-
-
 def acquire_removal_lease(path: str, *, check_cutover: bool = True) -> str | None:
     """Gateway-local: lease *path* for a removal; returns the capability, or ``None``.
 
@@ -250,37 +205,10 @@ def acquire_removal_lease(path: str, *, check_cutover: bool = True) -> str | Non
     return token
 
 
-def renew_removal_lease(token: str) -> bool:
-    """Gateway-local: extend the lease *token* names. ``False`` once its TTL has passed —
-    even inside the grace barrier, so a holder that fell behind learns the lease is lost
-    rather than silently resuming on a barrier that is about to end."""
-    lease = _renewable_removal_lease(token)
-    if lease is None:
-        return False
-    lease.expires_at = time.monotonic() + _REMOVAL_LEASE_TTL_SECS
-    return True
-
-
-def release_removal_lease(token: str) -> None:
-    """Gateway-local: end the lease *token* names (idempotent; a wrong token is a no-op)."""
-    _REMOVAL_LEASES.pop(token, None)
-
-
-def removal_in_progress() -> bool:
-    """Gateway-local: whether any removal is (or may still be) under way — a live lease
-    OR a lapsed one inside its grace barrier.
-
-    Any worktree, deliberately: a cutover restarts the whole gateway and a restart
-    tree-kills the backend, so a removal of ANY worktree must exclude them both.
-    """
-    _sweep_removal_leases()
-    return bool(_REMOVAL_LEASES)
-
-
 #: The backend's end of the lease — three awaitables installed by ``server.main``
 #: alongside the pointer provider: ``acquire(path) -> token | None``,
 #: ``renew(token) -> bool``, ``release(token) -> None``. ``None`` in the gateway, where
-#: the registry above is called directly.
+#: the ``live_leases`` registry is called directly.
 RemovalLeaseClient = tuple[
     Callable[[str], Awaitable[str | None]],
     Callable[[str], Awaitable[bool]],
@@ -307,27 +235,6 @@ async def _local_renew(token: str) -> bool:
 
 async def _local_release(token: str) -> None:
     release_removal_lease(token)
-
-
-#: Normalized worktree path -> pod starts running on it in THIS process. Gateway state,
-#: beside the leases and for the same reason: an agent's pod start (``agent_pod_api``)
-#: runs in the gateway while every removal runs in the backend, so the two see each
-#: other only through state the gateway holds. An entry lives only while its start runs,
-#: and a start reserves only a worktree its caller has already resolved, so this holds
-#: at most one entry per existing worktree.
-_POD_STARTS: dict[str, int] = {}
-
-
-def _worktree_key(path: str) -> str:
-    """One spelling of a checkout path for the lease and pod-start registries."""
-    return os.path.normcase(os.path.normpath(path))
-
-
-def _lease_names(path: str) -> bool:
-    """Gateway-local: whether a removal lease on *path* is live or inside its grace barrier."""
-    _sweep_removal_leases()
-    key = _worktree_key(path)
-    return any(_worktree_key(lease.path) == key for lease in _REMOVAL_LEASES.values())
 
 
 @contextlib.contextmanager
@@ -360,24 +267,6 @@ def pod_start_reservation(path: str) -> Iterator[bool]:
             _POD_STARTS[key] = remaining
         else:
             _POD_STARTS.pop(key, None)
-
-
-@dataclass(frozen=True)
-class LeaseOutcome:
-    """What :func:`removal_lease` yields: granted, or refused with its cause.
-
-    ``refusal`` is ``"busy"`` when the gateway answered and declined (a cutover is
-    staged or in flight; removal leases do not exclude one another) and ``"unavailable"``
-    when the gateway could not be reached at all. The two have opposite remedies —
-    wait, versus check the gateway — so callers word them separately. Truthy iff
-    granted, so a caller that only needs the flag can test it directly.
-    """
-
-    granted: bool
-    refusal: str | None = None
-
-    def __bool__(self) -> bool:
-        return self.granted
 
 
 @contextlib.asynccontextmanager
@@ -467,39 +356,6 @@ async def removal_lease(path: str) -> AsyncIterator[LeaseOutcome]:
             pass
 
 
-#: worktree path -> "lost" event for the lease this process currently holds on it.
-_LEASE_LOSS_EVENTS: dict[str, asyncio.Event] = {}
-#: worktree path -> "confirm" (explicit renewal) for the lease this process holds on it.
-_LEASE_CONFIRMS: dict[str, Callable[[], Awaitable[bool]]] = {}
-
-
-def removal_lease_lost(path: str) -> bool:
-    """Whether a lease this process holds on *path* has been lost (renewal refused, or
-    no renewal succeeded for a whole TTL).
-
-    Checked by the removal at its mutation boundaries: a lost lease means a cutover or
-    restart is not excluded any more, so the mutation must not start.
-    """
-    event = _LEASE_LOSS_EVENTS.get(path)
-    return event is not None and event.is_set()
-
-
-async def confirm_removal_lease(path: str) -> bool:
-    """Prove, by renewing it NOW, that this process's lease on *path* still holds.
-
-    The removal passes this as ``_run_cmd``'s ``pre_spawn`` gate: it runs after the
-    sandbox preparation hop and immediately before ``git worktree remove`` is spawned,
-    so a successful renewal here means the gateway excludes cutovers from this worktree
-    for at least a TTL — and, should this holder then die mid-mutation, for the grace
-    barrier beyond that. ``False`` when no lease is held, it was lost, or the gateway
-    cannot be reached to renew it.
-    """
-    confirm = _LEASE_CONFIRMS.get(path)
-    if confirm is None:
-        return False
-    return await confirm()
-
-
 # Which checkout powers the live gateway (the upstream reference showed this
 # per-row as is_live; users need to see what occupies the main instance).
 _LIVE_WORKTREE: str | None = None
@@ -508,88 +364,6 @@ _LIVE_WORKTREE: str | None = None
 _LIVE_VERIFIED: bool = True
 _LIVE_CHECK_AT: float = 0.0
 _LIVE_TTL = 30.0
-
-
-def _own_checkout_path() -> str | None:
-    """Checkout root the RUNNING process's kiro_crew package resolves into.
-
-    The systemd probe only sees service-managed gateways; a gateway launched
-    directly from a feature worktree (and this backend, its subprocess) is
-    invisible to it. Our own module path is ground truth for which checkout
-    is live code right now -- editable installs resolve
-    ``<checkout>/src/kiro_crew/__init__.py``.
-    """
-    try:
-        import kiro_crew as _pkg
-
-        p = Path(_pkg.__file__).resolve()
-        for parent in p.parents:
-            if (parent / ".git").exists() or (parent / "pyproject.toml").is_file():
-                return str(parent)
-    except Exception:  # noqa: BLE001 -- identity probe must never crash callers
-        return None
-    return None
-
-
-def _launchd_live_worktree() -> str | None:
-    """Resolve the live checkout from the launchd agent's live-gateway launcher.
-
-    The launcher is a generated script whose ``exec`` line names the target
-    binary; the checkout is that binary's ``.venv`` grandparent. Returns ``None``
-    when the launcher is absent (no agent installed) or names something that is
-    not a worktree venv binary — e.g. a freshly installed agent still aimed at
-    the system-wide ``kirocrew``. ``None`` correctly means "no row is live"
-    rather than guessing.
-    """
-    try:
-        script = gateway_service.LaunchdBackend.live_program().read_text()
-    except OSError:
-        return None
-    m = re.search(r"^exec '((?:[^']|'\\'')+)'", script, re.MULTILINE)
-    if not m:
-        return None
-    exe = Path(m.group(1).replace("'\\''", "'"))
-    # <checkout>/.venv/bin/kirocrew -> <checkout>
-    if ".venv" not in exe.parts:
-        return None
-    try:
-        return str(exe.parents[2].resolve())
-    except (OSError, IndexError):
-        return None
-
-
-def _running_checkout() -> Path | None:
-    """The checkout this gateway process is EXECUTING from, or None.
-
-    Authoritative where a service definition is not: it is derived from the
-    location of the code that is actually loaded, so it needs no service query
-    and cannot be fooled by a definition that was never updated. Returns None
-    for a packaged/site-packages install, which is not a checkout at all — the
-    caller must treat that as "cannot verify" rather than as a mismatch.
-    """
-    own = repository._own_source_checkout()
-    return Path(own) if own else None
-
-
-def _staged_target() -> str | None:
-    """The pointer target when a cutover is staged but NOT yet in effect.
-
-    Non-None means the operator has committed a cutover that the gateway has not
-    picked up: the next start lands on this checkout, and until then the running
-    image is a different one. The UI renders this as its own persistent state so
-    the pending restart survives a dismissed toast or a page reload.
-
-    GATEWAY-LOCAL: reads the pointer file directly, which only the gateway may do.
-    ``_make_live`` (gateway-only) calls this; the backend's call sites go through
-    :func:`_staged_target_resolved`.
-    """
-    pointed = live_target.read_target()
-    if pointed is None:
-        return None
-    running = _running_checkout()
-    if running is None or repository._same_path(str(pointed), str(running)):
-        return None
-    return str(pointed)
 
 
 async def _staged_target_resolved() -> str | None:
@@ -730,15 +504,6 @@ async def _live_worktree_path(*, fresh: bool = False) -> str | None:
 
 
 # --- gateway service detection + restart ---
-_GATEWAY_SERVICE_ACTIVE: bool | None = None
-_GATEWAY_SERVICE_CHECK_AT: float = 0.0
-_GATEWAY_SERVICE_TTL = 30.0
-_LIVE_GATEWAY_UNIT = "kirocrew-gateway.service"
-# The launchd counterpart of the live systemd unit. Same agent
-# `kirocrew service install` writes (kiro_crew.service.common.LAUNCHD_LABEL);
-# duplicated as a literal rather than imported so this module keeps importing
-# cleanly on hosts where the service package's optional deps are unavailable.
-_LIVE_GATEWAY_LABEL = "dev.kirocrew.gateway"
 
 # Single-flights the make-live cutover. Two concurrent cutovers would race on
 # the shared drop-in (snapshot -> atomic-write -> daemon-reload -> systemd-run
@@ -762,92 +527,6 @@ _MAKE_LIVE_LOCK = LoopBoundLock()
 # restart spawns starts with it clear. Failure paths BEFORE successful
 # scheduling never set it, and ``dry_run`` never sets it.
 _MAKE_LIVE_COMMITTED = False
-
-
-def _gateway_unit_name() -> str:
-    """Resolve the systemd unit of the gateway THIS backend belongs to.
-
-    Inside a pod (config home under ``.kirocrew-pods/<name>``) the owning unit
-    is the pod template instance — restarting the hardcoded live unit from a
-    pod would bounce the user's LIVE gateway across planes.
-    """
-    try:
-        from kiro_crew.config.loader import config_dir
-
-        home = config_dir()
-        if home.parent.name == ".kirocrew-pods":
-            return f"kirocrew-pod@{home.name}.service"
-    except Exception:  # noqa: BLE001 — fall through to the live unit
-        pass
-    return _LIVE_GATEWAY_UNIT
-
-
-def _gateway_label() -> str:
-    """Resolve the launchd label of the gateway THIS backend belongs to.
-
-    The launchd counterpart of :func:`_gateway_unit_name`, with the same pod
-    rule for the same reason: inside a pod the owning agent is that pod's own,
-    and kickstarting the live agent from a pod plane would bounce the user's
-    LIVE gateway. The label shape mirrors ``pod.launchd.pod_label`` — every
-    plane carries its ``unit_prefix`` segment, including the default one.
-    """
-    try:
-        from kiro_crew.config.loader import config_dir
-        from kiro_crew.pod.config import DEFAULT_UNIT_PREFIX
-        from kiro_crew.pod.launchd import LABEL_PREFIX
-
-        home = config_dir()
-        if home.parent.name == ".kirocrew-pods":
-            prefix = os.environ.get("KIROCREW_POD_UNIT_PREFIX", DEFAULT_UNIT_PREFIX)
-            return f"{LABEL_PREFIX}.{prefix}.{home.name}"
-    except Exception:  # noqa: BLE001 — fall through to the live agent
-        pass
-    return _LIVE_GATEWAY_LABEL
-
-
-def _gateway_backend() -> "gateway_service.GatewayServiceBackend | None":
-    """Build the service backend for this host.
-
-    Constructed per call, never cached: ``platform`` and ``which`` are resolved
-    HERE, through this module's globals, so tests can drive platform detection
-    by patching ``live.sys`` / ``live.shutil``. Caching the instance would
-    freeze the first verdict and
-    silently escape those patches.
-    """
-    return gateway_service.backend(
-        runtime._run_cmd,
-        unit=_gateway_unit_name,
-        label=_gateway_label,
-        platform=sys.platform,
-        which=shutil.which,
-        # Resolved at call time so tests patching these module attributes still
-        # control the systemd rendering (see SystemdBackend's docstring).
-        dropin_path=_dropin_path,
-        dropin_content=_dropin_content,
-    )
-
-
-def _foreground_backend() -> "gateway_service.ForegroundBackend | None":
-    """The last-resort foreground restart backend, or ``None`` off-POSIX.
-
-    Constructed per call for the same reason as :func:`_gateway_backend`, and
-    ``sys.platform`` is read through this module's globals so tests that patch
-    ``live.sys`` keep controlling it. POSIX-only: the detach mechanism
-    is a new session standing in for ``systemd-run --collect``, and the hosts
-    this exists for (no drivable systemd/launchd) are Linux and macOS; Windows
-    keeps the manual-restart advisory. Whether a restart can actually be
-    attempted is the backend's ``status()``, not this constructor — callers
-    must gate on both :data:`gateway_service.FOREGROUND_ELIGIBLE` and
-    ``status() == ok``.
-    """
-    if sys.platform not in ("linux", "darwin"):
-        return None
-    return gateway_service.ForegroundBackend(
-        marker_ports=run_marker.marker_ports,
-        read_pid=run_marker.read_pid,
-        read_launcher=run_marker.read_launcher,
-        pid_exists=platform_compat.pid_exists,
-    )
 
 
 async def _gateway_service_reason() -> str | None:
@@ -900,94 +579,6 @@ async def _staged_cancel_available() -> bool:
     if _POINTER_PROVIDER is not None:
         return (await _POINTER_PROVIDER(False)).staged_cancel_available
     return await _staged_cancel_available_local()
-
-
-async def _staged_cancel_available_local() -> bool:
-    """GATEWAY-LOCAL probe behind :func:`_staged_cancel_available`."""
-    svc = _gateway_backend()
-    if svc is None:
-        return True
-    return (await _live_user_unit_status()) != "ok"
-
-
-async def _gateway_service_active() -> bool:
-    """Cached check: is the gateway running as a service we can drive?
-
-    Async and routed through the sandboxed ``_run_cmd`` chokepoint: a sync
-    ``subprocess.run`` here would block the event loop on cache miss AND
-    bypass the spawn-audit sandbox invariant.
-    """
-    global _GATEWAY_SERVICE_ACTIVE, _GATEWAY_SERVICE_CHECK_AT
-    now = time.monotonic()
-    if (
-        _GATEWAY_SERVICE_ACTIVE is not None
-        and (now - _GATEWAY_SERVICE_CHECK_AT) < _GATEWAY_SERVICE_TTL
-    ):
-        return _GATEWAY_SERVICE_ACTIVE
-    svc = _gateway_backend()
-    active = False if svc is None else await svc.active()
-    if not active:
-        # Foreground backend is the last-resort restart path for hosts without
-        # a drivable service manager. If eligible, the Restart button and the
-        # auto-restart-after-sync flow should still be available — but ONLY
-        # when the backend is not confined (status() == STATUS_OK), mirroring
-        # the _make_live probe at line ~4558.
-        status = await _live_user_unit_status()
-        if _foreground_eligible(status):
-            fg = _foreground_backend()
-            if fg is not None and await fg.status() == gateway_service.STATUS_OK:
-                active = True
-    _GATEWAY_SERVICE_ACTIVE = active
-    _GATEWAY_SERVICE_CHECK_AT = now
-    return _GATEWAY_SERVICE_ACTIVE
-
-
-async def _gateway_start_id() -> str | None:
-    """Start identity of the live gateway, or ``None``. Delegated per platform.
-
-    On systemd this is ``ExecMainStartTimestampMonotonic``; on launchd it is the
-    agent's PID (launchd exposes no monotonic start stamp). See
-    ``gateway_service`` for each backend's rationale and caveats.
-
-    Reads ``ExecMainStartTimestampMonotonic`` -- the CLOCK_MONOTONIC microsecond
-    stamp of the unit's ExecStart *main* PID. Chosen over a wall-clock stamp or
-    ``ActiveEnterTimestampMonotonic`` because it is (a) monotonic, so it can
-    only increase and never repeats or goes backwards across a restart even if
-    the wall clock is stepped by NTP, and (b) tied to the actual main-process
-    spawn, so it changes the instant the NEW gateway process starts -- precisely
-    the "the new process is up" signal the restart handshake needs (a unit can
-    enter ``active`` before its replacement main PID exists).
-
-    Returns ``None`` when no service manager applies, the probe fails, or the
-    manager reports no usable identity (systemd prints ``0`` when no main-start
-    stamp is recorded; launchd omits the pid line for a loaded-but-not-running
-    agent). Callers
-    MUST treat ``None`` as "identity unavailable" and degrade to the legacy
-    reload-on-first-response behaviour rather than waiting forever in
-    "restarting". Uses ``_gateway_unit_name()`` so it matches whichever unit
-    ``_restart_gateway`` / ``_make_live`` actually bounce (pod or live).
-    """
-    svc = _gateway_backend()
-    sid = None if svc is None else await svc.start_id()
-    if sid is not None:
-        return sid
-    # Foreground fallback: on a host where no manager can be driven the
-    # handshake still needs an identity that changes when the replacement
-    # starts, or a foreground cutover could never be observed to complete. The
-    # run-marker pid stands in (see ForegroundBackend). Gated on the same
-    # eligibility codes as the foreground restart itself so that a host with a
-    # mis-set-up manager (which this app refuses to bounce) does not start
-    # advertising an identity for a restart path that will never run.
-    if _foreground_eligible(await _live_user_unit_status()):
-        fg = _foreground_backend()
-        if fg is not None:
-            return await fg.start_id()
-    return None
-
-
-def _foreground_eligible(status: str) -> bool:
-    """True when *status* permits the foreground last resort."""
-    return status in gateway_service.FOREGROUND_ELIGIBLE
 
 
 async def _restart_gateway() -> dict:
@@ -1079,284 +670,6 @@ async def _restart_gateway() -> dict:
                 f" — run `{_manual_restart_command()}` to apply the build"
             ),
         }
-
-
-# --- make-live: switch the live gateway to another worktree ---
-#
-# `_restart_gateway` only bounces the live unit in place — the shipped unit
-# file hardcodes WorkingDirectory/ExecStart/PATH, so there is no way to point
-# the live gateway at a DIFFERENT worktree. Make-live closes that gap with a
-# systemd drop-in that OVERRIDES those three fields (the main unit file is
-# never edited), then a detached restart applies it.
-
-
-def _in_pod() -> bool | None:
-    """Whether THIS backend runs inside a pod (config home under
-    ``.kirocrew-pods/<name>``) — same detection as _gateway_unit_name.
-
-    Returns ``True`` (definitely a pod), ``False`` (definitely not), or
-    ``None`` when pod status cannot be resolved (config home unresolvable).
-
-    Cutting the real live gateway from a pod plane is refused: a pod is a
-    throwaway test instance and must never repoint the operator's live
-    gateway. The ambiguous ``None`` case is fail-CLOSED by the caller
-    (``_make_live`` refuses with ``pod_indeterminate``) — an unresolvable
-    home must NEVER be treated as "not a pod", which would let a pod cut the
-    operator's live gateway."""
-    try:
-        from kiro_crew.config.loader import config_dir
-
-        return config_dir().parent.name == ".kirocrew-pods"
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _dropin_path() -> Path:
-    """Absolute path of the make-live systemd drop-in for the live unit.
-
-    Honours ``$XDG_CONFIG_HOME`` (systemd --user reads units there when set)
-    and falls back to ``~/.config`` — a literal ``~/.config`` would be the
-    WRONG directory on a host that sets XDG_CONFIG_HOME, and the override
-    would silently never take effect."""
-    xdg = os.environ.get("XDG_CONFIG_HOME")
-    base = Path(xdg) if xdg else (Path.home() / ".config")
-    return base / "systemd" / "user" / f"{_LIVE_GATEWAY_UNIT}.d" / "make-live.conf"
-
-
-#: A path/value cannot be safely serialised into a service definition.
-#:
-#: Aliased to the adapter's exception so the systemd renderer below and the
-#: launchd backend raise ONE type: ``_make_live`` catches a single class, and the
-#: existing ``pytest.raises(mod._UnsafeUnitValue)`` assertions keep working.
-#:
-#: Raised for a value containing a newline, NUL, or any other control character.
-#: Such a value would split or truncate the drop-in, and because the broken
-#: override is PERSISTED, the failed cutover would then poison every subsequent
-#: restart of the live unit (the restart stops the gateway but the malformed unit
-#: refuses to start, and recovery restarts hit the same wall).
-_UnsafeUnitValue = gateway_service._UnsafeTargetValue
-
-
-# Control chars (C0 range + DEL) are unrepresentable in a single directive
-# value: NUL/newline split or truncate the unit; a tab is ambiguous whitespace.
-_SD_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
-# A value needs double-quoting only when it carries whitespace or a systemd
-# command-line / assignment metacharacter. A plain path is emitted verbatim so
-# ordinary worktrees render byte-for-byte identically to before this guard.
-_SD_NEEDS_QUOTE_RE = re.compile(r"""[\s"'\\$;`]""")
-
-
-def _sd_value(raw: str) -> str:
-    """Serialise *raw* for a systemd unit directive value.
-
-    All three directives make-live emits — ``WorkingDirectory``, ``ExecStart``
-    and ``Environment`` — undergo specifier expansion, so a literal ``%`` is
-    doubled to ``%%``. Control characters are rejected outright
-    (``_UnsafeUnitValue`` → ``unsafe_path``). Only when *raw* contains
-    whitespace or a systemd metacharacter is it wrapped in double quotes (with
-    ``\\`` and ``"`` backslash-escaped, per systemd's command-line C-style
-    quoting); a clean path is returned unquoted so existing units are
-    unchanged."""
-    if _SD_CTRL_RE.search(raw):
-        raise _UnsafeUnitValue(repr(raw))
-    escaped = raw.replace("%", "%%")
-    if _SD_NEEDS_QUOTE_RE.search(raw):
-        inner = escaped.replace("\\", "\\\\").replace('"', '\\"')
-        return f'"{inner}"'
-    return escaped
-
-
-def _dropin_content(worktree: Path, kcbin: Path) -> str:
-    """Render the drop-in that repoints the live unit at *worktree*.
-
-    The lone empty ``ExecStart=`` line RESETS the unit's ExecStart before the
-    replacement — systemd otherwise APPENDS, and a Type=simple service with
-    two ExecStart values is a fatal unit error. ``~`` is NOT expanded inside
-    ``Environment=``, so the operator bin dir is materialised to an absolute
-    path here (a literal ``~/.local/bin`` would corrupt PATH).
-
-    Every interpolated value passes through ``_sd_value`` so a worktree path
-    with spaces, ``%`` specifiers, or quotes is escaped (and a control-char
-    path rejected) rather than silently splitting/expanding the directive."""
-    venv_bin = worktree / ".venv" / "bin"
-    local_bin = Path.home() / ".local" / "bin"
-    path_env = ":".join([str(venv_bin), str(local_bin), "/usr/local/bin", "/usr/bin", "/bin"])
-    return (
-        "[Service]\n"
-        f"WorkingDirectory={_sd_value(str(worktree))}\n"
-        "ExecStart=\n"
-        f"ExecStart={_sd_value(str(kcbin))} gateway --no-open\n"
-        f"Environment={_sd_value('PATH=' + path_env)}\n"
-    )
-
-
-async def _live_user_unit_status() -> str:
-    """Classify the live gateway unit for make-live eligibility.
-
-    make-live writes a ``systemctl --user`` drop-in and restarts the --user
-    unit. A ``kirocrew service install`` SYSTEM unit
-    (``/etc/systemd/system/kirocrew.service``) is NOT controllable that way:
-    the drop-in would be written and the cutover would "succeed" while the
-    detached ``--user restart`` bounces nothing (a silent false success).
-    Gate on the unit actually being known to the --user manager
-    (``systemctl --user cat`` rc==0, same plane ``_restart_gateway`` acts on).
-
-    Returns:
-      ``"no_systemd"``   — not Linux / systemctl absent (make-live needs --user systemd);
-      ``"no_user_unit"`` — systemctl present but the live unit is not a loaded
-                           --user unit (a system-unit install, or not installed);
-      ``"user_unit_inactive"`` — the unit is loaded but NOT running, so it is not
-                           the process serving this request: restarting it would
-                           bounce an idle unit while the real gateway (foreground,
-                           or a system unit) keeps serving the old code;
-      ``"no_launchd"`` / ``"no_agent"`` / ``"agent_not_indirected"`` /
-      ``"agent_restart_contract_outdated"`` — the launchd counterparts (see
-                           ``gateway_service``);
-      ``"ok"``           — the live service is known to the manager AND running,
-                           so a restart actually replaces the gateway we are in.
-    """
-    svc = _gateway_backend()
-    # No manager at all on this host: report the systemd code, which the
-    # dashboard already maps, rather than inventing a third "no platform" state.
-    if svc is None:
-        return "no_systemd"
-    status = await svc.status()
-    # Loadedness alone is not drivability: a cutover that bounces a unit which is
-    # not the running gateway "succeeds" while the old code keeps serving, and the
-    # UI would run its restart handshake to a false completion.
-    if status == "ok" and not await svc.active():
-        return "user_unit_inactive"
-    return status
-
-
-def _staged_notice(name: str, unit_status: str) -> str:
-    """Operator-facing message for a cutover that staged but could not restart.
-
-    Leads with the remedy: the actionable command is what the operator needs
-    first, and the reason is diagnostic context after it. The reason string
-    already carries the "Dev Fleet cannot restart it" clause, so this must not
-    restate it.
-    """
-    return (
-        f"{name} is staged as the live target. Run "
-        f"`{_manual_restart_command()}` to finish the cutover — the gateway "
-        f"will come up on it. To back out instead, use the live row's "
-        f"Cancel staged cutover in Dev Fleet. It was not automatic because "
-        f"{_make_live_status_error(unit_status)}."
-    )
-
-
-def _make_live_status_error(code: str) -> str:
-    """Operator-facing message for a non-``ok`` service status.
-
-    Every message names the concrete remedy: an unmanageable service is the one
-    make-live failure a user cannot diagnose from the UI alone, and the macOS
-    variants are only reachable on a host where the previous behaviour was to
-    hide the control entirely.
-    """
-    return {
-        "no_systemd": (
-            "the gateway does not run as a systemd --user service, so Dev Fleet "
-            "cannot restart it for you"
-        ),
-        "no_user_unit": (
-            f"the live gateway is not running as the user service "
-            f"{_LIVE_GATEWAY_UNIT} — Dev Fleet cannot restart it for you (a "
-            "`kirocrew service install` system unit needs root to bounce)"
-        ),
-        "user_unit_inactive": (
-            f"the user service {_LIVE_GATEWAY_UNIT} exists but is not running, so "
-            "this gateway is not it — restarting that unit would leave the "
-            "gateway you are talking to untouched"
-        ),
-        "no_launchd": (
-            "the gateway does not run as a launchd user agent, so Dev Fleet "
-            "cannot restart it for you"
-        ),
-        "no_agent": (
-            f"the live gateway is not running as the launchd agent "
-            f"{_LIVE_GATEWAY_LABEL} — it was most likely started by the "
-            "packaged app or from a terminal, so Dev Fleet cannot restart it "
-            "for you"
-        ),
-        "agent_not_indirected": (
-            f"the launchd agent {_LIVE_GATEWAY_LABEL} does not run through the "
-            "live-gateway launcher, so Dev Fleet does not treat it as one it "
-            "can safely bounce. Re-run `kirocrew service install` to refresh "
-            "the agent definition"
-        ),
-        "agent_restart_contract_outdated": (
-            f"the launchd agent {_LIVE_GATEWAY_LABEL} lacks the bounded graceful "
-            "restart contract required by Dev Fleet. Re-run "
-            "`kirocrew service install` to refresh the agent definition"
-        ),
-        "live_program_missing": (
-            f"the launchd agent {_LIVE_GATEWAY_LABEL} is loaded but its "
-            "live-gateway launcher is missing (deleted application-support "
-            "directory?), so it has nothing to execute. Make live onto a "
-            "worktree to rewrite it, or start a gateway from your source "
-            "checkout — either restores the launcher without touching the "
-            "agent definition, whereas kirocrew service install would rewrite "
-            "the whole plist and discard any environment you added to it"
-        ),
-    }.get(code, f"the live gateway cannot be repointed ({code})")
-
-
-def _manual_restart_command() -> str:
-    """The command an operator runs to finish a staged cutover themselves.
-
-    Always the service-aware ``kirocrew restart``: it resolves whatever manager
-    owns the gateway (or a foreground process) at run time. Naming a specific
-    ``systemctl`` invocation here would guess, and guessing wrong hands the
-    operator a command that fails while the staged pointer stays unapplied — a
-    Linux host with ``systemctl`` present may still be running the gateway from a
-    terminal with no unit to bounce.
-    """
-    return "kirocrew restart"
-
-
-def _make_live_plan(
-    worktree: Path,
-    kcbin: Path,
-    *,
-    svc: "gateway_service.GatewayServiceBackend | None",
-    foreground: "gateway_service.ForegroundBackend | None" = None,
-) -> dict:
-    """Describe — without mutating anything — what making *worktree* live does.
-
-    Validates the target the same way the real cutover does, so a dry run
-    reports an unusable worktree instead of promising a cutover that would then
-    be refused. When the service is drivable the backend's own plan is folded in,
-    because the cutover restages that definition too. *foreground* is the
-    last-resort restart that will be ATTEMPTED when no manager is drivable
-    (see ``_make_live``): a dry run must report that restart as automatic, or
-    the preview would promise a manual step the real call then performs itself.
-    """
-    live_target.validate(str(worktree))
-    plan: dict = {
-        "mechanism": "live-target pointer",
-        "pointer_path": str(live_target.pointer_path()),
-        "exec": str(kcbin),
-        "restart": "automatic" if (svc is not None or foreground is not None) else "manual",
-    }
-    if svc is not None:
-        plan.update(svc.plan(worktree, kcbin))
-    elif foreground is not None:
-        plan.update(foreground.plan(worktree, kcbin))
-    else:
-        plan["manual_restart"] = _manual_restart_command()
-    return plan
-
-
-def _undo_binding_holds(real: Path) -> bool:
-    """``real`` is still the pointer's validated one-level undo target.
-
-    Synchronous (pointer read + path comparison): callers hop it to the executor.
-    Checked before validation and again under the single-flight lock, so a banner
-    rendered for an older cutover can never repoint a newer live target.
-    """
-    previous = live_target.read_previous_target()
-    return previous is not None and repository._same_path(str(real), str(previous))
 
 
 async def _make_live(
@@ -2179,3 +1492,63 @@ __all__ = (
     "install_pointer_provider",
     "pointer_state",
 )
+
+
+# This module is the facade of Dev Fleet's live-target and Make Live code, and every name is
+# reached through it as ``live.<name>`` (``server.py`` re-exports ``__all__``): a read is
+# served by the owner that binds the name, and a write -- ``monkeypatch.setattr``,
+# ``mock.patch`` -- reaches every owner holding it (:mod:`kiro_crew._facade_mirror`). Owners
+# never import this module. The state the cutover shares stays here: the pointer provider,
+# the live-worktree cache, the cutover lock and latch, lease acquisition and the backend's
+# lease client, the restart and the cutover itself. New work goes to the owner of its
+# responsibility:
+#   ``live_leases`` -- the removal-lease and pod-start registries
+#   ``live_service`` -- the checkout probes discovery uses (own package, launchd program,
+#     running checkout, staged target, the local staged-cancel check) and the live gateway
+#     as a service: unit, backend, probes, drop-in
+#   ``live_plan`` -- a cutover's dry-run plan, operator-facing text, and the Switch-back
+#     undo-binding check (``_undo_binding_holds``)
+
+#: Owner modules, lowest layer first: the first holder of a name answers its reads.
+_OWNERS = (
+    "kiro_crew.apps.builtins.dev_fleet.live_leases",
+    "kiro_crew.apps.builtins.dev_fleet.live_service",
+    "kiro_crew.apps.builtins.dev_fleet.live_plan",
+)
+for _owner in _OWNERS:
+    _importlib.import_module(_owner)
+#: Name the facade serves but does not bind -> the owner that answers a read of it.
+_EXPORTS: dict[str, str] = {}
+_EXPORTS.update(_facade_mirror.install(sys.modules[__name__], _OWNERS, excluded=()).served)
+sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
+
+if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.apps.builtins.dev_fleet.live_leases import (  # noqa: F401
+        _REMOVAL_LEASE_GRACE_SECS,
+        _renewable_removal_lease,
+        confirm_removal_lease,
+        removal_lease_lost,
+    )
+    from kiro_crew.apps.builtins.dev_fleet.live_service import (  # noqa: F401
+        _GATEWAY_SERVICE_ACTIVE,
+        _GATEWAY_SERVICE_CHECK_AT,
+        _GATEWAY_SERVICE_TTL,
+        _LIVE_GATEWAY_LABEL,
+        _SD_CTRL_RE,
+        _SD_NEEDS_QUOTE_RE,
+        _dropin_content,
+        _dropin_path,
+        _gateway_label,
+        _gateway_unit_name,
+        _own_checkout_path,
+        _sd_value,
+        _UnsafeUnitValue,
+    )
+
+if TYPE_CHECKING:  # names it serves from outside the owner family, from their homes
+    from kiro_crew import (  # noqa: F401
+        platform_compat,
+    )
+    from kiro_crew.instances import (  # noqa: F401
+        run_marker,
+    )

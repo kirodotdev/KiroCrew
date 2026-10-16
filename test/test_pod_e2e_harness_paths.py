@@ -47,8 +47,10 @@ POD_CONFIG = Path(__file__).resolve().parent.parent / "src/kiro_crew/pod/config.
 #: ``generate_token`` is defined in the token-auth tokens owner; the token_auth facade serves it.
 TOKEN_AUTH = Path(__file__).resolve().parent.parent / "src/kiro_crew/dashboard/token_auth_tokens.py"
 TOKEN_HANDLER = Path(__file__).resolve().parent.parent / "src/kiro_crew/dashboard/handlers/core.py"
+#: ``_pod_status`` is defined in the Dev Fleet pods owner; the worktree_ops facade serves it.
 WORKTREE_OPS = (
-    Path(__file__).resolve().parent.parent / "src/kiro_crew/apps/builtins/dev_fleet/worktree_ops.py"
+    Path(__file__).resolve().parent.parent
+    / "src/kiro_crew/apps/builtins/dev_fleet/worktree_ops_pods.py"
 )
 
 

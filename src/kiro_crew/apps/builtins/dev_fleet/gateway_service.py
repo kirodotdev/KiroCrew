@@ -102,9 +102,9 @@ async def _off_loop(fn: Callable[..., "T"], *args: object) -> "T":
     """
     return await asyncio.get_running_loop().run_in_executor(subprocess_executor(), fn, *args)
 
-# (rc, stdout, stderr) — live.py's sandboxed subprocess chokepoint. Injected
+# (rc, stdout, stderr) — live_service.py's sandboxed subprocess chokepoint. Injected
 # rather than imported so every spawn stays audited through the one seam the
-# tests already patch, and so this module has no import cycle with live.py.
+# tests already patch, and so this module has no import cycle with live_service.py.
 RunCmd = Callable[..., Awaitable[tuple[int, str, str]]]
 T = TypeVar("T")
 #: ``shutil.which``-shaped tool lookup, injected for the same reason as the
@@ -229,7 +229,7 @@ class SystemdBackend:
     adapter existed, including the wire codes the dashboard already maps
     (``no_systemd`` / ``no_user_unit``).
 
-    The drop-in path and renderer are INJECTED from ``live.py`` rather than
+    The drop-in path and renderer are INJECTED from ``live_service.py`` rather than
     reimplemented here. They are the seam a dozen existing tests patch
     (``monkeypatch.setattr(mod, "_dropin_path", ...)`` /
     ``"_dropin_content"``), and keeping them where the tests already point means
