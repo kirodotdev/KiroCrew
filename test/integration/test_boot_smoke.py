@@ -436,6 +436,7 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     ("kiro_crew.config.loader_snapshots", "_MATERIALIZED_REFRESH_ISSUED"): "counter",
     ("kiro_crew.context", "_store_cache_generation"): "counter",
     ("kiro_crew.dashboard.handlers.updates_check", "_last_update_check"): "clock",
+    ("kiro_crew.locator_attestations", "_next_validation_ns"): "validation clock",
     # When the shared-crew admission service last read its config: a monotonic
     # stamp the harness zeroes and each boot sets again when it builds its service.
     ("kiro_crew.shared_crew.admission_gate", "_last_config_at"): "clock",

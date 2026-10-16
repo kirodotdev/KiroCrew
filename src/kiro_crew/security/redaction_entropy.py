@@ -23,6 +23,7 @@ from __future__ import annotations
 import base64
 import bisect
 import contextvars
+import hashlib
 import math
 import re
 import urllib.parse
@@ -1044,6 +1045,20 @@ def _is_guid_text(raw: bytes) -> bool:
         byte == ord("-") if i in _EXCHANGE_GUID_DASHES else byte in b"0123456789ABCDEFabcdef"
         for i, byte in enumerate(raw)
     )
+
+
+_SHAREPOINT_LOCATOR_RE = re.compile(
+    r"(?<![A-Za-z0-9+.-])https://"
+    r"(?P<host>[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.sharepoint\.com))"
+    r"(?P<path>/:[A-Za-z]:/s/[A-Za-z0-9._~%-]{1,128}/(?P<item>[EI][A-Za-z0-9_-]{45}))"
+    r"(?=$|[?&#\s<>|)\]}'\".,;:!?])",
+    re.IGNORECASE,
+)
+
+
+def _sharepoint_locator_digest(match: re.Match[str]) -> str:
+    canonical = match.group("host").lower() + match.group("path")
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 _PLANTUML_ALPHABET = {
