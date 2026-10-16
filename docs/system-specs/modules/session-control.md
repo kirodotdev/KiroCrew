@@ -1763,7 +1763,7 @@ marker being the runner's own; and that a turn whose only call is `create_sessio
 records its audience at the creator gate; and that a Telegram allow-list entry that
 is not a positive integer (a group id, zero, text) is never attested as a DM peer,
 so a tab mirrored to such a conversation stays refused with the real transport. The crew-log
-opener is pinned in `test/test_discord.py` and `test/test_telegram.py`: a DM turn
+opener is pinned in `test/test_discord_mirroring.py` and `test/test_telegram.py`: a DM turn
 followed by a `work_ledger_record` write against the real writer lands, and the
 resumed-session path opens nothing.
 

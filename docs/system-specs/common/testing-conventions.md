@@ -4578,7 +4578,7 @@ A refused write raises `CrewLedgerNotRecorded`, a refused read raises `OSError`,
 best-effort reader quietly answers the empty record (`assert '' == 'fold me'`). It
 reached unrelated PRs on Windows and Linux shards through sync helpers that cannot see
 their caller is async (`_item`, `_work`, `_seed_item` in the issue-radar tests) and
-through direct reads in `test_discord.py`, `test_session_ledger.py` and
+through direct reads in `test_discord_mirroring.py`, `test_session_ledger.py` and
 `test_work_ledger_projection.py`; 0 in 400 local runs, so only a held-lock probe
 reproduces it. It came back through a read the pin did not list: `_folded()` in
 `test_spawn_approval_crew_log.py` opened the log with `CrewLog.open` and read it with

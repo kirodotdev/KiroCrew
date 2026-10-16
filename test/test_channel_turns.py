@@ -25,7 +25,7 @@ too, each because the real one would leave the test or make it unobservable:
   under the data home for a restart; the fake records each spool.
 * per test, ``session_store_for_turn`` (to refuse member memory),
   ``charge_turn_failure`` (to see which provider is charged),
-  ``open_turn_crew_log`` (the real emitter is ``test_discord``'s e2e subject) and
+  ``open_turn_crew_log`` (the real emitter is ``test_discord_mirroring``'s e2e subject) and
   ``build_directive_consumer`` (to see whether one is built); the ceiling tests
   install a one-turn ``turn_ceiling`` ceiling, which conftest resets.
 

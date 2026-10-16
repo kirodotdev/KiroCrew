@@ -163,8 +163,8 @@
  7 test_dev_fleet_server_coverage.py
  8 test_devfleet_prune_shutdown_drain.py
  1 test_diag_threads.py
- 2 test_discord.py
  3 test_discord_approval_press_race_13539.py
+ 2 test_discord_dispatcher.py
  2 test_discord_sessions.py
  2 test_e2e_ci_scheduling.py
  1 test_e2e_smoke.py
