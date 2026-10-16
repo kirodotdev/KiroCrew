@@ -5,7 +5,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAppDispatch } from '../store'
 import { createSlot } from '../store/chatSlice'
 import { api, type WebhookTokenEntry } from '../api/client'
-import { useAvailableModels } from '../hooks/useAvailableModels'
+import { acpBackendName } from '../api/acpBackend'
+import { useAvailableModels, useAvailableModelsQuery } from '../hooks/useAvailableModels'
 import { Btn, SendBtn, PageHeader } from '../components/ui'
 import {
   Dialog, DialogBody, DialogContent, DialogFooter,
@@ -192,14 +193,9 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   // as though those were the only choices. One notice, first failure wins.
   const editorOptionsError = installedError ?? workspacesError ?? cfgError
 
-  // Model list for the per-agent default. Same query key as every other model
-  // picker so the list is fetched once. INHERIT_MODEL leads so "no pin" is the
-  // obvious choice rather than an absent option.
+  // Model list for the template pane. Same query key as every other model
+  // picker so the list is fetched once.
   const availableModels = useAvailableModels()
-  const modelOptions = [
-    INHERIT_MODEL,
-    ...(availableModels || []).map((m: { name: string }) => m.name).filter((n: string) => n && n !== INHERIT_MODEL),
-  ]
 
   const [filter, setFilter] = useState('')
   const [view, setView] = useState<CrewView>(readStoredView)
@@ -300,6 +296,14 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     queryFn: () => api.agentResolvedModel(editing),
     enabled: !!editing,
   })
+  // The pin's list is the harness's that judges it, when that is not the configured one.
+  // INHERIT_MODEL leads so "no pin" is the obvious choice rather than an absent option.
+  const pinModelsQuery = useAvailableModelsQuery({ backend: resolved?.models_backend })
+  const modelOptions = [
+    INHERIT_MODEL,
+    ...pinModelsQuery.data.map((m: { name: string }) => m.name).filter((n: string) => n && n !== INHERIT_MODEL),
+  ]
+  const pinHarness = acpBackendName({ id: resolved?.models_backend ?? kirocrewCfg?.agent?.acp_backend ?? '' })
 
   /** The model an effort level would be applied to: the pending pick when the
    *  crew pins one, otherwise whatever the inherit chain resolves to. Reading
@@ -317,7 +321,9 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const effortModel = editModel !== INHERIT_MODEL
     ? editModel
     : modelPinPendingClear ? '' : (resolved?.model || '')
-  const effortCapable = modelSupportsEffort(effortModel)
+  // The pin backend's own answer, where its build decides rather than the model.
+  const effortCapable = resolved?.effort_supported ?? modelSupportsEffort(effortModel)
+  const effortLevels: string[] | undefined = resolved?.effort_levels?.length ? resolved.effort_levels : undefined
 
   /** Argument-free so a click event is never mistaken for one. Opens the
    *  simple create dialog (`NewCrewmateDialog`); it owns its own form state, so
@@ -1140,7 +1146,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                   )}
 
                   {pane === 'model' && (
-                    <CrewModelPane modelOptions={modelOptions} editModel={editModel} setEditModel={setEditModel} editEffort={editEffort} setEditEffort={setEditEffort} effortModel={effortModel} effortCapable={effortCapable} resolved={resolved} resolvedError={resolvedError} />
+                    <CrewModelPane modelOptions={modelOptions} pinModelsQuery={pinModelsQuery} pinHarness={pinHarness} servedAs={editModel === editingAgent?.model ? resolved?.pin_served_as : undefined} editModel={editModel} setEditModel={setEditModel} editEffort={editEffort} setEditEffort={setEditEffort} effortModel={effortModel} effortCapable={effortCapable} effortLevels={effortLevels} resolved={resolved} resolvedError={resolvedError} />
                   )}
 
                   {pane === 'place' && (

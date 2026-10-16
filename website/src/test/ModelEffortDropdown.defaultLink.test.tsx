@@ -85,6 +85,12 @@ describe('ModelEffortDropdown — visible models shortcut', () => {
     expect(onRetryModels).toHaveBeenCalledOnce()
   })
 
+  it('names a failed load of the session\'s own list in its own words', () => {
+    // A session on another harness reads that harness's list from this machine, not a peer.
+    wrap(<ModelEffortDropdown {...baseProps} modelsFailed modelsFailedMessage="Couldn't load the model list." onRetryModels={vi.fn()} />)
+    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't load the model list.")
+  })
+
   it('disables the Retry button while the in-place retry is in flight', () => {
     // `failed` stays true for the whole refetch round trip, so without this
     // the button looks dead: nothing on screen acknowledges the click.

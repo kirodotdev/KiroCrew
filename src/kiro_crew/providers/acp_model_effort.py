@@ -37,6 +37,7 @@ from kiro_crew.acp.session_handle import (
 from kiro_crew.acp.types import (
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
+    ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     effort_config_option_id,
     effort_config_option_value,
 )
@@ -259,6 +260,12 @@ def supports_effort(self: AcpProvider) -> bool:
             return False
         advertised = self._client.get_valid_effort_levels()
         return not advertised or any(level != "off" for level in advertised)
+    # A pair-id harness takes a level only through its effort option, so a build
+    # that advertises none drops every pick (change_effort skips it).
+    if self._client.backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS and not (
+        self._client.supports_config_option(effort_config_option_id(self._client.backend))
+    ):
+        return False
     return model_supports_effort(self._effort_model)
 
 

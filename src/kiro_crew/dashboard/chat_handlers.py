@@ -47,6 +47,7 @@ from kiro_crew.config.loader import (  # noqa: F401
     dispatch_kiro_agent,
     published_autocompact_pct,
     resolve_agent_bindings,
+    resolve_effective_model,
 )
 from kiro_crew.dashboard import chat_api as _chat_api
 from kiro_crew.dashboard import display_verdicts  # noqa: F401 -- read by chat_api.slot_detail
@@ -220,6 +221,7 @@ from kiro_crew.dashboard.chat_api.slot_detail import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_api.slot_effort import (  # noqa: F401
     _configured_backend_for_slot,
+    _own_models_field,
     api_chat_slot_reasoning_effort,
     api_chat_slot_selection_capabilities,
 )
@@ -413,6 +415,7 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     cron_slot_creator,
     read_bounded_json,
 )
+from kiro_crew.dashboard.handlers.agents import harness_effort, own_models_backend  # noqa: F401
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request  # noqa: F401
 from kiro_crew.dashboard.relay_archive import relay_archive_refusal  # noqa: F401
 from kiro_crew.dashboard.request_priority import owner_start_priority  # noqa: F401

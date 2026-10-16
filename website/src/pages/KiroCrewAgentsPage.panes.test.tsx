@@ -86,6 +86,8 @@ describe('CrewPlacePane', () => {
 describe('CrewModelPane', () => {
   const model = (over: Partial<Parameters<typeof CrewModelPane>[0]> = {}) => ({
     modelOptions: ['auto', 'model-a'],
+    pinModelsQuery: { isError: false, isDegraded: false, isFetching: false, refetch: vi.fn() },
+    pinHarness: 'Kiro CLI',
     editModel: 'model-a',
     setEditModel: vi.fn(),
     editEffort: 'high',

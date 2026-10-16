@@ -88,7 +88,7 @@ const PAGE_HOOKS = [
   'useQuery', 'useAvailableModels', 'useState', 'useState', 'useState', 'useState', 'useState', 'useState',
   'useState', 'useState', 'useState', 'useState', 'useState', 'useState', 'useState', 'useState', 'useState',
   'useState', 'useState', 'useState', 'useState', 'useState', 'useRef', 'useEffect', 'useState', 'useState',
-  'useState', 'useQuery', 'useEffect', 'useEffect', 'useQuery', 'useSearchParams', 'useEffect', 'useRef',
+  'useState', 'useQuery', 'useEffect', 'useEffect', 'useQuery', 'useAvailableModelsQuery', 'useSearchParams', 'useEffect', 'useRef',
   'useEffect', 'useEffect', 'useRef', 'useRef', 'useMutation', 'useMutation', 'useState', 'useRef', 'useRef',
   'useRef', 'useRef', 'useEffect', 'useState', 'useState', 'useState', 'useState', 'useState', 'useState',
   'useEffect', 'useRef', 'useEffect', 'useRef', 'useEffect', 'useEffect', 'useRef', 'useEffect', 'useQuery',
