@@ -3392,7 +3392,7 @@ def _run_stdio_dispatch_loop(
                     # their queued steps so no worker runs one for a client
                     # that is gone, then shuts the pool down.
                     if _worker_thread:
-                        _worker_thread.join(timeout=5.0)
+                        _deliver_finished_worker(5.0)
                     break
                 if isinstance(req, _Skipped):
                     # One iteration per dropped frame, so a finished worker's
