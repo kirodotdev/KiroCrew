@@ -298,6 +298,10 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # narrower than the truth (criterion 2).
     "credential_redaction.json",
     "settings_seeds.json",
+    # The Slack code-channel record: ``CodeChannelStore`` reads ``{}`` as no
+    # routes and no bindings, exactly as an absent file (criterion 1); a reader
+    # frozen at ``{}`` sees no bindings, which binds nothing (criterion 2).
+    "slack-code-channels.json",
     # The operator's grants of ``owner`` trust to a hand-configured app registry.
     # Satisfies both criteria the way ``file_delivery_consent.json`` does:
     # ``registry._granted_owner_repos`` reads an absent, empty, AND ``{}``-versioned

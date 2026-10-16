@@ -98,6 +98,10 @@ from kiro_crew.skills import SkillsLoader
 from kiro_crew.slack.agent_sessions.session_events import AGENT_SESSION_EVENTS
 from kiro_crew.slack.agent_sessions.session_events import dispatch as dispatch_agent_session_event
 from kiro_crew.slack.allowlist import prompt_track_channel, send_dashboard_link
+from kiro_crew.slack.code_channels import install as install_code_channels
+from kiro_crew.slack.code_channels.routing import Gate as CodeChannelGate
+from kiro_crew.slack.code_channels.routing import dispatch as code_channel_dispatch
+from kiro_crew.slack.code_channels.routing import inbound_gate as code_channel_gate
 from kiro_crew.slack.blocks import (
     build_stopping_blocks,
     channels_modal,
@@ -1153,6 +1157,9 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
     set_orch_cfg(orch._cfg)
     if orch.dashboard_state:
         set_dashboard_state(orch.dashboard_state)
+    # Slack Code channels: registers the channel-status turn hooks. Inert while
+    # slack.code_channels is off (the hooks fire only for a bound code channel).
+    install_code_channels(lambda: orch.slack)
 
     # ── Enterprise Grid workspace validation ──
     # Blocks data exfiltration via personal/external Slack workspaces.
@@ -2994,6 +3001,26 @@ async def _route_message(
             )
             return
 
+    # ── Slack Code channels (a pass-through unless slack.code_channels is on) ──
+    # In one of OUR code channels the channel itself is the conversation: a
+    # message is answered without a mention, Slack's copy of the origin message
+    # and a message addressed only to other people are dropped, and the sender
+    # is authorized against the channel's ORIGIN conversation (the gate audits
+    # every decision). Everywhere else this is PASS and nothing below changes.
+    _code_channel = await code_channel_gate(
+        orch,
+        event,
+        text=text,
+        sender_id=sender_id,
+        authorized=_user_authorized,
+        from_trusted_bot=from_trusted_bot,
+    )
+    if _code_channel.gate is CodeChannelGate.DROP:
+        return
+    _was_mention = is_mention
+    if _code_channel.gate is CodeChannelGate.DIRECTED:
+        is_mention = True
+
     # Resolve sender's Slack display name so the LLM uses the actual
     # profile name instead of guessing from memory. Cached on channel
     # history (for history context) and passed to handle_message.
@@ -3482,6 +3509,19 @@ async def _route_message(
         activation,
         _safe_log(text[:80]),
     )
+
+    # ── Slack Code channels: start the turn in the channel's bound session, or
+    #    open a code channel for a mention that asks for multi-step work. False
+    #    (always, with slack.code_channels off) continues the normal path. ──
+    if await code_channel_dispatch(
+        orch,
+        _code_channel,
+        event=event,
+        clean_text=clean_text,
+        sender_id=sender_id,
+        was_mention=_was_mention,
+    ):
+        return
 
     # ── Queue check: if session is busy, enqueue instead of blocking ──
     # Keyed on the SAME session the turn will run under. A single-session DM keys

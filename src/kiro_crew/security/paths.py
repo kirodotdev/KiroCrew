@@ -1223,6 +1223,14 @@ _WRITE_PROTECTED_HOME_PATHS += [
     for prefix in _CREW_HOME_PREFIXES
 ]
 _WRITE_PROTECTED_HOME_PATHS += [
+    # The Slack code-channel record (``slack.code_channels.store``). No secret, but
+    # an authorization input: it names the dashboard session a code channel's
+    # messages run in. The gateway writes it through ``atomic_write``, outside
+    # this gate; ``sandbox_leaves`` seals it.
+    f"{prefix}/slack-code-channels.json"
+    for prefix in _CREW_HOME_PREFIXES
+]
+_WRITE_PROTECTED_HOME_PATHS += [
     # The app-sources checkout root — the persistent tree every installed app
     # EXECUTES from (``apps.registry.app_source_dir``). This is a whole DIRECTORY
     # rather than a leaf, which the shared matcher already supports: it compares a
