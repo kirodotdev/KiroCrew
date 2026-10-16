@@ -7957,7 +7957,11 @@
       "this_authorizes_the_merge_as_soon_as_requirement": "これは要件が合格した直後にマージを認可します。このリポジトリで許可されている場合はスカッシュします(そうでない場合はマージコミット、その後リベース)。",
       "this_authorizes_the_merge_when_the_pipeline_succ": "これはパイプラインが成功したときにマージを認可します。",
       "untitled_commit": "タイトルなしコミット",
-      "updated": "更新済み"
+      "updated": "更新済み",
+      "checks_failed_others_still_running": "チェック失敗。他のチェックはまだ実行中です",
+      "checks_count_running_failed": "実行中: {{running}} · 失敗: {{failed}}",
+      "waiting_on_checks_detail": "チェックはまだ実行中です。必須チェックが成功し、必須レビューが承認されるとマージできます。",
+      "checks_failed_still_running_detail": "{{total}} 件のチェックのうち、失敗 {{failed}} 件、実行中 {{running}} 件。必須チェックが成功し、必須レビューが承認されるまでマージできません。"
     },
     "questionCard": {
       "custom_answer": "カスタム回答",

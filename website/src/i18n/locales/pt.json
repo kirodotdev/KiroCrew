@@ -8217,7 +8217,11 @@
       "this_authorizes_the_merge_as_soon_as_requirement": "Isso autoriza o merge assim que os requisitos forem atendidos, com squash se este repositório permitir (caso contrário, um merge commit e depois rebase).",
       "this_authorizes_the_merge_when_the_pipeline_succ": "Isso autoriza o merge quando o pipeline for bem-sucedido.",
       "untitled_commit": "Commit sem título",
-      "updated": "Atualizado"
+      "updated": "Atualizado",
+      "checks_failed_others_still_running": "Verificações com falha; outras ainda em execução",
+      "checks_count_running_failed": "Em execução: {{running}} · Com falha: {{failed}}",
+      "waiting_on_checks_detail": "Ainda há verificações em execução. O merge é desbloqueado quando as verificações obrigatórias passarem e as revisões exigidas forem aprovadas.",
+      "checks_failed_still_running_detail": "De {{total}} verificações: com falha {{failed}}, ainda em execução {{running}}. O merge continua bloqueado até as verificações obrigatórias passarem e as revisões exigidas serem aprovadas."
     },
     "questionCard": {
       "custom_answer": "Resposta personalizada",

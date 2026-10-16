@@ -8347,7 +8347,11 @@
       "this_authorizes_the_merge_as_soon_as_requirement": "Это разрешает слияние сразу после выполнения требований, со squash, если репозиторий это допускает (иначе коммит слияния, затем rebase).",
       "this_authorizes_the_merge_when_the_pipeline_succ": "Это разрешает слияние после успешного прохождения пайплайна.",
       "untitled_commit": "Коммит без названия",
-      "updated": "Обновлён"
+      "updated": "Обновлён",
+      "checks_failed_others_still_running": "Проверки не пройдены; другие ещё выполняются",
+      "checks_count_running_failed": "Выполняется: {{running}} · Не пройдено: {{failed}}",
+      "waiting_on_checks_detail": "Проверки ещё выполняются. Слияние станет доступно, когда обязательные проверки пройдут и обязательные ревью будут одобрены.",
+      "checks_failed_still_running_detail": "Из {{total}} проверок: не пройдено {{failed}}, ещё выполняется {{running}}. Слияние заблокировано, пока обязательные проверки не пройдут и обязательные ревью не будут одобрены."
     },
     "questionCard": {
       "custom_answer": "Свой ответ",

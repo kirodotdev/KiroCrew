@@ -8087,7 +8087,11 @@
       "this_authorizes_the_merge_as_soon_as_requirement": "Dies autorisiert das Zusammenführen, sobald die Anforderungen erfüllt sind — mit Squash, wenn dieses Repository es zulässt (andernfalls ein Merge-Commit, dann Rebase).",
       "this_authorizes_the_merge_when_the_pipeline_succ": "Dies autorisiert das Zusammenführen, wenn die Pipeline erfolgreich ist.",
       "untitled_commit": "Commit ohne Titel",
-      "updated": "Aktualisiert"
+      "updated": "Aktualisiert",
+      "checks_failed_others_still_running": "Prüfungen fehlgeschlagen; andere laufen noch",
+      "checks_count_running_failed": "Laufend: {{running}} · Fehlgeschlagen: {{failed}}",
+      "waiting_on_checks_detail": "Es laufen noch Prüfungen. Das Zusammenführen ist möglich, sobald die erforderlichen Prüfungen bestanden und alle erforderlichen Reviews genehmigt sind.",
+      "checks_failed_still_running_detail": "Von {{total}} Prüfungen: fehlgeschlagen {{failed}}, noch laufend {{running}}. Das Zusammenführen bleibt blockiert, bis die erforderlichen Prüfungen bestanden und alle erforderlichen Reviews genehmigt sind."
     },
     "questionCard": {
       "custom_answer": "Benutzerdefinierte Antwort",

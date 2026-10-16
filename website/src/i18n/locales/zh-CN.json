@@ -7957,7 +7957,11 @@
       "this_authorizes_the_merge_as_soon_as_requirement": "此操作会在要求通过后立即授权合并，若此仓库允许则压缩为单个提交（否则生成合并提交，再变基）。",
       "this_authorizes_the_merge_when_the_pipeline_succ": "此操作会在流水线成功后授权合并。",
       "untitled_commit": "无标题提交",
-      "updated": "已更新"
+      "updated": "已更新",
+      "checks_failed_others_still_running": "检查失败；其他检查仍在运行",
+      "checks_count_running_failed": "运行中：{{running}} · 失败：{{failed}}",
+      "waiting_on_checks_detail": "检查仍在运行。必需检查通过且必需审阅获批后即可合并。",
+      "checks_failed_still_running_detail": "共 {{total}} 项检查：失败 {{failed}} 项，仍在运行 {{running}} 项。必需检查通过且必需审阅获批前无法合并。"
     },
     "questionCard": {
       "custom_answer": "自定义回答",

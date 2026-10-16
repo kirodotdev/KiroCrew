@@ -60,9 +60,12 @@ function showsChipCi(state: SourceLinkState | undefined): boolean {
  */
 function chipStatusGlyph(
   link: SidebarSourceLink,
-): 'failed' | 'conflict' | 'running' | 'passed' | null {
+): 'failed' | 'failed_running' | 'conflict' | 'running' | 'passed' | null {
   if (!showsChipCi(link.state)) return null
-  if (link.ci === 'failed') return 'failed'
+  // Failure wins, but "failed with checks still in flight" is its own state:
+  // the bare red × reads as a finished run, so the user could not tell that
+  // CI was still moving.
+  if (link.ci === 'failed') return link.ciPending === '1' ? 'failed_running' : 'failed'
   // GitHub can settle `mergeStateStatus: dirty` while `mergeable` is still
   // `unknown` (the two fields are recorded independently, each only once it is
   // real), and GitLab's `conflict` normalizes into both — so either field
@@ -317,6 +320,19 @@ export function SessionSourceChips({ slotKey, links, total, connected, isActive,
                 return <Check className="lucide-inline shrink-0 text-ok" aria-label={i18nT('pages.chatSidebar.checks_passed')} />
               case 'failed':
                 return <X className="lucide-inline shrink-0 text-danger" aria-label={i18nT('pages.chatSidebar.checks_failed')} />
+              case 'failed_running': {
+                // The failure glyph plus the same static pending dot, never a
+                // spinner (see above). One labelled group so a screen reader
+                // hears the combined state once; the group is icon-only, so
+                // like the merged glyph it carries a title as well.
+                const failedRunningLabel = i18nT('components.pullRequestPanel.checks_failed_others_still_running')
+                return (
+                  <span className="inline-flex shrink-0 items-center" role="img" aria-label={failedRunningLabel} title={failedRunningLabel}>
+                    <X className="lucide-inline shrink-0 text-danger" aria-hidden="true" />
+                    <Circle className="lucide-inline shrink-0 text-warn scale-75" fill="currentColor" strokeWidth={0} aria-hidden="true" />
+                  </span>
+                )
+              }
               case 'conflict':
                 // The panel's own conflict-banner key, reused rather than
                 // duplicated: the chip and the banner describe one pull

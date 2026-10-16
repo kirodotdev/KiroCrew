@@ -626,6 +626,33 @@ describe('PullRequestPanel', () => {
     )
     expect(screen.getByRole('tab', { name: /Checks running 0\/1/i })).toBeInTheDocument()
   })
+  it('says how many checks are still running and how many failed', async () => {
+    const failed = { ...github.checks[0], name: 'lint', conclusion: 'FAILURE', bucket: 'failed' as const }
+    const pending = { ...github.checks[0], name: 'e2e', status: 'IN_PROGRESS', conclusion: '', bucket: 'pending' as const }
+    const checks = [github.checks[0], failed, pending]
+    mockApi.pullRequestSource.mockResolvedValue({ ...github, checks })
+    mockApi.pullRequestChecks.mockResolvedValue({ checks })
+    renderPanel()
+
+    // A `complete/total` fraction ("1/3") could not say whether two checks were
+    // still running or one had failed and one was running.
+    expect(await screen.findByRole('tab', { name: /Checks 1 running · 1 failed/i })).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: /1\/3/ })).not.toBeInTheDocument()
+  })
+
+  it('never counts a required manual job as running on the Checks tab', async () => {
+    // A GitLab required manual job is bucketed pending, but it waits on a person.
+    const failed = { ...github.checks[0], name: 'lint', conclusion: 'FAILED', status: 'FAILED', bucket: 'failed' as const }
+    const manual = { ...github.checks[0], name: 'deploy', status: 'MANUAL', conclusion: 'MANUAL', bucket: 'pending' as const }
+    const checks = [github.checks[0], failed, manual]
+    mockApi.pullRequestSource.mockResolvedValue({ ...github, checks })
+    mockApi.pullRequestChecks.mockResolvedValue({ checks })
+    renderPanel()
+
+    expect(await screen.findByRole('tab', { name: /Checks running 1\/3/i })).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: /running ·/i })).not.toBeInTheDocument()
+  })
+
   it('uses bounded backoff only while checks remain pending', () => {
     const pending = [{ ...github.checks[0], bucket: 'pending' as const }]
 
@@ -1080,6 +1107,76 @@ describe('pullRequestMergeBlocker', () => {
     const blocker = pullRequestMergeBlocker({ ...github, mergeable: 'mergeable', mergeStateStatus: 'blocked' })
     expect(blocker).toMatchObject({ tone: 'warn', title: 'Merge blocked' })
     expect(blocker?.handoff).toBeUndefined()
+  })
+
+  it('says checks are still running instead of the generic branch-protection copy', () => {
+    const pending = { ...github.checks[0], name: 'e2e', status: 'IN_PROGRESS', conclusion: '', bucket: 'pending' as const }
+    const blocker = pullRequestMergeBlocker({
+      ...github,
+      mergeable: 'mergeable',
+      mergeStateStatus: 'blocked',
+      checks: [github.checks[0], pending],
+    })
+    expect(blocker).toMatchObject({ tone: 'warn', title: 'Merge blocked' })
+    expect(blocker?.detail).toBe('Checks are still running. Merging unblocks once required checks pass and any required reviews are approved.')
+    expect(blocker?.handoff).toBeUndefined()
+  })
+
+  it('keeps the branch-protection copy when the only pending check is a manual gate', () => {
+    // A GitLab required manual job is bucketed pending, but it waits on a
+    // person: "still running" would be false for as long as nobody presses it.
+    const manual = { ...github.checks[0], name: 'deploy', status: 'MANUAL', conclusion: 'MANUAL', bucket: 'pending' as const }
+    const blocker = pullRequestMergeBlocker({
+      ...github,
+      mergeable: 'mergeable',
+      mergeStateStatus: 'blocked',
+      checks: [github.checks[0], manual],
+    })
+    expect(blocker).toMatchObject({ tone: 'warn', title: 'Merge blocked' })
+  })
+
+  it('leads with the failure when a check failed while others still run', () => {
+    const failed = { ...github.checks[0], name: 'lint', conclusion: 'FAILURE', bucket: 'failed' as const }
+    const pending = { ...github.checks[0], name: 'e2e', status: 'IN_PROGRESS', conclusion: '', bucket: 'pending' as const }
+    const blocker = pullRequestMergeBlocker({
+      ...github,
+      mergeable: 'mergeable',
+      mergeStateStatus: 'blocked',
+      checks: [github.checks[0], failed, pending],
+    })
+    expect(blocker).toMatchObject({ tone: 'danger', title: 'Checks failed; others still running' })
+    expect(blocker?.detail).toContain('1 failed and 1 still running, of 3 checks')
+    expect(blocker?.detail).toContain('any required reviews are approved')
+    expect(blocker?.handoff).toBeUndefined()
+  })
+
+  it('keeps the branch-protection copy beside a failure when the only pending check is a manual gate', () => {
+    const failed = { ...github.checks[0], name: 'lint', status: 'FAILED', conclusion: 'FAILED', bucket: 'failed' as const }
+    const manual = { ...github.checks[0], name: 'deploy', status: 'MANUAL', conclusion: 'MANUAL', bucket: 'pending' as const }
+    const blocker = pullRequestMergeBlocker({
+      ...github,
+      mergeable: 'mergeable',
+      mergeStateStatus: 'blocked',
+      checks: [failed, manual],
+    })
+    expect(blocker).toMatchObject({ tone: 'warn', title: 'Merge blocked' })
+  })
+
+  it('keeps the branch-protection copy for a blocked GitLab MR with a failed and a running job', () => {
+    // GitLab reports a merge-gating running pipeline as `unstable`, so `blocked`
+    // here means approvals or discussions block the MR, not the running job.
+    const failed = { ...gitlab.checks[0], name: 'lint', status: 'FAILED', conclusion: 'FAILED', bucket: 'failed' as const }
+    const running = { ...gitlab.checks[0], name: 'e2e', status: 'RUNNING', conclusion: '', bucket: 'pending' as const }
+    const blocker = pullRequestMergeBlocker({
+      ...gitlab,
+      state: 'opened',
+      mergedAt: '',
+      mergeable: 'mergeable',
+      mergeStateStatus: 'blocked',
+      checks: [failed, running],
+    })
+    expect(blocker).toMatchObject({ tone: 'warn', title: 'Merge blocked' })
+    expect(blocker?.detail).toBe('Branch protection requirements (approving reviews or required checks) are not yet satisfied.')
   })
 
   it("banners open GitLab MRs, whose raw provider state is 'opened'", () => {

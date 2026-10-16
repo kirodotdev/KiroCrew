@@ -3077,7 +3077,11 @@
       "state_closed": "Closed",
       "state_draft": "Draft",
       "state_merged": "Merged",
-      "state_open": "Open"
+      "state_open": "Open",
+      "checks_failed_others_still_running": "Checks failed; others still running",
+      "checks_count_running_failed": "{{running}} running · {{failed}} failed",
+      "waiting_on_checks_detail": "Checks are still running. Merging unblocks once required checks pass and any required reviews are approved.",
+      "checks_failed_still_running_detail": "{{failed}} failed and {{running}} still running, of {{total}} checks. Merging stays blocked until required checks pass and any required reviews are approved."
     },
     "registryManager": {
       "adding": "Adding…",

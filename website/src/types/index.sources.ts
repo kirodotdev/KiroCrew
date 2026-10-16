@@ -20,7 +20,7 @@ export interface PullRequestCheck {
  *  "no news" — never "nothing blocks the merge". */
 export interface PullRequestStatus {
   state?: 'open' | 'draft' | 'merged' | 'closed'
-  ci?: 'running' | 'passed' | 'failed'
+  ci?: 'running' | 'passed' | 'failed'; ciPending?: string // '1': `ci` failed, other checks still running
   /** Normalized merge ability, same vocabulary as `PullRequestSource.mergeable`. */
   mergeable?: string
   /** Normalized merge-state detail, same vocabulary as `PullRequestSource.mergeStateStatus`. */

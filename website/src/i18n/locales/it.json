@@ -8217,7 +8217,11 @@
       "this_authorizes_the_merge_as_soon_as_requirement": "Autorizza il merge appena i requisiti sono soddisfatti, con squash se questo repository lo consente (altrimenti un commit di merge, poi rebase).",
       "this_authorizes_the_merge_when_the_pipeline_succ": "Autorizza il merge quando la pipeline riesce.",
       "untitled_commit": "Commit senza titolo",
-      "updated": "Aggiornato"
+      "updated": "Aggiornato",
+      "checks_failed_others_still_running": "Controlli non riusciti; altri ancora in corso",
+      "checks_count_running_failed": "In corso: {{running}} · Non riusciti: {{failed}}",
+      "waiting_on_checks_detail": "Alcuni controlli sono ancora in corso. Il merge si sblocca quando i controlli richiesti passano e le revisioni richieste sono approvate.",
+      "checks_failed_still_running_detail": "Su {{total}} controlli: non riusciti {{failed}}, ancora in corso {{running}}. Il merge resta bloccato finché i controlli richiesti non passano e le revisioni richieste non vengono approvate."
     },
     "questionCard": {
       "custom_answer": "Risposta personalizzata",

@@ -8087,7 +8087,11 @@
       "this_authorizes_the_merge_as_soon_as_requirement": "শর্তগুলো পাস হওয়ার সাথে সাথেই এটি মার্জের অনুমতি দেয়, আর এই রিপোজিটরি অনুমোদন করলে স্কোয়াশ করে (নাহলে একটি মার্জ কমিট, তারপর রিবেস)।",
       "this_authorizes_the_merge_when_the_pipeline_succ": "পাইপলাইন সফল হলে এটি মার্জের অনুমতি দেয়।",
       "untitled_commit": "শিরোনামহীন কমিট",
-      "updated": "আপডেট হয়েছে"
+      "updated": "আপডেট হয়েছে",
+      "checks_failed_others_still_running": "চেক ব্যর্থ; অন্যগুলো এখনও চলছে",
+      "checks_count_running_failed": "চলছে: {{running}} · ব্যর্থ: {{failed}}",
+      "waiting_on_checks_detail": "চেক এখনও চলছে। আবশ্যক চেক পাস করলে এবং আবশ্যক রিভিউ অনুমোদিত হলে মার্জ করা যাবে।",
+      "checks_failed_still_running_detail": "{{total}}টি চেকের মধ্যে: ব্যর্থ {{failed}}, এখনও চলছে {{running}}। আবশ্যক চেক পাস না করা এবং আবশ্যক রিভিউ অনুমোদিত না হওয়া পর্যন্ত মার্জ আটকে থাকবে।"
     },
     "questionCard": {
       "custom_answer": "কাস্টম উত্তর",

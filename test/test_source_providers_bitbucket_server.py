@@ -24,6 +24,7 @@ from kiro_crew.dashboard.handlers import source_providers as source
 from kiro_crew.dashboard.source_providers import (
     bitbucket_server,
     chip_refresh,
+    chip_status,
     hosts,
     links,
     plugins,
@@ -666,3 +667,27 @@ async def test_the_chip_reads_lifecycle_and_build_rollup(
     monkeypatch.setattr(bitbucket_server, "ClientSession", stub.session)
     status = await chip_refresh._fetch_check_status(PR_URL)
     assert status == {"state": expected, "ci": "failed"}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_build_with_one_still_running_reads_the_same_on_chip_and_full(
+    config_file, listed, monkeypatch, vault
+) -> None:
+    builds = {
+        "isLastPage": True,
+        "values": [
+            {"state": "FAILED", "key": "lint", "name": "Lint", "dateAdded": _ms(2)},
+            {"state": "INPROGRESS", "key": "unit", "name": "Unit tests", "dateAdded": _ms(2)},
+        ],
+    }
+    routes = {**_routes(), f"{REST}/build-status/1.0/commits/{HEAD}?limit=100": (200, builds)}
+    stub = _Instance(routes)
+    monkeypatch.setattr(bitbucket_server, "ClientSession", stub.session)
+
+    chip = await chip_refresh._fetch_check_status(PR_URL)
+    assert chip == {"state": "open", "ci": "failed", "ciPending": "1"}
+
+    payload = await bitbucket_server.PROVIDER.fetch_full(links.parse_source_url(PR_URL))
+    full = chip_status.status_from_full_payload(dict(payload))
+    assert full is not None
+    assert {key: full[key] for key in ("ci", "ciPending")} == {"ci": "failed", "ciPending": "1"}

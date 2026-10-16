@@ -8087,7 +8087,11 @@
       "this_authorizes_the_merge_as_soon_as_requirement": "इससे शर्तें पूरी होते ही मर्ज की अनुमति मिल जाती है, और यह रिपॉज़िटरी इजाज़त दे तो स्क्वैश किया जाएगा (अन्यथा मर्ज कमिट, फिर रीबेस)।",
       "this_authorizes_the_merge_when_the_pipeline_succ": "इससे पाइपलाइन सफल होने पर मर्ज की अनुमति मिल जाती है।",
       "untitled_commit": "बिना शीर्षक कमिट",
-      "updated": "अपडेट किया गया"
+      "updated": "अपडेट किया गया",
+      "checks_failed_others_still_running": "जाँचें विफल; अन्य अभी भी चल रही हैं",
+      "checks_count_running_failed": "चल रही: {{running}} · विफल: {{failed}}",
+      "waiting_on_checks_detail": "जाँचें अभी भी चल रही हैं। आवश्यक जाँचें पास होने और आवश्यक समीक्षाएँ स्वीकृत होने पर मर्ज संभव होगा।",
+      "checks_failed_still_running_detail": "{{total}} जाँचों में से: विफल {{failed}}, अभी चल रही {{running}}. आवश्यक जाँचें पास होने और आवश्यक समीक्षाएँ स्वीकृत होने तक मर्ज अवरुद्ध रहेगा।"
     },
     "questionCard": {
       "custom_answer": "कस्टम उत्तर",

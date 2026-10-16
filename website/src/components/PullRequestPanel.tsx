@@ -221,6 +221,31 @@ export function pullRequestMergeBlocker(source: PullRequestSource): PullRequestM
     }
   }
   if (source.mergeStateStatus === 'blocked') {
+    // GitHub reports `blocked` while required checks are still running, which
+    // the generic branch-protection copy cannot distinguish from a missing
+    // approval. Say checks are still running when any are, and lead with the
+    // failure when one has already failed, so a red check is never hidden
+    // behind "still running". Only GitHub gets this copy: GitLab reports a
+    // merge-gating running pipeline as `unstable`, so a GitLab `blocked` with
+    // jobs running is blocked by something else (approvals, open discussions)
+    // and keeps the generic copy, as does every other provider.
+    const checks = source.provider === 'github' ? source.checks || [] : []
+    const running = checks.filter(checkInFlight).length
+    const failed = checks.filter(check => check.bucket === 'failed').length
+    if (running > 0 && failed > 0) {
+      return {
+        tone: 'danger',
+        title: i18nT('components.pullRequestPanel.checks_failed_others_still_running'),
+        detail: i18nT('components.pullRequestPanel.checks_failed_still_running_detail', { failed, running, total: checks.length }),
+      }
+    }
+    if (running > 0) {
+      return {
+        tone: 'warn',
+        title: i18nT('components.pullRequestPanel.merge_blocked'),
+        detail: i18nT('components.pullRequestPanel.waiting_on_checks_detail'),
+      }
+    }
     return {
       tone: 'warn',
       title: i18nT('components.pullRequestPanel.merge_blocked'),
@@ -277,6 +302,13 @@ export function pullRequestCiSignal(
   if (checks.some(check => check.bucket === 'failed')) return 'failed'
   if (checks.some(check => check.bucket === 'pending')) return 'running'
   return 'passed'
+}
+
+/** Whether one check is still running: bucketed `pending` and not a manual
+ * gate. A GitLab required manual job is bucketed `pending` with status
+ * `MANUAL`; it waits on a person, so it is never "running". */
+export function checkInFlight(check: PullRequestCheck): boolean {
+  return check.bucket === 'pending' && (check.status || '').toUpperCase() !== 'MANUAL'
 }
 
 /** A merge field the provider actually answered, or undefined.
@@ -1069,11 +1101,16 @@ export default function PullRequestPanel({
       complete: checks.filter(check => check.bucket === 'passed' || check.bucket === 'skipped').length,
       failed: checks.filter(check => check.bucket === 'failed').length,
       pending: checks.filter(check => check.bucket === 'pending').length,
+      running: checks.filter(checkInFlight).length,
       total: checks.length,
     }
   }, [source?.checks])
   const checksUnavailable = checksPollingPaused
   const checksRunning = checkCounts.pending > 0 && !checksUnavailable
+  // A `complete/total` fraction counts a failed check as not complete, so it
+  // cannot say whether the rest are still running or one has failed; once a
+  // check has failed while others run, the tab counts both instead.
+  const checksFailedStillRunning = checksRunning && checkCounts.failed > 0 && checkCounts.running > 0
   const allChecksPassed = checkCounts.total > 0
     && checkCounts.failed === 0
     && checkCounts.pending === 0
@@ -1092,7 +1129,7 @@ export default function PullRequestPanel({
     return merged
   }, [statusQuery.data, source])
 
-  const allTabs: Array<{ id: SourceTab; label: string; count?: number; tone?: string }> = source ? [
+  const allTabs: Array<{ id: SourceTab; label: string; count?: number; countText?: string; tone?: string }> = source ? [
     { id: 'changes', label: i18nT('components.pullRequestPanel.changes'), count: source.files.length },
     { id: 'description', label: i18nT('components.pullRequestPanel.description') },
     { id: 'commits', label: i18nT('components.pullRequestPanel.commits'), count: source.commits.length },
@@ -1100,12 +1137,19 @@ export default function PullRequestPanel({
       id: 'checks',
       label: checksUnavailable
         ? i18nT('components.pullRequestPanel.checks_unavailable')
-        : checksRunning
-          ? i18nT('components.pullRequestPanel.checks_running')
-          : showAllChecksPassed
-            ? i18nT('components.pullRequestPanel.all_checks_passed')
-            : i18nT('components.pullRequestPanel.checks'),
+        : checksFailedStillRunning
+          ? i18nT('components.pullRequestPanel.checks')
+          : checksRunning
+            ? i18nT('components.pullRequestPanel.checks_running')
+            : showAllChecksPassed
+              ? i18nT('components.pullRequestPanel.all_checks_passed')
+              : i18nT('components.pullRequestPanel.checks'),
       count: checkCounts.total,
+      countText: checksFailedStillRunning
+        ? i18nT('components.pullRequestPanel.checks_count_running_failed', { running: checkCounts.running, failed: checkCounts.failed })
+        : checkCounts.total
+          ? `${checkCounts.complete}/${checkCounts.total}`
+          : undefined,
       tone: checkCounts.failed
         ? 'text-danger'
         : checksUnavailable || checksRunning
@@ -1298,7 +1342,9 @@ export default function PullRequestPanel({
                   <Check className="lucide-inline text-ok" />
                 ) : null}
                 {item.label}
-                {item.count !== undefined && <span className="text-muted">{item.id === 'checks' && checkCounts.total ? `${checkCounts.complete}/${item.count}` : item.count}</span>}
+                {item.countText !== undefined
+                  ? <span className="text-muted">{item.countText}</span>
+                  : item.count !== undefined && <span className="text-muted">{item.count}</span>}
               </Btn>
             ))}
           </div>

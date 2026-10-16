@@ -516,7 +516,7 @@ async def _fetch_checks(ref: SourceRef) -> list[dict[str, Any]]:
 
 
 async def _fetch_chip_status(ref: SourceRef) -> dict[str, str]:
-    """The chip's ``{state, ci}``, from the same reads the full payload projects."""
+    """The chip's ``{state, ci, ciPending}``, from the same reads the full payload projects."""
 
     async def work(client: _Client) -> dict[str, str]:
         pr = await client.pull_request()
@@ -530,9 +530,7 @@ async def _fetch_chip_status(ref: SourceRef) -> dict[str, str]:
             raise
         except SourceProviderError:
             return status
-        ci = projection._rollup_ci([row["bucket"] for row in rows])
-        if ci is not None:
-            status["ci"] = ci
+        projection._record_ci(status, rows)
         return status
 
     return await _with_client(ref, work)

@@ -8217,7 +8217,11 @@
       "this_authorizes_the_merge_as_soon_as_requirement": "Esto autoriza la fusión en cuanto se cumplan los requisitos, con squash si este repositorio lo permite (si no, un commit de fusión y luego rebase).",
       "this_authorizes_the_merge_when_the_pipeline_succ": "Esto autoriza la fusión cuando el pipeline se complete correctamente.",
       "untitled_commit": "Commit sin título",
-      "updated": "Actualizado"
+      "updated": "Actualizado",
+      "checks_failed_others_still_running": "Comprobaciones fallidas; otras siguen en ejecución",
+      "checks_count_running_failed": "En ejecución: {{running}} · Fallidas: {{failed}}",
+      "waiting_on_checks_detail": "Todavía hay comprobaciones en ejecución. La fusión se desbloquea cuando pasen las comprobaciones obligatorias y se aprueben las revisiones requeridas.",
+      "checks_failed_still_running_detail": "De {{total}} comprobaciones: fallidas {{failed}}, aún en ejecución {{running}}. La fusión sigue bloqueada hasta que pasen las comprobaciones obligatorias y se aprueben las revisiones requeridas."
     },
     "questionCard": {
       "custom_answer": "Respuesta personalizada",

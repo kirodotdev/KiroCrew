@@ -42,6 +42,9 @@ export function parseStatusDelta(data: unknown): SourceStatusDelta | null {
   }
   const ci = record.ci
   if (ci === 'running' || ci === 'passed' || ci === 'failed') delta.ci = ci
+  // Only meaningful beside a failed rollup; a stray marker on any other value
+  // would claim CI is still moving when the delta says it is not.
+  if (delta.ci === 'failed' && record.ciPending === '1') delta.ciPending = '1'
   const mergeable = mergeStateValue(record.mergeable)
   if (mergeable) delta.mergeable = mergeable
   const mergeStateStatus = mergeStateValue(record.mergeStateStatus)

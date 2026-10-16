@@ -212,7 +212,7 @@ def test_status_from_full_payload_projects_lifecycle_and_ci() -> None:
     assert source.status_from_full_payload(
         {"state": "OPEN", "draft": True, "checks": [{"bucket": "pending"}, {"bucket": "passed"}]}
     ) == {"ci": "running", "state": "draft"}
-    # Any failure dominates the rollup.
+    # Any failure dominates; a payload naming no built-in provider gets no marker.
     assert source.status_from_full_payload(
         {"state": "MERGED", "checks": [{"bucket": "failed"}, {"bucket": "pending"}]}
     ) == {"ci": "failed", "state": "merged"}
