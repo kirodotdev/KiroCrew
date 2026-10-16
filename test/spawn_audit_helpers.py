@@ -37,7 +37,7 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # isolation boundary and the gateway sandbox is unavailable.
         "remote_session/worker.py::run",
         "remote_session/workspace_tools.py::run_command",
-        "remote_session/workspace_tools.py::_git_status",
+        "remote_session/workspace_tools.py::_run_grouped",
         # Gateway credential reads: the callers supply fixed CLI verbs and a
         # host from HOSTS, not guest argv. Git helper discovery uses trusted git,
         # its install cwd, a discovery ceiling and a scrubbed GIT_* environment;
