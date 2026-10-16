@@ -83,9 +83,6 @@
  2 test_chat_nav.py
  4 test_chat_regenerate_cov80.py
  1 test_chat_regenerate_cov80_edit_resend_boundary.py
- 5 test_chat_runner_coverage_commands.py
- 2 test_chat_runner_coverage_pending.py
- 2 test_chat_runner_coverage_queue.py
  1 test_chat_runner_folder_steering.py
  2 test_chat_send_client_meta_survival.py
  4 test_chat_send_echo_scope.py
@@ -161,7 +158,6 @@
  5 test_embedding_rebuild_generation.py
  1 test_embedding_rebuild_process.py
  2 test_embeddings.py
- 8 test_embeddings_resource_budget.py
  5 test_executors.py
  1 test_explain_for_skill.py
  6 test_external_logout_detection_retirement.py
@@ -181,7 +177,6 @@
  7 test_history_locking_remediation.py
  1 test_history_pagination_projection.py
  1 test_hook_gate_off_loop.py
- 8 test_hook_reconcile.py
  3 test_hop_port_guard.py
  1 test_inbound_spool.py
  3 test_inbound_unbind_notice.py
@@ -206,7 +201,6 @@
  2 test_knowledge_agent_sync_off_loop.py
  2 test_knowledge_cross_thread.py
  3 test_knowledge_handlers_coverage.py
- 7 test_knowledge_handlers_off_loop.py
  1 test_knowledge_ingest_magic_byte.py
  2 test_knowledge_store_sources.py
  1 test_knowledge_sync_local_file.py
@@ -234,9 +228,7 @@
  1 test_mcp_preflight.py
  1 test_mcp_shared.py
  3 test_mcp_shared_deferred_tools.py
- 7 test_md_notebook.py
  1 test_meetings_audio_import.py
- 8 test_meetings_routes.py
  4 test_meetings_routes_lifecycle.py
  3 test_member_memory_mcp_routing.py
  1 test_members_eventlog_wiring_append_ordering.py
@@ -325,7 +317,6 @@
  1 test_session_work_dir.py
  2 test_shell_audit_log.py
  1 test_shutdown_event.py
-15 test_side.py
  1 test_side_steer_queue.py
  5 test_sign_in_refresher.py
  1 test_skill_catalog_snapshot.py
@@ -394,9 +385,7 @@
  2 test_tool_permission.py
  4 test_truncating_save_recreate_order.py
  1 test_trusted_apps_api.py
- 7 test_tunnel_keeper.py
  3 test_turn_dispatch.py
- 7 test_unattended_slot_guardrails.py
  4 test_update_check_install_aware.py
  2 test_update_ownership.py
  1 test_vector_commit_failures.py
@@ -413,7 +402,6 @@
  3 test_windows_fail_closed_optin.py
  1 test_windows_job_limits.py
  2 test_windows_tree_reap.py
- 8 test_work_ledger_board_lock.py
  1 test_work_ledger_projection.py
  6 test_work_ledger_projection_rebuild_guards.py
  1 test_workflow_agent_spawn_governance.py

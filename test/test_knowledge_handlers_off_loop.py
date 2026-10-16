@@ -49,6 +49,7 @@ from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.dashboard.handlers import knowledge as kh
 from kiro_crew.knowledge.store import _ON_LOOP_DB_GUARD, KnowledgeStore
 from kiro_crew.on_loop_db import OnLoopStoreError
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 @pytest.fixture()
@@ -639,10 +640,9 @@ class TestTheProgressStampCannotDiscardAnUpload:
             resp = await self._upload(client)
             assert resp.status == 200, await resp.text()
             assert (await resp.json())["status"] == "processing"
-            for _ in range(200):
-                if pipeline.ingest_file.await_args is not None:
-                    break
-                await asyncio.sleep(0.01)
+            await async_wait_until(
+                lambda: pipeline.ingest_file.await_args is not None,
+            )
 
         assert present == [True], "the ingest never ran, or ran after the unlink"
         assert "error" not in stamped, "a failed UI hint was turned into a failed ingest"
@@ -670,10 +670,9 @@ class TestTheProgressStampCannotDiscardAnUpload:
         )
         async with TestClient(TestServer(_make_app(store, pipeline=pipeline))) as client:
             assert (await self._upload(client)).status == 200
-            for _ in range(200):
-                if pipeline.ingest_file.await_args is not None:
-                    break
-                await asyncio.sleep(0.01)
+            await async_wait_until(
+                lambda: pipeline.ingest_file.await_args is not None,
+            )
 
         assert order == ["stamp:syncing", "ingest"]
 
@@ -1062,12 +1061,8 @@ class TestCancellationFinalizesSyncStatus:
     """
 
     @staticmethod
-    async def _wait_until(predicate, timeout: float = 5.0) -> None:
-        for _ in range(int(timeout / 0.01)):
-            if predicate():
-                return
-            await asyncio.sleep(0.01)
-        raise AssertionError("condition never became true")
+    async def _wait_until(predicate) -> None:
+        await async_wait_until(predicate)
 
     @pytest.mark.asyncio
     async def test_cancelled_local_file_ingest_lands_in_error(self, store, tmp_path):
@@ -1084,7 +1079,7 @@ class TestCancellationFinalizesSyncStatus:
         task = asyncio.ensure_future(
             kh._ingest_local_file_task(pipeline, store, str(doc), source_id)
         )
-        await asyncio.wait_for(started.wait(), 5.0)
+        await await_until(started)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -1105,7 +1100,7 @@ class TestCancellationFinalizesSyncStatus:
                 source_id, "https://example.com/x", "x", store, MagicMock(), MagicMock()
             )
         )
-        await asyncio.wait_for(started.wait(), 5.0)
+        await await_until(started)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -1132,7 +1127,7 @@ class TestCancellationFinalizesSyncStatus:
             resp = await client.post("/api/knowledge/ingest", data=form)
             assert resp.status == 200, await resp.text()
             source_id = (await resp.json())["source_id"]
-            await asyncio.wait_for(started.wait(), 5.0)
+            await await_until(started)
             task = next(t for t in app["_bg_tasks"] if not t.done())
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -1235,7 +1230,7 @@ class TestCancellationFinalizesSyncStatus:
                 source_id, "https://example.com/x", "x", store, MagicMock(), MagicMock()
             )
         )
-        await asyncio.wait_for(started.wait(), 5.0)
+        await await_until(started)
         monkeypatch.setattr(kh, "_finalize_sync_status_write", _boom_write)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):

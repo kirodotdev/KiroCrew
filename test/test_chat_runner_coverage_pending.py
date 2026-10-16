@@ -17,6 +17,7 @@ from chat_runner_coverage_helpers import _slot, _state
 
 from kiro_crew.config import live
 from kiro_crew.dashboard import chat_runner
+from kiro_crew.testing.wait import await_until
 
 # ── requeue suppression / pending reset ───────────────────────────────────
 
@@ -111,7 +112,7 @@ class TestConsumePendingReset:
         task = chat_runner._pending_reset_retries.get(slot.key)
         assert task is not None
         assert task[0] is slot
-        await asyncio.wait_for(task[1], timeout=2.0)
+        await await_until(task[1])
         assert slot._pending_reset_history_key is None
         assert state.sessions.reset.await_count == 2
 
@@ -144,7 +145,7 @@ class TestConsumePendingReset:
         entry = chat_runner._pending_reset_retries.get(replacement.key)
         assert entry is not None
         assert entry[0] is replacement
-        await asyncio.wait_for(entry[1], timeout=2.0)
+        await await_until(entry[1])
         assert replacement._pending_reset_history_key is None
 
         stale_task.cancel()

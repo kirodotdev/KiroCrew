@@ -17,6 +17,7 @@ from chat_runner_coverage_helpers import _errors, _slot, _state
 
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat_utils import chunk_generation
+from kiro_crew.testing.wait import async_wait_until
 
 # ── queue drain / synthesis ───────────────────────────────────────────────
 
@@ -730,11 +731,7 @@ class TestFinishQueueCycle:
             await chat_runner._finish_queue_cycle(state, slot)
             assert slot._synthesis_recheck is not None, "an outage arms the re-check"
             synth.assert_not_called()
-            for _ in range(100):
-                if synth.await_count:
-                    break
-                # flake-ok: pre-existing poll of at most 100 x 10 ms for the synthesis task, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.01)
+            await async_wait_until(lambda: synth.await_count)
 
         synth.assert_awaited_once()
         assert slot._synthesis_inflight is True
@@ -790,11 +787,7 @@ class TestFinishQueueCycle:
             assert _chat_dones() == [True], "the arm was still set at the turn's end"
             assert slot._synthesis_recheck is not None, "an outage arms the re-check"
             synth.assert_not_called()
-            for _ in range(100):
-                if synth.await_count:
-                    break
-                # flake-ok: pre-existing poll of at most 100 x 10 ms for the synthesis task, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.01)
+            await async_wait_until(lambda: synth.await_count)
 
         synth.assert_awaited_once()
         assert slot._pending_synthesis is True, "consumed by the synthesis task, not here"

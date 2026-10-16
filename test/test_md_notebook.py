@@ -38,7 +38,7 @@ from kiro_crew import atomic_write as atomic_write_mod
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.md_notebook import git_ops
 from kiro_crew.loop_lock import LoopBoundLock
-from kiro_crew.testing.wait import until_parked
+from kiro_crew.testing.wait import async_wait_until, await_until, until_parked
 
 SECRET = "test-proxy-secret"
 
@@ -1827,7 +1827,7 @@ async def test_creating_writes_wait_for_a_running_sync(fixtures, monkeypatch) ->
             entered.clear()
             release.clear()
             syncing = asyncio.ensure_future(start())
-            await asyncio.wait_for(entered.wait(), 5)
+            await await_until(entered)
             assert parked == []
             for path, payload in (
                 ("/api/note/new", {"folder": "Projects"}),
@@ -1927,7 +1927,7 @@ async def test_a_symlink_landing_while_a_writer_waits_on_the_lock_is_refused(
 
         before = sorted(p.name for p in heads.iterdir())
         syncing = asyncio.ensure_future(client.post("/api/sync"))
-        await asyncio.wait_for(entered.wait(), 5)
+        await await_until(entered)
         # The link is now in place; these requests park on the lock the sync holds.
         creating = asyncio.ensure_future(client.post("/api/note/new", {"folder": "Projects"}))
         saving = asyncio.ensure_future(
@@ -2008,13 +2008,13 @@ async def test_duplicate_source_link_swap_under_the_vault_lock(
                 writing = asyncio.create_task(
                     client.post("/api/note/duplicate", {"path": "Projects/Private.md"})
                 )
-                await asyncio.wait_for(waiting.wait(), 5)
+                await await_until(waiting)
                 assert not writing.done()
                 if remove_link:
                     projects.unlink()
                     projects.mkdir()
                     (projects / "Private.md").write_text("current note", encoding="utf-8")
-            status, body = await asyncio.wait_for(writing, 5)
+            status, body = await await_until(writing)
             if remove_link:
                 assert status == 200, body
                 assert (projects / "Private copy.md").read_text(encoding="utf-8") == "current note"
@@ -2075,14 +2075,14 @@ async def test_scoped_mutation_rederives_paths_after_a_scope_link_swap(
                     if operation == "delete"
                     else client.post("/api/note/move", {"from": name, "to": "Moved.md"})
                 )
-                await asyncio.wait_for(waiting.wait(), 5)
+                await await_until(waiting)
                 assert not writing.done()
                 scope.unlink()
                 scope.mkdir()
                 (scope / "Kept.md").write_text("scope note", encoding="utf-8")
                 if alias:
                     (scope / "Alias.md").symlink_to("Kept.md")
-            status, body = await asyncio.wait_for(writing, 5)
+            status, body = await await_until(writing)
             assert status == 200, body
             assert (public / "Kept.md").read_text(encoding="utf-8") == "tracked target"
             assert (public / name).exists(), "the stale target entry was mutated"
@@ -4454,16 +4454,8 @@ def _default_settings_body(server_mod) -> dict[str, Any]:
 
 
 async def _wait_for(predicate: Callable[[], Any], message: str, budget: float = 5.0) -> None:
-    """Poll *predicate* until it is truthy, failing loudly if it never is.
-
-    A deadline poll rather than a fixed sleep: a loaded runner starves the loop's
-    task, and a fixed sleep would trade the assertion for a flake.
-    """
-    started = time.monotonic()
-    while not predicate():
-        elapsed = time.monotonic() - started
-        assert elapsed < budget, f"{message} (gave up after {elapsed:.1f}s)"
-        await asyncio.sleep(0.01)
+    """Poll *predicate* until it is truthy under a lost-run bound."""
+    await async_wait_until(predicate, describe=lambda: message)
 
 
 async def _noop_rebuild(vault: dict[str, Any]) -> dict[str, Any]:

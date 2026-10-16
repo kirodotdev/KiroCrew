@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from kiro_crew import embeddings as emb
+from kiro_crew.testing.wait import await_until, wait_until
 
 
 @pytest.mark.parametrize(
@@ -73,7 +74,9 @@ def test_one_cache_coalesces_parallel_stores_and_backend_replacement(monkeypatch
             assert entered.wait(5)
         finally:
             release.set()
-        assert [job.result(timeout=5) for job in pending] == [[1.0]] * 8
+        for job in pending:
+            wait_until(job.done)
+        assert [job.result() for job in pending] == [[1.0]] * 8
     assert calls == ["shared question"]
     replacement = SimpleNamespace(model_id="same-space", embed=lambda text, **kw: [2.0])
     monkeypatch.setattr(emb, "get_shared_embedder", lambda: replacement)
@@ -140,9 +143,13 @@ def test_queue_is_bounded_and_reserves_space_for_interactive_queries(backend, mo
             )
         finally:
             release.set()
-        assert running.result(timeout=5) == [1.0]
-        assert interactive.result(timeout=5) == [1.0]
-        assert all(job.result(timeout=5) == [1.0] for job in pending)
+        wait_until(running.done)
+        assert running.result() == [1.0]
+        wait_until(interactive.done)
+        assert interactive.result() == [1.0]
+        for job in pending:
+            wait_until(job.done)
+        assert all(job.result() == [1.0] for job in pending)
 
 
 def test_batch_work_is_split_before_native_inference(backend):
@@ -210,7 +217,7 @@ async def test_cancelled_memory_work_keeps_its_slot_until_the_thread_finishes(mo
         first = asyncio.create_task(executors.run_in_embed_pool(held))
         second = None
         try:
-            await asyncio.wait_for(started.wait(), 5)
+            await await_until(started)
             first.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await first
@@ -221,7 +228,7 @@ async def test_cancelled_memory_work_keeps_its_slot_until_the_thread_finishes(mo
         finally:
             release.set()
             if second is not None:
-                assert await asyncio.wait_for(second, 5) == "static prompt"
+                assert await await_until(second) == "static prompt"
             await asyncio.gather(first, return_exceptions=True)
         assert len(submitted) == 2
 
@@ -267,5 +274,8 @@ def test_full_pending_queue_enforces_interactive_reserve(backend, monkeypatch):
             assert backend._jobs.qsize() == bound
         finally:
             release.set()
-        assert running.result(timeout=5) == [1.0]
-        assert all(job.result(timeout=5) == [1.0] for job in jobs)
+        wait_until(running.done)
+        assert running.result() == [1.0]
+        for job in jobs:
+            wait_until(job.done)
+        assert all(job.result() == [1.0] for job in jobs)

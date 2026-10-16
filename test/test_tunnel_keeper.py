@@ -8,6 +8,7 @@ import pytest
 
 from kiro_crew.instances import tunnel_keeper
 from kiro_crew.instances.ssh_tunnel_manager import TunnelState, TunnelStatus
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 class _FakeTunnel:
@@ -47,11 +48,8 @@ def _reset(monkeypatch):
     monkeypatch.setattr(tunnel_keeper, "_recover_backoff_secs", lambda attempt: 0.0)
 
 
-async def _until(predicate, timeout: float = 2.0) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout
-    while not predicate():
-        assert asyncio.get_running_loop().time() < deadline, "condition never held"
-        await asyncio.sleep(0.01)
+async def _until(predicate) -> None:
+    await async_wait_until(predicate)
 
 
 def test_a_dropped_forward_is_rebuilt_then_stopped_cleanly():
@@ -69,7 +67,7 @@ def test_a_dropped_forward_is_rebuilt_then_stopped_cleanly():
         # race against a start() still in flight, by design.
         await _until(lambda: lines.count("tunnel: connected") == 2)
         stop.set()
-        await asyncio.wait_for(task, 2)
+        await await_until(task)
         return lines
 
     lines = asyncio.run(scenario())
@@ -101,7 +99,7 @@ def test_a_failed_start_backs_off_and_retries(monkeypatch):
         _FakeTunnel.instances[-1].drop()
         await _until(lambda: len(_FakeTunnel.instances) == 4)
         stop.set()
-        await asyncio.wait_for(task, 2)
+        await await_until(task)
 
     asyncio.run(scenario())
     # Two failures escalate the backoff; a connect resets it to the first step.
@@ -122,7 +120,7 @@ def test_stop_during_backoff_returns_without_another_attempt(monkeypatch):
         await _until(lambda: len(_FakeTunnel.instances) == 1)
         await asyncio.sleep(0.05)
         stop.set()
-        await asyncio.wait_for(task, 2)
+        await await_until(task)
 
     asyncio.run(scenario())
     assert len(_FakeTunnel.instances) == 1
@@ -147,9 +145,9 @@ def test_stop_while_connecting_tears_down_without_waiting_for_the_connect(monkey
                 "devbox", 5477, 5476, stop=stop, make_tunnel=_SlowTunnel, emit=lines.append
             )
         )
-        await asyncio.wait_for(started.wait(), 2)
+        await await_until(started)
         stop.set()
-        await asyncio.wait_for(task, 2)
+        await await_until(task)
 
     asyncio.run(scenario())
     (only,) = _FakeTunnel.instances
@@ -193,7 +191,7 @@ def test_the_stdin_lifeline_stops_the_keeper_when_the_parent_goes(monkeypatch):
 
     async def fake_keep(host, local, remote, *, stop, emit):
         emit("tunnel: connected")
-        await asyncio.wait_for(stop.wait(), 2)
+        await await_until(stop)
         stopped.append(stop.is_set())
 
     monkeypatch.setattr(tunnel_keeper, "keep_tunnel", fake_keep)

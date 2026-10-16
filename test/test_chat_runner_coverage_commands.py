@@ -35,6 +35,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.providers.base import LLMEvent
+from kiro_crew.testing.wait import await_until
 
 # ── model backfill / pin guards ───────────────────────────────────────────
 
@@ -536,17 +537,17 @@ class TestRunChatLocalCommands:
         ):
             task = asyncio.create_task(_drive(state, slot, "/todos"))
             try:
-                await asyncio.wait_for(preparing.wait(), timeout=5)
+                await await_until(preparing)
                 task.cancel()
-                await asyncio.wait_for(expiring.wait(), timeout=5)
+                await await_until(expiring)
                 task.cancel()
                 with pytest.raises(asyncio.CancelledError):
-                    await asyncio.wait_for(task, timeout=5)
+                    await await_until(task)
             finally:
                 unblock.set()
                 if not task.done():
                     task.cancel()
-                await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=5)
+                await await_until(asyncio.gather(task, return_exceptions=True))
 
         expire.assert_awaited_once_with(state, session_key)
         state.slack_client.update_message.assert_awaited_once()
@@ -665,7 +666,7 @@ class TestRunChatLocalCommands:
         state.sessions.get_or_create = AsyncMock(wraps=manager.get_or_create)
         try:
             with patch.object(chat_runner.KiroCrewConfig, "load", return_value=cfg):
-                await asyncio.wait_for(_drive(state, slot, "/todos"), timeout=5)
+                await await_until(asyncio.ensure_future(_drive(state, slot, "/todos")))
             state.sessions.get_or_create.assert_not_awaited()
             assert session.semaphore.locked()
             client.stream.assert_not_called()
