@@ -5,6 +5,7 @@ import {
   setTerminalFontFamily,
   setTerminalFontSize,
   setTerminalCursorStyle,
+  setTerminalCopyOnSelect,
   resetTerminalFont,
   __resetTerminalFontStore,
   DEFAULT_TERMINAL_FONT_FAMILY,
@@ -47,6 +48,7 @@ describe('terminal font store', () => {
       fontFamily: '',
       fontSize: DEFAULT_TERMINAL_FONT_SIZE,
       cursorStyle: DEFAULT_TERMINAL_CURSOR_STYLE,
+      copyOnSelect: false,
     })
   })
 
@@ -73,11 +75,13 @@ describe('terminal font store', () => {
     setTerminalFontFamily('X')
     setTerminalFontSize(20)
     setTerminalCursorStyle('bar')
+    setTerminalCopyOnSelect(true)
     resetTerminalFont()
     expect(getTerminalFont()).toEqual({
       fontFamily: '',
       fontSize: DEFAULT_TERMINAL_FONT_SIZE,
       cursorStyle: DEFAULT_TERMINAL_CURSOR_STYLE,
+      copyOnSelect: false,
     })
   })
 })
@@ -122,5 +126,43 @@ describe('terminal cursor style', () => {
     expect(s.fontFamily).toBe('Menlo')
     expect(s.fontSize).toBe(18)
     expect(s.cursorStyle).toBe('underline')
+  })
+})
+
+describe('terminal copy on select', () => {
+  it('is off by default', () => {
+    expect(getTerminalFont().copyOnSelect).toBe(false)
+  })
+
+  it('turns on and persists to localStorage', () => {
+    setTerminalCopyOnSelect(true)
+    expect(getTerminalFont().copyOnSelect).toBe(true)
+    const persisted = JSON.parse(localStorage.getItem('mc-terminal-font') || '{}')
+    expect(persisted.copyOnSelect).toBe(true)
+  })
+
+  it('loads a persisted true on a fresh module load', async () => {
+    localStorage.setItem('mc-terminal-font', JSON.stringify({ copyOnSelect: true }))
+    vi.resetModules()
+    const fresh = await import('../hooks/useTerminalFont')
+    expect(fresh.getTerminalFont().copyOnSelect).toBe(true)
+  })
+
+  it('reads anything but a literal true as off', async () => {
+    for (const value of ['true', 1, 'yes', null]) {
+      localStorage.setItem('mc-terminal-font', JSON.stringify({ copyOnSelect: value }))
+      vi.resetModules()
+      const fresh = await import('../hooks/useTerminalFont')
+      expect(fresh.getTerminalFont().copyOnSelect, JSON.stringify(value)).toBe(false)
+    }
+  })
+
+  it('leaves the font and cursor untouched', () => {
+    setTerminalFontFamily('Menlo')
+    setTerminalCursorStyle('bar')
+    setTerminalCopyOnSelect(true)
+    const s = getTerminalFont()
+    expect(s.fontFamily).toBe('Menlo')
+    expect(s.cursorStyle).toBe('bar')
   })
 })
