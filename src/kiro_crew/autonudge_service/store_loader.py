@@ -469,6 +469,15 @@ def _load(self: AutoNudgeService) -> None:
                     loop_values["gate"],
                 )
                 loop_values["gate"] = False
+            # Model-authored and agent-writable on disk: cleaned the way every
+            # write cleans it (``autonudge_stop_log.clean_stop_detail``). A value
+            # the clean changed is written back clean.
+            if "stopped_detail" in loop_values:
+                raw_detail = loop_values["stopped_detail"]
+                detail = autonudge_stop_log.clean_stop_detail(raw_detail)
+                if detail != raw_detail:
+                    self._store_dirty = True
+                loop_values["stopped_detail"] = detail
             # Judge fields come from the same agent-writable store: a non-numeric
             # streak would defeat the floor on how long a judge keeps a loop quiet,
             # and an oversized map would be re-serialized on every persist. Each map
