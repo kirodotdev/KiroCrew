@@ -806,7 +806,6 @@ test/test_stt_stream_cov80.py
 test/test_stub_bridge_liveness.py
 test/test_stuck_turn_watchdog.py
 test/test_subagent_cost.py
-test/test_subagent_reap_race.py
 test/test_subagent_stall.py
 test/test_subquestion_queue.py
 test/test_sweep_stale_permissions.py

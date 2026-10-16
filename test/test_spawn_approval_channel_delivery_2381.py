@@ -51,6 +51,7 @@ from kiro_crew.messaging.session_trust import (
 )
 from kiro_crew.subagent import SpawnApprovalUnreachable
 from kiro_crew.telegram.renderer import TelegramApprovalDecider
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
@@ -269,10 +270,7 @@ async def _press(dispatcher, session_key: str, request_id: str, flag: str) -> No
     ``a:`` path a tool approval uses.
     """
     key = TelegramApprovalDecider.key(session_key, request_id)
-    for _ in range(50):
-        if key in TelegramApprovalDecider._REGISTRY:
-            break
-        await asyncio.sleep(0.01)
+    await async_wait_until(lambda: key in TelegramApprovalDecider._REGISTRY)
     nonce = TelegramApprovalDecider._NONCES[key]
     cb = SimpleNamespace(
         callback_query_id="q1",
@@ -309,10 +307,7 @@ class TestTelegramDeliveryHook:
                     "spawn:abc", f"spawn_run(deploy using {split})", session_key
                 )
             )
-            for _ in range(50):
-                if cli.sent:
-                    break
-                await asyncio.sleep(0.01)
+            await async_wait_until(lambda: cli.sent)
             text, _markup = cli.sent[0]
             await _press(d, session_key, "spawn:abc", "0")
             await task
@@ -376,10 +371,7 @@ class TestTelegramDeliveryHook:
             task = asyncio.ensure_future(
                 d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key)
             )
-            for _ in range(50):
-                if cli.sent:
-                    break
-                await asyncio.sleep(0.01)
+            await async_wait_until(lambda: cli.sent)
             # One prompt posted, carrying the three-button keyboard for spawn:abc.
             assert len(cli.sent) == 1
             _text, markup = cli.sent[0]
@@ -412,17 +404,11 @@ class TestTelegramDeliveryHook:
             task = asyncio.ensure_future(
                 d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key)
             )
-            for _ in range(50):
-                if cli.sent:
-                    break
-                await asyncio.sleep(0.01)
+            await async_wait_until(lambda: cli.sent)
             # The prompt was threaded into the originating Topic, not the group root.
             assert cli.send_threads == [thread]
             key = TelegramApprovalDecider.key(session_key, "spawn:abc")
-            for _ in range(50):
-                if key in TelegramApprovalDecider._REGISTRY:
-                    break
-                await asyncio.sleep(0.01)
+            await async_wait_until(lambda: key in TelegramApprovalDecider._REGISTRY)
             nonce = TelegramApprovalDecider._NONCES[key]
             cb = SimpleNamespace(
                 callback_query_id="q1",
@@ -459,10 +445,7 @@ class TestTelegramDeliveryHook:
                 d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key)
             )
             key = TelegramApprovalDecider.key(session_key, "spawn:abc")
-            for _ in range(50):
-                if key in TelegramApprovalDecider._REGISTRY:
-                    break
-                await asyncio.sleep(0.01)
+            await async_wait_until(lambda: key in TelegramApprovalDecider._REGISTRY)
             nonce = TelegramApprovalDecider._NONCES[key]
             # Rotate the parent conversation's generation AFTER arming.
             d._conv.bump_gen(route)
@@ -498,10 +481,7 @@ class TestTelegramDeliveryHook:
             task = asyncio.ensure_future(
                 d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key)
             )
-            for _ in range(50):
-                if key in TelegramApprovalDecider._REGISTRY:
-                    break
-                await asyncio.sleep(0.01)
+            await async_wait_until(lambda: key in TelegramApprovalDecider._REGISTRY)
             # Prompt is live and awaiting: both entries armed.
             assert key in TelegramApprovalDecider._REGISTRY
             assert key in TelegramApprovalDecider._NONCES
@@ -665,10 +645,7 @@ class TestASilentSendFailureFallsThroughAtOnce:
             task = asyncio.ensure_future(
                 d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key)
             )
-            for _ in range(50):
-                if cli.sent:
-                    break
-                await asyncio.sleep(0.01)
+            await async_wait_until(lambda: cli.sent)
             await _press(d, session_key, "spawn:abc", "1")
             return await task
 
@@ -829,19 +806,13 @@ class TestTheDestinationIsReauthorizedBeforeTheSend:
             task = asyncio.ensure_future(
                 d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key)
             )
-            for _ in range(50):
-                if cli.sent:
-                    break
-                await asyncio.sleep(0.01)
+            await async_wait_until(lambda: cli.sent)
             # The prompt threaded into the private topic it came from, not the
             # chat root -- proof the roster admitted it despite the empty forum
             # allow-list.
             assert cli.send_threads == [thread]
             key = TelegramApprovalDecider.key(session_key, "spawn:abc")
-            for _ in range(50):
-                if key in TelegramApprovalDecider._REGISTRY:
-                    break
-                await asyncio.sleep(0.01)
+            await async_wait_until(lambda: key in TelegramApprovalDecider._REGISTRY)
             nonce = TelegramApprovalDecider._NONCES[key]
             cb = SimpleNamespace(
                 callback_query_id="q1",
@@ -938,7 +909,7 @@ class TestTheDestinationIsReauthorizedBeforeTheSend:
                 d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key)
             )
             await _press(d, session_key, "spawn:abc", "1")
-            return await asyncio.wait_for(task, 10.0)
+            return await await_until(task)
 
         assert asyncio.run(_go()) is True
         assert len(cli.sent) == 1
@@ -1236,7 +1207,7 @@ class TestTheDeliveryHookCharacterization:
             task = asyncio.ensure_future(
                 d.deliver_spawn_approval("spawn:abc", "d", "telegram:kirocrew:direct:7")
             )
-            await asyncio.wait_for(entered.wait(), 5)
+            await await_until(entered)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task

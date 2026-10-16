@@ -27,6 +27,7 @@ The design under test separates all of them:
   deliberately independent of ``done``, and executed under ``asyncio.shield`` so
   an interrupted claimer cannot strand the outcome.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -39,6 +40,7 @@ from kiro_crew.subagent import (
     SubagentInfo,
     SubagentManager,
 )
+from kiro_crew.testing.wait import await_until
 
 
 def _make_manager(max_concurrent: int = 4) -> SubagentManager:
@@ -128,10 +130,12 @@ async def test_reap_settles_credits_before_a_cancelled_state_writer_drains(monke
     task = asyncio.create_task(mgr._run_inner(info, f"subagent:{info.id}"))
     mgr._tasks[info.id] = task
     try:
-        await asyncio.wait_for(entered.wait(), timeout=5)
+        await await_until(entered)
         task.cancel()
-        await asyncio.wait_for(draining.wait(), timeout=5)
-        await asyncio.wait_for(mgr._force_reap(info.id, info, 12.5, reason="deadline"), timeout=5)
+        await await_until(draining)
+        await await_until(
+            asyncio.ensure_future(mgr._force_reap(info.id, info, 12.5, reason="deadline"))
+        )
         assert info._state_drain_active, "test must report before the worker drains"
         assert not task.done()
         assert _done_events(mgr)[0].args[2]["credits"] == 2.0
@@ -141,8 +145,10 @@ async def test_reap_settles_credits_before_a_cancelled_state_writer_drains(monke
     finally:
         released.set()
         task.cancel()
-        await asyncio.wait_for(
-            asyncio.gather(task, *workers, *mgr._report_tasks, return_exceptions=True), timeout=5
+        await await_until(
+            asyncio.ensure_future(
+                asyncio.gather(task, *workers, *mgr._report_tasks, return_exceptions=True)
+            )
         )
     assert info.credits == 2.0, "the outer finally must not count the attempt twice"
     assert info._credit_accounting is None
@@ -156,6 +162,7 @@ async def _schedule_recovery(mgr: SubagentManager, info: SubagentInfo) -> None:
     task that then EXITS — arming it from the test body would sit through the
     real ``_RESET_TIMEOUT + 60`` handshake.
     """
+
     async def _arm() -> None:
         mgr._schedule_cancel_recovery(info)
 
@@ -230,9 +237,9 @@ async def test_done_set_during_reap_teardown_still_reports_and_frees_one_slot():
 
     assert len(_done_events(mgr)) == 1, "outcome was not reported exactly once"
     assert mgr._on_done.await_count == 1, "completion never reached the parent"
-    assert mgr._running_count == 0, (
-        f"slot not freed exactly once (_running_count={mgr._running_count})"
-    )
+    assert (
+        mgr._running_count == 0
+    ), f"slot not freed exactly once (_running_count={mgr._running_count})"
 
 
 @pytest.mark.asyncio
@@ -331,10 +338,8 @@ async def test_cancel_during_subagent_done_still_delivers_once():
     mgr._fire_event = AsyncMock(side_effect=_slow_event)
     mgr._on_done = AsyncMock(side_effect=_record_delivery)
 
-    task = asyncio.ensure_future(
-        mgr._force_reap("a1b2c3d4", info, elapsed=1.0, reason="reaped")
-    )
-    await asyncio.wait_for(entered.wait(), timeout=2)  # now inside the shielded report
+    task = asyncio.ensure_future(mgr._force_reap("a1b2c3d4", info, elapsed=1.0, reason="reaped"))
+    await await_until(entered)  # now inside the shielded report
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -342,8 +347,8 @@ async def test_cancel_during_subagent_done_still_delivers_once():
     # The shielded report survives its awaiter's cancellation -- release it
     # and confirm it still completes delivery.
     release.set()
-    await asyncio.wait_for(
-        asyncio.gather(*[t for t in mgr._report_tasks if not t.done()]), timeout=2
+    await await_until(
+        asyncio.ensure_future(asyncio.gather(*[t for t in mgr._report_tasks if not t.done()]))
     )
     assert delivered == ["done"], "shielded report did not complete delivery"
 
@@ -365,18 +370,16 @@ async def test_cancel_during_on_done_produces_no_second_delivery():
 
     mgr._on_done = AsyncMock(side_effect=_slow_on_done)
 
-    task = asyncio.ensure_future(
-        mgr._force_reap("a1b2c3d4", info, elapsed=1.0, reason="reaped")
-    )
+    task = asyncio.ensure_future(mgr._force_reap("a1b2c3d4", info, elapsed=1.0, reason="reaped"))
     # Wait until _on_done is actually executing before cancelling — avoids a
     # race under heavy xdist load where asyncio.sleep(0.01) could expire after
     # _force_reap already completed, so the cancel would be a no-op.
-    await asyncio.wait_for(entered.wait(), timeout=5)
+    await await_until(entered)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    await asyncio.wait_for(
-        asyncio.gather(*[t for t in mgr._report_tasks if not t.done()]), timeout=2
+    await await_until(
+        asyncio.ensure_future(asyncio.gather(*[t for t in mgr._report_tasks if not t.done()]))
     )
 
     # Exactly one injection, and the claim is consumed so no other path retries.
@@ -611,9 +614,9 @@ async def test_cancel_all_readmits_an_undelivered_report_to_orphan_recovery(monk
     await mgr.cancel_all()
 
     assert task.cancelled(), "straggler should have been cancelled"
-    assert cleared == [info.id], (
-        "undelivered completion was left tombstoned — unrecoverable on restart"
-    )
+    assert cleared == [
+        info.id
+    ], "undelivered completion was left tombstoned — unrecoverable on restart"
 
 
 @pytest.mark.asyncio
@@ -762,9 +765,9 @@ async def test_reap_suppression_marker_is_set_before_the_teardown_await():
         "respawn suppression was not set while teardown was suspended — a "
         "recovery handshake expiring here would respawn the run being killed"
     )
-    assert seen["recovery_deregistered"] is True, (
-        "recovery task was still registered while teardown was suspended"
-    )
+    assert (
+        seen["recovery_deregistered"] is True
+    ), "recovery task was still registered while teardown was suspended"
     await asyncio.sleep(0)
     assert recovery.cancelled(), "recovery task was never actually cancelled"
 
@@ -920,9 +923,9 @@ async def test_cancelled_teardown_still_releases_slot_and_gate():
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    assert mgr._running_count == 0, (
-        f"cancelled teardown leaked the slot (_running_count={mgr._running_count})"
-    )
+    assert (
+        mgr._running_count == 0
+    ), f"cancelled teardown leaked the slot (_running_count={mgr._running_count})"
     assert "a1b2c3d4" not in mgr._tasks, "cancelled teardown left the task registered"
 
 
@@ -960,10 +963,10 @@ async def test_run_does_not_block_on_its_report_during_shutdown():
 
     try:
         # Must return promptly even though the injection is wedged.
-        await asyncio.wait_for(mgr._run(info), timeout=5)
+        await await_until(asyncio.ensure_future(mgr._run(info)))
         # The independent report may still be persisting terminal usage when
         # the run returns; synchronize with its callback rather than scheduling.
-        await asyncio.wait_for(wedged.wait(), timeout=5)
+        await await_until(wedged)
         assert wedged.is_set(), "report never started"
         pending = [t for t in mgr._report_tasks if not t.done()]
         assert pending, "report should still be pending, owned by cancel_all's drain"
@@ -1013,8 +1016,7 @@ async def test_user_stop_during_pending_recovery_is_not_recorded_as_failure():
         mod.Stats = orig  # type: ignore[assignment]
 
     assert failures == [], (
-        "a neutral user Stop was counted as a subagent failure by the "
-        "cancelled-recovery arm"
+        "a neutral user Stop was counted as a subagent failure by the " "cancelled-recovery arm"
     )
     assert info.error == "", f"user stop synthesized an error: {info.error!r}"
 
@@ -1064,6 +1066,6 @@ async def test_stop_during_pending_spawn_approval_reports_and_releases_once():
         "count permanently inflates apparent capacity"
     )
     total_reports = len(_done_events(mgr)) + len(announced)
-    assert total_reports == 1, (
-        f"terminal outcome delivered {total_reports} times, expected exactly once"
-    )
+    assert (
+        total_reports == 1
+    ), f"terminal outcome delivered {total_reports} times, expected exactly once"

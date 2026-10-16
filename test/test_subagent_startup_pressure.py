@@ -46,6 +46,7 @@ from test_update_provider import _UNALLOCATABLE_PID
 import kiro_crew.subagent as subagent_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.subagent import _STARTUP_CAP_GATE_ROUNDS, SubagentInfo, SubagentManager
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # The end-to-end tests drive ``SubagentManager.spawn``, which refuses on a
 # memory-pressured host; pin the host reading so the verdict is the test's.
@@ -923,7 +924,7 @@ async def test_reaper_sweep_reaps_at_the_base_deadline_under_a_crowd(monkeypatch
 
     loop_task = asyncio.ensure_future(mgr._reaper_loop())
     try:
-        await asyncio.wait_for(swept.wait(), 5.0)
+        await await_until(swept)
     finally:
         loop_task.cancel()
         await asyncio.gather(loop_task, return_exceptions=True)
@@ -977,7 +978,7 @@ async def test_reaper_sweep_reaps_a_runtime_that_never_answers_its_first_prompt(
 
     loop_task = asyncio.ensure_future(mgr._reaper_loop())
     try:
-        await asyncio.wait_for(swept.wait(), 5.0)
+        await await_until(swept)
     finally:
         loop_task.cancel()
         await asyncio.gather(loop_task, return_exceptions=True)
@@ -1041,7 +1042,7 @@ class TestStreamOpenIsNotProgress:
         )
         task = asyncio.ensure_future(mgr._run_inner(info, "subagent:f00d1234"))
         try:
-            await asyncio.wait_for(opened.wait(), 5.0)
+            await await_until(opened)
             await _settle()
             assert info._exec_started is not None
             assert info._first_stream_started is None
@@ -1237,11 +1238,7 @@ def _shared_runtime(work_dir) -> tuple[object, asyncio.StreamReader, list[dict]]
 
 async def _until(predicate, what: str, ceiling: float = 10.0) -> None:
     """Wait on observable state, never on a guessed sleep."""
-    deadline = time.monotonic() + ceiling
-    while not predicate():
-        if time.monotonic() > deadline:
-            raise AssertionError(f"never observed: {what}")
-        await asyncio.sleep(0.01)
+    await async_wait_until(predicate, timeout=ceiling, describe=lambda: what)
 
 
 class TestOnlyThisSessionsFrameIsItsAnswer:
@@ -1394,7 +1391,7 @@ class TestOnlyThisSessionsFrameIsItsAnswer:
             assert info._startup_cotenant_frames == 1
             assert info._taskq_running_marked is True
             _feed({"id": prompt_id, "result": {"stopReason": "end_turn"}})
-            await asyncio.wait_for(run, timeout=10.0)
+            await await_until(run)
         finally:
             for task in (run, pump):
                 task.cancel()
@@ -1480,7 +1477,7 @@ class TestLeavingStartupStartsTheHeldSpawn:
             held = await self._hold_one_behind_the_bound(mgr, driven)
             run = asyncio.ensure_future(mgr._run_inner(driven, f"subagent:{driven.id}"))
             try:
-                await asyncio.wait_for(opened.wait(), 5.0)
+                await await_until(opened)
                 assert driven._pid == _UNALLOCATABLE_PID
                 assert driven._first_stream_started is None
                 await _until(
@@ -1489,7 +1486,7 @@ class TestLeavingStartupStartsTheHeldSpawn:
                 assert not mgr._queue
                 assert mgr._startup_population() == 2  # the peer and ``held``
                 release.set()
-                await asyncio.wait_for(run, 10.0)
+                await await_until(run)
             finally:
                 release.set()
                 run.cancel()
@@ -1530,7 +1527,7 @@ class TestLeavingStartupStartsTheHeldSpawn:
             held = await self._hold_one_behind_the_bound(mgr, driven)
             run = asyncio.ensure_future(mgr._run_inner(driven, f"subagent:{driven.id}"))
             try:
-                await asyncio.wait_for(opened.wait(), 5.0)
+                await await_until(opened)
                 await _settle()
                 assert driven._pid is None
                 assert SubagentManager._in_startup(driven) is True
@@ -1538,14 +1535,14 @@ class TestLeavingStartupStartsTheHeldSpawn:
                     runs.started == [] and len(mgr._queue) == 1
                 )  # an opened stream is not progress
                 send_first.set()
-                await asyncio.wait_for(first_sent.wait(), 5.0)
+                await await_until(first_sent)
                 assert driven._first_stream_started is not None
                 await _until(
                     lambda: runs.started == [held.id], "the held spawn starting on the first frame"
                 )
                 assert not mgr._queue
                 release.set()
-                await asyncio.wait_for(run, 10.0)
+                await await_until(run)
             finally:
                 send_first.set()
                 release.set()
@@ -1769,7 +1766,7 @@ class TestGateExitResetIsOneDefinition:
         _register(mgr, info)
         task = asyncio.ensure_future(mgr._create_shared_session(info, "subagent:hung", ""))
         try:
-            await asyncio.wait_for(entered.wait(), timeout=5)
+            await await_until(entered)
             assert info._gate_wait_started is None
             assert mgr._is_startup_stalled(info, now=1_000.0 + 120.5) is True
             assert mgr._monitor._start_queue_saturated_secs(info, 1_000.0 + 120.5) == 0.0

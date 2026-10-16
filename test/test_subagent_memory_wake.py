@@ -52,6 +52,7 @@ from kiro_crew.subagent import SubagentManager, _SharingPlan
 from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
 from kiro_crew.subagent_manager.admission.types import MemoryWait
 from kiro_crew.subagent_wait_reasons import QUEUED_REASON_LOW_MEMORY, QUEUED_WAIT_EXPIRED_TEXT
+from kiro_crew.testing.wait import await_until
 
 pytestmark = [pytest.mark.timeout(60), pytest.mark.usefixtures("healthy_host_memory")]
 
@@ -120,7 +121,7 @@ class _Host:
             self.mgr._drain_queue()
             task = getattr(self.mgr, "_drain_task", None)
             if task is not None:
-                await asyncio.wait_for(asyncio.shield(task), 5)
+                await await_until(task)
             await self.settle()
 
     async def spawn(self, parent: str, task: str = "work") -> Any:
@@ -173,7 +174,7 @@ class _Host:
         mgr._admission._sampler_fired()
         task = mgr._memory_sample_task
         assert task is not None
-        await asyncio.wait_for(asyncio.shield(task), 5)
+        await await_until(task)
         await self.quiesce()
 
     def sampler_active(self) -> bool:
@@ -198,7 +199,7 @@ class _Host:
         fut.set_result(None)
         task = self.mgr._tasks.get(info.id)
         if task is not None:
-            await asyncio.wait_for(asyncio.shield(task), 5)
+            await await_until(task)
         await self.settle()
 
     def deferred_audits(self) -> list[Any]:
@@ -280,7 +281,7 @@ async def _host(
         tasks += [task for task in mgr._report_tasks if not task.done()]
         for task in tasks:
             task.cancel()
-        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 5)
+        await await_until(asyncio.ensure_future(asyncio.gather(*tasks, return_exceptions=True)))
         for task in (
             getattr(mgr, "_drain_task", None),
             getattr(mgr, "_memory_sample_task", None),
@@ -661,7 +662,7 @@ class TestWhatAWaitWrites:
                 adm.wake_memory_waits(("child_terminal", "wait_ended", "sampler")[n % 3])
                 fit = h.mgr._memory_fit_task
                 assert fit is not None
-                await asyncio.wait_for(asyncio.shield(fit), 5)
+                await await_until(fit)
             await h.quiesce()
             assert not h.running(a2)
             assert h.deferred_events(a2) == events, "a wake that found no room re-parked it"

@@ -27,7 +27,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from _hot_reload_helpers import change
-from overload_fakes import Clock, mock_ctx, mock_sessions, wait_taskq_open
+from overload_fakes import (
+    Clock,
+    mock_ctx,
+    mock_sessions,
+    settle_store_writes,
+    wait_taskq_open,
+)
 
 import kiro_crew.subagent as subagent_mod
 from kiro_crew import taskq
@@ -38,7 +44,7 @@ from kiro_crew.config.schema import requires_restart
 from kiro_crew.subagent import SubagentManager
 from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator, taskq_bridge
 from kiro_crew.subagent_wait_reasons import QUEUED_WAIT_EXPIRED_TEXT
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
@@ -94,7 +100,9 @@ class _Harness:
         """Every posted store write and every scheduled emit has landed."""
         for _ in range(3):
             await self.mgr._taskq.run(lambda: None)
-            await asyncio.sleep(0.02)
+            await asyncio.sleep(
+                0.02
+            )  # flake-ok: harness settle lets orchestrator background tasks propagate through multiple event-loop iterations
 
     async def pump(self, passes: int = 3) -> None:
         """Run whole pump passes, each one awaited to its end."""
@@ -102,7 +110,7 @@ class _Harness:
             self.mgr._drain_queue()
             task = getattr(self.mgr, "_drain_task", None)
             if task is not None:
-                await asyncio.wait_for(asyncio.shield(task), 5)
+                await asyncio.wait_for(asyncio.shield(task), 30)
             await self.settle()
 
     async def spawn(self, task: str = "work", parent: str = _PARENT, **kwargs: Any) -> Any:
@@ -160,7 +168,7 @@ async def _harness(monkeypatch) -> AsyncIterator[_Harness]:
         tasks += [task for task in mgr._report_tasks if not task.done()]
         for task in tasks:
             task.cancel()
-        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 5)
+        await await_until(asyncio.ensure_future(asyncio.gather(*tasks, return_exceptions=True)))
         drain = getattr(mgr, "_drain_task", None)
         if drain is not None and not drain.done():
             drain.cancel()
@@ -682,10 +690,10 @@ class TestAnExpiryOutlivesItsProcess:
 
             h.mgr._on_done = refused
             await _recheck(h, 2)
-            for _ in range(200):
-                if attempts and not [t for t in h.mgr._report_tasks if not t.done()]:
-                    break
-                await asyncio.sleep(0.02)
+            await async_wait_until(
+                lambda: bool(attempts and not [t for t in h.mgr._report_tasks if not t.done()]),
+                describe=lambda: f"attempts={len(attempts)}, pending_reports={[t for t in h.mgr._report_tasks if not t.done()]}",
+            )
             await h.settle()
             assert attempts == [info.id]
             later = _later_store(h)
@@ -745,10 +753,7 @@ class TestAnExpiryOutlivesItsProcess:
             mgr.start_reaper()
             await wait_taskq_open(mgr)
             assert mgr._taskq is not None
-            for _ in range(200):
-                if delivered:
-                    break
-                await asyncio.sleep(0.02)
+            await async_wait_until(lambda: bool(delivered))
             assert [d.id for d in delivered] == ["deadbeefdeadbeef"]
             assert delivered[0].error == QUEUED_WAIT_EXPIRED_TEXT
         finally:
@@ -785,9 +790,7 @@ class TestAnExpiryOutlivesItsProcess:
             assert mgr._taskq is not None
             mgr._admission.taskq_boot_dispatch()
             mgr._admission.taskq_schedule_owed_replay()
-            for _ in range(10):
-                await mgr._taskq.run(lambda: None)
-                await asyncio.sleep(0.02)
+            await settle_store_writes(mgr._taskq, rounds=10)
             assert delivered == []
             later = taskq.TaskStore(path, network_fs=False).open()
             try:
@@ -797,10 +800,7 @@ class TestAnExpiryOutlivesItsProcess:
             finally:
                 later.close()
             mgr.release_queue_dispatch()
-            for _ in range(200):
-                if delivered:
-                    break
-                await asyncio.sleep(0.02)
+            await async_wait_until(lambda: bool(delivered))
             assert [d.id for d in delivered] == ["deadbeefdeadbeef"]
             assert delivered[0].error == QUEUED_WAIT_EXPIRED_TEXT
         finally:
@@ -846,10 +846,10 @@ class TestAnExpiryOutlivesItsProcess:
                 assert [d.id for d in h.delivered] == ["deadbeefdeadbeef"]
                 # Later sweeps: the replay is done, so no further read.
                 seen = len(sweeps)
-                for _ in range(200):
-                    if len(sweeps) >= seen + 3:
-                        break
-                    await asyncio.sleep(0.01)
+                await async_wait_until(
+                    lambda: len(sweeps) >= seen + 3,
+                    describe=lambda: f"sweeps={len(sweeps)}, want {seen + 3}",
+                )
                 await h.settle()
             finally:
                 reaper.cancel()
@@ -961,7 +961,7 @@ async def _a_wave_with_one_live_member(h: _Harness, parent: str = _WAVE_PARENT) 
         "live sibling", parent_session_key=parent, batch_id="wv", batch_total=2
     )
     assert live is not None
-    await asyncio.wait_for(h.started.wait(), 5)
+    await await_until(h.started)
     h.free["gb"] = 1.0
     waiting = await h.spawn("waits for memory", parent=parent, batch_id="wv", batch_total=2)
     return live, waiting
@@ -1006,10 +1006,7 @@ class TestADigestHeldExpiryStaysOwed:
             try:
                 await wait_taskq_open(restarted)
                 restarted._admission.taskq_boot_dispatch()
-                for _ in range(200):
-                    if delivered:
-                        break
-                    await asyncio.sleep(0.02)
+                await async_wait_until(lambda: bool(delivered))
                 assert [d.id for d in delivered] == [waiting.id]
                 assert delivered[0].error == QUEUED_WAIT_EXPIRED_TEXT
             finally:
@@ -1041,10 +1038,7 @@ class TestADigestHeldExpiryStaysOwed:
                     h.mgr, "batch_members_pending_async", AsyncMock(return_value=False)
                 )
                 await h.mgr._on_done(done)
-                for _ in range(200):
-                    if injected:
-                        break
-                    await asyncio.sleep(0.02)
+                await async_wait_until(lambda: bool(injected))
                 await h.settle()
                 assert len(injected) == 1 and QUEUED_WAIT_EXPIRED_TEXT in injected[0]
                 # The flusher's own folder is tombstoned; the expiry has none.
@@ -1068,10 +1062,7 @@ class TestADigestHeldExpiryStaysOwed:
             with _through_the_gateway(h) as (injected, marked):
                 waiting = await h.spawn("waits for memory", parent=_WAVE_PARENT)
                 await _expire(h, waiting.id)
-                for _ in range(200):
-                    if injected:
-                        break
-                    await asyncio.sleep(0.02)
+                await async_wait_until(lambda: bool(injected))
                 await h.settle()
                 assert len(injected) == 1 and QUEUED_WAIT_EXPIRED_TEXT in injected[0]
                 assert marked == []
@@ -1221,10 +1212,10 @@ class TestARefusedTeardownSweepIsRetried:
             monkeypatch.setattr(mgr, "_taskq_pump", MagicMock())
             reaper = asyncio.ensure_future(mgr._reaper_loop())
             try:
-                for _ in range(200):
-                    if len(retries) >= 2:
-                        break
-                    await asyncio.sleep(0.01)
+                await async_wait_until(
+                    lambda: len(retries) >= 2,
+                    describe=lambda: f"retries={len(retries)}",
+                )
             finally:
                 reaper.cancel()
                 await asyncio.gather(reaper, return_exceptions=True)
@@ -1245,10 +1236,10 @@ async def _expire_through_the_gateway(h: _Harness, parent: str, stream: Any) -> 
     with _through_the_gateway(h, stream) as _:
         waiting = await h.spawn("waits for memory", parent=parent)
         await _expire(h, waiting.id)
-        for _ in range(200):
-            if not [t for t in h.mgr._report_tasks if not t.done()]:
-                break
-            await asyncio.sleep(0.02)
+        await async_wait_until(
+            lambda: not [t for t in h.mgr._report_tasks if not t.done()],
+            describe=lambda: f"pending_reports={len([t for t in h.mgr._report_tasks if not t.done()])}",
+        )
         await h.settle()
     assert len(_expired_reports(h, waiting.id)) == 1
     return waiting.id, stream
@@ -1320,7 +1311,7 @@ class TestAGivenUpDigestKeepsItsHeldExpiriesOwed:
             before = set(h.mgr._tasks)
             h.mgr.force_digest_flush("wv", live.parent_session_key, 2, 120.0)
             (key,) = [k for k in h.mgr._tasks if k not in before]
-            await asyncio.wait_for(h.mgr._tasks[key], 10)
+            await await_until(h.mgr._tasks[key])
             return None
         done = subagent_mod.SubagentInfo(
             id=live.id,

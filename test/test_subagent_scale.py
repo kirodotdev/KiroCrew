@@ -20,6 +20,7 @@ import asyncio
 import contextlib
 import pathlib
 import re
+import threading
 import time
 from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -35,6 +36,7 @@ from kiro_crew.subagent import (
     SubagentManager,
 )
 from kiro_crew.subagent_scale import SubagentEventCoalescer
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # Ceiling for a wait on an announce task that only the test ends (a release, a
 # cancel or ``cancel_all``). It is far above what the in-memory work needs, so a
@@ -1063,12 +1065,7 @@ async def _settle(predicate, what: str, timeout: float = 5.0) -> None:
     every call site here settles within one 0.02 s poll, so reaching the
     ceiling is a stall and not a slow runner.
     """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while not predicate():
-        if loop.time() >= deadline:
-            raise AssertionError(f"never settled within {timeout}s: {what}")
-        await asyncio.sleep(0.02)
+    await async_wait_until(predicate, timeout=timeout, describe=lambda: what)
 
 
 async def _drain_injections(orch) -> None:
@@ -1577,10 +1574,12 @@ class TestWaveDigest:
         mgr, on_done = self._capture_on_done(orch)
         total = 12  # chunk size 10 -> chunk 1/2 at member 10, final 2/2 on close
         injected: list[str] = []
+        injected_event = threading.Event()
 
         async def _fake_run_chat(_state, _slot, text, *, _directive_user_origin, **_kw):
             assert _directive_user_origin is False
             injected.append(text)
+            injected_event.set()
 
         hop_calls: list[int] = []
 
@@ -1592,9 +1591,7 @@ class TestWaveDigest:
             # where the later chunk is parked and can never land here.
             hop_calls.append(1)
             if len(hop_calls) == 1:
-                deadline = time.monotonic() + 2.0
-                while not injected and time.monotonic() < deadline:
-                    time.sleep(0.01)
+                injected_event.wait(timeout=2.0)
             return 60.0
 
         with (
@@ -2678,24 +2675,18 @@ async def _await_drained(mgr, store, started: list[str], expected: int) -> None:
     """
     from kiro_crew.taskq import model
 
-    t0 = time.monotonic()
-    deadline = t0 + _DRAIN_CEILING_SECS
-    while time.monotonic() < deadline:
-        # The in-memory half of the conjunction gates the store read: a
-        # ``count()`` here takes the store's connection ON the event loop
-        # (``on_loop_db`` warns for exactly this), and one contended with the
-        # writer thread blocks the loop for the connection's whole busy
-        # timeout — including the drain this is waiting for.
-        if len(started) >= expected and not mgr._queue and mgr._running_count == 0:
-            if store.count(state=model.DONE) >= expected:
-                return
-        await asyncio.sleep(0.005)
-    raise AssertionError(
-        f"drain unfinished after {time.monotonic() - t0:.1f}s: "
-        f"{len(started)} of {expected} rows started, "
-        f"{store.count(state=model.DONE)} DONE, "
-        f"{len(mgr._queue)} still in the window, "
-        f"running_count={mgr._running_count}"
+    await async_wait_until(
+        lambda: len(started) >= expected
+        and not mgr._queue
+        and mgr._running_count == 0
+        and store.count(state=model.DONE) >= expected,
+        timeout=_DRAIN_CEILING_SECS,
+        describe=lambda: (
+            f"drain unfinished after {_DRAIN_CEILING_SECS:.1f}s: {len(started)} of {expected} rows started, "
+            f"{store.count(state=model.DONE)} DONE, "
+            f"{len(mgr._queue)} still in the window, "
+            f"running_count={mgr._running_count}"
+        ),
     )
 
 
@@ -2916,14 +2907,12 @@ class TestQueuedDepthReachesZero:
         ):
             for i in range(5):
                 mgr.spawn(f"t{i}", parent_session_key="dashboard:s1", batch_id="b1")
-            deadline = time.monotonic() + 15.0
-            while time.monotonic() < deadline:
-                await asyncio.sleep(0.02)
-                if len(started) == 5 and mgr._running_count == 0 and not mgr._queue:
-                    # let the in-flight depth emits land
-                    for _ in range(5):
-                        await asyncio.sleep(0.02)
-                    break
+            await async_wait_until(
+                lambda: len(started) == 5 and mgr._running_count == 0 and not mgr._queue,
+                timeout=15.0,
+                describe=lambda: f"started={len(started)}, running={mgr._running_count}, queued={len(mgr._queue)}",
+            )
+            await settle_depth_emits(mgr)
         assert len(started) == 5
         assert mgr.queued_count_for("dashboard:s1") == 0
         assert mgr._dispatching_ids == set()
@@ -2992,7 +2981,7 @@ class TestQueuedDepthReachesZero:
             await settle_depth_emits(mgr)
             popped_at = len(depths)
             mgr._drain_queue()
-            await asyncio.wait_for(hold.wait(), 5)
+            await await_until(hold)
             assert second.id in mgr._dispatching_ids and not mgr._queue
             # The guards' reading: the row is still this parent's work.
             assert await mgr.has_pending_work_for_async("dashboard:s1") is True
@@ -3047,15 +3036,14 @@ class TestQueuedDepthReachesZero:
             assert mgr._release_slot(first)
             mgr._running_count -= 1
             mgr._drain_queue()
-            await asyncio.wait_for(hold.wait(), 5)
+            await await_until(hold)
             # Popped, marked, unclaimed, and invisible to the in-memory sweeps.
             assert second.id in mgr._dispatching_ids
             assert not mgr._queue
             assert second.id not in mgr._agents or mgr._agents[second.id].queued
             _running, queued_stopped = await mgr.cancel_for_parent("dashboard:s1")
             released.set()
-            for _ in range(25):
-                await asyncio.sleep(0.02)
+            await settle_store_writes(mgr._taskq, rounds=4)
         assert queued_stopped == 1, "Stop all did not reach the popped row"
         row = mgr._taskq.get(second.id)
         assert row is not None and row.state not in (
@@ -3117,10 +3105,10 @@ class TestQueuedDepthReachesZero:
             if mgr._release_slot(first):
                 mgr._running_count -= 1
                 mgr._drain_queue()
-            for _ in range(50):
-                await asyncio.sleep(0.02)
-                if depths and depths[-1][0] == 1 and not mgr._dispatching_ids:
-                    break
+            await async_wait_until(
+                lambda: bool(depths and depths[-1][0] == 1 and not mgr._dispatching_ids),
+                describe=lambda: f"depths={depths[-3:] if depths else []}, dispatching={mgr._dispatching_ids}",
+            )
         assert mgr._dispatching_ids == set(), "mark leaked past a failed claim"
         assert depths and depths[-1][0] == 1, f"failed claim published {depths[-3:]}"
         assert mgr.queued_count_for("dashboard:s1") == 1

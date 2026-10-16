@@ -15,6 +15,7 @@ import pytest
 
 from kiro_crew.execution_context import execution_for_store
 from kiro_crew.subagent import _TURN_LIMIT, SubagentManager
+from kiro_crew.testing.wait import await_until
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
@@ -2472,7 +2473,7 @@ class TestSubagentUsageRow:
         with patch.object(manager, "_fire_event", side_effect=on_event):
             task = asyncio.create_task(manager._run_inner(info, "subagent:usagecancel"))
             try:
-                await asyncio.wait_for(entered.wait(), timeout=5)
+                await await_until(entered)
                 task.cancel()
                 with pytest.raises(asyncio.CancelledError):
                     await task
@@ -3024,7 +3025,7 @@ class TestSpawnMemoryModeSnapshot:
         parent_modes["dashboard:parent"] = "persistent"
         manager._running_count = 0
         manager._drain_queue()
-        await asyncio.wait_for(asyncio.gather(*manager._tasks.values()), timeout=5)
+        await await_until(asyncio.ensure_future(asyncio.gather(*manager._tasks.values())))
         running = manager.get(info.id)
         assert running is not None and running.memory_mode == mode
         assert read_run_memory_mode(info.id) == mode
@@ -3079,15 +3080,17 @@ class TestSpawnMemoryModeSnapshot:
         info = manager.spawn("approved task", parent_session_key="dashboard:parent")
         assert info is not None
         try:
-            await asyncio.wait_for(entered.wait(), timeout=5)
+            await await_until(entered)
             modes.clear()
             approved.set_result(True)
-            await asyncio.wait_for(asyncio.gather(*manager._tasks.values()), timeout=5)
+            await await_until(asyncio.ensure_future(asyncio.gather(*manager._tasks.values())))
             assert info.memory_mode == mode
             assert read_run_memory_mode(info.id) == mode
         finally:
             if not approved.done():
                 approved.set_result(False)
-            await asyncio.wait_for(
-                asyncio.gather(*manager._tasks.values(), return_exceptions=True), timeout=5
+            await await_until(
+                asyncio.ensure_future(
+                    asyncio.gather(*manager._tasks.values(), return_exceptions=True)
+                )
             )

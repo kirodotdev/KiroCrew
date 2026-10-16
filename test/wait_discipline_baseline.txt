@@ -170,7 +170,6 @@
  2 test_discord_sessions.py
  2 test_e2e_ci_scheduling.py
  1 test_e2e_smoke.py
- 5 test_eager_spawn.py
  5 test_embedding_rebuild_generation.py
  1 test_embedding_rebuild_process.py
  2 test_embeddings.py
@@ -386,11 +385,9 @@
  6 test_snapshot_memory_stores.py
  1 test_source_providers.py
  1 test_spawn_admission_verdict_census.py
-12 test_spawn_approval_channel_delivery_2381.py
  1 test_spawn_approval_channel_governance_13491.py
  1 test_spawn_approval_mid_wait_deny_13559.py
  1 test_spawn_exec_shim.py
-12 test_spawn_followup.py
  4 test_spawn_reasoning_effort.py
  3 test_spawn_release_queued.py
  6 test_ssh_tunnel_manager_cov80.py
@@ -405,26 +402,18 @@
  4 test_stub_broker_reconnect.py
  7 test_stub_reconnect_queued_calls.py
  2 test_stub_writer_death.py
- 5 test_subagent.py
  4 test_subagent_config_hot_reload.py
  1 test_subagent_coverage.py
- 6 test_subagent_delivery_ttl_anchor.py
  1 test_subagent_error_detail.py
  3 test_subagent_memory_bounds_concurrency.py
- 5 test_subagent_memory_wake.py
  1 test_subagent_no_tool_calls_note.py
  3 test_subagent_owed_tombstones.py
  1 test_subagent_panel_durable_replay.py
  3 test_subagent_provenance_write.py
-15 test_subagent_queue_max_wait.py
  2 test_subagent_queued_visibility.py
- 5 test_subagent_reap_attribution.py
-10 test_subagent_reap_race.py
  1 test_subagent_release_off_loop.py
- 9 test_subagent_scale.py
  1 test_subagent_sizing.py
  1 test_subagent_stall_activity_scope.py
-11 test_subagent_startup_pressure.py
  1 test_subagent_tool_approval_crew_log.py
  1 test_subagent_turn_identity.py
 12 test_subprocess_pool.py
