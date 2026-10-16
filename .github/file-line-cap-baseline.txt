@@ -25,7 +25,6 @@
 3207 src/kiro_crew/agent_sdk/backends.py
 4276 src/kiro_crew/apps/bridges.py
 2259 src/kiro_crew/apps/builtins/auto_improvement/spine/agent_runner.py
-2772 src/kiro_crew/apps/builtins/aws_control/crew/packaging/tests/test_sensitive_source_and_report_identity.py
 2879 src/kiro_crew/apps/builtins/aws_control/crew/runtime/container/sidecar/backup.py
 5158 src/kiro_crew/apps/builtins/aws_control/crew/runtime/container_tests/test_sidecar_durability_gaps.py
 2683 src/kiro_crew/apps/builtins/code_review_sage/backend/routes.py

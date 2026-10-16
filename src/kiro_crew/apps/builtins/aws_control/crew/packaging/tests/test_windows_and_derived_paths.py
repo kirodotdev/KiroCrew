@@ -425,6 +425,15 @@ _POSIX_ONLY_PRIMITIVES = (
     "_staged_tree_hash",
 )
 
+#: The sensitive-source suite the two guards below read as one tree: its first module and the
+#: topic modules beside it, so a test is scanned wherever in the suite it lives.
+_SENSITIVE_SOURCE_SUITE = (
+    "test_sensitive_source_and_report_identity.py",
+    "test_sensitive_source_and_report_identity_credential_floor.py",
+    "test_sensitive_source_and_report_identity_nofollow_reads.py",
+    "test_sensitive_source_and_report_identity_staging_and_disposal.py",
+)
+
 
 def _test_has_posix_skip(fn: ast.FunctionDef) -> bool:
     """A test is POSIX-gated if a decorator is ``@_posix_only`` or a ``skipif`` naming posix."""
@@ -460,8 +469,9 @@ def test_every_sensitive_source_test_touching_a_posix_primitive_is_posix_gated()
     This asserts every such test in the sensitive-source suite carries a POSIX skip, so the
     next neighbour pulled onto that path is caught here rather than on the Windows run.
     """
-    suite = pathlib.Path(__file__).resolve().parent / "test_sensitive_source_and_report_identity.py"
-    tree = ast.parse(suite.read_text(encoding="utf-8"), str(suite))
+    here = pathlib.Path(__file__).resolve().parent
+    suite = [here / name for name in _SENSITIVE_SOURCE_SUITE]
+    tree = ast.parse("\n".join(p.read_text(encoding="utf-8") for p in suite), str(suite[0]))
     offenders = [
         fn.name
         for fn in ast.walk(tree)
@@ -483,8 +493,9 @@ def test_the_posix_gate_guard_is_scanning_real_tests() -> None:
     A guard that matched nothing would pass while an unmarked test raised on Windows. Confirm
     the suite has several tests that DO drive a primitive, so the rule is scanning a real set.
     """
-    suite = pathlib.Path(__file__).resolve().parent / "test_sensitive_source_and_report_identity.py"
-    tree = ast.parse(suite.read_text(encoding="utf-8"), str(suite))
+    here = pathlib.Path(__file__).resolve().parent
+    suite = [here / name for name in _SENSITIVE_SOURCE_SUITE]
+    tree = ast.parse("\n".join(p.read_text(encoding="utf-8") for p in suite), str(suite[0]))
     drivers = [
         fn.name
         for fn in ast.walk(tree)
