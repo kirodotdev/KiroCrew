@@ -43,7 +43,7 @@
  7 test_active_turn_session_key.py
  5 test_adaptive_startup_memory.py
  4 test_admission_gate.py
- 2 test_agent.py
+ 2 test_agent_fork_templates.py
  6 test_agent_slash_command.py
  2 test_ai_pr_watchers_coverage.py
  2 test_ai_runner_coverage.py

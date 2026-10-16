@@ -23,7 +23,7 @@ Two properties are security-critical rather than merely tidy:
   than riding inside that one.
 
 Every test patches ``kiro_crew.agent``'s module globals with the
-``patch.multiple`` + ``ExitStack`` idiom from ``test_agent.py``, so the real
+``patch.multiple`` + ``ExitStack`` idiom from ``agent_helpers.py``, so the real
 ``~/.kiro`` is never read or written.
 """
 
@@ -112,7 +112,7 @@ def _bundled_defaults(tmp_path: Path) -> Path:
 def _run_install(tmp_path: Path, cfg_dir: Path, *, managed: "dict | None" = None, **kwargs) -> Path:
     """Run ``install_agent`` with every module global redirected into *tmp_path*.
 
-    The ``patch.multiple`` + ``ExitStack`` shape from ``test_agent.py``. This is
+    The ``patch.multiple`` + ``ExitStack`` shape from ``agent_helpers.py``. This is
     what keeps a test from touching the developer's real ``~/.kiro/agents`` — which
     for THIS feature would mean writing a computer-use MCP entry into their live
     agent config.

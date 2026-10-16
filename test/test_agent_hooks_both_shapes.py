@@ -496,7 +496,7 @@ class TestOffStaysOffThroughAutoimport:
         Production rejects a `kiro_hooks_dir` that does not resolve under
         `Path.home()`, so a tmp dir is refused and autoimport silently scans
         nothing — which would let every test here pass with the suppression
-        deleted. The same isolation `test_agent.py`'s autoimport class uses.
+        deleted. The same isolation `test_agent_hooks_autoimport.py`'s autoimport class uses.
         """
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
 
