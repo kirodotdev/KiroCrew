@@ -177,6 +177,7 @@ Slack Socket Mode → events.py (dispatch) → handler.py → SessionManager →
 | `slack/sessions_view.py` | Slack half of the recent-sessions list shared by the slash command, the DM keyword and the App Home tab; collection lives in `messaging/sessions_view.py` |
 | `slack/thread_parent.py` | The first message of a thread a new Slack-born session was opened in: fetched once for the fenced prompt block and recorded once as a display-only `notice` transcript row (see "Thread parent for a new Slack-born session") |
 | `slack/thread_replies.py` | Thread replies a turn has not seen yet, bounded, redacted and injection-screened, for the fenced `[SLACK THREAD REPLIES — UNTRUSTED DATA]` prompt block (see "Thread replies since the last turn") |
+| `slack/code_channels/workspace/` | A code channel's workspace: per-channel git worktree, the Code-tab diff (`setView type=diff`), the context bar (repo/branch/PR/CI) and archive cleanup. See [Code-channel workspace](#code-channel-workspace) |
 
 ## Composition
 
@@ -1718,6 +1719,137 @@ Config example (remote access via URL):
 - **Trusted bot IDs** (`slack.trusted_bot_ids` in config): allows specific bot IDs to bypass the blanket `bot_id` filter, enabling multi-node mesh communication. Empty list = all bot messages dropped (default), and a bot id NOT in the list is denied exactly as with no list (fail-closed, `error=untrusted_bot`). Admission requires a positive `bot_id` match against the allowlist; the match sets `from_trusted_bot`, which lets the `bot_id` stand in as `sender_id` and grants access equivalent to an allowed user — authorization is explicit via the `trusted_bot_ids` config allowlist, not the `slack.allowed_users` list. When an admitted trusted-bot event has empty (or generic-placeholder) top-level text and the forwarded-message path recovered nothing, the gateway recovers content from its ordinary attachments (`_extract_trusted_bot_attachment_text`). It skips attachments marked `is_share` or `is_msg_unfurl` before reading their fallback or blocks, so shared and link-preview content declined by the forwarded path cannot be reclassified by trusted recovery. For each remaining attachment, the bounded `fallback` is trimmed first and used only when it remains nonblank and is not a generic Slack placeholder after that normalization; otherwise the attachment's Block Kit text is used. That Block Kit text comes from `_extract_blocks_text`, the ONE Block Kit renderer. Forwarded-message recovery uses its default `rich_text` / `section.text` / `context` behavior, while trusted ordinary attachments enable its `include_section_fields` mode so each valid `section.fields[*].text` value becomes a bounded line after any `section.text`; field handling remains inside the same renderer. `_MAX_RECOVERED_TEXT_CHARS` (16,000) is enforced at different scopes: each `_extract_blocks_text` invocation has its own hard traversal/output cap (or the smaller requested `limit`, clamped to 16,000) and stops reading blocks, elements, and inline fragments when that invocation's budget is spent. `_extract_trusted_bot_attachment_text` separately applies one 16,000-character global budget across its ordinary attachments, subtracting each `\n\n` separator and handing each renderer only the remaining budget. Forwarded-message aggregation keeps its existing scope: it does not enable the trusted-only fields mode, so field-only section blocks yield no text; it may join content from multiple `is_share` attachments, including raw `att_text` or `fallback`, and has no global 16,000-character cap across attachments. This recovery is unavailable to human or untrusted-bot events (`from_trusted_bot` is the gate), so ordinary link-unfurl previews remain excluded, and a non-list `attachments` or non-dict member is skipped rather than guessed at. All trusted-bot permission decisions emit SEL audit events (allowed decisions carry `resources="trusted_bot"` so the decision basis is traceable). Echo protection: error replies to trusted-bot messages are suppressed on both dispatch routes — the native path (`from_trusted_bot` in `handle_message`) and the default transport path (`from_trusted_bot` in `handle_message_transport`, threaded through the immediate call, both session queues, and `_dispatch_queued`; the error message is suppressed but the thread status is still cleared). Successful-reply loops are bounded by the **per-thread turn cap** (`slack.trusted_bot_turn_limit`, default 5, minimum 1): a thread that has run that many consecutive trusted-bot turns admits no more (`error=trusted_bot_turn_limit_reached`) until an allowed human posts in it, which resets the count — without the cap, two mutually trusted gateways would admit each other's replies as fresh turns indefinitely. Only a message that actually dispatches a turn moves the count (Slack retries, message/app_mention duplicate pairs, and activation-dropped messages do not). Review-mode channels deny trusted bots outright (`error=trusted_bot_denied_in_review_channel`): the review draft flow delivers via an ephemeral to the sender, which requires a human user id. The gateway's own bot id (cached from the startup `auth.test` that enterprise validation already performs) is never trusted even when listed (`error=own_bot_id_never_trusted`) — otherwise every reply would re-enter the handler as fresh input, a self-reply loop; when `auth.test` was unavailable the self identity is unverified and the admission FAILS CLOSED, trusting nobody (`error=trusted_bot_requires_verified_self_id`) — the same posture enterprise validation takes for a configured allowlist with unverifiable workspace identity. The (unwired) `SlackTransport.receive` inbound path and this gate call ONE owner of the admission rule, `slack.enterprise.trusted_bot_admission` — positive allow-list match, own-bot exclusion, fail-closed unverified self id, audited decisions, trust before the subtype filter — so the two Slack inbound paths cannot drift about which peer bots are admissible. What each site still owns is the READ TIMING of the allow-list it passes in: this gate passes the live config, so an operator's edit takes effect on the next event, while the transport freezes a constructor snapshot to match its `allowed_users` pattern.
 - Socket Mode — no public URL exposed
 - Credentials stored in `~/.kiro/crew/.env` with `chmod 600`
+
+## Code-channel workspace
+
+`slack/code_channels/workspace/` gives each Slack code channel its own git
+checkout and keeps the channel's Code tab and context bar current. It writes to
+Slack only through the core's `CodeChannelsClient` (`set_context_bar`,
+`set_diff_view`, `remove_view`), which maps Slack's answers to
+`CodeChannelApiError` and hands every refusal to the feature's latch, and it is
+attached to the core's turn hooks by `workspace/core.py`'s `install()`, called
+from the core's own `install()`. The core's bind
+(`routing._bind_channel`) awaits `core.prepare(binding)` before the first message
+is routed: the core captures a session's project when the first turn starts, so
+the worktree must exist and the session must point at it by then. The wait is
+bounded by git's own per-call timeout and `prepare` never raises. Each channel has
+ONE bind task at a time, shielded from its caller: a caller that times out (the
+core's hook timeout) or is cancelled leaves it running and the next caller joins
+it. A bind that
+ends on a git error is retried by later calls, three binds at most; reasons that
+describe the project or host (no project, not a repository, sensitive path, no
+sandbox) are not retried. Filesystem probes on the event loop's behalf run on
+worker threads.
+
+**Gate.** Every bind and refresh first asks the core's one gate,
+`binding.code_channels_on(live_config())` (= `features.code_channels_enabled`):
+the user's `slack.code_channels` setting is on AND the install can run code
+channels (granted scopes include `code_channels:manage`, and Slack has not
+answered `feature_disabled` / `missing_scope` / `not_allowed_token_type`). The
+core's client hands such an answer, whichever write receives it, to
+`features.latch_unavailable`, which latches the feature off for the process
+until a reconnect re-probes; nothing is posted in Slack. Off for any of these reasons,
+no code in this package runs (no worktree, no Slack call, no audit row) and the
+gateway behaves as it does without it.
+
+- **Worktree (bind and turn start).** When the binding's project — or, for a
+  binding with none, the project its session was created with (the dashboard's
+  default) — lies in a git repository, `WorkspaceService.ensure` creates a worktree through the follow-up
+  card's own `_create_worktree_sync` (`dashboard/handlers/worktree.py`): branch
+  `slack/<title-slug>-<hash8>` (hash over `team_id:channel_id`, so channels never
+  collide and a restart re-derives the same name) cut from `origin/HEAD`, else
+  `HEAD`; the branch claimed compare-and-create, the directory claimed by atomic
+  `mkdir`, checkout-filter repos refused, everything OS-sandboxed with repo hooks
+  off. The base sha is recorded, and the bound dashboard session is pointed at the
+  worktree (or the same subdirectory of it) through the `set_project` directive's
+  `_set_project`, SEL-recorded as `code_channel_session_project` — ONCE per
+  session: by the bind that made the worktree, and once for a replacement session
+  that later takes over the channel. A later turn start never moves a session
+  again, so a project its user picks afterwards holds and no mid-conversation
+  reset is armed.
+  A project that is
+  not a repository, a missing project, a sensitive path, a filter repo or a host
+  with no sandbox get no worktree and no error (`worktree_skipped` says why);
+  worktree decisions are SEL-recorded as `code_channel_worktree`. A record lost
+  across a restart is recovered by adopting the worktree the derived branch holds.
+- **Channel folder and workers (conductor-led channels).** Before the core
+  creates a channel's session, its bind calls `workspace.core.plan_session`,
+  which cuts the worktree and creates a folder for the channel, named for it,
+  under the folder the session would have been filed in (the Code channels
+  default), with the worktree as the folder's `project_dir` (through the
+  dashboard's one create path, `chat_folders.create_folder_record`; SEL
+  `code_channel_folder`). The session is created in that folder and starts in the
+  worktree. A conductor running there files its workers under
+  `<that folder>/<agent>`, so they inherit the same worktree (a folder's project
+  comes from its nearest ancestor that declares one). The diff and the bar track
+  that one tree and its branch: a worker commits there, on the channel branch.
+  Every 15 s a watcher reads, in memory, which sessions are filed anywhere under
+  each channel's folder and whether a turn is running in them; a turn that ended
+  schedules the same refresh a bound turn does, and while only workers are
+  running the channel shows Slack's working status. The tree has one writer at a
+  time: workers take turns (a conductor dispatches one worker at a time into a
+  channel), and two sessions running in it at once are logged. Off git, with the
+  feature off, or when the folder is refused, the spec is left exactly as the
+  core resolved it.
+- **Context bar.** At most five unique `info` items with Slack's documented keys
+  and icons: `repo` (`owner/name`, linked to the forge; the directory name when
+  the remote is not a forge; `folder` for a non-git project), `branch` (linked
+  once the branch exists on the remote), `pr` and, for a live PR, `ci` (linked to
+  `<pr>/checks`). The remote URL is parsed strictly and rebuilt from host, owner
+  and name, so a credential in it never reaches Slack. Sent at bind and after each
+  turn, only when the item list changed (it is a full replacement upstream).
+- **Diff (turn end).** The turn-end hook only schedules the refresh and returns,
+  so the turn never waits on git, `gh` or Slack; one refresh runs per channel and
+  turns ending meanwhile queue exactly one rerun.
+  `git diff <merge-base(HEAD, origin/HEAD) or base sha>`
+  against the working tree — committed, staged and unstaged changes in one diff,
+  external diff drivers and textconv off — plus a `new file` section per untracked,
+  non-ignored file (at most 500), rendered from the file itself. The gateway reads
+  those files outside the sandbox, so the read is confined to the worktree against
+  an agent racing it: the worktree root and every directory are walked by fd with
+  `O_NOFOLLOW`, the leaf is opened relative to its directory fd with
+  `O_NOFOLLOW | O_NONBLOCK`, the open fd must be the regular file the `lstat` saw,
+  and a file with more than one hard link is never read (its other name can be
+  anywhere), nor is a path `is_sensitive_path` names. The per-channel record that
+  names the worktree is a file, so before the gateway reads under it git must
+  confirm it: the branch must be one this channel derives and git
+  must list the recorded path as the worktree holding it (SEL
+  `code_channel_worktree` denied otherwise). An untracked symlink is shown as a
+  link (mode `120000` and its target text), never followed; without `dir_fd`
+  support (Windows) untracked files are not rendered. Everything bound for Slack —
+  diff body, base/head labels and context-bar labels — goes through the gateway's
+  outbound redaction (`platform.context.redact_via_context`, so an installed credential policy applies: credentials and exfiltration
+  URLs) before it is sized, cut and hashed. All bytes are normalized to
+  UTF-8 before anything is measured, and git output is capped while it is read.
+  The body is cut to Slack's 1,000,000-byte `setView` limit at a file boundary
+  where one fits and then opens with a plain-text truncation note; a new file too
+  large to show, or with a name that would break the diff, also triggers the note. Published with
+  `base_branch`/`head_branch` labels only when its digest changed; nothing is
+  published for an empty diff, and a published tab whose changes were all reverted
+  is removed when the client offers `remove_view`.
+- **PR and CI.** `gh pr list --repo <owner/name> --head <branch> --state all`
+  through the dashboard's source-provider runner (allowlisted `gh`, pinned
+  `GH_HOST`, env allowlist, output cap, SEL record; `gh` never runs in the
+  worktree), preferring an open PR over the newest one. State and CI come from
+  the dashboard PR chip's own `_fetch_check_status`, which reads
+  `statusCheckRollup` separately so a token without Checks access still yields
+  the PR. `gh` missing or signed out keeps the PR last seen and drops its CI; a
+  GitHub Enterprise host must be in `dashboard.github_hosts` (that allowlist is
+  loaded before it is read).
+- **Slack refusals.** Channel-specific answers (`not_agent_channel`,
+  `not_authorized`, `channel_not_found` and the rest of
+  `service._CHANNEL_DISABLING_ERRORS`) switch publishing off for that channel (SEL
+  `code_channel_publish` denied) instead of retrying every turn. The install-wide
+  answers are not persisted per channel: they go to the feature's process latch
+  (see Gate), which a reconnect lifts. Any other error is logged and retried on
+  the next turn.
+- **Archive.** Not handled here: removing a channel's worktree when the channel
+  is archived belongs to the code-channel wrap-up change, which owns the archive
+  path. Until it lands, a channel's worktree and its `slack/…` branch stay in the
+  repository until removed by hand (`git worktree remove <path>`; commits stay on
+  the branch).
+- **State.** `<data home>/slack/code_channel_workspaces.json` (owner-only) holds
+  pointers and digests per channel, never repository content.
 
 ## Dependencies
 

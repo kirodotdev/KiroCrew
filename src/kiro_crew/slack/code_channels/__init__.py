@@ -90,4 +90,7 @@ def install(slack_provider: Any) -> None:
     status.install(slack_provider)
     install_temp_cleanup()
     register_channel_stop_handler(handle_session_stopped)
+    from kiro_crew.slack.code_channels.workspace import core as workspace
+
+    workspace.install(slack_provider)
     _INSTALLED = True
