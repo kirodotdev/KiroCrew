@@ -281,7 +281,6 @@
 2390 test/test_slack_transport_dispatch.py
 2183 test/test_slot_ownership_checkpoint.py
 3265 test/test_snapshot.py
-11572 test/test_source_providers.py
 2641 test/test_spawn_audit.py
 2008 test/test_steer_requeue.py
 2045 test/test_stop_clears_only_its_own_sender.py

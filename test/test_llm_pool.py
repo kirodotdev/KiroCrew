@@ -2514,7 +2514,7 @@ class TestWorkerConversationRecycle:
 class _ReapProbe:
     """A PIPE-stdio child double that records how it is reaped.
 
-    Mirrors the pin ``test_source_providers`` uses for the same class. A killed
+    Mirrors the pin ``test_source_providers_provider_cli`` uses for the same class. A killed
     child blocked writing into a full pipe -- or a surviving descendant still
     holding the pipes open -- makes a bare ``await proc.wait()`` hang the caller
     forever, so the bounded reap must drain via ``communicate()`` and never touch
