@@ -32,7 +32,6 @@
 2879 src/kiro_crew/apps/builtins/aws_control/crew/runtime/container/sidecar/backup.py
 5158 src/kiro_crew/apps/builtins/aws_control/crew/runtime/container_tests/test_sidecar_durability_gaps.py
 2683 src/kiro_crew/apps/builtins/code_review_sage/backend/routes.py
-3175 src/kiro_crew/apps/builtins/code_review_sage/tests/test_backend_routes.py
 2339 src/kiro_crew/apps/builtins/design_critique/tests/test_backend_routes.py
 2181 src/kiro_crew/apps/builtins/dev_fleet/live.py
 3182 src/kiro_crew/apps/builtins/dev_fleet/worktree_ops.py
