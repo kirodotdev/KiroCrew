@@ -1,6 +1,6 @@
 """``instances.ssh_tunnel_manager`` — the ``_SshTunnel`` teardown / exit paths.
 
-``test_instances.py`` covers the state machine's happy path, the probe loop and
+``test_instances_self_heal.py`` covers the state machine's happy path, the probe loop and
 the ssh error classifier. What it leaves unobserved is everything that runs when
 a tunnel goes DOWN, plus the whole SSM error vocabulary:
 

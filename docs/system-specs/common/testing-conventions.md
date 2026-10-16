@@ -3481,7 +3481,7 @@ that survives neither is the probe's.
 `test_plugin_import.py::test_the_frontier_is_bounded_when_no_directory_carries_a_marker`
 took 101 s once (round 1) and 30-41 s after: a nested-pytest test on a loaded host, the
 same shape as the ipv6 one, left as is.
-`test_instances.py::TestProxyRequest::test_failed_exchange_sends_no_link_and_remints`
+`test_instances_proxy.py::TestProxyRequest::test_failed_exchange_sends_no_link_and_remints`
 failed once in round 1 with `ProxyRequestError: instance is not connected` immediately
 after `connect()`; one occurrence under the round-1 probe is not attributable and is
 recorded here, not fixed. `test_dashboard_files_onloop_fs.py` is green: its red was the
