@@ -259,6 +259,26 @@ class DeferredTool:
         """
         return None
 
+    def on_answered(self, written: bool) -> None:
+        """Hook run once, after the driver answered the call with the text
+        that settled it: ``written`` is True only once the whole response
+        frame reached the client, False when the write tore or the call's
+        parked step was never answered (the loop ended first).
+
+        Runs on the driver's thread with the call's caller identity installed,
+        so a request it sends authenticates as the call. It blocks that
+        thread, so what it sends must be bounded (one short request). A
+        cancelled call never hears this; its
+        :meth:`cancel` runs instead. An abandoned call whose :meth:`abandon`
+        returned text is answered with that text, so it hears ``abandon``,
+        then :meth:`on_settled`, then this; one whose ``abandon`` returned
+        ``None`` is refused and hears :meth:`cancel`, not :meth:`on_settled`
+        or this. A parked call the loop answers
+        without its text (its step raised, a failure servicing it) or drops
+        (a reused request id) hears False.
+        """
+        return None
+
 
 def drive_deferred(deferred: DeferredTool, *, clock: Any = time) -> str:
     """Run ``deferred`` to completion inline, sleeping between steps.
@@ -266,11 +286,23 @@ def drive_deferred(deferred: DeferredTool, *, clock: Any = time) -> str:
     ``clock`` is a module-like object with ``monotonic`` and ``sleep``, so a
     caller can hand in the one its tests patch (``mcp_core.time``). Nothing
     can cancel an inline drive, so the settling text is committed at once.
+    The text is the caller's already, so :meth:`DeferredTool.on_answered`
+    hears True at once, or False when ``on_settled`` raises; that failure is
+    logged at WARNING and re-raised, so the caller gets the exception.
     """
     while True:
         result = deferred.step()
         if result is not None:
-            deferred.on_settled(result)
+            try:
+                deferred.on_settled(result)
+            except Exception:
+                logger.warning("on_settled failed for an inline drive", exc_info=True)
+                try:
+                    deferred.on_answered(False)
+                except Exception:  # noqa: BLE001 - the settle failure is what propagates
+                    logger.warning("on_answered failed for an inline drive", exc_info=True)
+                raise
+            deferred.on_answered(True)
             return result
         delay = deferred.due_at() - clock.monotonic()
         if delay > 0:
@@ -305,6 +337,9 @@ class _MappedDeferred(DeferredTool):
 
     def on_settled(self, text: str) -> None:
         self._inner.on_settled(text)
+
+    def on_answered(self, written: bool) -> None:
+        self._inner.on_answered(written)
 
 
 #: How often the loop reports in-flight deferred ids while any exist
@@ -1540,10 +1575,14 @@ def _path_is_under(path: str, root: str, pathmod: Any = os.path) -> bool:
     return pathmod.normcase(common) == pathmod.normcase(root)
 
 
-def respond(req_id: Any, result: Any, error: dict | None = None) -> None:
-    """Write a validated JSON-RPC response to stdout."""
+def respond(req_id: Any, result: Any, error: dict | None = None) -> bool:
+    """Write a validated JSON-RPC response to stdout.
+
+    True once the whole frame is written; False when there was nothing to
+    write to (no id) or the write tore, so the client holds no complete answer.
+    """
     if req_id is None:
-        return
+        return False
     resp: dict[str, Any] = {"jsonrpc": "2.0", "id": req_id}
     if error:
         resp["error"] = error
@@ -1557,7 +1596,7 @@ def respond(req_id: Any, result: Any, error: dict | None = None) -> None:
             "id": req_id,
             "error": {"code": -32603, "message": "Internal error"},
         }
-    _write_frame(resp, label=f"request {req_id}")
+    return _write_frame(resp, label=f"request {req_id}")
 
 
 def notify(method: str, params: dict[str, Any]) -> None:
@@ -1565,11 +1604,12 @@ def notify(method: str, params: dict[str, Any]) -> None:
     _write_frame({"jsonrpc": "2.0", "method": method, "params": params}, label=method)
 
 
-def _write_frame(msg: dict[str, Any], *, label: str) -> None:
+def _write_frame(msg: dict[str, Any], *, label: str) -> bool:
     """Frame ``msg`` per the negotiated framing and write it to the client.
 
     ``label`` names the frame in the torn-write log line (a request id, or a
-    notification method).
+    notification method). True once the whole frame is written, False when
+    the write tore and the frame was dropped.
     """
     body = json.dumps(msg)
     if _framing == "content-length":
@@ -1593,7 +1633,7 @@ def _write_frame(msg: dict[str, Any], *, label: str) -> None:
         if fd is not None:
             try:
                 _write_all(fd, frame)
-                return
+                return True
             except OSError as exc:
                 # The dup'd fd is unusable (client pipe closed). Fall back to
                 # sys.stdout ONLY if nothing was written, so a genuinely broken
@@ -1610,13 +1650,14 @@ def _write_frame(msg: dict[str, Any], *, label: str) -> None:
                         len(frame),
                         exc.__class__.__name__,
                     )
-                    return
+                    return False
     if _framing == "content-length":
         sys.stdout.buffer.write(frame)
         sys.stdout.buffer.flush()
     else:
         sys.stdout.write(frame.decode("utf-8"))
         sys.stdout.flush()
+    return True
 
 
 def _audit_safe_args(value: Any) -> Any:
@@ -1759,6 +1800,9 @@ class _AuditedDeferred(DeferredTool):
     def on_settled(self, text: str) -> None:
         self._inner.on_settled(text)
         self._audit(text)
+
+    def on_answered(self, written: bool) -> None:
+        self._inner.on_answered(written)
 
 
 def _read_message(stdin) -> dict[str, Any] | _Skipped | None:
@@ -2436,6 +2480,26 @@ def _run_stdio_dispatch_loop(
         _result_ready.set()
         _wake.wake()
 
+    def _tell_answered(
+        deferred: DeferredTool,
+        written: bool,
+        caller_ctx: Any,
+        tenant_nonce: str,
+        req_id: Any,
+    ) -> None:
+        """Tell a call whether its answer was written, with its identity installed."""
+        set_current_caller(caller_ctx)
+        set_current_tenant_nonce(tenant_nonce)
+        try:
+            deferred.on_answered(written)
+        except Exception:  # noqa: BLE001 - one call's hook must not end the server
+            logger.warning(
+                "%s: on_answered failed for request %s", server_name, req_id, exc_info=True
+            )
+        finally:
+            set_current_caller(None)
+            set_current_tenant_nonce("")
+
     def _cancel_quietly(
         deferred: DeferredTool,
         req_id: Any,
@@ -2986,7 +3050,18 @@ def _run_stdio_dispatch_loop(
                         # its children), which a retry would repeat.
                         _abandon_or_refuse(entry, functools.partial(_refuse_table_full, entry))
                     else:
+                        # A client that reuses the id of a call still parked
+                        # replaces it: the displaced call is never answered.
+                        displaced = _deferred.get(str(_current_req_id))
                         _deferred[str(_current_req_id)] = entry
+                        if displaced is not None:
+                            _tell_answered(
+                                displaced.deferred,
+                                False,
+                                displaced.caller_ctx,
+                                displaced.tenant_nonce,
+                                req_id=displaced.req_id,
+                            )
                 else:
                     respond(_current_req_id, boxed)
             elif boxed is not None and not _worker_audited[0]:
@@ -3035,7 +3110,17 @@ def _run_stdio_dispatch_loop(
         del _deferred[key]
         _cancelled_ids.discard(key)
         if error:
-            _answer_failed(entry, payload)
+            try:
+                _answer_failed(entry, payload)
+            finally:
+                # Answered with the error, not with text that settled the call.
+                _tell_answered(
+                    entry.deferred,
+                    False,
+                    entry.caller_ctx,
+                    entry.tenant_nonce,
+                    req_id=entry.req_id,
+                )
         else:
             _commit_settled(entry, payload)
 
@@ -3093,7 +3178,17 @@ def _run_stdio_dispatch_loop(
         finally:
             set_current_caller(None)
             set_current_tenant_nonce("")
-        respond(entry.req_id, _tool_response(text))
+        written = False
+        try:
+            written = respond(entry.req_id, _tool_response(text)) is True
+        finally:
+            _tell_answered(
+                entry.deferred,
+                written,
+                entry.caller_ctx,
+                entry.tenant_nonce,
+                req_id=entry.req_id,
+            )
 
     def _harvest_step(key: str, entry: _DeferredEntry) -> bool:
         """Consume a FINISHED step: answer or drop the call as its outcome and
@@ -3185,11 +3280,21 @@ def _run_stdio_dispatch_loop(
                     _cancelled_ids.discard(key)
                     if entry.stepping is not None:
                         entry.stepping.cancel()
-                    respond(
-                        entry.req_id,
-                        None,
-                        error={"code": JSONRPC_INTERNAL_ERROR, "message": "Internal error"},
-                    )
+                    try:
+                        respond(
+                            entry.req_id,
+                            None,
+                            error={"code": JSONRPC_INTERNAL_ERROR, "message": "Internal error"},
+                        )
+                    finally:
+                        # Answered without its text, as a call the loop ends with.
+                        _tell_answered(
+                            entry.deferred,
+                            False,
+                            entry.caller_ctx,
+                            entry.tenant_nonce,
+                            req_id=entry.req_id,
+                        )
 
     def _cancel_deferred(rid: str) -> None:
         """A ``notifications/cancelled`` names a parked call: settle it with no
@@ -3485,6 +3590,15 @@ def _run_stdio_dispatch_loop(
         for entry in _deferred.values():
             if entry.stepping is not None:
                 entry.stepping.cancel()
+        # Still parked, so never answered: the loop writes nothing more.
+        for entry in list(_deferred.values()):
+            _tell_answered(
+                entry.deferred,
+                False,
+                entry.caller_ctx,
+                entry.tenant_nonce,
+                req_id=entry.req_id,
+            )
         if _step_pool is not None:
             _step_pool.shutdown()
         _wake.close()

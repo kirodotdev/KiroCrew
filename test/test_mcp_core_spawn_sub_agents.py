@@ -80,6 +80,9 @@ class TestDeferredSubmission:
                 "agent": agents[index].get("agent_or_mode", ""),
                 "parent_session": "dashboard:owner", "cwd": "/workspace/project",
                 "include_memory": False, "include_lessons": False, "include_project": False,
+                # Each member is held for this call's inline collection.
+                "inline_collect": True, "inline_call": step.call_id,
+                "max_wait": step.max_wait,
             })
         get.assert_not_called()
         assert step.deadline == manual_clock.monotonic() + step.max_wait
@@ -114,8 +117,8 @@ class TestDeferredSubmission:
         assert step.phase == "poll" and len(step.sa_ids) == members
         # The polling step retains no member prompts, and nothing reads as unsubmitted.
         assert step.agents_input == []
-        assert "not_submitted" not in step.abandon()
         assert step.deadline == manual_clock.monotonic() + step.max_wait
+        assert "not_submitted" not in step.abandon()
 
     def test_a_member_keeps_only_its_two_fields_while_parked(self, monkeypatch):
         """The parked step retains every member until it is submitted, so the
@@ -165,7 +168,12 @@ class TestDeferredSubmission:
             text = step.step()
             assert text == expected
             step.on_settled(text)
-        assert post.call_count == (1 if agents[0]["prompt"].strip() else 0)
+        spawns = [c for c in post.call_args_list if c.args[0] == "/api/spawn"]
+        assert len(spawns) == (1 if agents[0]["prompt"].strip() else 0)
+        # A refused batch ends its collection: a lost reply may have reserved one.
+        closes = [c.args[1] for c in post.call_args_list if c.args[0] != "/api/spawn"]
+        assert all(b["ids"] == [] and "phase" not in b for b in closes)
+        assert bool(closes) == bool(spawns)
         get.assert_not_called()
         terminal = [call.kwargs for call in audit.log_tool_invocation.call_args_list
                     if call.kwargs["source"] == "mcp"]
@@ -179,7 +187,10 @@ class TestDeferredSubmission:
 
     @pytest.mark.parametrize("submitted", [0, 1, 2])
     def test_abandon_during_submission_names_accepted_and_unsubmitted(self, monkeypatch, submitted):
-        post = MagicMock(side_effect=[{"id": "a1"}, {"error": "capacity reached"}])
+        answers = iter([{"id": "a1"}, {"error": "capacity reached"}])
+        post = MagicMock(
+            side_effect=lambda path, body, **_k: next(answers) if path == "/api/spawn" else {}
+        )
         get = MagicMock()
         monkeypatch.setattr(mcp_core, "_post", post)
         monkeypatch.setattr(mcp_core, "_get", get)
@@ -190,7 +201,11 @@ class TestDeferredSubmission:
         })
         for _ in range(submitted):
             assert step.step() is None
-        step.cancel()  # accepted children keep running; cancellation sends no POST
+        # Accepted children keep running; the cancel only ends the collection,
+        # so each one's completion is delivered as an ordinary one.
+        step.cancel()
+        closes = [c.args[1] for c in post.call_args_list if c.args[0] != "/api/spawn"]
+        assert [b["ids"] for b in closes] == ([[]] if submitted else [])
         text = step.abandon()
         if submitted == 0:
             # Nothing accepted yet: the whole call is retryable, so no final text.
@@ -207,7 +222,8 @@ class TestDeferredSubmission:
         if submitted == 2:
             assert records[2]["status"] == "spawn_errors"
         step.on_settled("abandoned")
-        assert post.call_count == submitted
+        step.on_answered(True)
+        assert post.call_count == submitted + 1  # the spawns and the one commit
         get.assert_not_called()
 
 
@@ -271,7 +287,13 @@ class TestSpawnSubAgents:
              patch("kiro_crew.mcp_core._get") as mock_get, \
              patch("kiro_crew.mcp_core.sel"), \
              patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "s"}):
-            mock_post.side_effect = [{"id": "a1"}, {"error": "capacity reached"}]
+            # Two spawns, then the collection's one commit.
+            mock_post.side_effect = [
+                {"id": "a1"},
+                {"error": "capacity reached"},
+                {"status": "ok"},
+                {"status": "ok"},
+            ]
             mock_get.return_value = {"done": True, "agent": "w", "result": "ok"}
 
             result = _call_tool("spawn_sub_agents", {
@@ -281,6 +303,7 @@ class TestSpawnSubAgents:
             assert '"completed"' in result
             assert '"spawn_errors"' in result
             assert "capacity reached" in result
+            assert mock_post.call_count == 3
 
     def test_reports_spawn_with_no_agent_id(self):
         # /api/spawn returns neither error nor id — must not append an empty
@@ -334,8 +357,11 @@ class TestSpawnSubAgents:
             assert not any(
                 call.args and "cancel" in str(call.args[0]) for call in mock_post.call_args_list
             )
+            # The call closes its collection, but marks nothing collected.
             assert not any(
-                call.args and call.args[0] == "/api/spawn/mark-collected"
+                call.args
+                and call.args[0] == "/api/spawn/mark-collected"
+                and call.args[1].get("ids")
                 for call in mock_post.call_args_list
             )
             completed_rows = [
@@ -506,7 +532,7 @@ class TestSpawnSubAgents:
              patch("kiro_crew.mcp_core._get") as mock_get, \
              patch("kiro_crew.mcp_core.sel"), \
              patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "s"}):
-            mock_post.side_effect = [{"id": "a1"}, {"id": "a2"}, {}]
+            mock_post.side_effect = [{"id": "a1"}, {"id": "a2"}, {}, {}]
             mock_get.return_value = {"done": True, "agent": "w", "result": "done"}
 
             result = _call_tool("spawn_sub_agents", {
@@ -516,7 +542,7 @@ class TestSpawnSubAgents:
                 ],
             })
 
-            # 2 spawn calls + 1 mark-collected call = 3 total
+            # 2 spawn calls + the one mark-collected commit = 3 total
             assert mock_post.call_count == 3
             assert result.count('"completed"') == 2
 
@@ -649,7 +675,13 @@ class TestSpawnSubAgentsSummarization:
              patch("kiro_crew.mcp_core.sel"), \
              patch("kiro_crew.mcp_core.summarize_result") as mock_summarize, \
              patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "s"}):
-            mock_post.side_effect = [{"id": "short1"}, {"id": "long1"}]
+            # Two spawns, then the collection's one commit.
+            mock_post.side_effect = [
+                {"id": "short1"},
+                {"id": "long1"},
+                {"status": "ok"},
+                {"status": "ok"},
+            ]
             short_result = "brief answer"
             large_result = "detailed " * 600  # over 3K
 
@@ -670,6 +702,7 @@ class TestSpawnSubAgentsSummarization:
             # Long result was summarized
             assert mock_summarize.call_count == 1
             assert "summarized long result" in result
+            assert mock_post.call_count == 3
 
     def test_result_exactly_at_threshold_not_summarized(self):
         """A result exactly at COMPLETION_KEEP_DEFAULT_CHARS is NOT summarized."""
@@ -1049,9 +1082,11 @@ class TestSpawnSubAgentsAbandon:
         assert "[Subagent completion event]" in running["note"]
         assert records[1]["status"] == "spawn_errors"
         assert "capacity reached" in records[1]["errors"][0]
-        # Nothing is marked collected (or polled), so each child's completion
-        # event still reaches the parent.
-        assert mock_post.call_count == posts_before
+        # Nothing is marked collected (or polled): the one request ends the
+        # collection, so each child's completion event still reaches the parent.
+        assert mock_post.call_count == posts_before + 1
+        close = mock_post.call_args_list[-1].args[1]
+        assert (close["ids"], close["released"]) == ([], ["a1", "a2"])
         mock_get.assert_not_called()
 
 
@@ -1062,7 +1097,7 @@ class TestDeferredCollectionCommit:
         from kiro_crew import mcp_core
         from kiro_crew.mcp_tools.spawn import _SubAgentsStep
 
-        post = MagicMock()
+        post = MagicMock(return_value={})
         audit = MagicMock()
         monkeypatch.setattr(mcp_core, "_post", post)
         monkeypatch.setattr(mcp_core, "sel", lambda: audit)
@@ -1072,7 +1107,8 @@ class TestDeferredCollectionCommit:
             max_wait=60, inline_result=lambda aid, text: text,
         )
         text = step._collect()
-        assert '"completed"' in text
+        assert text is not None and '"completed"' in text
+        # The collect step only builds the reply: nothing is sent before it is written.
         post.assert_not_called()
         audit.log_tool_invocation.assert_not_called()
         step.on_settled(text)
@@ -1081,10 +1117,12 @@ class TestDeferredCollectionCommit:
         audit.log_tool_invocation.assert_called_once()
         assert audit.log_tool_invocation.call_args.kwargs["outcome"] == "completed"
         assert audit.log_tool_invocation.call_args.kwargs["metadata"]["completed"] == 1
-        post.assert_called_once_with(
-            "/api/spawn/mark-collected",
-            {"ids": ["a1"], "parent_session": "dashboard:owner"}, timeout=5,
-        )
+        post.assert_not_called()  # settling sends nothing: the write decides
+        step.on_answered(True)
+        step.on_answered(True)
+        commit = {"ids": ["a1"], "parent_session": "dashboard:owner",
+                  "released": ["a1"], "call": step.call_id}
+        post.assert_called_once_with("/api/spawn/mark-collected", commit, timeout=5.0)
 
     def test_abandon_never_commits_a_collect_result(self, monkeypatch):
         from unittest.mock import MagicMock
@@ -1099,10 +1137,15 @@ class TestDeferredCollectionCommit:
             sa_ids=["a1"], sa_deferred=set(), sa_errors=[], parent_session="dashboard:owner",
             max_wait=60, inline_result=lambda aid, text: text,
         )
+        post.return_value = {}
         text = step.abandon()
         step._collect()  # A stuck collect can finish after the abandonment decision.
         step.on_settled(text)
-        post.assert_not_called()
+        step.on_answered(True)
+        # Only the abandon's release-all commit: nothing the late collect
+        # carried is settled.
+        assert [c.args[0] for c in post.call_args_list] == ["/api/spawn/mark-collected"]
+        assert post.call_args.args[1]["ids"] == []
 
     @pytest.mark.parametrize("member", [
         {"prompt": "task", "agent_or_mode": {"nested": "x" * 4096}},

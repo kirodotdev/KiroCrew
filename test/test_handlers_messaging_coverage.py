@@ -607,18 +607,42 @@ class TestApiSpawnMarkCollected:
     def test_no_slot_when_slot_is_gone(self) -> None:
         state = _state()
         state.get_slot.return_value = None
-        req = _Req(state, {"ids": ["a1"], "parent_session": "dashboard:chat-1"})
+        body = {"ids": ["a1"], "parent_session": "dashboard:chat-1"}
+        req = _Req(state, body)
         assert _payload(_run(mod.api_spawn_mark_collected, req)) == {"status": "no_slot"}
 
     def test_records_ids_bounded_and_skips_non_strings(self) -> None:
-        slot = SimpleNamespace(_subagents_inline_collected=set(), _queue=[])
-        state = _state()
+        from kiro_crew.subagent_inline_collection import InlineCollections
+
+        registry = InlineCollections()
+        slot = SimpleNamespace(_queue=[])
+        state = _state(
+            subagents=SimpleNamespace(inline_collections=registry, get=lambda _aid: object())
+        )
         state.get_slot.return_value = slot
-        ids: list[Any] = [f"a{i}" for i in range(250)] + ["", 7]
-        req = _Req(state, {"ids": ids, "parent_session": "dashboard:chat-1"})
-        resp = _run(mod.api_spawn_mark_collected, req)
+        cap = mod._COLLECTED_IDS_CAP
+        ids: list[Any] = ["", 7] + [f"a{i}" for i in range(cap + 50)]
+        # The tool reserves every member before it runs; ids past the cap
+        # have no reservation to mark.
+        assert all(
+            registry.reserve("dashboard:chat-1", f"a{i}", 600, call="c1") for i in range(cap)
+        )
+        body = {"ids": ids, "parent_session": "dashboard:chat-1"}
+        resp = _run(mod.api_spawn_mark_collected, _Req(state, body))
         assert _payload(resp) == {"status": "ok", "marked": len(ids)}
-        assert len(slot._subagents_inline_collected) == 200
+        kept = [
+            f"a{i}"
+            for i in range(cap + 50)
+            if registry.consume_collected("dashboard:chat-1", f"a{i}")
+        ]
+        assert len(kept) == cap - 2
+
+    def test_one_call_never_names_more_ids_than_the_per_call_cap(self) -> None:
+        """Main's per-call bound of 200 holds every member one blocking call names."""
+        from kiro_crew.validation import SPAWN_BATCH_MEMBERS_MAX
+
+        assert mod._COLLECTED_IDS_CAP == 200
+        assert SPAWN_BATCH_MEMBERS_MAX <= mod._COLLECTED_IDS_CAP
 
 
 # ── result paging helpers ──

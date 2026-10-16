@@ -48,12 +48,14 @@ from kiro_crew.subagent_persistence import agent_dir_for_display
 from kiro_crew.subagent_wait_reasons import MEMORY_PRESSURE_PHRASE, queued_wait_text
 from kiro_crew.validation import (
     MAX_MEDIUM_STRING,
+    MAX_RESPONSE_LEN,
     MAX_SHORT_STRING,
     SPAWN_CONTINUE_SCHEMA,
     SPAWN_RELEASE_SCHEMA,
     SPAWN_RUN_SCHEMA,
     SPAWN_STEER_SCHEMA,
     SPAWN_SUB_AGENTS_SCHEMA,
+    sanitize_string,
     validate_tool_args,
 )
 
@@ -1750,13 +1752,22 @@ class _SubAgentsStep(DeferredTool):
         self.phase = "submit" if agents_input is not None else "poll"
         self.hold = _ResumeHold(parent_session, self.deadline)
         self.resume_note: dict[str, Any] | None = None
-        self._settled_ids: set[str] = set()
         # Per-child tallies the collect step computes for this call's own SEL
         # row (``outcome`` and ``metadata``), written at settle. ``None`` until a
         # collect ran: a batch the gateway refused outright settles from the
         # submit phase with an error text and gets no outcome row, as the
         # blocking tool returned before writing one.
         self._counts: dict[str, int] | None = None
+        # This call's inline collection (``subagent_inline_collection`` in the
+        # gateway). Every member it posts is reserved for it under ``call_id``,
+        # so its one commit ends each of them, including one whose
+        # ``/api/spawn`` reply never arrived and whose id this call never
+        # learned. ``_collected`` are the members the reply carries, set by
+        # the collect step; the commit is sent once (``_committed``).
+        self.call_id = uuid.uuid4().hex
+        self._posted = bool(sa_ids)
+        self._collected: list[str] = []
+        self._committed = False
 
     def due_at(self) -> float:
         return self.next_due
@@ -1774,6 +1785,9 @@ class _SubAgentsStep(DeferredTool):
         runs, so the whole call may safely be retried: ``None`` keeps the
         loop's retryable refusal. A member of unknown acceptance is reported
         as such, since resubmitting it could run it twice."""
+        # Nothing this reply carries is collected, so every held completion
+        # is delivered to the parent as an ordinary one.
+        self._end_unanswered()
         if not self.sa_ids and not self.sa_unknown:
             return None
         self.phase = "abandoned"
@@ -1833,10 +1847,17 @@ class _SubAgentsStep(DeferredTool):
                 "task": prompt,
                 "agent": entry.get("agent_or_mode") or "",
                 "parent_session": self.parent_session,
+                # Held for this call from the moment its id is minted: its
+                # completion is this call's result, never a prompt into the
+                # parent's turn, which is blocked in this call.
+                "inline_collect": True,
+                "inline_call": self.call_id,
+                "max_wait": self.max_wait,
                 **self.sa_groups,
             }
             if self.cwd:
                 body["cwd"] = self.cwd
+            self._posted = True
             data = mcp_core._post("/api/spawn", body)
             self._submit_index += 1
             if data.get("transport_error"):
@@ -1861,6 +1882,9 @@ class _SubAgentsStep(DeferredTool):
         if self._submit_index < len(self.agents_input):
             return None
         if not self.sa_ids and self.sa_errors:
+            # A spawn whose reply was lost may still have reserved a member:
+            # end the collection so its completion is delivered at once.
+            self._end_unanswered()
             return "Error spawning sub-agents:\n" + "\n".join(f"  - {e}" for e in self.sa_errors)
         if not self.sa_ids:
             return "Error: no valid agent entries found in 'agents' array"
@@ -1875,6 +1899,17 @@ class _SubAgentsStep(DeferredTool):
         return None
 
     def step(self) -> str | None:
+        try:
+            return self._step()
+        except BaseException:
+            # The call ends with no reply carrying any result.
+            self._end_unanswered()
+            raise
+
+    def cancel(self) -> None:
+        self._end_unanswered()
+
+    def _step(self) -> str | None:
         if self.phase == "submit":
             return self._submit_one()
         if self.phase == "poll":
@@ -1930,10 +1965,13 @@ class _SubAgentsStep(DeferredTool):
             return
         self.next_due = mcp_core.time.monotonic() + self.POLL_INTERVAL
 
-    def _collect(self) -> str:
+    def _collect(self) -> str | None:
         # Collect results
         sa_results: list[str] = []
         _settled_ids: set[str] = set()  # agents confirmed settled (done or error)
+        # The position in ``sa_results`` of each settled member's block: only a
+        # member whose whole block survives the response's truncation is committed.
+        block_of: dict[str, int] = {}
         # Children the wait ended on, with the state each was last seen in. The
         # wait expiring is a fact about THIS call, not about them: they keep their
         # own execution budget, are never cancelled here, and their completion
@@ -1987,6 +2025,7 @@ class _SubAgentsStep(DeferredTool):
                         "check spawn_status before re-spawning"
                     )
                 sa_results.append(json.dumps(failure))
+                block_of[aid] = len(sa_results) - 1
             elif not sa_st.get("done"):
                 still_running += 1
                 if sa_st.get("awaiting_approval"):
@@ -2007,6 +2046,7 @@ class _SubAgentsStep(DeferredTool):
                 if sa_st.get("made_no_tool_calls") is True:
                     record["unverified"] = f"This agent {NO_TOOL_CALLS_NOTE}"
                 sa_results.append(json.dumps(record))
+                block_of[aid] = len(sa_results) - 1
         if _unsettled:
             sa_results.append(
                 json.dumps(
@@ -2047,13 +2087,65 @@ class _SubAgentsStep(DeferredTool):
             sa_results.append(json.dumps(self.resume_note))
         if self.sa_errors:
             sa_results.append(json.dumps({"status": "spawn_errors", "errors": self.sa_errors}))
-        self._settled_ids = _settled_ids
         self._counts = {
             "completed": completed,
             "still_running": still_running,
             "errored": errored,
         }
+        # Only members whose results the reply carries (completed or errored)
+        # are committed: still-running ones complete later and their real
+        # result must not be suppressed.
+        self._collected = _carried_in_reply(
+            sa_results, {aid: block_of[aid] for aid in _settled_ids if aid in block_of}
+        )
         return "\n\n".join(sa_results)
+
+    def _end_unanswered(self) -> None:
+        """End the collection of a call whose reply carries no result.
+
+        Commits no member, so every held completion is delivered to the parent
+        as an ordinary one.
+        """
+        self._commit([])
+
+    def on_answered(self, written: bool) -> None:
+        """Commit the members the reply carries, once its frame was written.
+
+        The call's one settle, synchronous on the dispatch thread with the
+        call's caller identity installed: one bounded request, the cost the
+        single mark sent from ``on_settled`` paid before. A reply that was not
+        written commits nothing, so its members are delivered as ordinary
+        completions.
+        """
+        self._commit(self._collected if written else [])
+
+    def _commit(self, collected: list[str]) -> None:
+        """Send the call's one commit: *collected* settle, every other member is released.
+
+        One attempt. A commit that fails or never arrives leaves the members
+        held until the collection expires; they are then delivered as ordinary
+        completions, a duplicate of what the reply carried, never a lost result.
+        """
+        if self._committed or not self.parent_session or not self._posted:
+            return
+        self._committed = True
+        body: dict[str, Any] = {
+            "ids": list(collected),
+            "parent_session": self.parent_session,
+            "call": self.call_id,
+        }
+        if self.sa_ids:
+            body["released"] = list(self.sa_ids)
+        try:
+            # A refused or failed request comes back as an ``error`` body.
+            resp = mcp_core._post("/api/spawn/mark-collected", body, timeout=5.0)
+        except Exception:
+            resp = {"error": "request failed"}
+        if not isinstance(resp, dict) or resp.get("error"):
+            logger.warning(
+                "spawn_sub_agents could not commit its collection; its members are "
+                "delivered as ordinary completions once it expires"
+            )
 
     def on_settled(self, text: str) -> None:
         # Only the driver's accepted-result commit suppresses completion events
@@ -2076,16 +2168,36 @@ class _SubAgentsStep(DeferredTool):
                 ),
                 metadata={"spawned": len(self.sa_ids), **counts},
             )
-        settled_ids, self._settled_ids = self._settled_ids, set()
-        if settled_ids and self.parent_session:
-            try:
-                mcp_core._post(
-                    "/api/spawn/mark-collected",
-                    {"ids": list(settled_ids), "parent_session": self.parent_session},
-                    timeout=5,
-                )
-            except Exception:
-                pass  # best-effort: a missed mark leaves the completion event enabled
+
+
+def _carried_in_reply(blocks: list[str], position: Mapping[str, int]) -> list[str]:
+    """The members whose whole result block the delivered reply still carries.
+
+    The reply is *blocks* joined by blank lines, and the dispatcher sends
+    ``sanitize_response`` of it, which cuts the TAIL off a reply over
+    ``MAX_RESPONSE_LEN``. A member whose block ends past the cut never reached
+    the parent, so it is not committed: its completion goes out as an ordinary
+    one. Each block is judged by where it ends, never by its text, since two
+    members can return identical text. Omitted members are counted and logged
+    once.
+    """
+    ends: list[int] = []
+    end = -2
+    for block in blocks:
+        end += 2 + len(sanitize_string(block))
+        ends.append(end)
+    if not ends or ends[-1] <= MAX_RESPONSE_LEN:
+        return sorted(position)  # nothing is cut
+    carried = sorted(aid for aid, i in position.items() if ends[i] <= MAX_RESPONSE_LEN)
+    omitted = len(position) - len(carried)
+    if omitted:
+        logger.warning(
+            "spawn_sub_agents: the reply was truncated at %d chars; %d result(s) it "
+            "cut are delivered as ordinary completions",
+            MAX_RESPONSE_LEN,
+            omitted,
+        )
+    return carried
 
 
 def _live_adaptive_state() -> dict[str, Any] | None:

@@ -105,7 +105,6 @@ if TYPE_CHECKING:
         apply_completion_keep,
         classify_stop_reason,
         configured_fallback_chain,
-        evict_completed_agents,
         extract_options,
         failure_name,
         fire_tool_hooks,
@@ -1581,14 +1580,37 @@ class RunEventCoordinator(ManagerComponent):
         cold-started, context-free replacement session. A completed inner run
         remains pending until its live outer task registers the terminal report,
         and a follow-up watcher remains pending until it dispatches or settles.
+        A result a blocking ``spawn_sub_agents`` call held is pending until it
+        is delivered (``InlineCollections.owes``): a parent reset under it
+        would cold-start a context-free session for that delivery.
         """
         if self._manager._queued_depth(parent_session_key) > 0:
             return True
         return (
-            self._has_live_parent_run_task(parent_session_key)
+            self._owes_inline_result(parent_session_key)
+            or self._has_live_parent_run_task(parent_session_key)
             or self._has_live_parent_followup_watcher(parent_session_key)
             or any(a.parent_session_key == parent_session_key for a in self._manager.running)
         )
+
+    def _evict_completed_runs(self) -> int:
+        """Evict the oldest completed runs past retention, keeping held ones.
+
+        A completion a blocking ``spawn_sub_agents`` call holds is read back
+        from its run record at release (``InlineCollections.pins``), so
+        retention keeps that record while held. Imported here: only ``_impl``
+        methods run on the facade's globals.
+        """
+        from kiro_crew.subagent import evict_completed_agents
+
+        _inline = getattr(self._manager, "inline_collections", None)
+        return evict_completed_agents(self._manager._agents, pinned=getattr(_inline, "pins", None))
+
+    def _owes_inline_result(self, parent_session_key: str) -> bool:
+        """Whether a held inline result is still owed to *parent_session_key*."""
+        registry = getattr(self._manager, "inline_collections", None)
+        owes = getattr(registry, "owes", None)
+        return bool(owes(parent_session_key)) if callable(owes) else False
 
     async def has_pending_work_for_async_impl(self, parent_session_key: str) -> bool:
         """:meth:`has_pending_work_for_impl` for an event-loop caller.
@@ -1599,7 +1621,8 @@ class RunEventCoordinator(ManagerComponent):
         if await self._manager._queued_depth_async(parent_session_key) > 0:
             return True
         return (
-            self._has_live_parent_run_task(parent_session_key)
+            self._owes_inline_result(parent_session_key)
+            or self._has_live_parent_run_task(parent_session_key)
             or self._has_live_parent_followup_watcher(parent_session_key)
             or any(a.parent_session_key == parent_session_key for a in self._manager.running)
         )
@@ -3533,7 +3556,7 @@ class RunEventCoordinator(ManagerComponent):
             info.partial = True
             # result.txt is what spawn_status / spawn_run read for a done run.
             write_result_chunk(info.id, f"\n\n{_warn}\n")
-        evict_completed_agents(self._manager._agents)
+        self._evict_completed_runs()
 
         # ── Per-turn usage row: attribute subagent spend. ──
         # Its inputs are read here, synchronously, and the append itself is

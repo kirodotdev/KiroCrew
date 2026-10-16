@@ -202,6 +202,10 @@ from kiro_crew.subagent_cost import (
     read_cap_costs,
     read_learned_costs_checked,
 )
+from kiro_crew.subagent_inline_collection import (
+    InlineCollections,
+    finite_nonnegative_number,
+)
 from kiro_crew.subagent_manager import (
     CancellationCoordinator,
     ClaimPoint,
@@ -367,7 +371,6 @@ from kiro_crew.subagent_parts.run_output import (  # noqa: F401
     SubagentDelivery,
     _describe_exception,
     _done_result,
-    _finite_nonnegative_number,
     _redact,
     _redact_and_truncate,
     _RunCreditAccounting,
@@ -482,6 +485,7 @@ _PARTS_GLOBAL_BINDINGS = (
     _sum_usage,
     cached_project_agent_names,
     effort_settings_key,
+    finite_nonnegative_number,
     fnmatch,
     is_internal_agent_spec,
     is_markdown_spec,
@@ -1533,6 +1537,10 @@ class SubagentManager:
         defer_queue_dispatch: bool = False,
     ):
         self._sessions = sessions
+        # Members a blocking spawn_sub_agents call returns inline, per parent:
+        # their completion events are never injected (see the module).
+        self.inline_collections = InlineCollections()
+        self.inline_collections.bind(self)
         # Run ids a parent-end teardown stopped. Keyed by ID rather than carried
         # only on the run record because a QUEUED run has no ``_agents`` row at
         # all: ``_report_queued_stop`` builds a fresh ``SubagentInfo`` for its
@@ -4013,6 +4021,24 @@ class SubagentManager:
 
     def is_queued(self, agent_id: str) -> bool:
         return self._run_events.is_queued_impl(agent_id)
+
+    def reserve_inline_member(
+        self, parent_session_key: str, max_wait: float, *, call: str = ""
+    ) -> str:
+        """Mint a run id a blocking ``spawn_sub_agents`` call collects inline.
+
+        Recorded in ``inline_collections`` BEFORE the run exists, so its
+        completion is held from the first moment it could arrive. Pass the id to
+        ``spawn`` as ``_preassigned_id``. *call* names the blocking call, so its
+        close ends this reservation even if the call never learns the id.
+        ``""`` means the registry refused it (the parent's collection is full,
+        or *call* has already ended); the caller refuses the spawn instead of
+        running a member unheld. ``api_spawn`` validates *max_wait* first.
+        """
+        agent_id = self._mint_agent_id()
+        if not self.inline_collections.reserve(parent_session_key, agent_id, max_wait, call=call):
+            return ""
+        return agent_id
 
     @property
     def count(self) -> int:

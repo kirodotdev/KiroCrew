@@ -1543,17 +1543,18 @@ def test_spawn_collection_commit_installs_its_call_identity(monkeypatch):
 
     def respond(req_id, result, error=None):
         contexts.append((current_caller(), current_tenant_nonce()))
-        harness._record(req_id, result, error)
+        return harness._record(req_id, result, error)
 
     monkeypatch.setattr(mcp_shared, "respond", respond)
     try:
         harness.send(_identity_call(1, "spawn_sub_agents", "dashboard:owner", "owner-nonce"))
         assert harness.wait_for(lambda: any(r[0] == 1 for r in harness.responses))
-        assert len(calls) == 1
-        path, body, caller, nonce = calls[0]
-        assert path == "/api/spawn/mark-collected"
-        assert body == {"ids": ["a1"], "parent_session": "dashboard:owner"}
-        assert caller.session_key == "dashboard:owner" and nonce == "owner-nonce"
+        assert harness.wait_for(lambda: len(calls) == 1)
+        # The one commit, once the reply was written: under the call's own
+        # identity, and the answer itself under none.
+        assert [(c[0], c[1]["ids"]) for c in calls] == [("/api/spawn/mark-collected", ["a1"])]
+        for _path, _body, caller, nonce in calls:
+            assert caller.session_key == "dashboard:owner" and nonce == "owner-nonce"
         assert contexts == [(None, "")]
     finally:
         harness.close()

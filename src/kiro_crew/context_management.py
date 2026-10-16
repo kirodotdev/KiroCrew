@@ -12,7 +12,9 @@ import logging
 import os
 import shutil
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from kiro_crew.config.loader import config_dir
 
@@ -211,12 +213,20 @@ def check_session_budget(session_dir: Path) -> bool:
     return total > SESSION_MAX_BYTES
 
 
-def evict_completed_agents(agents: dict, max_retained: int = MAX_RETAINED_AGENTS) -> int:
+def evict_completed_agents(
+    agents: dict,
+    max_retained: int = MAX_RETAINED_AGENTS,
+    pinned: Callable[[Any], bool] | None = None,
+) -> int:
     """Remove oldest completed sub-agents from the agents dict.
+
+    A run *pinned* answers True for is kept and not counted: a blocking
+    ``spawn_sub_agents`` call holds its completion and reads it back from
+    this record at release (``InlineCollections.pins``).
 
     Returns number of evicted entries.
     """
-    completed = [(k, v) for k, v in agents.items() if v.done]
+    completed = [(k, v) for k, v in agents.items() if v.done and not (pinned and pinned(v))]
     if len(completed) <= max_retained:
         return 0
     completed.sort(key=lambda x: x[1].started)

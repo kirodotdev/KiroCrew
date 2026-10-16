@@ -17,6 +17,7 @@ if TYPE_CHECKING:
         SubagentInfo,
         _billing_stats,
         _sum_usage,
+        finite_nonnegative_number,
         math,
         redact_and_truncate,
         redact_credentials,
@@ -97,21 +98,10 @@ def _done_result(text: str) -> str:
     return "…(truncated)\n" + redacted[-_MAX_DONE_RESULT_LEN:]
 
 
-def _finite_nonnegative_number(value: object) -> float | None:
-    """Return a safe numeric telemetry value, excluding booleans and NaN/inf."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    try:
-        number = float(value)
-    except OverflowError:
-        return None
-    return number if math.isfinite(number) and number >= 0.0 else None
-
-
 def format_subagent_usage(credits: object, elapsed: object) -> str:
     """Format the terminal usage line shared by all subagent delivery surfaces."""
-    credit_value = _finite_nonnegative_number(credits)
-    elapsed_value = _finite_nonnegative_number(elapsed)
+    credit_value = finite_nonnegative_number(credits)
+    elapsed_value = finite_nonnegative_number(elapsed)
     if credit_value is None or elapsed_value is None:
         return ""
     # Match the dashboard's Math.round for non-negative elapsed telemetry;

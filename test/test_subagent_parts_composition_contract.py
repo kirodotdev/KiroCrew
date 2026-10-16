@@ -216,7 +216,6 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ("_describe_exception", "function", "(exc: 'BaseException') -> 'str'"),
         ("_MAX_DONE_RESULT_LEN", "value", "int"),
         ("_done_result", "function", "(text: 'str') -> 'str'"),
-        ("_finite_nonnegative_number", "function", "(value: 'object') -> 'float | None'"),
         ("format_subagent_usage", "function", "(credits: 'object', elapsed: 'object') -> 'str'"),
         ("SubagentDelivery", "class", ""),
         ("ORPHAN_NOTICE_OWED", "value", "str"),

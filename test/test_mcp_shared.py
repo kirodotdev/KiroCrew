@@ -948,8 +948,9 @@ class _LoopHarness:
         )
         self._thread.start()
 
-    def _record(self, req_id, result, error=None) -> None:
+    def _record(self, req_id, result, error=None) -> bool:
         self.responses.append((req_id, result, error))
+        return True  # the whole frame reached the client
 
     def send(self, msg: dict) -> None:
         self.send_raw((json.dumps(msg) + "\n").encode("utf-8"))
@@ -2562,3 +2563,18 @@ class TestStdioLoopExitsWhenItsInstallIsPruned:
         assert result is None
         assert error["code"] == -32000 and "restart" in error["message"]
         assert exits == []
+
+
+def test_respond_reports_a_torn_frame_as_not_written(monkeypatch):
+    class _Torn(BrokenPipeError):
+        bytes_written = 3
+
+    def _write_all(fd, frame):
+        raise _Torn()
+
+    monkeypatch.setattr(mcp_shared, "_stdout_fd", 99)
+    monkeypatch.setattr(mcp_shared, "_write_all", _write_all)
+    assert mcp_shared.respond(1, {"ok": True}) is False
+    monkeypatch.setattr(mcp_shared, "_write_all", lambda fd, frame: None)
+    assert mcp_shared.respond(1, {"ok": True}) is True
+    assert mcp_shared.respond(None, {"ok": True}) is False

@@ -21,6 +21,8 @@ if TYPE_CHECKING:
         DashboardState,
         KiroCrewConfig,
         ValidationError,
+        _invalid_max_wait,
+        _oversized_identity_refusal,
         _redact,
         _spawn_scope_refusal,
         dashboard_slot_key,
@@ -28,7 +30,9 @@ if TYPE_CHECKING:
         effort_applied_note,
         effort_drop_reason,
         effort_pending_note,
+        finite_nonnegative_number,
         internal_memory_scope,
+        oversized_identity,
         parent_template_allowlists,
         parent_work_supported,
         spawn_parent_claim,
@@ -250,6 +254,27 @@ async def api_spawn(request: web.Request) -> web.Response:
             {"error": "parent_session must be a string", "code": "invalid_parent_session"},
             status=400,
         )
+    inline_call = body.get("inline_call", "")
+    if not isinstance(inline_call, str):
+        return web.json_response(
+            {"error": "inline_call must be a string", "code": "invalid_inline_call"},
+            status=400,
+        )
+    if body.get("inline_collect") is True:
+        # A held member belongs to the call that collects it, so the call's
+        # commit can end it: a collection with no call id has nothing to end it
+        # but expiry.
+        if not inline_call:
+            return web.json_response(
+                {"error": "inline_collect needs an inline_call", "code": "invalid_inline_call"},
+                status=400,
+            )
+        # The inline-collection registry would keep the parent key and the call
+        # id: each is refused whole, before anything is retained, never truncated.
+        field = oversized_identity(parent_session, (), inline_call)
+        if field:
+            length = len(parent_session if field == "parent_session" else inline_call)
+            return _oversized_identity_refusal(state, field, length)
     _, refusal = await internal_memory_scope(
         request, "spawn.create", claimed_session=spawn_parent_claim(request, parent_session)
     )
@@ -363,6 +388,51 @@ async def api_spawn(request: web.Request) -> web.Response:
     # on-loop, cache-only agent validation inside spawn() is a hit.
     if agent:
         await warm_project_agents_for_spawn(state, cwd)
+    # A member of a blocking spawn_sub_agents call: its id is minted and held
+    # for that call BEFORE the run exists, so its completion can never reach the
+    # parent whose turn is blocked in the call (subagent_inline_collection).
+    inline_kwargs: dict[str, Any] = {}
+    reserve = getattr(state.subagents, "reserve_inline_member", None)
+    if body.get("inline_collect") is True and parent_session and callable(reserve):
+        # A missing key is no wait; a present one must be a usable JSON number,
+        # so null, false, any string ("600" included) and containers are
+        # refused like true is.
+        inline_wait = finite_nonnegative_number(body.get("max_wait", 0))
+        if inline_wait is None:
+            return _invalid_max_wait()
+        inline_id = reserve(parent_session, inline_wait, call=inline_call)
+        registry = getattr(state.subagents, "inline_collections", None)
+        if (
+            not inline_id
+            and registry is not None
+            and registry.call_ended(parent_session, inline_call)
+        ):
+            # The call already sent its commit (its loop ended while this spawn
+            # was in flight): a member reserved now would be held for a call
+            # that never commits again, so the spawn is refused and the call
+            # records a spawn error.
+            return web.json_response(
+                {
+                    "error": "the blocking call this spawn belongs to has already ended",
+                    "code": "inline_call_ended",
+                },
+                status=409,
+            )
+        if not inline_id:
+            return web.json_response(
+                {
+                    "error": "too many sub-agents are waiting on this session's blocking calls",
+                    "code": "inline_collection_full",
+                },
+                status=429,
+            )
+        inline_kwargs["_preassigned_id"] = inline_id
+    # A spawn that raises leaves its reservation in place. It may already have
+    # queued the durable row on the store writer, so a run can still start
+    # under this id; discarding the record would let it run unheld while the
+    # call is still blocked. The call's end releases every member it reserved
+    # (the record carries the call id), and expiry covers a call that never
+    # reports back.
     info = await _spawn_on_loop(
         state,
         task,
@@ -386,7 +456,12 @@ async def api_spawn(request: web.Request) -> web.Response:
         _memory_mode=admitted_mode,
         _execution_context=admitted_execution.to_record(),
         _parent_spawn_policy=parent_spawn_policy,
+        **inline_kwargs,
     )
+    if inline_kwargs and (not info or (info.done and info.error)):
+        # Refused: nothing will run under the reserved id, so release it. A
+        # completion it already holds stays for the call's end (``discard``).
+        state.subagents.inline_collections.discard(parent_session, inline_kwargs["_preassigned_id"])
     if not info:
         # Reached mgr.spawn (submission COUNTED at the top of spawn()) but
         # refused for capacity — tell the client so it does NOT reconcile
