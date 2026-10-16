@@ -19,6 +19,7 @@ import pytest
 from non_utf8_comm import BAD_COMM, write_stat
 
 from kiro_crew import platform_compat
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 
 
 class TestSignalOrphanedRuntimeGroup:
@@ -697,8 +698,7 @@ class TestSyncKillProvider:
         provider._proc = None
         provider._active_proc = MagicMock()
         provider._active_proc.returncode = None
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid, moved verbatim; kill_pid is patched to the fake_kill below
-        provider._active_proc.pid = 99999
+        provider._active_proc.pid = UNALLOCATABLE_PID
 
         sigs: list[int] = []
 
@@ -706,9 +706,18 @@ class TestSyncKillProvider:
             sigs.append(sig)
             raise ProcessLookupError()
 
-        with patch(
-            "kiro_crew.session_pid.platform_compat.kill_pid",
-            side_effect=fake_kill,
+        # The fake pid names no process, so the OS is never asked about it: no
+        # group, which leaves the pid-scoped signal as the only arm, a pid that
+        # reads as gone, as the signal's ProcessLookupError says, and the root's
+        # reap observed rather than run.
+        with (
+            patch("kiro_crew.session_pid.platform_compat.pgroup_of", return_value=None),
+            patch("kiro_crew.session_pid._reap_provider_root"),
+            patch("kiro_crew.session_pid.platform_compat.pid_exists", return_value=False),
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_pid",
+                side_effect=fake_kill,
+            ),
         ):
             _sync_kill_provider(provider)
 

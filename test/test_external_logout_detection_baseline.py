@@ -14,6 +14,7 @@ from external_logout_detection_helpers import _private_sel_root_per_test  # noqa
 from external_logout_detection_helpers import _expire_identity_cache, _FakeProvider, _write_store
 
 from kiro_crew import kiro_prerequisite as kp
+from kiro_crew.testing.wait import finished
 
 
 class TestIdentityChangePredicate:
@@ -689,15 +690,14 @@ class TestBootSeededSessionBaseline:
         service = kp.KiroPrerequisiteService(home=tmp_path, environ={}, platform_name="linux")
 
         async def _hang(*, allow_cached: bool = True) -> str:
-            # flake-ok: the stub models a hung store; the 0.05 s seed deadline fires long before this sleep ends
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the stub models a hung store; the test asserts the seed deadline fires first
-            await asyncio.sleep(30)
+            # A hung store: parked until the seed deadline cancels it.
+            await asyncio.Event().wait()
             return "never-reached"
 
         monkeypatch.setattr(service, "current_identity_fingerprint", _hang)
         monkeypatch.setattr(kp, "_SEED_BASELINE_TIMEOUT_SECS", 0.05)
 
-        assert await service.seed_sessions_baseline() is False
+        assert await finished(service.seed_sessions_baseline(), "the bounded seed") is False
 
     @pytest.mark.asyncio
     async def test_a_switch_after_seeding_is_still_detected(self, tmp_path: Path) -> None:

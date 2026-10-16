@@ -45,6 +45,7 @@ from kiro_crew.apps.registry import (
 from kiro_crew.config import loader as loader_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.platform.bootstrap import build_default_context
+from kiro_crew.testing.wait import LoopHop, await_until, until_parked
 
 # ---------------------------------------------------------------------------
 # Cancellation settles the copy without recording a partial run
@@ -163,21 +164,27 @@ class TestCopyCancellation:
 
         reg = _pin_registry(monkeypatch, _TRUST_OWNER)
         loop = asyncio.get_running_loop()
+        hop = LoopHop(loop)
         copy_entered = asyncio.Event()
         returned = threading.Event()
         removal_saw_worker_returned: list[bool] = []
+
+        async def _one_loop_turn() -> None:
+            return None
+
         real_copy = reg_mod._copy_declared_art
         real_rmtree = reg_mod._rmtree_force_settled
 
         def _slow_copy(entry, mdir, manifest, cancel=None):
             loop.call_soon_threadsafe(copy_entered.set)
-            while cancel is not None and not cancel.is_set():
-                time.sleep(0.01)
-            # Linger past the flag: a caller that does not wait for the return
-            # reaches the removal while this thread is still here.
-            # flake-ok: the slow-copy stub lingers past the cancel flag so the removal races the copy thread
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- slow-copy stub that lingers past the cancel flag; the comment above explains it
-            time.sleep(0.2)
+            assert cancel is not None and cancel.wait(
+                timeout=_BARRIER_CEILING_SECS
+            ), "the copy worker never saw the cancel flag"
+            # Linger past the flag until the loop has finished the step that set
+            # it. That step either parks the caller on the worker (the settle) or,
+            # for a caller that does not wait for the return, runs its ``finally``
+            # straight into the removal, which records this thread as still here.
+            hop.run(_one_loop_turn(), "a loop turn after the cancel flag was set")
             result = real_copy(entry, mdir, manifest, cancel)
             returned.set()
             return result
@@ -203,6 +210,7 @@ class TestCopyCancellation:
         with pytest.raises(asyncio.CancelledError):
             await _settled(task, "the cancelled prewarm")
 
+        hop.check()
         assert removal_saw_worker_returned == [True], removal_saw_worker_returned
 
 
@@ -273,15 +281,17 @@ class TestCallSites:
 
         fetched: set[str] = set()
         seen_at_prewarm: list[frozenset[str]] = []
+        official_fetched = asyncio.Event()
 
         async def _fetch(r):
-            # The slow sibling finishes last; a prewarm inside the per-registry
-            # load would run for "official" while "second" is still unfetched.
+            # The sibling finishes last, gated on the first fetch: a prewarm inside
+            # the per-registry load would run for "official" in the same loop turn
+            # its fetch returns, while "second" is still parked here, unfetched.
             if r.name == "second":
-                # flake-ok: the slow sibling finishes last so a prewarm inside the per-registry load is caught
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- slow-sibling stub that finishes last; the comment above explains it
-                await asyncio.sleep(0.05)
+                await await_until(official_fetched, what="the official registry's fetch")
             fetched.add(r.name)
+            if r.name == "official":
+                official_fetched.set()
             return [dict(_entry(), _registry=r.name)]
 
         async def _prewarm(r, entries):
@@ -457,14 +467,14 @@ class TestPrewarmBatchBounds:
         monkeypatch.setattr(reg_mod, "_PREWARM_MAX_ROWS", 1000)
         live = 0
         peak = 0
+        release = asyncio.Event()
 
         async def _fetch(entry, registry_name):
             nonlocal live, peak
             live += 1
             peak = max(peak, live)
-            # flake-ok: each fake fetch stays in flight briefly so the pool's peak concurrency is observable
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- stub that holds each fake fetch in flight so overlapping tasks are counted
-            await asyncio.sleep(0.005)
+            # Every fetch stays in flight until the test has seen the pool full.
+            await release.wait()
             live -= 1
             return True
 
@@ -476,10 +486,18 @@ class TestPrewarmBatchBounds:
             for i in range(40)
         ]
 
-        fetched = await _prewarm_owner_tier_store_assets(reg, rows)
+        prewarm = asyncio.ensure_future(_prewarm_owner_tier_store_assets(reg, rows))
+        try:
+            # The pool is full once three fetches are parked; a task per row would
+            # have parked all forty by the time this poll first reads.
+            await until_parked(release, count=3, describe=lambda: f"live={live} peak={peak}")
+            assert peak == 3, peak
+        finally:
+            release.set()
+        fetched = await _settled(prewarm, "the prewarm batch")
 
         assert fetched == 40
-        assert 1 < peak <= 3, peak
+        assert peak == 3, peak
 
     @pytest.mark.asyncio
     async def test_the_retained_row_drops_fields_a_fetch_does_not_read(self, monkeypatch):
@@ -805,12 +823,14 @@ class TestBoundedPostBudgetCleanup:
         import asyncio
 
         release = asyncio.Event()
+        deadline_fired = asyncio.Event()
 
         async def _worker():
             try:
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
                 # The pre-fix shape awaits this cleanup inline, unbounded.
+                deadline_fired.set()
                 await release.wait()
                 raise
 
@@ -822,19 +842,18 @@ class TestBoundedPostBudgetCleanup:
             except asyncio.TimeoutError:
                 return 0
 
-        loop = asyncio.get_running_loop()
-        started = loop.time()
         task = asyncio.ensure_future(_prefix_wait())
-        # Give the pre-fix shape three times its 0.2 s deadline to return. Waiting on
-        # the task itself (not a bare sleep) ends the wait the moment it returns, and
-        # returning early is exactly what this control must rule out; a slow runner
-        # only lengthens the wait, it cannot make the control pass falsely.
-        done, _ = await asyncio.wait({task}, timeout=0.6)  # flake-ok: expiry is expected
-        blocked_past_deadline = task not in done
-        assert blocked_past_deadline, "the pre-fix shape should still be blocked on cleanup"
-        release.set()
-        await asyncio.wait_for(task, timeout=2)
-        assert loop.time() - started > 0.5
+        try:
+            # The deadline has fired and cancelled the worker, which is now parked in
+            # its cleanup. Nothing but ``release`` can end that cleanup, so a pre-fix
+            # shape still pending here is blocked past its deadline by construction,
+            # not by how long this test chose to look.
+            await _await_barrier(deadline_fired, "the pre-fix deadline")
+            await until_parked(release)
+            assert not task.done(), "the pre-fix shape should still be blocked on cleanup"
+        finally:
+            release.set()
+        assert await _settled(task, "the pre-fix wait") == 0
 
     @pytest.mark.asyncio
     async def test_a_quick_cleanup_settles_within_the_budget_without_detaching(self, monkeypatch):
@@ -934,9 +953,11 @@ class TestOuterCancellationSettlesTheBatch:
 
         worker_cancelled: list[str] = []
         leaked: list[asyncio.Future] = []
+        worker_parked = asyncio.Event()
 
         async def _worker():
             try:
+                worker_parked.set()
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
                 worker_cancelled.append("w")
@@ -951,12 +972,14 @@ class TestOuterCancellationSettlesTheBatch:
             return batch
 
         task = asyncio.ensure_future(_prefix_prewarm())
-        # flake-ok: a short yield lets the control task reach its bare wait before the cancel lands
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- short yield so the control task reaches its bare wait before the cancel
-        await asyncio.sleep(0.05)
+        # The worker runs inside the batch, and the control task created the batch
+        # and went straight into its bare wait in the same turn: both are parked
+        # where the cancel must find them.
+        await _await_barrier(worker_parked, "the batch's worker")
+        assert leaked and not task.done()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=5)
+            await _settled(task, "the cancelled control")
         # The batch was NOT cancelled by the bare wait: the worker still runs.
         assert worker_cancelled == [], "the bare-wait shape should leak the running batch"
         # Clean up the leaked batch this control deliberately created.

@@ -146,14 +146,21 @@ def _overdue_run(
     return manager, info, session_key
 
 
-def _hanging_reset(manager: SubagentManager) -> None:
-    """A reset that never returns: the caller's ``wait_for`` times out."""
+def _hanging_reset(manager: SubagentManager) -> asyncio.Event:
+    """A reset that never returns: the caller's ``wait_for`` times out.
+
+    Returns the event the reset sets once it is parked, for a test that must
+    cancel the teardown inside it.
+    """
+    entered = asyncio.Event()
 
     async def _hang(session_key: str, **_: Any) -> bool:
-        await asyncio.sleep(999)
+        entered.set()
+        await asyncio.Event().wait()  # parked until the caller's bound or a cancel
         return True
 
     manager._sessions.reset = AsyncMock(side_effect=_hang)
+    return entered
 
 
 def _kill_path_stubs() -> tuple[Any, Any, Any, Any]:

@@ -27,7 +27,7 @@ from connections_warm_helpers import (
 from kiro_crew.connections import warm
 from kiro_crew.connections.mint import _mints
 from kiro_crew.connections.registry import Provider
-from kiro_crew.testing.wait import await_until, finished
+from kiro_crew.testing.wait import async_wait_until, await_until, finished, until_parked
 
 # The shared fixtures, bound here by name so pytest registers them for this module.
 _clean_mint_table = connections_warm_helpers._clean_mint_table
@@ -340,13 +340,14 @@ async def test_rearm_is_single_flight_and_cannot_form_a_restart_loop(
     second = warm._warm_mint.start_rearm(3)
 
     assert first is not None and second is first
-    # flake-ok: pre-existing single-tick yield that lets the started rearm task run, moved verbatim; tracked for a de-flake pass
-    await asyncio.sleep(0)
+    # The one started rearm has recorded its call and is parked on the gate.
+    await until_parked(gate, describe=lambda: f"calls={calls}")
     assert calls == [3]
     gate.set()
-    await first
-    # flake-ok: pre-existing single-tick yield after the awaited rearm, moved verbatim; tracked for a de-flake pass
-    await asyncio.sleep(0)
+    await await_until(first, what="the rearm")
+    # The finished rearm has released its single-flight slot, so the refusal
+    # below is the spent budget, not a slot still held.
+    await async_wait_until(lambda: warm._warm_mint._rearm_task is None)
 
     assert warm._warm_mint.start_rearm(3) is None
     assert calls == [3], "one automatic replacement must not recursively earn another"

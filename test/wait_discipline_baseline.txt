@@ -286,7 +286,7 @@
  3 test_queue_receipt.py
  6 test_queued_prompt_durability.py
  1 test_registry_store_art_prewarm.py
- 9 test_registry_store_art_prewarm_batch.py
+ 6 test_registry_store_art_prewarm_batch.py
  1 test_registry_store_art_prewarm_rewarm.py
  1 test_remote_crew_chaining.py
  1 test_resource_pressure_notify.py

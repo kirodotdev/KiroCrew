@@ -28,7 +28,7 @@ from subagent_force_stop_audit_helpers import (
 )
 from test_subagent_continuable import _mock_sessions as _completing_sessions
 
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, process_identity
 from kiro_crew.acp.client import AcpProcessDied
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.session import SessionManager
@@ -297,8 +297,7 @@ class TestTheRunsOwnReportWaitsForItsTeardown:
 
         async def _reset_that_hangs(session_key: str, **_: Any) -> bool:
             reset_entered.set()
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the stubbed reset's hang, which the test cancels; nothing waits it out
-            await asyncio.sleep(999)
+            await asyncio.Event().wait()  # parked until the test cancels the run
             return True
 
         manager._sessions.reset = AsyncMock(side_effect=_reset_that_hangs)
@@ -336,15 +335,15 @@ class TestTheRunsOwnReportWaitsForItsTeardown:
         """Control: the reap consumed the handle and cancels the run task; its own arm names the kill, not this one."""
         manager, info, key = _overdue_run("fin7", pid=7676)
         info._reap_started = True  # the reap is in flight and owns the record
-        _hanging_reset(manager)
+        reset_entered = _hanging_reset(manager)
 
         task = asyncio.ensure_future(manager._teardown_run_session(info, key))
-        # flake-ok: pre-existing 10 ms yield barrier before the cancel, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing yield barrier before the cancel, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.01)
+        # Cancel inside the reset, so a clean record means the run's own arm left
+        # it to the reap, not that the teardown never started.
+        await await_until(reset_entered, what="the teardown's reset")
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await task
+            await await_until(task, what="the cancelled teardown")
 
         assert not info.error, f"the run's finally named a kill the reap owns: {info.error!r}"
 
@@ -364,11 +363,14 @@ class TestTheRunsOwnReportWaitsForItsTeardown:
         manager = _completing_run(seen)
         _hanging_reset(manager)
         children, alive, start_id, sweep = _kill_path_stubs()
+        kill_may_decide = asyncio.Event()
+        real_signal = process_identity._signal_retained_group
 
-        def _slow_refusal(*_args: Any) -> None:
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the stubbed kill's own executor wait, which must outlast the report's grace; not a barrier
-            time.sleep(0.6)  # on the subprocess executor: the kill half outlasts the grace
-            raise _REFUSAL
+        async def _held_signal(*args: Any, **kwargs: Any) -> Any:
+            # The kill half outlasts the grace: it decides (the group signal is
+            # refused) only once the test has seen the report published.
+            await await_until(kill_may_decide, what="the test releasing the kill")
+            return await real_signal(*args, **kwargs)
 
         with (
             patch("kiro_crew.subagent.Stats"),
@@ -380,16 +382,18 @@ class TestTheRunsOwnReportWaitsForItsTeardown:
             alive,
             start_id,
             sweep,
-            patch(
-                "kiro_crew.platform_compat.kill_process_group", MagicMock(side_effect=_slow_refusal)
-            ),
+            patch("kiro_crew.process_identity._signal_retained_group", _held_signal),
+            patch("kiro_crew.platform_compat.kill_process_group", MagicMock(side_effect=_REFUSAL)),
         ):
             info = manager.spawn("finish, then hang in the reset and stall in the kill", keep=True)
             assert info is not None and not info.error
             run_task = manager._tasks[info.id]  # popped by the run's own finally later
             _session_with_pid(manager, f"subagent:{info.id}", 9914)
-            # The report publishes once its grace runs out.
-            await async_wait_until(lambda: seen, describe=lambda: f"error={info.error!r}")
+            # The report publishes once its grace runs out, with the kill undecided.
+            try:
+                await async_wait_until(lambda: seen, describe=lambda: f"error={info.error!r}")
+            finally:
+                kill_may_decide.set()
             published = seen[0]
             await await_until(run_task, what="the run finishing")
             await await_until(

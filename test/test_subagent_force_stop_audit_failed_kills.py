@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -41,6 +42,7 @@ from kiro_crew.subagent_persistence import (
     read_tombstone,
     update_state,
 )
+from kiro_crew.testing.wait import await_until, default_timeout, finished
 
 # The shared fixtures, bound here by name so pytest registers them for this module.
 _kill_seam = subagent_force_stop_audit_helpers._kill_seam
@@ -760,32 +762,17 @@ class TestTheOrphanKillLeavesTheLoopRunning:
     that wait, once per live orphan, during startup.
     """
 
-    @staticmethod
-    async def _ticks_during(work: Any) -> int:
-        """How many 10 ms ticks the loop served while *work* ran."""
-        ticks = 0
-
-        async def clock() -> None:
-            nonlocal ticks
-            while True:
-                # The tick is the instrument: a blocked loop serves none of them.
-                await asyncio.sleep(0.01)  # flake-ok: the loop-liveness probe
-                ticks += 1
-
-        ticking = asyncio.create_task(clock())
-        try:
-            await work
-        finally:
-            ticking.cancel()
-        return ticks
-
     @pytest.mark.asyncio
     async def test_the_reconciliation_awaits_the_kill_off_the_loop(self, agent_root: Any) -> None:
         manager = _orphan_on_disk("orphan-awaited", pid=4245)
+        loop = asyncio.get_running_loop()
+        served = asyncio.Event()
 
         async def slow_kill(pid: int, sig: int) -> bool:
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the stubbed kill's own wait, which the loop-liveness probe measures; not a barrier
-            await asyncio.sleep(0.2)  # the taskkill wait, as the executor hop presents it
+            # The taskkill wait, as the executor hop presents it: the kill stays in
+            # flight until the loop has served a callback queued after it began.
+            loop.call_soon(served.set)
+            await await_until(served, what="a loop callback queued during the kill")
             return True
 
         with (
@@ -794,36 +781,38 @@ class TestTheOrphanKillLeavesTheLoopRunning:
             patch.object(platform_compat, "kill_pid_async", side_effect=slow_kill) as kill,
             patch("kiro_crew.subagent.sel") as mock_sel,
         ):
-            ticks = await self._ticks_during(manager._reconcile_orphans())
+            await finished(manager._reconcile_orphans(), "the orphan reconciliation")
 
         kill.assert_awaited_once_with(4245, platform_compat.SIGKILL)
-        assert ticks >= 5, (
-            f"the loop served {ticks} ticks while the orphan kill waited: the reconciliation "
-            "did not await the kill"
-        )
+        assert served.is_set(), "the loop served nothing while the orphan kill waited"
         assert _audit(mock_sel, "orphan_reconcile_kill")["outcome"] == "killed"
         assert (agent_root / "orphan-awaited" / "tombstone.json").exists()
 
     @pytest.mark.asyncio
     async def test_a_slow_windows_kill_does_not_stall_the_loop(self) -> None:
         """The Windows arm's blocking ``taskkill`` wait runs on the subprocess executor."""
+        loop = asyncio.get_running_loop()
+        served = threading.Event()
+        waited_off_the_loop: list[bool] = []
 
         def taskkill_wait(pid: int, sig: int) -> bool:
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the stubbed taskkill's own wait, which the loop-liveness probe measures; not a barrier
-            time.sleep(0.3)  # taskkill waiting on the target, on whichever thread runs it
+            # taskkill waiting on the target, on whichever thread runs it: it returns
+            # once the loop has served a callback queued after the wait began. On the
+            # loop thread that callback can never run, so the wait reaches its bound.
+            loop.call_soon_threadsafe(served.set)
+            waited_off_the_loop.append(served.wait(timeout=default_timeout()))
             return True
 
         with (
             patch.object(platform_compat, "IS_POSIX", False),
             patch.object(platform_compat, "kill_pid", side_effect=taskkill_wait) as kill,
         ):
-            ticks = await self._ticks_during(SubagentManager._kill_orphan_pid(4246))
+            await finished(SubagentManager._kill_orphan_pid(4246), "the orphan kill")
 
         kill.assert_called_once_with(4246, platform_compat.SIGKILL)
-        assert ticks >= 5, (
-            f"the loop served {ticks} ticks during a 300 ms taskkill wait: the kill ran on the "
-            "loop thread"
-        )
+        assert waited_off_the_loop == [
+            True
+        ], "the loop served nothing during the taskkill wait: the kill ran on the loop thread"
 
     @pytest.mark.asyncio
     async def test_a_failure_off_the_loop_is_still_named(self) -> None:

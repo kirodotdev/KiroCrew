@@ -19,6 +19,7 @@ import pytest
 from pid_lifecycle_helpers import _POSIX_ONLY
 
 from kiro_crew import platform_compat
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 from kiro_crew.testing.wait import wait_until
 
 # A grandchild that ignores SIGTERM, so only a SIGKILL that actually reaches it
@@ -946,21 +947,23 @@ class TestSyncKillProviderTree:
             recorded = platform_compat.get_process_start_id(child.pid)
             assert recorded is not None, "a running child's identity must be readable"
             child.kill()
-            if self._HAS_WAITID:
-                deadline = time.monotonic() + 10
-                wait_until(
-                    lambda: self._our_child_exited(child.pid),
-                    timeout=max(0.0, deadline - time.monotonic()),
-                    describe=lambda: "the child never exited",
-                )
-            else:
-                # No non-destructive peek here, and consuming the status to look at it
-                # would destroy what the refusal arm inspects. SIGKILL cannot be caught
-                # or ignored, so a bounded settle is enough -- and if it were not, the
-                # positive arm below would find the status uncollected and fail loudly
-                # rather than pass on a child that was still running.
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing bounded settle, moved verbatim; the comment above explains it
-                time.sleep(0.5)
+
+            # Wait for the exit without consuming the status the refusal arm inspects:
+            # ``waitid(WNOWAIT)`` peeks where it exists; elsewhere (macOS) the kernel's
+            # own process state reports the zombie, which is a pid that has exited and
+            # whose status is still uncollected.
+            def _exited() -> bool:
+                if self._HAS_WAITID:
+                    return self._our_child_exited(child.pid)
+                return platform_compat.pid_is_zombie(child.pid) is True
+
+            wait_until(
+                _exited,
+                timeout=10,
+                describe=lambda: (
+                    f"the child never exited; pid_exists={platform_compat.pid_exists(child.pid)}"
+                ),
+            )
             assert self._status_still_collectable(child.pid), "the status must start uncollected"
 
             sp._reap_provider_root(child.pid, "0.000000", gated=True)
@@ -1212,8 +1215,7 @@ class TestSyncKillProviderTree:
     ) -> None:
         """A failed setup must not leave unreported children or an open pipe."""
         proc = MagicMock(spec=subprocess.Popen)
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid, moved verbatim; os.killpg and the Popen double are mocks in this test
-        proc.pid = 4242
+        proc.pid = UNALLOCATABLE_PID
         proc.stdout = MagicMock()
         if report == "timeout":
             error = subprocess.TimeoutExpired("provider fixture", 10)
@@ -1373,8 +1375,7 @@ class TestSyncKillProviderTree:
         provider = MagicMock(spec=["_client", "_proc", "_active_proc"])
         provider._client = None
         provider._proc = MagicMock(spec=["pid", "returncode"])
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid, moved verbatim; os.killpg and kill_pid are patched below
-        provider._proc.pid = 4242
+        provider._proc.pid = UNALLOCATABLE_PID
         provider._proc.returncode = None
         provider._active_proc = None
         # Not an isolated leader, so _isolated_provider_group yields None and the
@@ -1388,9 +1389,15 @@ class TestSyncKillProviderTree:
             "kiro_crew.session_pid.os.killpg", lambda pgid, sig: killpg_calls.append((pgid, sig))
         )
         monkeypatch.setattr("kiro_crew.session_pid.platform_compat.kill_pid", lambda _p, _s: None)
+        # The fake pid names no process, so the root's reap is observed, not run.
+        reaped: list[int] = []
+        monkeypatch.setattr(
+            "kiro_crew.session_pid._reap_provider_root", lambda pid, *a, **k: reaped.append(pid)
+        )
 
         _sync_kill_provider(provider)
 
+        assert reaped == [UNALLOCATABLE_PID], "the teardown never reached the root's reap"
         assert calls == [], "group recovery was attempted for a non-gated live-handle root"
         assert killpg_calls == [], f"a group was signalled for a live-handle root: {killpg_calls}"
 
