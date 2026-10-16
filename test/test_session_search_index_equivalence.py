@@ -272,6 +272,43 @@ def test_no_nul_reaches_the_fts_column(tmp_path):
         assert "embedded" in {r["key"] for r in rows}, f"{term} was not found"
 
 
+def test_a_lone_surrogate_does_not_stop_the_backfill(tmp_path):
+    """One unpaired ``\\udXXX`` escape in a transcript must not cost every older session its row.
+
+    The backfill walks sessions newest first, so a poisoned newest session that
+    raised out of ``sync`` ended every pass before any older one was indexed, and
+    every query kept scanning raw transcripts. The escape is written into the
+    file by hand because ``append`` never produces one; ``json.loads`` turns it
+    into a lone surrogate, which no strict UTF-8 encoder accepts.
+    """
+    scan_log = ConversationLog(base_dir=tmp_path / "scan")
+    index_log = ConversationLog(base_dir=tmp_path / "indexed")
+    for log in (scan_log, index_log):
+        log.append("older", "user", "a session about deployment")
+        log.append("poisoned", "user", "contention notes, emoji LONE-SURROGATE cut off")
+        path = log._path("poisoned")
+        path.write_text(
+            path.read_text(encoding="utf-8").replace("LONE-SURROGATE", "\\ud83d"),
+            encoding="utf-8",
+        )
+        # Pin the order rather than rely on two writes landing in distinct mtimes.
+        older = log._path("older")
+        older_ns = path.stat().st_mtime_ns - 60_000_000_000
+        os.utime(older, ns=(older_ns, older_ns))
+        assert log.list_sessions()[0]["key"] == "poisoned"
+
+    projection = index_log._catalog_projection
+    report = projection.backfill_index(budget_secs=30)
+    assert report["remaining"] == 0
+    assert projection.search_index.indexed_keys() == {"older", "poisoned"}
+
+    scan_log._catalog_projection.search_index.available = False
+    for query in ("deployment", "contention", "emoji cut"):
+        indexed_rows = index_log.search_sessions(query)
+        assert indexed_rows, f"{query!r} found nothing"
+        assert _strip(indexed_rows) == _strip(scan_log.search_sessions(query))
+
+
 def test_an_append_between_the_stat_and_the_snapshot_is_not_vouched_for(tmp_path, monkeypatch):
     """A vouch must not rest on an observation older than the index read it certifies.
 
