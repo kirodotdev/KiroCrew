@@ -1548,7 +1548,7 @@ measures, never above.
   directory that also contains sibling tools.
 
 - **Bootstrap fixtures must match the child's libc target.** In
-  `test_playwright_cli_installer.py`, `_expected_node_base` uses native
+  `playwright_cli_installer_helpers.py`, `_expected_node_base` uses native
   `os.confstr("CS_GNU_LIBC_VERSION")` on Linux/x64 to select `glibc-217` below
   glibc 2.28. OS and architecture alone give the fake mirror the wrong archive,
   failing before checksum and cleanup assertions. Keep the real platform tool

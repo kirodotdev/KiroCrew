@@ -77,7 +77,7 @@ def _native_powershell(name):
     with no ``pwsh`` at all skipped. Judging the candidate by the file it RESOLVES
     to gives the same verdict on every run of one host: a real ``pwsh`` resolves to
     a file named ``pwsh``, a shim to ``mise``. Same rule as
-    ``test_playwright_cli_installer._native_tool_on_path``. Windows executables
+    ``playwright_cli_installer_helpers._native_tool_on_path``. Windows executables
     carry PATHEXT and have no shim problem, so the ordinary lookup is right there.
     """
     if sys.platform == "win32":

@@ -172,13 +172,11 @@
 2226 test/test_context_composition_contract.py
 6406 test/test_crew_log_emit.py
 2202 test/test_crew_log_fold_eager.py
-3011 test/test_crew_log_projection.py
 2195 test/test_crew_turn_proxy.py
 3125 test/test_cron_script.py
 2247 test/test_cron_secret_env.py
 3175 test/test_dashboard_approval.py
 2718 test/test_dashboard_server_composition_contract.py
-3002 test/test_dashboard_source_link_unlink.py
 2430 test/test_dashboard_state_ws.py
 2286 test/test_dashboard_templates.py
 2478 test/test_dashboard_updates_coverage.py
@@ -227,7 +225,6 @@
 3579 test/test_overload_integration_glue.py
 2429 test/test_pinned_staging.py
 4048 test/test_pipeline_conductor_fleet_probe.py
-3012 test/test_playwright_cli_installer.py
 2725 test/test_plugin_import.py
 8519 test/test_pod.py
 3225 test/test_portability.py
@@ -237,7 +234,6 @@
 5775 test/test_remote_crew_chaining.py
 3193 test/test_sandbox_absent_ceiling_seal.py
 12647 test/test_security.py
-3048 test/test_security_conductor_ledger.py
 2034 test/test_security_path_resolve_bounded.py
 5509 test/test_sel.py
 9530 test/test_session.py
