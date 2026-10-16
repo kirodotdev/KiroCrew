@@ -185,6 +185,18 @@ def resolve_projected_spec(
     """
     if not kas_agents_mod.agent_spec_absent(agents_dir, agent):
         return kas_agents_mod.load_agent_spec(agents_dir, agent), agents_dir
+    # Crewmate scope. A name the user level does NOT declare may be a crewmate's
+    # own config in ``~/.kiro/mates/agents/`` (``rfc-mate-owned-agent-config``
+    # §5.3): resolution reads this folder, the session agent picker does not, so
+    # the folder is the privacy boundary. It is a full custom-agent spec Crew
+    # wrote, trusted like a user-level one (not key-restricted like the untrusted
+    # project checkout below) because the governance ceiling re-applies at
+    # projection regardless. Checked BEFORE the project scope so a crewmate id
+    # never resolves to a same-named spec a checkout happens to carry; its prompt
+    # anchors to the crewmate folder.
+    mate_dir = paths_mod.mate_agents_dir()
+    if not kas_agents_mod.agent_spec_absent(mate_dir, agent):
+        return kas_agents_mod.load_agent_spec(mate_dir, agent), mate_dir
     declared, project = project_agent_spec(agent, work_dir)
     if not declared:
         try:

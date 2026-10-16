@@ -20,6 +20,7 @@ Blocking IO throughout; callers run it off the event loop.
 from __future__ import annotations
 
 import fnmatch
+import json
 import logging
 import re
 from pathlib import Path
@@ -42,7 +43,17 @@ ALREADY_ENROLLED = "already_enrolled"
 POLICY_WITHHOLDS = "policy_withholds"
 SERVER_UNAVAILABLE = "server_unavailable"
 BACKEND_UNSUPPORTED = "backend_unsupported"
+MATE_FILE_MISSING = "mate_file_missing"
 FAILED = "failed"
+
+
+def _digest(value: Any) -> str:
+    """Stable digest of a spec, to tell a no-op edit from a real one."""
+    import hashlib
+
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
 
 
 def _referenced(tools: Any) -> bool:
@@ -178,6 +189,57 @@ def _operations(view: dict) -> list[dict] | str:
     return ops
 
 
+def _mutate_spec_for_mate_tools(spec: dict) -> bool:
+    """Add the mate server + tools ref + auto-grants to *spec* IN PLACE.
+
+    The mate-owned-config form of the grant: instead of driving the capability
+    editor's fork/enroll (which mints a ``crew-`` draft and a ``private_to``
+    lineage the RFC's severed copy explicitly does not want), the mate's own
+    config file is edited directly. Idempotent -- a spec that already launches the
+    server, mounts its tools and holds the auto-grants is left untouched.
+
+    Returns True iff anything changed. Mirrors :func:`_operations`' intent:
+
+    * launch ``kirocrew-mate`` (``mcpServers`` entry, un-muted) if absent;
+    * reference it in ``tools`` if not already mounted;
+    * add every :data:`kiro_crew.agent._MATE_AUTO_GRANTS` not already covered by
+      an ``allowedTools`` entry.
+    """
+    from kiro_crew import agent as agent_mod
+
+    changed = False
+    servers = spec.setdefault("mcpServers", {})
+    if not isinstance(servers, dict):
+        raise ValueError("mcpServers is not an object")
+    entry = servers.get(MATE_SERVER)
+    from kiro_crew.mcp_cleanup import mcp_entry_is_muted
+
+    if entry is None:
+        servers[MATE_SERVER] = {"disabled": False}
+        changed = True
+    elif isinstance(entry, dict) and mcp_entry_is_muted(entry):
+        # The template's author muted it; honour that, mirroring TEMPLATE_MUTES_IT.
+        return False
+    tools = spec.get("tools")
+    if not isinstance(tools, list):
+        tools = []
+        spec["tools"] = tools
+    if not _referenced(tools):
+        tools.append(_MATE_REF)
+        changed = True
+    allowed = spec.get("allowedTools")
+    if not isinstance(allowed, list):
+        allowed = []
+        spec["allowedTools"] = allowed
+    allowed_map: dict[str, dict] = {ref: {} for ref in allowed if isinstance(ref, str)}
+    for grant in agent_mod._MATE_AUTO_GRANTS:
+        if not _covered(grant, allowed_map):
+            allowed.append(grant)
+            allowed_map[grant] = {}
+            changed = True
+    return changed
+
+
 def _policy_permits(member: str) -> bool:
     """Whether POLICY ∩ PROFILE lets the member's sessions reach the server at all.
 
@@ -231,9 +293,20 @@ def grant_mate_tools_to_new_member(
 
 
 def _grant(member: str, catalog: Callable[[str], dict[str, str]]) -> str:
-    from kiro_crew.agent_capabilities import CapabilityError, CapabilityService
+    """Edit the crewmate's OWNED config file in place to add the mate tools.
+
+    The mate-owned-config mechanism (RFC): the crewmate already owns a config
+    file at ``mates/agents/<member>.json`` (the eager copy ran first, repointing
+    the binding to the mate id), so the grant is a direct read-modify-write of
+    that severed file -- no capability-editor fork, no ``crew-`` draft, no
+    ``private_to`` lineage. ``catalog`` is unused now (the enroll path needed it
+    to classify skills; a direct edit does not), kept in the signature so callers
+    and tests are unchanged.
+    """
+    from kiro_crew.acp.mate_config import has_mate_config, mate_config_path
     from kiro_crew.agent_files import AGENT_FILENAME
     from kiro_crew.config.loader import KiroCrewConfig, _invalidate_config_cache
+    from kiro_crew.config.paths import mate_agents_dir
 
     _invalidate_config_cache()
     binding = KiroCrewConfig.load().agents.get(member)
@@ -241,33 +314,48 @@ def _grant(member: str, catalog: Callable[[str], dict[str, str]]) -> str:
         return NOT_A_MEMBER
     if binding.kiro_agent == Path(AGENT_FILENAME).stem:
         return DEFAULT_TEMPLATE
-    service = CapabilityService(catalog)
-    try:
-        view = service.get(member)
-    except CapabilityError as exc:
-        logger.info("mate tools not added to %r: %s", member, exc.code)
-        return f"refused:{exc.code}"
-    if view.get("mode") != "shared":
-        return ALREADY_ENROLLED
-    ops = _operations(view)
-    if isinstance(ops, str):
-        return ops
+    # The eager copy must have run first and repointed the binding at the mate
+    # id. If it did not (its best-effort copy failed), there is no owned file to
+    # edit; leave the shared pointer as-is rather than minting one here.
+    if binding.kiro_agent != member or not has_mate_config(member):
+        return MATE_FILE_MISSING
     if not _policy_permits(member):
         return POLICY_WITHHOLDS
-    if any(op["section"] == "mcpServers" for op in ops):
-        from kiro_crew.agent_capabilities import _member_platform_transport
+    from kiro_crew.agent_capabilities import _member_platform_transport
 
-        if _member_platform_transport(MATE_SERVER) is None:
-            return SERVER_UNAVAILABLE
-    body = {"revision": view["revision"], "enroll": True, "operations": ops}
+    if _member_platform_transport(MATE_SERVER) is None:
+        return SERVER_UNAVAILABLE
+
+    from kiro_crew.agent import _read_spec_capped, _spec_path_is_safe
+    from kiro_crew.atomic_write import atomic_write
+    from kiro_crew.platform.governance import sanitize_agent_config_governance
+
+    root = mate_agents_dir()
+    path = mate_config_path(member)
+    if not _spec_path_is_safe(path, root):
+        return FAILED
+    spec = _read_spec_capped(path)
+    if not isinstance(spec, dict):
+        return FAILED
+    before = _digest(spec)
     try:
-        preview = service.preview(member, body)
-        if preview.get("backend_warning"):
-            return BACKEND_UNSUPPORTED
-        service.put(member, {**body, "preview_token": preview["preview_token"]})
-    except CapabilityError as exc:
-        logger.info("mate tools not added to %r: %s", member, exc.code)
-        return f"refused:{exc.code}"
+        changed = _mutate_spec_for_mate_tools(spec)
+    except ValueError:
+        logger.info("mate tools not added to %r: malformed owned spec", member)
+        return FAILED
+    if not changed:
+        # Already carries the set (TEMPLATE_HAS_IT equivalent for an owned file).
+        return TEMPLATE_HAS_IT
+    spec["name"] = member
+    sanitize_agent_config_governance(spec)
+    if _digest(spec) == before:
+        # Governance stripped exactly what we added -- the ceiling withholds it.
+        return POLICY_WITHHOLDS
+    try:
+        atomic_write(path, json.dumps(spec, indent=2) + "\n", restrict_to_owner=True)
+    except OSError:
+        logger.warning("mate tools: could not write owned spec for %r", member, exc_info=True)
+        return FAILED
     try:
         from kiro_crew.sel import sel
 

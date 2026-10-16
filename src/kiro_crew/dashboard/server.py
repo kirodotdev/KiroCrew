@@ -373,6 +373,7 @@ from kiro_crew.hooks import ScriptHookStore, set_global_hook_store
 from kiro_crew.instances import run_marker  # noqa: F401
 from kiro_crew.instances.registry import InstancesRegistry
 from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager, TunnelState
+from kiro_crew.mate_config_migration import migrate_existing_crewmates
 from kiro_crew.mcp_gateway.socketsec import chmod_socket_0600  # noqa: F401
 from kiro_crew.metrics.http_metrics import (  # noqa: F401
     make_route_latency_middleware,
@@ -2353,6 +2354,16 @@ async def start_dashboard(
 
     # Converge leftover channel transcript copies BEFORE the restores read them.
     await _converge_channel_transcripts(state)
+
+    # RFC mate-owned-agent-config Phase 2: give every existing crewmate still on
+    # a shared template its own owned file, same release as Phase 1 so the
+    # product never carries two kinds of crewmate at once. Additive and
+    # idempotent (see mate_config_migration.py), so a failure here is logged
+    # and left for the next boot rather than blocking startup.
+    try:
+        await asyncio.to_thread(migrate_existing_crewmates, cfg)
+    except Exception:
+        logger.warning("mate-owned-config migration failed", exc_info=True)
 
     await _restore_dashboard_sessions(state, cfg)
 

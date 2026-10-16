@@ -52,6 +52,61 @@ if TYPE_CHECKING:
     )
 
 
+async def _eager_copy_mate_config(name: str) -> str:
+    """Write crewmate *name*'s own custom-agent file and repoint its binding at it.
+
+    The eager copy of ``rfc-mate-owned-agent-config`` §5.4. Reads whatever the
+    crewmate's ``kiro_agent`` resolves to right now (its template, after the
+    mate-tools grant has run), copies it into ``~/.kiro/mates/agents/<name>.json``
+    with the prompt inlined as literal text, then repoints ``kiro_agent`` to
+    *name* so resolution finds the owned file and the picker never offers it.
+
+    Best-effort and never raises: a crewmate that was already published must not
+    be reported as a failed create over this copy. Returns a short outcome code
+    for the log. On any failure ``kiro_agent`` is left pointing at the source
+    template, which still resolves and runs (the pre-RFC shared-pointer model),
+    so the degradation is graceful.
+
+    Runs with :mod:`kiro_crew.dashboard.handlers.agents`'s injected namespace, so
+    ``KiroCrewConfig``, ``persist_member_config``, ``_get_config_lock`` and
+    ``_drained_to_thread`` resolve there -- this helper is ALSO re-exported into
+    that module (the namespace-injection contract), or it NameErrors live.
+    """
+    from kiro_crew.acp.mate_config import MateConfigError, write_mate_config
+
+    try:
+        async with _get_config_lock():
+            cfg = KiroCrewConfig.load()
+            binding = cfg.agents.get(name)
+            if binding is None:
+                return "no_binding"
+            source = binding.kiro_agent
+            if not source:
+                return "no_source"
+            if source == name:
+                # Already owns its id (a re-create path, or already migrated):
+                # nothing to copy from a different source, nothing to repoint.
+                return "already_owned"
+            prior_store = binding.memory_store
+            await _drained_to_thread(write_mate_config, name, source)
+            binding.kiro_agent = name
+            await _drained_to_thread(
+                lambda: persist_member_config(
+                    cfg,
+                    name,
+                    expected_store=prior_store,
+                    changed_fields={"kiro_agent"},
+                )
+            )
+        return "copied"
+    except MateConfigError:
+        logger.warning("crewmate %s: mate config copy failed; kept source pointer", name)
+        return "copy_failed"
+    except Exception:
+        logger.warning("crewmate %s: mate config copy errored; kept source pointer", name)
+        return "errored"
+
+
 async def api_kirocrew_agent_resolved_model(request: web.Request) -> web.Response:
     """GET /api/agents/resolved-model?agent=NAME[&app=APP] — the model a new session uses.
 
@@ -508,8 +563,28 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": str(exc), "code": "member_memory_unavailable"}, status=409
             )
-    # A template without the crewmate's own tools gets them on the new member's
-    # private copy (member_mate_tools); the create stands whatever the outcome.
+    # Eager copy (``rfc-mate-owned-agent-config`` §5.4), FIRST. The crewmate owns
+    # a custom-agent file in ``~/.kiro/mates/agents/<name>.json``, copied from
+    # whatever ``kiro_agent`` resolves to right now (its chosen template), with
+    # its prompt inlined so no ``file://`` link back to the source survives, and
+    # the binding's ``kiro_agent`` is repointed to the crewmate id. This runs
+    # BEFORE the mate-tools grant so the grant has an owned file to edit directly
+    # (the severed-copy model): if the eager copy ran second it would re-copy the
+    # source AFTER the grant and the grant's additions would be lost, and if the
+    # grant ran first via the capability editor it would mint a ``crew-`` draft
+    # and repoint the binding to it, clobbering the mate id (the create-ordering
+    # bug the live pod surfaced).
+    #
+    # Best-effort: a crewmate that was published must not be reported as a failed
+    # create over the copy. A copy that does not land leaves ``kiro_agent``
+    # pointing at the source template (the pre-RFC shared-pointer model), and the
+    # grant below then skips (``mate_file_missing``) rather than minting a fork.
+    mate_copy = await _eager_copy_mate_config(name)
+    logger.info("new crewmate %s: mate-owned config %s", name, mate_copy)
+    # A template without the crewmate's own tools gets them on the member's OWNED
+    # config file (member_mate_tools edits ``mates/agents/<name>.json`` in place --
+    # no fork, no enroll, no ``crew-`` draft); the create stands whatever the
+    # outcome.
     from kiro_crew.member_mate_tools import grant_mate_tools_to_new_member
 
     async with _get_config_lock():

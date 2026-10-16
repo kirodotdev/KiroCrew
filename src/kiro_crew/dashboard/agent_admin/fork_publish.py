@@ -103,6 +103,22 @@ async def api_agent_fork(request: web.Request) -> web.Response:
                 {"error": f"Agent '{crew}' not found", "code": "agent_not_found"}, status=404
             )
         agent = cfg.agents[crew]
+        # A MATE owns its config file outright (mates/agents/<id>.json, a severed
+        # copy with no parent): it is edited in place, never forked. Forking it
+        # would mint a crew-<hex> draft in ~/.kiro/agents/, re-expose it in the
+        # /set_mode picker and orphan the owned file -- the exact regression this
+        # guard prevents. The capability editor routes a mate to the in-place
+        # path (mate_capabilities), so a fork call on a mate is always wrong.
+        from kiro_crew import mate_capabilities
+
+        if await asyncio.to_thread(mate_capabilities.binding_is_mate, crew):
+            return web.json_response(
+                {
+                    "error": f"'{crew}' owns its config and is edited in place, not forked",
+                    "code": "cannot_fork_mate",
+                },
+                status=409,
+            )
         # A stale or racing request must not clobber a newer binding: the fork
         # was issued against the crew's current template, so require it still is.
         if agent.kiro_agent not in (name, source_name):

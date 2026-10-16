@@ -129,6 +129,7 @@ from kiro_crew.config.paths import (  # noqa: F401, kiro_agents_dir
     demote_scratch_root_override,
     ensure_data_home,
     kiro_agents_dir,
+    mate_agents_dir,
     project_agents_dir,
     scratch_root_owner_refusal,
     scratch_root_writer_refusal,
@@ -6597,8 +6598,9 @@ _MATERIALIZED_SEEN: dict[str, None] = {}
 _MATERIALIZED_SEEN_MAX = 4096
 _MATERIALIZED_SEEN_NAME_MAX_CHARS = 256
 # What the last bounded write dropped, so a diagnostic is written when that
-# changes rather than on every refresh of an unchanged directory.
-_MATERIALIZED_LAST_DROPPED: dict[str, int] = {}
+# changes rather than on every refresh of an unchanged directory. Keyed by
+# ``(what, scope)`` -- see :func:`_report_dropped` for why scope matters.
+_MATERIALIZED_LAST_DROPPED: dict[tuple[str, str], int] = {}
 # Bumped by every publish. A refresh samples it before scanning and, if it moved
 # while the scan was in flight, unions instead of replacing — otherwise a scan
 # that globbed the directory BEFORE a registration wrote into it would assign its
@@ -6617,16 +6619,24 @@ _MATERIALIZED_REFRESH_APPLIED = 0
 _MATERIALIZED_AGENTS_LOCK = threading.Lock()
 
 
-def _report_dropped(what: str, dropped: int) -> None:
+def _report_dropped(what: str, dropped: int, *, scope: str = "") -> None:
     """One aggregate line when a bounded write's drop count changes.
 
     Every bounded map reports through here, once per landed scan or publish
     and only when the count differs from the last report for *what*, so an
     unchanged oversized directory is reported once, not on every refresh.
+
+    *scope* additionally keys the dedup state (e.g. the directory a scan read),
+    so two independently-scanned directories reporting the SAME *what* never
+    clobber each other's "last reported" value -- without it, a 0-dropped mate
+    scan interleaved with a 5-dropped user-level scan would reset the user-level
+    dedup state to 0 and make an unchanged user-level directory re-report on
+    every refresh (``refresh_materialized_agents`` scans both).
     """
-    if _MATERIALIZED_LAST_DROPPED.get(what, 0) == dropped:
+    key = (what, scope)
+    if _MATERIALIZED_LAST_DROPPED.get(key, 0) == dropped:
         return
-    _MATERIALIZED_LAST_DROPPED[what] = dropped
+    _MATERIALIZED_LAST_DROPPED[key] = dropped
     if dropped:
         logger.warning(
             "agents directory: %d %s not kept (bounds: %d entries, %d characters per name)",
@@ -6657,6 +6667,10 @@ def _remember_seen(names: Iterable[str]) -> None:
         del _MATERIALIZED_SEEN[next(iter(_MATERIALIZED_SEEN))]
         dropped += 1
     _report_dropped("removal-evidence name(s)", dropped)
+    # NOTE: ``_remember_seen`` draws from the UNION of every scanned directory's
+    # names (one shared `_MATERIALIZED_SEEN` map), unlike the per-directory stems
+    # bound in ``_scan_materialized_index`` below -- so it needs no *scope* here;
+    # it is called once per refresh, not once per directory.
 
 
 # Whether the last :func:`_scan_materialized_index` on THIS thread read every
@@ -6764,7 +6778,13 @@ def _scan_materialized_index(agents_dir: Path) -> tuple[frozenset[str], dict[str
             dropped += 1
             continue
         kept[stem] = name
-    _report_dropped("file-name mapping(s)", dropped)
+    # Scoped by the directory scanned: ``refresh_materialized_agents`` now scans
+    # TWO directories (user-level, then the mate scope) per refresh, each with
+    # its own independent bound/drop count. Without this scope, the two scans'
+    # reports would clobber one shared dedup slot and an unchanged user-level
+    # directory could re-report on every refresh purely because the OTHER
+    # directory's drop count differed last time.
+    _report_dropped("file-name mapping(s)", dropped, scope=str(agents_dir))
     return frozenset(names), kept
 
 
@@ -6809,7 +6829,24 @@ def refresh_materialized_agents(*, heal_default: bool = False) -> None:
         agents_dir = kiro_agents_dir()
         _SCAN_STATE.complete = True
         snapshot, stems = _scan_materialized_index(agents_dir)
-        scan_complete = bool(getattr(_SCAN_STATE, "complete", True))
+        # Crewmate scope (``rfc-mate-owned-agent-config`` §5.3). A crewmate owns a
+        # custom-agent file in ``~/.kiro/mates/agents/`` whose ``kiro_agent``
+        # binding names its id; binding resolution reads both folders so that
+        # pointer is a DECLARED agent and the dangling self-heal
+        # (:func:`reset_dangling_default_agent`) does not reset it, and dispatch
+        # (:func:`dispatch_kiro_agent`) finds it. The session agent picker reads
+        # :func:`kiro_agents_dir` only, never this snapshot, so a crewmate stays
+        # out of it. Unioned, so a user-level agent of the same name still wins
+        # the stem map (user-level is authored; a crewmate id collides only by
+        # construction). ``_SCAN_STATE.complete`` is left as the user-level scan
+        # set it: a crewmate-folder read error must not mark a complete user-level
+        # scan incomplete and block the owner's heal.
+        complete_after_user = bool(getattr(_SCAN_STATE, "complete", True))
+        mate_names, mate_stems = _scan_materialized_index(mate_agents_dir())
+        _SCAN_STATE.complete = complete_after_user
+        snapshot = frozenset(snapshot | mate_names)
+        stems = {**mate_stems, **stems}
+        scan_complete = complete_after_user
     except Exception:  # noqa: BLE001 — a refresh failure only costs a fallback
         logger.debug("Failed to refresh materialized agent names", exc_info=True)
         return

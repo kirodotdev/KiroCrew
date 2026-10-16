@@ -13,14 +13,18 @@ export interface CapabilityRow extends CapabilityRef {
 export interface CapabilityView {
   schema_version: 1
   member: string
-  mode: 'shared' | 'legacy_snapshot' | 'inherited'
+  // 'mate': the member owns its config file outright (mates/agents/<id>.json), a
+  // severed copy with NO parent. Edits write that file in place — no fork, no
+  // enroll, no inheritance/review lifecycle. The pane suppresses the parent /
+  // Follow / Review affordances for this mode.
+  mode: 'shared' | 'legacy_snapshot' | 'inherited' | 'mate'
   revision: string
-  template: { name: string; source: 'builtin' | 'package' | 'custom' | 'project' | 'unknown'; scope: 'global' | 'project'; available: boolean; error_code?: string }
+  template: { name: string; source: 'builtin' | 'package' | 'custom' | 'project' | 'unknown'; scope: 'global' | 'project' | 'mate'; available: boolean; error_code?: string }
   rows: CapabilityRow[]
   connections: { id: string; label: string; managed: boolean }[]
   skills: { id: string; label: string; shared_reference: boolean }[]
   parent_changes: (CapabilityRef & { kind: 'added' | 'changed' | 'removed'; conflict: boolean; requires_approval: boolean; before: unknown; after: unknown })[]
-  runtime: { status: 'pending' | 'applied' | 'failed' | 'unverified'; saved_revision: string; sessions: unknown[]; error_code?: string }
+  runtime: { status: 'pending' | 'applied' | 'failed' | 'unverified' | 'owned'; saved_revision: string; sessions: unknown[]; error_code?: string }
   /** Set when a member chat on the backend `setting` resolves to would refuse
    * this spec. A warning only: the save still lands. */
   backend_warning?: CapabilityBackendWarning | null

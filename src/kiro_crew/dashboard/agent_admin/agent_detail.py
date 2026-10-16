@@ -61,16 +61,24 @@ def _agent_detail_candidates(name: str) -> list[tuple[Path, dict[str, Any]]]:
     files that match.
     """
     matches: list[tuple[Path, dict[str, Any]]] = []
-    for f in iter_agent_spec_files(kiro_agents_dir_path(), ordered=False):
-        spec = _read_agent_spec(
-            f,
-            operation="api_agent_detail",
-            source="dashboard",
-        )
-        if spec is None:
-            continue
-        if spec.get("name") == name or f.stem == name:
-            matches.append((f, spec))
+    from kiro_crew.config.paths import mate_agents_dir
+
+    # The user-level agents dir, then the crewmate scope: a crewmate's config
+    # lives in mates/agents/<id>.json, not the user-level dir, so the Built-from
+    # pane (which reads this) must look there too — the same two-folder order the
+    # KAS, loader, essential-context and capability seams use.
+    roots = [kiro_agents_dir_path(), mate_agents_dir()]
+    for root in roots:
+        for f in iter_agent_spec_files(root, ordered=False):
+            spec = _read_agent_spec(
+                f,
+                operation="api_agent_detail",
+                source="dashboard",
+            )
+            if spec is None:
+                continue
+            if spec.get("name") == name or f.stem == name:
+                matches.append((f, spec))
     return matches
 
 

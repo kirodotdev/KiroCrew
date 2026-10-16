@@ -18,7 +18,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Callable
 
-from kiro_crew import agent_state, kiro_cli
+from kiro_crew import agent_state, kiro_cli, mate_capabilities
 from kiro_crew.agent import (
     OWNED_KIRO_AGENT_FILES,
     _is_confirmed_managed_dashboard_author,
@@ -41,7 +41,7 @@ from kiro_crew.config.loader import (
     default_project_dir,
     update_config_locked,
 )
-from kiro_crew.config.paths import project_agents_dir
+from kiro_crew.config.paths import mate_agents_dir, project_agents_dir
 from kiro_crew.mcp_cleanup import mcp_entry_is_muted
 from kiro_crew.platform import redact_via_context
 from kiro_crew.platform.governance import sanitize_agent_config_governance
@@ -126,6 +126,11 @@ def _source(name: str, project: str, *, allow_private: bool = False) -> tuple[Pa
         raise CapabilityError("invalid_template_name")
     roots = [(project_agents_dir(project), "project")] if project else []
     roots.append((kiro_agents_dir_path(), "global"))
+    # The crewmate scope, same two-folder order as the KAS/loader/essential-
+    # context seams. ``CapabilityService.get``/``preview``/``put`` already route
+    # a mate binding to ``mate_capabilities`` before reaching here, so this only
+    # ever serves a stale caller on the read path, never fork/enroll writes.
+    roots.append((mate_agents_dir(), "mate"))
     for root, scope in roots:
         try:
             path = agent_spec_path(name, agents_dir=root)
@@ -997,7 +1002,16 @@ class CapabilityService:
         snapshot["revision"] = self._token([snapshot["revision"], snapshot["generation"]])
         return snapshot
 
+    def _mate_catalog(self, member: str) -> dict[str, str]:
+        """The skill catalog for the mate in-place path."""
+        binding = KiroCrewConfig.load().agents.get(member)
+        project = default_project_dir(binding.workspace) if binding else ""
+        project = str(Path(project).resolve()) if project else ""
+        return self._catalog(project)
+
     def get(self, member: str) -> dict:
+        if mate_capabilities.binding_is_mate(member):
+            return mate_capabilities.get(member, self._mate_catalog(member))
         return self._view(self._snapshot(member))
 
     def _project(
@@ -1356,6 +1370,8 @@ class CapabilityService:
         )
 
     def preview(self, member: str, body: Any, *, reset_parent: bool = False) -> dict:
+        if mate_capabilities.binding_is_mate(member):
+            return mate_capabilities.preview(member, body, self._mate_catalog(member))
         request = validate_request(body)
         plans = self._plans(member, request, reset_parent=reset_parent)
         snap, spec, intent, changes = plans[0]
@@ -1718,6 +1734,8 @@ class CapabilityService:
         return self._finish_publish(member, expected_template, name)
 
     def put(self, member: str, body: Any, *, reset_parent: bool = False) -> dict:
+        if mate_capabilities.binding_is_mate(member):
+            return mate_capabilities.put(member, body, self._mate_catalog(member))
         request = validate_request(body, commit=True)
         prepared = {
             plan[0]["member"]: plan[0]
