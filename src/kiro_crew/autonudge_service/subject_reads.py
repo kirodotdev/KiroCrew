@@ -12,15 +12,17 @@ place the observation gate never reaches:
   the loop sleeps and ends the sleep early, once per head, when the head
   conflicts with its base. That is the only thing it may do: it never suppresses a cycle, never
   acts on a terminal reading, and an unread subject only goes on sleeping.
-* **A held gated loop.** A loop paused for an unanswered approval fires nothing, which
-  also left it blind: a pull request that merged during the hold kept its loop
-  active and paused until someone came back. ``hold_tick`` reads the subject of a
-  held GATED loop on every held tick; a merged or closed pull request settles it
-  the way the gate settles it on its terminal reading, recorded on its monitor. A
-  held ungated loop reads nothing and is never settled here, as on main: the
-  opt-out's promise covers the hold too. The hold itself is unchanged: no cycle is
-  fired, no bound is spent, and ``release_approval_hold`` re-arms it toward its
-  deadline.
+* **A held gated loop.** A loop paused for an unanswered approval, or one whose
+  agent declared it is waiting on a person, fires nothing, which also left it
+  blind: a pull request that merged during the hold kept its loop active and paused
+  until someone came back. ``hold_tick`` reads the subject of a held GATED loop on
+  every held tick; a merged or closed pull request settles it the way the gate
+  settles it on its terminal reading, recorded on its monitor. A held ungated loop
+  reads nothing and is never settled here, as on main: the opt-out's promise
+  covers the hold too. The hold itself is unchanged: no cycle is fired, no bound
+  is spent, and ``release_approval_hold`` re-arms it toward its deadline. A
+  declared hold that reaches its expiry is ended by ``_timer`` before this read,
+  not here.
 """
 
 from __future__ import annotations
@@ -36,13 +38,18 @@ from kiro_crew.autonudge_service.maintenance import _release_mutation_lock
 from kiro_crew.autonudge_service.model import (
     APPROVAL_HOLD,
     MONITOR_TERMINAL_REASON,
+    PERSON_WAIT_HOLD,
     SUBJECT_READ_SECS,
     NudgeLoop,
     credit_held_runtime,
     hold_span,
 )
 from kiro_crew.autonudge_service.subject import loop_subject
-from kiro_crew.autonudge_service.timers import _held_tick_rearms
+from kiro_crew.autonudge_service.timers import (
+    _held_tick_delay,
+    _held_tick_rearms,
+    _holds_for_a_person,
+)
 from kiro_crew.monitoring.models import MonitorOutcome
 from kiro_crew.probes import gh_pr
 
@@ -82,12 +89,20 @@ async def _read_state(message: str) -> gh_pr.PrObservation | None:
 async def sleep_until_cycle(svc: AutoNudgeService, loop: NudgeLoop, delay: float) -> None:
     """Sleep *delay* seconds, ending early when an ungated loop's head needs a re-sync.
 
-    A loop with a monitor, a gated loop, a loop naming no single pull request and a
-    sleep of at most one read interval each take one plain sleep. Time is
+    A loop with a monitor, a gated loop, a loop naming no single pull request, a
+    loop held for a person and a sleep of at most one read interval each take one
+    plain sleep: a held loop's reads are ``hold_tick``'s, and only a gated loop's
+    hold reads at all. Time is
     counted from the sleeps themselves rather than a clock, so a cancelled or
     patched sleep cannot leave this spinning. ``CancelledError`` propagates.
     """
-    if loop.gate or loop.monitor is not None or delay <= SUBJECT_READ_SECS or not _pr_message(loop):
+    if (
+        loop.gate
+        or loop.monitor is not None
+        or delay <= SUBJECT_READ_SECS
+        or _holds_for_a_person(loop)
+        or not _pr_message(loop)
+    ):
         await _nap(delay)
         return
     remaining = delay
@@ -96,7 +111,7 @@ async def sleep_until_cycle(svc: AutoNudgeService, loop: NudgeLoop, delay: float
         remaining -= SUBJECT_READ_SECS
         # Re-derived each read: an instruction edit can retarget the loop mid-sleep.
         message = _pr_message(loop)
-        if not message or not loop.active or loop.approval_stalled:
+        if not message or not loop.active or _holds_for_a_person(loop):
             continue
         observation, took = await _timed_read(message)
         remaining -= took
@@ -138,24 +153,26 @@ async def _timed_read(message: str) -> tuple[gh_pr.PrObservation | None, float]:
 
 
 async def hold_tick(svc: AutoNudgeService, loop: NudgeLoop) -> None:
-    """One tick of an approval-held legacy loop: read its subject, maybe settle.
+    """One tick of a legacy loop held for a person: read its subject, maybe settle.
 
-    Fires no cycle. Only a gated loop naming one pull request is read
+    Fires no cycle. Held for an approval or by a declared person-wait
+    (``_holds_for_a_person``). Only a gated loop naming one pull request is read
     (``_held_tick_rearms``); an ungated or subject-less one reads nothing and is
-    never settled here. A loop still held afterwards is re-armed one read interval
-    out when it is read; a release re-arms it toward its own deadline instead,
-    replacing this timer.
+    never settled here. A loop still held afterwards is re-armed when
+    ``_held_tick_delay`` names a next tick: one read interval out when it is read,
+    and no later than a declared hold's expiry. A release re-arms it toward its own
+    deadline instead, replacing this timer.
     """
-    if not _held_tick_rearms(loop):
-        return
-    message = _pr_message(loop)
+    message = _pr_message(loop) if _held_tick_rearms(loop) else ""
     if message:
         observation = await _read_state(message)
         if observation is not None and observation.is_terminal:
             if await _settle_terminal(svc, loop, message, merged=observation.merged):
                 return
-    if loop.active and _held_tick_rearms(loop) and svc._loops.get(loop.id) is loop:
-        svc._arm_timer(loop, delay=SUBJECT_READ_SECS)
+    if loop.active and svc._loops.get(loop.id) is loop:
+        delay = _held_tick_delay(loop)
+        if delay is not None:
+            svc._arm_timer(loop, delay=delay)
 
 
 async def _settle_terminal(
@@ -198,9 +215,14 @@ async def _settle_terminal(
             staged.monitor.stopped_at = now
             # The hold spends none of the budget, so its span is handed back the way a
             # release hands it back: the wall span on ``created_ts``, which a restart
-            # reads, and the monotonic span on the budget's anchor once applied.
-            since = loop.approval_stalled_at
-            _start, held = hold_span(loop, APPROVAL_HOLD, since, now)
+            # reads, and the monotonic span on the budget's anchor once applied. The
+            # loop is held by an approval or by a declared wait, never both, so one
+            # span is handed back.
+            if loop.approval_stalled:
+                kind, since = APPROVAL_HOLD, loop.approval_stalled_at
+            else:
+                kind, since = PERSON_WAIT_HOLD, loop.waiting_on_person_at
+            _start, held = hold_span(loop, kind, since, now)
             created = staged.created_ts
             if (
                 held
@@ -212,6 +234,11 @@ async def _settle_terminal(
             staged.stopped_reason = MONITOR_TERMINAL_REASON
             staged.approval_stalled = False
             staged.approval_stalled_at = 0.0
+            if staged.person_wait_declared:
+                # The declared wait ends with the loop. A hold the work ledger found
+                # is the ledger's, and stays as it is.
+                staged.waiting_on_person = staged.person_wait_declared = False
+                staged.waiting_on_person_at = 0.0
             staged.active = False
             try:
                 await svc._write_monitor_snapshot_locked(
@@ -254,6 +281,9 @@ def _apply_settlement(loop: NudgeLoop, staged: NudgeLoop, held: float) -> None:
     loop.approval_stalled_at = staged.approval_stalled_at
     loop.created_ts = staged.created_ts
     credit_held_runtime(loop, previous_created, held)
+    loop.waiting_on_person = staged.waiting_on_person
+    loop.waiting_on_person_at = staged.waiting_on_person_at
+    loop.person_wait_declared = staged.person_wait_declared
     if loop.monitor is not None and staged.monitor is not None:
         loop.monitor.outcome = staged.monitor.outcome
         loop.monitor.stopped_reason = staged.monitor.stopped_reason
