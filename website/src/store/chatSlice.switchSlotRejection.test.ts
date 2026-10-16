@@ -15,7 +15,7 @@ import { configureStore, type Middleware } from '@reduxjs/toolkit'
 
 vi.mock('../api/client', () => ({ api: { chatSlotDetail: vi.fn() } }))
 
-import chatReducer, { switchSlot, warmSlotCache, setActiveSlot, setSlotState, setSlotRunning, startLocalTurn, sseChatMessage, clearMessages, clearSlotCache } from './chatSlice'
+import chatReducer, { switchSlot, switchSlotNoticeCopy, warmSlotCache, setActiveSlot, setSlotState, setSlotRunning, startLocalTurn, sseChatMessage, clearMessages, clearSlotCache } from './chatSlice'
 import { fetchSlots, removeSlotOptimistic, armConfirmedCloseHold } from './dashboardSlice'
 import { api } from '../api/client'
 import { isMissingSlotError } from '../utils/thunkError'
@@ -657,6 +657,42 @@ describe('switchSlot 404 — an announcing caller surfaces the recovery (#6372)'
     const { store } = makeRecordingStore()
     await unwrapRejection(store.dispatch(switchSlot({ key: 'gone', announceOnMissing: true })).unwrap())
     expect(store.getState().chat.switchSlotGone).toMatchObject({ name: '', kind: 'gone' })
+  })
+
+  it('gestureNeutral: a non-click path (nav arrow / deep link) to an unnamed gone target stores the flag so ChatPage picks gesture-neutral copy', async () => {
+    // A Back/Forward history POP or late-frame deep-link recovery is NOT a
+    // click on a session row. Without a name, ChatPage would otherwise show
+    // "The session you clicked was deleted" — misnaming the gesture. The flag
+    // is stored so ChatPage resolves the neutral variant instead, and survives
+    // a locale switch (the name/kind/flag are stored, not the sentence).
+    detail.mockRejectedValue(apiError(404, 'slot unavailable'))
+    const { store } = makeRecordingStore()
+    await unwrapRejection(store.dispatch(switchSlot({ key: 'gone', announceOnMissing: true, gestureNeutral: true })).unwrap())
+    expect(store.getState().chat.switchSlotGone).toMatchObject({ name: '', kind: 'gone', gestureNeutral: true })
+  })
+
+  it('gestureNeutral is omitted for a plain click, keeping the "you clicked" copy the default', async () => {
+    // A session-row click passes no flag; the stored record must NOT carry
+    // gestureNeutral, so ChatPage keeps the click-naming default copy.
+    detail.mockRejectedValue(apiError(404, 'slot unavailable'))
+    const { store } = makeRecordingStore()
+    await unwrapRejection(store.dispatch(switchSlot({ key: 'gone', announceOnMissing: true })).unwrap())
+    expect(store.getState().chat.switchSlotGone).not.toHaveProperty('gestureNeutral')
+  })
+
+  it('the stored gestureNeutral flag resolves to DIFFERENT notice copy (guards the ChatPaneNotices call site)', () => {
+    // Every other test asserts only the stored flag — none asserts the rendered
+    // sentence, so dropping the third `gestureNeutral` argument at the notice
+    // call site (ChatPaneNotices) would ship the click-naming copy with the flag
+    // still green. Pin the copy function's actual fork for the UNNAMED gone case:
+    // the flag must flip the sentence, and the two sentences must differ.
+    const neutral = switchSlotNoticeCopy('gone', '', true)
+    const clicked = switchSlotNoticeCopy('gone', '', false)
+    expect(neutral).toBe(i18nT('store.chatSlice.session_gone_open_failed_neutral'))
+    expect(clicked).toBe(i18nT('store.chatSlice.session_gone_open_failed'))
+    expect(neutral).not.toBe(clicked)
+    // A NAMED gone target already reads neutrally, so the flag must NOT fork it.
+    expect(switchSlotNoticeCopy('gone', 'Beta', true)).toBe(switchSlotNoticeCopy('gone', 'Beta', false))
   })
 
 

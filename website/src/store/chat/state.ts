@@ -222,7 +222,7 @@ export interface ChatState {
    *  the API endpoint, status, and backend code available to Ask the agent
    *  while the displayed sentence stays localized. Cleared by the next
    *  `switchSlot.pending` or the notice's dismiss. */
-  switchSlotGone: { name: string; kind: 'gone' | 'failed'; report?: ErrorReport } | null
+  switchSlotGone: { name: string; kind: 'gone' | 'failed'; gestureNeutral?: boolean; report?: ErrorReport } | null
   loadingOlder: boolean
   /** Last older-history fetch was rejected; surfaced on the top-of-transcript bar. */
   slotOlderError: boolean

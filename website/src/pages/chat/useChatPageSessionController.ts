@@ -8,6 +8,8 @@ import { i18nT } from '../../i18n/t'
 import { useSessionTabs } from '../../hooks/useSessionTabs'
 import { useAppSelector, type AppDispatch } from '../../store'
 import {
+  announceSlotGone,
+  clearSwitchSlotGone,
   createSlot,
   deleteSlot,
   fetchHistory,
@@ -636,15 +638,23 @@ export function useChatPageSessionController({
       return
     }
     if (filteredSlots.some(s => s.key === urlSid)) {
+      // A plain `switchSlot(urlSid)` is not an announced gesture, so
+      // `switchSlot.pending` leaves any prior `announceSlotGone` notice standing.
+      // Clear it here: walking on to a live session must retire the dead-session
+      // notice a previous Back onto a closed session raised.
+      dispatch(clearSwitchSlotGone())
       popInFlightRef.current = true
       dispatch(switchSlot(urlSid))
       return
     }
     if (embedMode || !activeSlotRef.current || slots.some(s => s.key === urlSid)) return
-    // A durable `removed` frame is post-pop truth for this tab, so repair this
-    // history entry immediately even while its row hold is still retained.
+    // A durable `removed` frame means the server confirmed this `?sid=` is gone.
+    // Announce it (`announceSlotGone` sets the notice without a `switchSlot`
+    // fetch — see its docstring for why that path tears the user off their
+    // session) and repair the dead `?sid=` in place. `gestureNeutral`: a nav
+    // arrow is not a session-row click.
     if (urlSidRemoved) {
-      popInFlightRef.current = true
+      dispatch(announceSlotGone({ key: urlSid, gestureNeutral: true }))
       repairPoppedSid()
       return
     }
@@ -745,7 +755,7 @@ export function useChatPageSessionController({
     // failure through its announced, localized ErrorNotice and structured report.
     setSidError(current => current === denied.error ? '' : current)
     popInFlightRef.current = true
-    void dispatch(switchSlot({ key: denied.key, announceOnMissing: true })).then(() => {
+    void dispatch(switchSlot({ key: denied.key, announceOnMissing: true, gestureNeutral: true })).then(() => {
       popInFlightRef.current = false
     })
   }, [filteredSlots, activeSlotRef, dispatch])

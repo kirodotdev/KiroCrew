@@ -1784,6 +1784,110 @@ describe('ChatPage ?sid= URL parameter', () => {
       await act(async () => { navForward() })
       await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-3-300'))
     })
+
+    // Regression (closed-session dead-end): a Back POP whose target session was
+    // CLOSED since the entry was pushed used to fall through without a notice —
+    // the substrate's `urlSidRemoved` branch repaired the URL silently, so the
+    // user saw the view snap back with no explanation (the reported "click Back,
+    // nothing says why"). Riding #15112's state machine, the server-confirmed
+    // -gone frame (`durablyRemoved`, set once a closing key is dropped by an
+    // authoritative list) now surfaces the notice directly via `announceSlotGone`
+    // — NOT a `switchSlot` fetch, which would trip the teardown below. Assert the
+    // two halves that distinguish the fix from the silent repair: (1) the gone
+    // target raises the page-level "That session was deleted" notice
+    // (`switchSlotGone`), and (2) the URL self-heals back to the current session.
+    it('announces and self-heals when Back targets a session closed since it was visited', async () => {
+      const navSlots = [slot('chat-1-100', 'Alpha'), slot('chat-2-200', 'Beta'), slot('chat-3-300', 'Gamma')]
+      const { store } = renderForPop(navSlots)
+      await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-1-100'))
+      await act(async () => { await store.dispatch(switchSlot('chat-2-200')) })
+      await act(async () => { await store.dispatch(switchSlot('chat-3-300')) })
+      await waitFor(() => expect(currentUrl).toContain('sid=chat-3-300'))
+
+      // Close B off screen and let the server CONFIRM the removal via an explicit
+      // `removed` frame — that is what sets `durablyRemoved`, the server-confirmed
+      // -gone signal our announce branch keys on. `mockImplementationOnce` so the
+      // 404 override does not leak into the next describe's chatSlotDetail calls.
+      let finishClose!: () => void
+      vi.mocked(api.deleteChatSlot).mockReturnValueOnce(new Promise<void>(resolve => { finishClose = resolve }) as never)
+      vi.mocked(api.chatSlotDetail).mockImplementationOnce((key: string) =>
+        key === 'chat-2-200'
+          ? Promise.reject(Object.assign(new Error('not found'), { status: 404 }))
+          : Promise.resolve({ messages: [], has_more: false, total: 0 }),
+      )
+      let closing!: Promise<unknown>
+      act(() => { closing = store.dispatch(deleteSlot('chat-2-200')) })
+      await waitFor(() => expect(store.getState().dashboard.slots.map(s => s.key)).not.toContain('chat-2-200'))
+      await act(async () => { store.dispatch(sseSlotPatch({ slots: [], removed: ['chat-2-200'] })) })
+      await act(async () => { finishClose(); await closing })
+      expect(store.getState().dashboard.durablyRemoved).toHaveProperty('chat-2-200')
+
+      // Back: C → (gone B). It must announce the gone session, heal the URL back
+      // to the live session, AND keep the user ON chat-3-300. Announcing via a
+      // switchSlot fetch would move activeSlot onto the unlisted gone key and
+      // trip the mode-clear → null → skipped-origin-restore teardown; so assert
+      // activeSlot is chat-3-300 the moment the announce lands and never nulls.
+      await act(async () => { navBack() })
+      await waitFor(() => expect(store.getState().chat.switchSlotGone).not.toBeNull())
+      expect(store.getState().chat.switchSlotGone?.kind).toBe('gone')
+      // Unnamed gone (the row is already gone from dashboard.slots) → gesture-neutral copy.
+      expect(store.getState().chat.switchSlotGone?.gestureNeutral).toBe(true)
+      // The teardown-catching assertion: the user stays on the live session, never
+      // torn off onto null / an auto-selected other session.
+      expect(store.getState().chat.activeSlot).toBe('chat-3-300')
+      await waitFor(() => expect(currentUrl).toContain('sid=chat-3-300'))
+      expect(currentUrl).not.toContain('sid=chat-2-200')
+      // History-depth guard (settles the dropped `popInFlightRef.current = true`
+      // on this branch): the announce repairs the dead `?sid=` with a REPLACE,
+      // not a PUSH, so the forward entry is intact — Forward returns to the
+      // entry the Back came from. A PUSH would have clobbered it.
+      await act(async () => { navForward() })
+      await waitFor(() => expect(currentUrl).toContain('sid=chat-3-300'))
+    })
+
+    // Regression (stale gone-notice): the notice `announceSlotGone` raises for a
+    // Back onto a closed session must not outlive the next navigation onto a
+    // LIVE one. That POP dispatches a plain `switchSlot(urlSid)` string arg,
+    // which `switchSlot.pending` does not treat as an announced user gesture, so
+    // it never cleared `switchSlotGone` — leaving "That session was deleted"
+    // stranded over the live transcript the user walked on to. The POP branch
+    // clears the notice itself before the live switch; assert that onward Back
+    // onto A leaves nothing behind.
+    it('clears the gone notice when a later Back lands on a live session', async () => {
+      const navSlots = [slot('chat-1-100', 'Alpha'), slot('chat-2-200', 'Beta'), slot('chat-3-300', 'Gamma')]
+      const { store } = renderForPop(navSlots)
+      await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-1-100'))
+      await act(async () => { await store.dispatch(switchSlot('chat-2-200')) })
+      await act(async () => { await store.dispatch(switchSlot('chat-3-300')) })
+      await waitFor(() => expect(currentUrl).toContain('sid=chat-3-300'))
+
+      let finishClose!: () => void
+      vi.mocked(api.deleteChatSlot).mockReturnValueOnce(new Promise<void>(resolve => { finishClose = resolve }) as never)
+      vi.mocked(api.chatSlotDetail).mockImplementation((key: string) =>
+        key === 'chat-2-200'
+          ? Promise.reject(Object.assign(new Error('not found'), { status: 404 }))
+          : Promise.resolve({ messages: [], has_more: false, total: 0 }),
+      )
+      let closing!: Promise<unknown>
+      act(() => { closing = store.dispatch(deleteSlot('chat-2-200')) })
+      await waitFor(() => expect(store.getState().dashboard.slots.map(s => s.key)).not.toContain('chat-2-200'))
+      await act(async () => { store.dispatch(sseSlotPatch({ slots: [], removed: ['chat-2-200'] })) })
+      await act(async () => { finishClose(); await closing })
+      expect(store.getState().dashboard.durablyRemoved).toHaveProperty('chat-2-200')
+
+      // Back: C → gone B. The notice is raised.
+      await act(async () => { navBack() })
+      await waitFor(() => expect(store.getState().chat.switchSlotGone).not.toBeNull())
+      expect(store.getState().chat.activeSlot).toBe('chat-3-300')
+
+      // Back again: → live A (chat-1-100). The POP dispatches a plain
+      // `switchSlot('chat-1-100')`; the user is now reading a live transcript,
+      // so the gone notice must be gone.
+      await act(async () => { navBack() })
+      await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-1-100'))
+      expect(store.getState().chat.switchSlotGone).toBeNull()
+      vi.mocked(api.chatSlotDetail).mockReset()
+    })
   })
 })
 

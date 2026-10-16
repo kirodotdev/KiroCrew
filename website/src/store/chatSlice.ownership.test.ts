@@ -176,7 +176,7 @@ const REEXPORTS: Array<[string, Record<string, unknown>, string[]]> = [
     'selectSlotPendingApproval', 'selectSlotRunEpoch', 'selectSlotStreamState', 'selectSlotToolLog', 'selectTrailingSendUnconfirmed',
     'selectSlotTurnFromWake', 'selectTurnInterrupted', 'QUIET_END_SERVER', 'QUIET_END_TOOL',
   ]],
-  ['slotSwitch', slotSwitch, ['clearSwitchSlotGone', 'switchSlot', 'switchSlotNoticeCopy']],
+  ['slotSwitch', slotSwitch, ['announceSlotGone', 'clearSwitchSlotGone', 'switchSlot', 'switchSlotNoticeCopy']],
   ['slotRefresh', slotRefresh, ['refreshSlot', 'warmSlotCache']],
   ['runState', runState, ['wireTurnIdentity']],
   ['windowWalk', windowWalk, ['WINDOW_WALK_MAX_PAGES']],

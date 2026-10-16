@@ -56,8 +56,14 @@ import { walkWindowBackTo } from './windowWalk'
  *    recovery paths (auto-improvement, issue-radar, cold-boot restore, the
  *    Slack-token reconnect) silently fall back to a fresh session — so
  *    announcing there would double-report or contradict a successful
- *    recovery. */
-export type SwitchSlotArg = string | { key: string; keepTargetOnMissing?: boolean; announceOnMissing?: boolean }
+ *    recovery.
+ *  - `gestureNeutral`: only meaningful with `announceOnMissing`, and only for
+ *    the unnamed gone case (named and `failed` copy already read neutrally).
+ *    Set it when the target was reached by a `?sid=` deep link rather than a
+ *    session-row click, so the copy does not say "the session you clicked".
+ *    (The Back/Forward POP onto a gone session gets the same copy via
+ *    `announceSlotGone`, not this arg.) */
+export type SwitchSlotArg = string | { key: string; keepTargetOnMissing?: boolean; announceOnMissing?: boolean; gestureNeutral?: boolean }
 
 /** The slot key of a `switchSlot` argument, in either spelling. Non-object
  *  values pass through untouched: a hand-rolled test dispatch can omit
@@ -114,7 +120,7 @@ const supersededSwitch = (state: ChatState, requestId: string | undefined): bool
 const switchSlotFailureReport = (
   error: unknown,
   key: string,
-  shown: { kind: 'gone' | 'failed'; name: string },
+  shown: { kind: 'gone' | 'failed'; name: string; gestureNeutral?: boolean },
 ): { report?: ErrorReport } => {
   const raw = errMessage(error)
   const endpoint = chatSlotDetailPath(key)
@@ -141,7 +147,7 @@ const switchSlotFailureReport = (
   return {
     report: recordError({
       source: 'api',
-      message: switchSlotNoticeCopy(shown.kind, shown.name),
+      message: switchSlotNoticeCopy(shown.kind, shown.name, shown.gestureNeutral),
       status: typeof status === 'number' ? status : undefined,
       endpoint,
       detail: detail || undefined,
@@ -152,8 +158,13 @@ const switchSlotFailureReport = (
 /** The sentence the pane notice shows for a `switchSlotGone` record. ONE owner
  *  for ChatPage (which re-resolves it on a locale switch) and the journal entry
  *  `switchSlotFailureReport` records under it — the journal is keyed by the
- *  message as the UI shows it, so the two must be the same words. */
-export function switchSlotNoticeCopy(kind: 'gone' | 'failed', name: string): string {
+ *  message as the UI shows it, so the two must be the same words.
+ *
+ *  `gestureNeutral` forks only the unnamed gone case to a gesture-agnostic
+ *  sentence: a Back/Forward nav or `?sid=` deep link is not a session-row click,
+ *  so "The session you clicked…" would misname it. Named and `failed` copy
+ *  already read neutrally. */
+export function switchSlotNoticeCopy(kind: 'gone' | 'failed', name: string, gestureNeutral = false): string {
   if (kind === 'failed') {
     return name
       ? i18nT('store.chatSlice.session_open_error_named', { name })
@@ -161,13 +172,39 @@ export function switchSlotNoticeCopy(kind: 'gone' | 'failed', name: string): str
   }
   return name
     ? i18nT('store.chatSlice.session_gone_open_failed_named', { name })
-    : i18nT('store.chatSlice.session_gone_open_failed')
+    : gestureNeutral
+      ? i18nT('store.chatSlice.session_gone_open_failed_neutral')
+      : i18nT('store.chatSlice.session_gone_open_failed')
 }
 
 /** See `switchSlotGone` on ChatState. Set by `switchSlot`'s catch for an
  *  `announceOnMissing` caller whose target 404ed. */
-export const setSwitchSlotGone = createAction<{ name: string; kind: 'gone' | 'failed'; report?: ErrorReport }>('chat/setSwitchSlotGone')
+export const setSwitchSlotGone = createAction<{ name: string; kind: 'gone' | 'failed'; gestureNeutral?: boolean; report?: ErrorReport }>('chat/setSwitchSlotGone')
 export const clearSwitchSlotGone = createAction('chat/clearSwitchSlotGone')
+
+/** Surface the "gone" pane notice for a server-confirmed-removed target
+ *  (`dashboard.durablyRemoved`) without a `switchSlot` fetch. `switchSlot` is
+ *  wrong here: its `pending` runs `enterActiveSlot`, which moves `activeSlot`
+ *  onto the unlisted gone key; the mode-clear effect nulls it; and
+ *  `switchSlot.rejected`'s `activeSlot !== target` guard then skips the origin
+ *  restore — leaving the user on the gone session. The removal is already known,
+ *  so this builds the same journal entry the thunk's catch would (endpoint and
+ *  notice copy, no HTTP status) and sets the notice directly; the caller repairs
+ *  the dead `?sid=`. `name` is '' (the row is gone from `dashboard.slots`), so
+ *  `gestureNeutral` picks the un-clicked copy. */
+export const announceSlotGone = (arg: { key: string; gestureNeutral?: boolean }) =>
+  (dispatch: (action: unknown) => void): void => {
+    const gestureNeutral = arg.gestureNeutral === true
+    // No request went out, so the journal entry carries no HTTP status
+    // (`switchSlotFailureReport`'s contract): a status-less error with an honest `detail`.
+    const removed = Object.assign(new Error('durably removed (server removed frame)'), { name: 'SlotGoneError' })
+    dispatch(setSwitchSlotGone({
+      name: '',
+      kind: 'gone',
+      ...(gestureNeutral ? { gestureNeutral: true } : {}),
+      ...switchSlotFailureReport(removed, arg.key, { kind: 'gone', name: '', gestureNeutral }),
+    }))
+  }
 
 export const switchSlot = createAsyncThunk<
   Awaited<ReturnType<typeof fetchSlotDetail>>,
@@ -308,10 +345,14 @@ export const switchSlot = createAsyncThunk<
             // NAME is stored, not the sentence, so the copy re-resolves on a
             // locale switch. Cleared by the next `switchSlot.pending` or the
             // notice's own dismiss.
+            // `gestureNeutral` is stored alongside so the unnamed gone copy
+            // names the right gesture (a nav arrow / deep link is not a click).
+            const gestureNeutral = typeof arg === 'object' && arg !== null && arg.gestureNeutral === true
             dispatch(setSwitchSlotGone({
               name: name ?? '',
               kind: 'gone',
-              ...switchSlotFailureReport(e, key, { kind: 'gone', name: name ?? '' }),
+              ...(gestureNeutral ? { gestureNeutral: true } : {}),
+              ...switchSlotFailureReport(e, key, { kind: 'gone', name: name ?? '', gestureNeutral }),
             }))
           }
           // Evict only when the selection will ESCAPE the evicted key. The
