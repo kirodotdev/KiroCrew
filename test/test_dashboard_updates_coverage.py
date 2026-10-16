@@ -1029,7 +1029,7 @@ class TestPipInstallFailureReport:
 
         state = MagicMock()
 
-        def fake_sync(repo, target_py, emit=None, timeout=None):
+        def fake_sync(repo, target_py, emit=None, timeout=None, **_kw):
             # dep_sync passes pip's captured output through verbatim; the cap is
             # this endpoint's job because it is the one publishing it.
             emit("x" * 4000, True)

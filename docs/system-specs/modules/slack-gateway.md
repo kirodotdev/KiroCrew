@@ -637,9 +637,13 @@ installer's own 300 s timeout.
 
 Not covered here:
 
-- The git route reinstalls through `dep_sync.sync_or_reinstall` in an executor
-  thread, and a cancelled await does not stop that thread, so its pip can
-  outlive a shutdown.
+- The git route reinstalls through `dep_sync.sync_or_reinstall_supervised` in an
+  executor thread. A shutdown's cancel reaches it, so an install still queued,
+  or cancelled before its last check ahead of pip, never starts pip (the
+  dependency-only branch probes once more after that check). A pip already running is left to finish
+  and can outlive the shutdown: killing it mid-install would leave the venv half
+  rewritten, and stopping it safely needs a staged (build-then-swap) install,
+  which is not done yet.
 - A policy apply started by `POST /api/update` runs in the request handler. The
   shutdown does not stop it first.
 
