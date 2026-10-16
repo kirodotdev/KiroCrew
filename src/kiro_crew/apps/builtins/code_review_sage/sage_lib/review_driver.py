@@ -35,8 +35,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
-import hmac
 import inspect
 import json
 import logging
@@ -115,6 +113,18 @@ from sage_lib import (  # noqa: E402
     store,
 )
 
+# Re-exported: tests and callers keep using `review_driver.<name>` for these.
+from sage_lib.worker_response import (  # noqa: E402,F401
+    _MAX_ENVELOPE_CANDIDATES,
+    _MAX_RESPONSE_BYTES,
+    _RESPONSE_SCHEMA,
+    _RESPONSE_VERSION,
+    _decode_worker_envelope,
+    _finding_counts,
+    _persist_worker_response,
+    _record_digest,
+)
+
 
 def _redact(text: str) -> str:
     """Scrub credentials + exfiltration URLs from LLM-generated text before it is
@@ -131,10 +141,6 @@ DEFAULT_TASK_TIMEOUT = 5400  # 90 min per review turn (the governing cap — pas
 #   Stays under the runtime's 2h prompt default.
 _REPORT_ARTIFACT_TAG = "sage-report"  # tags every per-run report artifact
 DEFAULT_REPORT_RETENTION = 20  # keep the N most-recent report artifacts; prune older
-_RESPONSE_SCHEMA = "code-review-sage-response"
-_RESPONSE_VERSION = 1
-_MAX_RESPONSE_BYTES = 1_000_000
-_MAX_ENVELOPE_CANDIDATES = 64
 
 
 def _api_request(method: str, path: str, body: dict | None = None, timeout: int = 30) -> dict:
@@ -575,178 +581,6 @@ def build_review_followup_task(
     )
 
 
-def _record_digest(record: dict) -> str:
-    """Stable digest binding a follow-up response to the first-pass record."""
-    encoded = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def _finding_counts(findings: list[dict]) -> dict[str, int]:
-    """Return the result-contract severity tallies for accepted findings."""
-    return {
-        "red": sum(finding.get("severity") == "red" for finding in findings),
-        "yellow": sum(finding.get("severity") == "yellow" for finding in findings),
-    }
-
-
-def _decode_worker_envelope(response: str, change_id: str, capability: str) -> dict | None:
-    """Find a dispatch-bound envelope within bounded candidate parsing."""
-    decoder = json.JSONDecoder()
-    depth = 0
-    in_string = False
-    end = len(response)
-    candidates = 0
-    fallback = None
-    for start in range(len(response) - 1, -1, -1):
-        if candidates >= _MAX_ENVELOPE_CANDIDATES:
-            break
-        char = response[start]
-        if depth == 0:
-            if char == "}":
-                end = start + 1
-                depth = 1
-            continue
-        if char == '"':
-            backslash = start - 1
-            while backslash >= 0 and response[backslash] == "\\":
-                backslash -= 1
-            if (start - backslash - 1) % 2 == 0:
-                in_string = not in_string
-        if in_string:
-            continue
-        if char == "}":
-            depth += 1
-        elif char == "{":
-            depth -= 1
-        if depth:
-            continue
-        candidates += 1
-        if end - start > _MAX_RESPONSE_BYTES:
-            continue
-        candidate = response[start:end]
-        if len(candidate.encode("utf-8")) > _MAX_RESPONSE_BYTES:
-            continue
-        try:
-            envelope, decoded_end = decoder.raw_decode(candidate)
-        except (ValueError, RecursionError):
-            continue
-        if decoded_end != len(candidate):
-            continue
-        if response[end:].lstrip().startswith(("}", "]", ",")):
-            continue
-        if not isinstance(envelope, dict):
-            continue
-        fallback = envelope
-        received = envelope.get("capability")
-        if (
-            envelope.get("schema") == _RESPONSE_SCHEMA
-            and envelope.get("version") == _RESPONSE_VERSION
-            and envelope.get("change_id") == change_id
-            and isinstance(received, str)
-            and received.isascii()
-            and hmac.compare_digest(received, capability)
-        ):
-            return envelope
-    return fallback
-
-
-def _persist_worker_response(
-    response: object,
-    *,
-    change_id: str,
-    capability: str,
-    root: Path | None,
-    run_id: str | None,
-    base_record: dict | None = None,
-) -> tuple[dict | None, str]:
-    """Validate a bound worker envelope, publish its record, and return it.
-
-    The accepted record is returned rather than left for the caller to read
-    back: the run-scoped path stays writable by every dispatched worker, so a
-    re-read is an unauthenticated second chance for a sibling to substitute
-    its own file for the one this envelope authorised.
-    """
-    if not isinstance(response, str):
-        return None, "worker response is missing"
-    try:
-        envelope = _decode_worker_envelope(response, change_id, capability)
-    except UnicodeEncodeError:
-        return None, "worker response is not valid UTF-8"
-    except RecursionError:
-        # A payload nested past the JSON parser's depth fails THIS change
-        # alone; it must never abort the whole batch through `pool.map`.
-        return None, "worker response is not valid JSON"
-    if envelope is None:
-        return None, "worker response is not valid JSON"
-    if envelope.get("schema") != _RESPONSE_SCHEMA or envelope.get("version") != _RESPONSE_VERSION:
-        return None, "worker response has an unsupported envelope schema"
-    received_capability = envelope.get("capability")
-    if not isinstance(received_capability, str):
-        return None, "worker response capability is missing or invalid"
-    try:
-        capabilities_match = hmac.compare_digest(
-            received_capability.encode("ascii"), capability.encode("ascii")
-        )
-    except UnicodeEncodeError:
-        return None, "worker response capability is missing or invalid"
-    if not capabilities_match:
-        return None, "worker response capability is missing or invalid"
-    if envelope.get("change_id") != change_id:
-        return None, "worker response names a different change"
-    record = envelope.get("record")
-    if not isinstance(record, dict):
-        return None, "worker response record must be an object"
-    if record.get("change_id") != change_id:
-        return None, "worker response record names a different change"
-    errors = results.validate_result(record)
-    if errors:
-        # The validator interpolates the record's own key names (phase1.<k>,
-        # findings[i].<k>, counts.<band>), and those keys are worker-written.
-        # This string is surfaced and logged, so it goes through the same
-        # scrub every other boundary carrying model-written text uses.
-        return None, store.redact_text("worker response record is invalid: " + "; ".join(errors))
-    if base_record is not None:
-        if envelope.get("base_digest") != _record_digest(base_record):
-            return None, "worker follow-up is not bound to the first-pass record"
-        base_findings = base_record.get("findings", [])
-        candidate_findings = record.get("findings", [])
-        if not isinstance(base_findings, list) or not isinstance(candidate_findings, list):
-            return None, "worker response record is invalid: findings must be a list"
-        if candidate_findings[: len(base_findings)] != base_findings:
-            return None, "worker follow-up removed or changed an existing finding"
-        if record.get("phase1") != base_record.get("phase1"):
-            return None, "worker follow-up changed the first-pass design assessment"
-        # A coverage pass can extend findings and coverage, but it has no authority
-        # over the first pass's change identity or review metadata. Reusing its
-        # complete record let it replace the revision that anchors comment payloads.
-        covered = record.get("files_covered", base_record.get("files_covered", []))
-        if not isinstance(covered, list):
-            return None, "worker response record is invalid: files_covered must be a list"
-        accepted_record = json.loads(json.dumps(base_record))
-        accepted_record["findings"] = candidate_findings
-        accepted_record["counts"] = _finding_counts(candidate_findings)
-        # A coverage pass reports the files IT read. Taking that answer whole
-        # drops every path the first pass already covered, so the record would
-        # claim less coverage than was reviewed -- and `coverage_complete` would
-        # assert completeness over the smaller list.
-        base_covered = base_record.get("files_covered", [])
-        merged = list(base_covered) if isinstance(base_covered, list) else []
-        merged += [name for name in covered if name not in merged]
-        accepted_record["files_covered"] = merged
-        for key in ("coverage_complete", "ship_summary"):
-            if key in record:
-                accepted_record[key] = record[key]
-        record = accepted_record
-    try:
-        results.write_result(record, root, run_id)
-    except (OSError, ValueError, RecursionError) as exc:
-        # RecursionError: a worker record nested past the JSON encoder's depth
-        # (a hostile or corrupted `record.extra`) fails THIS change alone; it
-        # must never abort the whole batch through `pool.map`.
-        return None, store.redact_text(f"could not persist worker response: {exc}")
-    return record, ""
-
-
 def build_post_task(change_link: str) -> str:
     """Poster prompt: publish the driver-built, Python-REDACTED DRAFT comments for
     one change. The bodies are authoritative and already scrubbed in Python — the
@@ -960,6 +794,26 @@ def _unconfigured_dispatch(task: str, timeout: int = DEFAULT_TASK_TIMEOUT) -> di
     }
 
 
+def _record_post_refusal(cur: dict, root: Path | None, run_id: str | None) -> None:
+    """Best-effort write of a posting refusal onto the change's record.
+
+    The caller returns the refusal either way, so this write only keeps the
+    record's ``post_error`` current. It must never raise: the refusal fields can
+    push a record already near the size cap past it, or a sibling worker can have
+    replaced the run-scoped path, and an exception here would escape
+    ``pool.map`` and abort the whole batch for one change. On failure the record
+    on disk keeps its previous, accepted state.
+    """
+    try:
+        results.write_result(cur, root, run_id)
+    except (OSError, ValueError, RecursionError) as exc:
+        logger.warning(
+            "could not record posting refusal for %s: %s",
+            cur.get("change_id", "?"),
+            store.redact_text(str(exc)),
+        )
+
+
 def post_recorded(
     change_id: str,
     link: str,
@@ -1060,7 +914,7 @@ def post_recorded(
             cur["post_error"] = str(e)
             cur["posted_comments"] = 0
             cur["design_comment_posted"] = False
-            results.write_result(cur, root, run_id)
+            _record_post_refusal(cur, root, run_id)
             return {
                 "post_ok": False,
                 "post_error": str(e),
@@ -1115,7 +969,7 @@ def post_recorded(
         # failure, never an exception that aborts the rest of the batch.
         try:
             results.write_result(cur, root, None)
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):
             staged_ok = False
     elif run_id and not results.publish_to_shared(change_id, root, run_id):
         staged_ok = False
@@ -1123,7 +977,7 @@ def post_recorded(
         staged = "could not stage the review record for the poster"
         cur["post_ok"] = False
         cur["post_error"] = staged
-        results.write_result(cur, root, run_id)
+        _record_post_refusal(cur, root, run_id)
         return {
             "post_ok": False,
             "post_error": staged,
@@ -1144,7 +998,7 @@ def post_recorded(
         refused = f"refusing to post: {exc}"
         cur["post_ok"] = False
         cur["post_error"] = refused
-        results.write_result(cur, root, run_id)
+        _record_post_refusal(cur, root, run_id)
         return {
             "post_ok": False,
             "post_error": refused,
@@ -1233,7 +1087,23 @@ def post_recorded(
         # replaces the draft by deleting and re-creating it, so a changed id is the
         # signal that the pending draft belongs to someone else.
         after["posted_review_id"] = confirmed_id
-        results.write_result(after, root, run_id)
+        try:
+            results.write_result(after, root, run_id)
+        except (OSError, ValueError, RecursionError) as exc:
+            # Same guard as the two earlier writes of this record: a record the
+            # confirmation fields push past the size cap (or a path a sibling
+            # worker replaced) fails THIS change, never the batch through
+            # `pool.map`. The ledger is unwritten, so the records survive and
+            # the next post re-sends: a visible duplicate, not a lost finding.
+            return {
+                "post_ok": False,
+                "post_error": store.redact_text(f"could not record confirmed delivery: {exc}"),
+                "posted_comments": 0,
+                "design_comment_posted": False,
+                "pending": len(pending),
+                "expected_units": expected_units,
+                "posted_keys": list(already),
+            }
     elif ok and delivered:
         # A partial post cannot be attributed to specific comments, so nothing is
         # marked delivered. Re-posting the selection is the safe direction: a

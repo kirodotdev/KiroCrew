@@ -2604,6 +2604,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/builtins/code_review_sage/sage_lib/pipeline.py",
         "apps/builtins/code_review_sage/sage_lib/report.py",
         "apps/builtins/code_review_sage/sage_lib/review_driver.py",
+        # Split out of `review_driver` unchanged: it scrubs the worker-written
+        # record's validation and persist errors before the driver surfaces them.
+        # Same classification as `review_driver`.
+        "apps/builtins/code_review_sage/sage_lib/worker_response.py",
         # `store` DEFINES this app's redactor (`redact_text`) so every reader in the
         # app can scrub, not just the posting path; `discovery` calls it when reading
         # the worker-writable pinned-repo file before the sidebar renders it. Both

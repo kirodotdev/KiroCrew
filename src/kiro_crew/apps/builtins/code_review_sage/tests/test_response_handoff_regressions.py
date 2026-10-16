@@ -121,3 +121,115 @@ def test_poster_restore_failure_does_not_abort_batch(tmp_path):
     assert succeeded["post_ok"] is True
     report = store.run_dir(run_id, root) / "report" / "report.json"
     assert len(json.loads(report.read_text(encoding="utf-8"))["rows"]) == 2
+
+
+def test_confirmed_delivery_write_failure_does_not_abort_batch(tmp_path, monkeypatch):
+    first = "https://github.com/o/r/pull/1"
+    second = "https://github.com/o/r/pull/2"
+    first_id = D._cid(first)
+    second_id = D._cid(second)
+    root = tmp_path / "app"
+    run_id = "confirm-write-failure"
+    real_write = results.write_result
+
+    def write_result(record, *args, **kwargs):
+        # The confirmed write is the only one carrying `posted_review_id`; fail it
+        # for the first change the way an over-cap record would.
+        if record.get("change_id") == first_id and "posted_review_id" in record:
+            raise ValueError("record exceeds the size cap")
+        return real_write(record, *args, **kwargs)
+
+    monkeypatch.setattr(results, "write_result", write_result)
+
+    def dispatch(task, timeout):
+        if "SINGLE thorough pass" in task:
+            change_id = first_id if first in task else second_id
+            return {"ok": True, "output": _response(task, change_id), "error": ""}
+        return {"ok": True, "output": "done", "error": ""}
+
+    out = D.run_review(
+        [first, second],
+        dispatch=dispatch,
+        root=root,
+        run_id=run_id,
+        post=True,
+        concurrency=1,
+        confirm=lambda *_: "confirmed-draft",
+        archiver=lambda *_: None,
+        generate_report=True,
+    )
+    failed, succeeded = out["per_change"]
+    assert failed["post_ok"] is False
+    assert "could not record confirmed delivery" in failed["post_error"]
+    assert succeeded["post_ok"] is True
+    report = store.run_dir(run_id, root) / "report" / "report.json"
+    assert len(json.loads(report.read_text(encoding="utf-8"))["rows"]) == 2
+
+
+def test_refusal_write_failure_returns_refusal_not_exception(tmp_path, monkeypatch):
+    # A record with no `revision` is refused before any poster runs. The refusal
+    # write can itself fail (the refusal fields push a near-cap record over it),
+    # and that must still come back as this change's refusal.
+    link = "https://github.com/o/r/pull/1"
+    change_id = D._cid(link)
+    record = _record(change_id)
+    del record["revision"]
+    root = tmp_path / "app"
+    results.write_result(record, root, "refusal-write")
+
+    def write_result(rec, *args, **kwargs):
+        raise ValueError("record exceeds the size cap")
+
+    monkeypatch.setattr(results, "write_result", write_result)
+
+    def dispatch(task, timeout):
+        raise AssertionError("no poster may run for a refused record")
+
+    out = D.post_recorded(
+        change_id,
+        link,
+        dispatch=dispatch,
+        root=root,
+        run_id="refusal-write",
+        accepted_record=record,
+    )
+    assert out["post_ok"] is False
+    assert out["post_error"]
+    assert results.read_result(change_id, root, "refusal-write") == record
+
+
+def test_write_result_stops_encoding_at_the_cap(tmp_path, monkeypatch):
+    # Indentation multiplies a deeply nested worker value: ~200 KB of compact
+    # JSON grows to tens of MB indented. The size refusal must come from
+    # streaming past the cap, not from building the whole string first.
+    nested: object = [0] * 100_000
+    for _ in range(300):
+        nested = [nested]
+    record = _record("CR-1")
+    record["extra"] = nested
+    encoded = []
+
+    # Defined before the patch below, so the base is still the real encoder.
+    class CountingEncoder(json.JSONEncoder):
+        def iterencode(self, o, _one_shot=False):
+            for chunk in super().iterencode(o, _one_shot):
+                encoded.append(len(chunk))
+                yield chunk
+
+    monkeypatch.setattr(results.json, "JSONEncoder", CountingEncoder)
+    try:
+        results.write_result(record, tmp_path / "app", "cap")
+    except ValueError as exc:
+        assert "exceeds durable reader limit" in str(exc)
+    else:
+        raise AssertionError("an over-cap record was written")
+    assert sum(encoded) <= results._RECORD_MAX_BYTES + 4096
+    assert not results.result_path("CR-1", tmp_path / "app", "cap").exists()
+
+
+def test_write_result_bytes_match_indented_dumps(tmp_path):
+    record = _record("CR-1")
+    record["findings"] = [{"severity": "red", "snippet": "ünïcode {}"}]
+    record["counts"] = {"red": 1, "yellow": 0}
+    path = results.write_result(record, tmp_path / "app", "same-bytes")
+    assert path.read_bytes() == json.dumps(record, indent=2).encode("utf-8")

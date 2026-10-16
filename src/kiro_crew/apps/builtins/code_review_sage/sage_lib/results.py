@@ -224,18 +224,37 @@ def validate_result(record: dict) -> list[str]:
     return errs
 
 
+def _encode_capped(record: dict) -> bytes:
+    """Serialize ``record`` exactly as ``json.dumps(record, indent=2)`` would,
+    but stop as soon as the output passes ``_RECORD_MAX_BYTES``. Raises ValueError.
+
+    Records carry worker-written fields (``extra``), and indentation multiplies
+    a deeply nested value many times over. Building the whole string before
+    checking its size let a ~1 MB worker response expand to tens of megabytes
+    first, so a memory-limited host raised MemoryError instead of this
+    ValueError. Streaming keeps peak memory near the cap.
+    """
+    parts: list[bytes] = []
+    size = 0
+    for chunk in json.JSONEncoder(indent=2).iterencode(record):
+        piece = chunk.encode("utf-8")
+        size += len(piece)
+        if size > _RECORD_MAX_BYTES:
+            raise ValueError(
+                f"serialized result record exceeds durable reader limit "
+                f"({_RECORD_MAX_BYTES} bytes)"
+            )
+        parts.append(piece)
+    return b"".join(parts)
+
+
 def write_result(record: dict, root: Path | None = None,
                  run_id: str | None = None) -> Path:
     """Validate then atomically write the record (mode 0600). Raises ValueError."""
     errs = validate_result(record)
     if errs:
         raise ValueError("invalid result record: " + "; ".join(errs))
-    data = json.dumps(record, indent=2).encode("utf-8")
-    if len(data) > _RECORD_MAX_BYTES:
-        raise ValueError(
-            f"serialized result record ({len(data)} bytes) exceeds durable reader limit "
-            f"({_RECORD_MAX_BYTES} bytes)"
-        )
+    data = _encode_capped(record)
     if run_id:
         store.ensure_run_layout(run_id, root)
     else:
