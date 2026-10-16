@@ -931,7 +931,13 @@ _GIT = platform_compat.trusted_git_bin()
 
 
 def _git(cwd: Path, *args: str) -> str:
-    """Run git for a fixture, with no host config and a fixed identity."""
+    """Run git for a fixture, with no host config and a fixed identity.
+
+    Auto-maintenance and auto-gc are off: either can start a background git that
+    creates and removes ``.git/objects/maintenance.lock`` while a test walks the
+    tree, so a snapshot could list the file and then fail to read it. ``-c`` is
+    carried to every git the command starts, the detached one included.
+    """
     assert _GIT is not None
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env.update(
@@ -943,7 +949,18 @@ def _git(cwd: Path, *args: str) -> str:
         GIT_COMMITTER_EMAIL="scratch-test@example.invalid",
     )
     result = subprocess.run(
-        [_GIT, "-c", "init.defaultBranch=main", "-c", "commit.gpgsign=false", *args],
+        [
+            _GIT,
+            "-c",
+            "init.defaultBranch=main",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "maintenance.auto=false",
+            "-c",
+            "gc.auto=0",
+            *args,
+        ],
         cwd=cwd,
         env=env,
         capture_output=True,
