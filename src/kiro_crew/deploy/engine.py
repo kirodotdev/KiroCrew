@@ -25,6 +25,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import threading
 import time
 from typing import Any, NamedTuple, Optional
 
@@ -116,6 +117,56 @@ _AWS_BIN_DIRS = (
 # filesystem-free and event-loop safe.
 _REFUSED_AWS_BIN_DIRS: set[tuple[str, str]] = set()
 
+# Fallback directories whose complete provenance chain passed during a resolver
+# walk in this process, paired with the canonical path safe to publish to a
+# child. The spawn-env builder reads one immutable snapshot, which keeps it
+# filesystem-free while making an unchecked directory ineligible for PATH.
+_TRUSTED_AWS_BIN_DIRS: tuple[tuple[str, str], ...] = ()
+_WARNED_AWS_BIN_DIR_REFUSALS: set[tuple[str, str]] = set()
+_AWS_BIN_DIR_TRUST_LOCK = threading.Lock()
+
+
+def _refresh_aws_bin_dir_trust() -> None:
+    """Serialize fallback checks and publish their canonical paths atomically."""
+    from kiro_crew.github_runner import validate_provider_directory
+
+    global _TRUSTED_AWS_BIN_DIRS
+    with _AWS_BIN_DIR_TRUST_LOCK:
+        trusted: list[tuple[str, str]] = []
+        for directory in _AWS_BIN_DIRS:
+            if not directory:
+                continue
+            try:
+                os.lstat(directory)
+            except FileNotFoundError:
+                logger.debug("AWS tooling directory is absent: %s", directory)
+                continue
+            except OSError:
+                pass
+            try:
+                canonical = validate_provider_directory(directory)
+            except ValueError as exc:
+                try:
+                    os.lstat(directory)
+                except FileNotFoundError:
+                    logger.debug("AWS tooling directory disappeared: %s", directory)
+                    continue
+                except OSError:
+                    pass
+                reason = str(exc)
+                warning_key = (directory, reason)
+                if warning_key in _WARNED_AWS_BIN_DIR_REFUSALS:
+                    continue
+                _WARNED_AWS_BIN_DIR_REFUSALS.add(warning_key)
+                logger.warning(
+                    "not appending AWS tooling directory %s to child PATH: %s",
+                    directory,
+                    reason,
+                )
+                continue
+            trusted.append((directory, canonical))
+        _TRUSTED_AWS_BIN_DIRS = tuple(trusted)
+
 
 def resolve_aws_tool_bin(name: str) -> str:
     """Resolve an AWS-tooling binary to an absolute path, or the bare ``name``.
@@ -178,6 +229,7 @@ def resolve_aws_tool_bin_with_refusals(name: str) -> tuple[str, tuple[AwsToolRef
     earlier walk is not reported.
     """
     refusals: list[AwsToolRefusal] = []
+    _refresh_aws_bin_dir_trust()
     env_path = os.environ.get("PATH", "")
     found = shutil.which(name, path=env_path) if env_path else None
     if found:
@@ -237,7 +289,7 @@ def aws_spawn_env(aws_bin: str) -> dict[str, str]:
 
 
 def tool_spawn_env(argv_head: str) -> dict[str, str]:
-    """This process's env with :data:`_AWS_BIN_DIRS` APPENDED to ``PATH``.
+    """This process's env with trusted :data:`_AWS_BIN_DIRS` appended to ``PATH``.
 
     ``argv_head`` is the argv head the caller is about to spawn, already resolved
     by the caller (:func:`resolve_aws_bin` for ``aws``,
@@ -296,9 +348,16 @@ def tool_spawn_env(argv_head: str) -> dict[str, str]:
     accepted ``aws`` cannot re-admit a dir whose ``session-manager-plugin`` was
     refused. This stays a set lookup and touches no filesystem.
 
-    Dirs already on ``PATH`` are not repeated, so a terminal-launched gateway
-    (whose ``PATH`` carries them) gets a byte-identical env and the fix is inert
-    outside the minimal-PATH case it exists for.
+    **Only directory chains approved by a resolver walk are appended.** Each
+    resolver call checks every fallback directory, even when the requested tool
+    resolves from the inherited ``PATH``. A missing, uncheckable, or rejected
+    directory is absent from :data:`_TRUSTED_AWS_BIN_DIRS`. Each approved entry
+    pairs its configured spelling with the canonical path published to the
+    child, so retargeting a checked link cannot redirect the child's lookup.
+
+    Dirs already on ``PATH`` under either their configured or canonical spelling
+    are not repeated, so a terminal-launched gateway gets a byte-identical env
+    and the fix is inert outside the minimal-PATH case it exists for.
 
     Unlike the resolvers above this touches no filesystem — it is a dict copy and
     a string join over ``os.environ`` — so it is safe to call directly on the
@@ -310,9 +369,15 @@ def tool_spawn_env(argv_head: str) -> dict[str, str]:
         # alone so it keeps failing execvp, as it did before this env existed.
         return env
     current = env.get("PATH", "")
-    have = {p for p in current.split(os.pathsep) if p}
+    have = {os.path.normcase(p) for p in current.split(os.pathsep) if p}
     refused_dirs = {directory for _name, directory in _REFUSED_AWS_BIN_DIRS}
-    extra = [d for d in _AWS_BIN_DIRS if d and d not in have and d not in refused_dirs]
+    extra: list[str] = []
+    for original, canonical in _TRUSTED_AWS_BIN_DIRS:
+        spellings = {os.path.normcase(original), os.path.normcase(canonical)}
+        if original in refused_dirs or spellings & have:
+            continue
+        extra.append(canonical)
+        have.update(spellings)
     if extra:
         env["PATH"] = os.pathsep.join(([current] if current else []) + extra)
     return env
@@ -361,8 +426,9 @@ def run_aws(
     inherited handle, and the dedicated descriptor is the only way a body reaches
     the child.
     """
+    argv = _aws(args, profile)
     sandboxed, cleanup = wrap_argv(
-        _aws(args, profile), mode="standard", extra_visible_dirs=extra_visible_dirs
+        argv, mode="standard", extra_visible_dirs=extra_visible_dirs
     )
     sandboxed = cgroup_scope_argv(sandboxed)  # cgroup DoS ceiling
     # stdin is CLOSED by default rather than inherited. The CLI resolves credentials
@@ -383,6 +449,19 @@ def run_aws(
             **UTF8_TEXT,
             timeout=timeout,
             stdin=stdin_arg,
+            # The CLI finds a profile's ``credential_process`` helper by NAME on
+            # the CHILD's PATH, and a desktop-app gateway hands the child the
+            # minimal launchd PATH. ``run_limited`` forwards this ``env`` untouched
+            # and sets no PATH of its own, so the child gets the env
+            # ``cloud.aws.run_aws`` passes too. ``aws_spawn_env`` APPENDS
+            # :data:`_AWS_BIN_DIRS`, the dirs the ``aws`` head itself is resolved
+            # from, after the inherited PATH; it widens only for an absolute head
+            # and drops any provenance-refused dir. So it can make an unresolvable
+            # lookup succeed but never re-points one the child already resolves.
+            # The CLI, not this module, picks the helper, so the provenance check
+            # never sees it. The sandbox still scrubs ``AWS_SECRET*`` and
+            # ``AWS_SESSION*`` from this env in every mode.
+            env=aws_spawn_env(argv[0]),
         )
     finally:
         if cleanup:

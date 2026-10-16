@@ -8,7 +8,13 @@ stored error is redacted, stripped of control characters and truncated.
 
 A corrupt or future-dated failure row reads as due, a corrupt count restarts at
 one, and an unwritable state file makes the recorder return ``None`` rather than
-raise. Both classes point ``_state_path`` into ``tmp_path``.
+raise.
+
+The install-global record of a nightly that skipped because no AWS key works sits
+beside ``record_nightly_failure``: one warning per streak, the carried ``since``,
+the clear a resolved key applies, a corrupt count restarting the streak, and an
+unusable ``since`` being re-stamped without resetting a valid count.
+Every class points ``_state_path`` into ``tmp_path``.
 """
 
 from __future__ import annotations
@@ -868,3 +874,125 @@ class TestNightlyRetryBackoff:
         record = _fail(ACCOUNT, backup.KIND_SNAPSHOT, "e" * 5000)
         assert len(record["error"]) == 200
         assert len(backup.nightly_failures(ACCOUNT)[backup.KIND_SNAPSHOT]["error"]) == 200
+
+
+class TestNightlyNoWorkingKeySkip:
+    """The install-global record for "no working AWS key, every wake skipped".
+
+    A desktop gateway that cannot find the per-user ``aws`` / helpers has no
+    healthy key, so ``hooks._run_once`` skips before any account resolves. The
+    skip is install-global (no account to key on), warns once per streak, carries
+    a usable ``since``, re-stamps an unusable ``since`` without resetting a valid
+    count, and is cleared when a key resolves, so the accounts read reports
+    a nightly the owner enabled as skipped rather than appearing to run.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_state(self, tmp_path, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
+        yield
+
+    def test_enabled_any_account_reads_every_accounts_grant(self):
+        # Nothing configured -> nothing scheduled, so no skip should ever be recorded.
+        assert backup.nightly_enabled_any_account() is False
+        # Snapshot grant on one account is enough.
+        backup.set_nightly(ACCOUNT, True)
+        assert backup.nightly_enabled_any_account() is True
+        backup.set_nightly(ACCOUNT, False)
+        assert backup.nightly_enabled_any_account() is False
+        # The sessions grant counts too, on any account.
+        backup.set_nightly_sessions("999988887777", True)
+        assert backup.nightly_enabled_any_account() is True
+
+    def test_warns_once_per_streak_and_carries_since(self):
+        # First wake of the streak: the caller is told to warn, and a record lands.
+        assert backup.record_nightly_no_key_skip() is True
+        first = backup.nightly_no_key_skip()
+        assert first is not None
+        assert first["consecutive"] == 1
+        assert first["reason"] == "no_working_key"
+        assert first["since"] == first["at"]
+
+        # Every later wake of the SAME streak: no warning, streak grows, `since`
+        # stays the day the streak began while `at` advances.
+        assert backup.record_nightly_no_key_skip() is False
+        second = backup.nightly_no_key_skip()
+        assert second["consecutive"] == 2
+        assert second["since"] == first["since"]  # carried, not re-stamped
+        assert second["at"] >= first["at"]
+
+        assert backup.record_nightly_no_key_skip() is False
+        assert backup.nightly_no_key_skip()["consecutive"] == 3
+
+    def test_a_resolved_key_clears_the_record(self):
+        backup.record_nightly_no_key_skip()
+        assert backup.nightly_no_key_skip() is not None
+        backup.clear_nightly_no_key_skip()
+        assert backup.nightly_no_key_skip() is None
+        # And the next skip starts a fresh streak (warns again, consecutive back to 1).
+        assert backup.record_nightly_no_key_skip() is True
+        assert backup.nightly_no_key_skip()["consecutive"] == 1
+
+    def test_clear_is_a_no_op_when_there_is_no_record(self):
+        # Never raises, and leaves the reader answering None.
+        backup.clear_nightly_no_key_skip()
+        assert backup.nightly_no_key_skip() is None
+
+    def test_clear_with_no_record_leaves_the_state_file_alone(self, tmp_path):
+        # The healthy path clears on every wake, so the no-record case must not
+        # write: no file appears, and an existing one keeps its inode and mtime
+        # (the state writer replaces the file atomically, which changes both).
+        state_file = tmp_path / "backup.json"
+        backup.clear_nightly_no_key_skip()
+        assert not state_file.exists()
+
+        backup.set_nightly(ACCOUNT, True)
+        before = state_file.stat()
+        backup.clear_nightly_no_key_skip()
+        after = state_file.stat()
+        assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+
+    def test_a_corrupt_consecutive_restarts_the_streak_rather_than_reading_as_long(self):
+        # A corrupted document carrying a bool/str must not read as a previous wake;
+        # the streak restarts at 1 so corruption can only UNDER-report the skip.
+        def mutate(state):
+            state[backup.NIGHTLY_NO_KEY_STATE_KEY] = {
+                "consecutive": True,  # bool is an int subclass; must be rejected
+                "since": "not-a-timestamp",
+                "at": "also-bad",
+                "reason": "no_working_key",
+            }
+
+        backup._locked_state_update(mutate)
+        # Warns (streak treated as new) and rewrites a clean record.
+        assert backup.record_nightly_no_key_skip() is True
+        row = backup.nightly_no_key_skip()
+        assert row["consecutive"] == 1
+        assert row["since"] == row["at"]  # the bad `since` was not carried
+
+    def test_an_unusable_since_restamps_without_resetting_a_valid_count(self):
+        # The count identifies the standing streak independently of its timestamp.
+        def mutate(state):
+            state[backup.NIGHTLY_NO_KEY_STATE_KEY] = {
+                "consecutive": 7,
+                "since": "not-a-timestamp",
+                "at": "also-bad",
+                "reason": "no_working_key",
+            }
+
+        backup._locked_state_update(mutate)
+        before = dt.datetime.now(dt.timezone.utc)
+        assert backup.record_nightly_no_key_skip() is False
+        after = dt.datetime.now(dt.timezone.utc)
+
+        row = backup.nightly_no_key_skip()
+        assert row["consecutive"] == 8
+        assert row["since"] == row["at"]
+        assert before <= dt.datetime.fromisoformat(row["since"]) <= after
+
+    def test_reader_treats_a_non_dict_record_as_absent(self):
+        def mutate(state):
+            state[backup.NIGHTLY_NO_KEY_STATE_KEY] = "corrupt"
+
+        backup._locked_state_update(mutate)
+        assert backup.nightly_no_key_skip() is None
