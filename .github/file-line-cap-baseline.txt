@@ -194,7 +194,6 @@
 3299 test/test_artifacts_handlers.py
 4053 test/test_auto_research.py
 2089 test/test_auto_research_handlers_coverage.py
-5266 test/test_autonudge_wake_judge.py
 3522 test/test_aws_control_app.py
 6303 test/test_aws_control_backup.py
 2170 test/test_aws_control_backup_composition_contract.py
