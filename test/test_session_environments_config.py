@@ -198,6 +198,8 @@ class TestLoader:
         assert cfg.to_dict()["session_environments"] == {
             "coder_url": "",
             "profiles": [],
+            "sprites_profiles": [],
+            "boxd_profiles": [],
             "default_profile": "",
             "stop_on_shutdown": True,
             "archived_retention_days": 7,
@@ -209,6 +211,8 @@ class TestLoader:
         section = {
             "coder_url": "https://c.example.com",
             "profiles": [_profile("a")],
+            "sprites_profiles": [],
+            "boxd_profiles": [],
             "default_profile": "",
             "stop_on_shutdown": True,
             "archived_retention_days": 2,
@@ -273,6 +277,8 @@ class TestApi:
             assert (await resp.json())["session_environments"] == {
                 "coder_url": "",
                 "profiles": [],
+                "sprites_profiles": [],
+                "boxd_profiles": [],
                 "default_profile": "",
                 "stop_on_shutdown": True,
                 "archived_retention_days": 7,
@@ -295,6 +301,8 @@ class TestApi:
         # The read shows the retention default; the file holds only what was sent.
         assert body["session_environments"] == {
             **expected,
+            "sprites_profiles": [],
+            "boxd_profiles": [],
             "default_profile": "",
             "stop_on_shutdown": True,
             "archived_retention_days": 7,
@@ -317,6 +325,8 @@ class TestApi:
         assert got == {
             "coder_url": "https://c.example.com",
             "profiles": [_profile()],
+            "sprites_profiles": [],
+            "boxd_profiles": [],
             "default_profile": "",
             "stop_on_shutdown": True,
             "archived_retention_days": 7,
@@ -368,6 +378,8 @@ class TestApi:
         assert got == {
             "coder_url": "https://c.example.com",
             "profiles": [],
+            "sprites_profiles": [],
+            "boxd_profiles": [],
             "default_profile": "",
             "stop_on_shutdown": True,
             "archived_retention_days": 7,
@@ -398,3 +410,190 @@ class TestApi:
             resp = await _patch(client, "session_environments.archived_retention_days", value)
             assert resp.status == 400
         assert config_file.read_bytes() == before
+
+
+# Cross-provider ids address both the picker and the launch resolver.
+_PROVIDER_KEYS = ("profiles", "sprites_profiles", "boxd_profiles")
+
+
+def _provider_section():
+    return {
+        "coder_url": "https://c.example.com",
+        "profiles": [_profile("coder-id")],
+        "sprites_profiles": [
+            {"id": "sprites-id", "name": "Sprite", "token_secret": "TOKEN", "workdir": "/w"}
+        ],
+        "boxd_profiles": [
+            {"id": "boxd-id", "name": "Box", "snapshot": "", "vcpu": 0, "workdir": "/w"}
+        ],
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "changed,existing", [(a, b) for a in _PROVIDER_KEYS for b in _PROVIDER_KEYS if a != b]
+)
+@pytest.mark.parametrize("whole", [False, True])
+async def test_cross_provider_collision_is_refused_under_write_lock(
+    config_file, monkeypatch, changed, existing, whole
+):
+    from kiro_crew.config import loader
+
+    section = _provider_section()
+    config_file.write_text(json.dumps({**_BASE_CONFIG, "session_environments": section}))
+    colliding = [{**section[changed][0], "id": section[existing][0]["id"]}]
+    checked = []
+    original = loader.update_config_locked
+
+    def locked(path, *, mutate, **kwargs):
+        def checking(data):
+            checked.append(True)
+            return mutate(data)
+
+        return original(path, mutate=checking, **kwargs)
+
+    monkeypatch.setattr(loader, "update_config_locked", locked)
+    before = config_file.read_bytes()
+    # Whole-section clients may omit the other providers; the locked merge must
+    # still check their preserved lists. Coder keys are required in a whole save.
+    value = {"coder_url": section["coder_url"], "profiles": section["profiles"]}
+    value[changed] = colliding
+    async with TestClient(TestServer(_app())) as client:
+        resp = await _patch(
+            client,
+            "session_environments" if whole else f"session_environments.{changed}",
+            value if whole else colliding,
+        )
+        assert resp.status == 400, await resp.text()
+        assert "both" in (await resp.json())["error"]
+    assert config_file.read_bytes() == before
+    if not whole or existing != "profiles":
+        assert checked == [True]
+
+
+@pytest.mark.parametrize(
+    "left,right",
+    [
+        ("profiles", "sprites_profiles"),
+        ("profiles", "boxd_profiles"),
+        ("sprites_profiles", "boxd_profiles"),
+    ],
+)
+@pytest.mark.parametrize("coder_url", ["", "https://c.example.com"])
+def test_hand_edited_collision_stays_unavailable_to_picker_and_launch(
+    monkeypatch, left, right, coder_url
+):
+    from types import SimpleNamespace
+
+    from kiro_crew.coder.session_launch import profile_provider
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.config.sections import SessionEnvironmentsConfig
+    from kiro_crew.dashboard.handlers import session_environments as handlers
+    from kiro_crew.session_environment import SessionEnvironmentUnavailable
+
+    raw = _provider_section()
+    raw["coder_url"] = coder_url
+    raw[right][0]["id"] = raw[left][0]["id"]
+    section = SessionEnvironmentsConfig.from_raw(raw)
+    monkeypatch.setattr(
+        KiroCrewConfig, "load", lambda: SimpleNamespace(session_environments=section)
+    )
+    duplicate = raw[left][0]["id"]
+    with pytest.raises(SessionEnvironmentUnavailable, match="ambiguous"):
+        profile_provider(section, duplicate)
+    offered = handlers._profiles()
+    assert duplicate not in {p["id"] for p in offered}
+    assert all(profile_provider(section, p["id"]) == p["provider"] for p in offered)
+
+
+@pytest.mark.parametrize(
+    "key,provider",
+    [("profiles", "coder"), ("sprites_profiles", "sprites"), ("boxd_profiles", "boxd")],
+)
+def test_choice_and_inherited_rows_record_the_resolved_provider(
+    tmp_path, monkeypatch, key, provider
+):
+    from types import SimpleNamespace
+
+    from kiro_crew.coder.session_launch import SessionEnvironmentChoices
+    from kiro_crew.config import live
+    from kiro_crew.config.sections import SessionEnvironmentsConfig
+
+    raw = _provider_section()
+    config = SimpleNamespace(session_environments=SessionEnvironmentsConfig.from_raw(raw))
+    monkeypatch.setattr(live, "snapshot", lambda: config)
+    choices = SessionEnvironmentChoices(tmp_path / "choices.json")
+    profile_id = raw[key][0]["id"]
+    choices.set("parent", profile_id)
+    assert choices.inherit("child", "parent") == profile_id
+    rows = json.loads(choices.path.read_text())["sessions"]
+    assert rows["parent"] == {"provider": provider, "configuration": profile_id}
+    assert rows["child"] == {"provider": provider, "configuration": profile_id, "parent": "parent"}
+    assert choices.resolve("child") == (profile_id, "parent")
+
+
+@pytest.mark.asyncio
+async def test_launch_derives_provider_from_id_and_refuses_collisions(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from kiro_crew.coder import session_launch
+    from kiro_crew.config import live, paths
+    from kiro_crew.config.sections import SessionEnvironmentsConfig
+    from kiro_crew.session_environment import SessionEnvironmentUnavailable
+    from kiro_crew.sprites_session.launch import SpritesSessionEnvironments
+
+    raw = _provider_section()
+    config = SimpleNamespace(session_environments=SessionEnvironmentsConfig.from_raw(raw))
+    monkeypatch.setattr(live, "snapshot", lambda: config)
+    monkeypatch.setattr(paths, "data_home", lambda: tmp_path)
+    choices = session_launch.SessionEnvironmentChoices(tmp_path / "coder" / "session-choices.json")
+    choices.set("session", "sprites-id")
+    # The provider tag is informational: legacy rows wrote coder for every id.
+    data = json.loads(choices.path.read_text())
+    data["sessions"]["session"]["provider"] = "coder"
+    choices.path.write_text(json.dumps(data))
+    prepare = AsyncMock(return_value="prepared")
+    monkeypatch.setattr(SpritesSessionEnvironments, "prepare", prepare)
+    assert await session_launch.prepare_for_session("session") == "prepared"
+    prepare.assert_awaited_once_with("session", "sprites-id")
+    raw["profiles"][0]["id"] = "sprites-id"
+    config.session_environments = SessionEnvironmentsConfig.from_raw(raw)
+    with pytest.raises(SessionEnvironmentUnavailable, match="ambiguous"):
+        await session_launch.prepare_for_session("session")
+    assert prepare.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", _PROVIDER_KEYS)
+@pytest.mark.parametrize("malformed", [None, [None], ["not-an-object"], [{}], [{"id": 7}]])
+async def test_leaf_patch_ignores_malformed_stored_provider_rows(config_file, key, malformed):
+    section = _provider_section()
+    section[key] = malformed
+    config_file.write_text(json.dumps({**_BASE_CONFIG, "session_environments": section}))
+    async with TestClient(TestServer(_app())) as client:
+        response = await _patch(client, "session_environments.archived_retention_days", 2)
+        assert response.status == 200, await response.text()
+        assert (await response.json())["session_environments"]["archived_retention_days"] == 2
+    saved = _stored(config_file)["session_environments"]
+    assert saved[key] == malformed
+    assert saved["archived_retention_days"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["sprites_profiles", "boxd_profiles"])
+@pytest.mark.parametrize("malformed", [None, [None], ["not-an-object"], [{}], [{"id": 7}]])
+async def test_whole_patch_refuses_malformed_preserved_provider_rows(config_file, key, malformed):
+    section = _provider_section()
+    section[key] = malformed
+    config_file.write_text(json.dumps({**_BASE_CONFIG, "session_environments": section}))
+    before = config_file.read_bytes()
+    async with TestClient(TestServer(_app())) as client:
+        response = await _patch(
+            client,
+            "session_environments",
+            {"coder_url": section["coder_url"], "profiles": section["profiles"]},
+        )
+        assert response.status == 400, await response.text()
+        assert (await response.json())["code"] == "config_write_refused"
+    assert config_file.read_bytes() == before

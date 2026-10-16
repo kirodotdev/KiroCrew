@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Cloud, Laptop, Loader2 } from 'lucide-react'
-import { CoderIcon } from './BrandIcon'
+import { BoxdIcon, CoderIcon, FlyIcon } from './BrandIcon'
 import { api, type SlotEnvironment } from '../api/client'
 import { ApiError, apiErrorCode } from '../api/apiError'
 import ErrorNotice from './ErrorNotice'
@@ -42,10 +42,14 @@ interface Props {
  * next to it). An unknown or missing provider, as from an older gateway, keeps
  * the generic cloud. */
 function ProviderGlyph({ provider, size }: { provider?: string; size: number }) {
-  if (provider !== 'coder') return <Cloud size={size} className="shrink-0 opacity-80" aria-hidden />
+  const mark = provider === 'coder' ? <CoderIcon size={Math.round(size * 0.8)} />
+    : provider === 'sprites' ? <FlyIcon size={size} />
+      : provider === 'boxd' ? <BoxdIcon size={size} />
+        : null
+  if (!mark) return <Cloud size={size} className="shrink-0 opacity-80" aria-hidden />
   return (
     <span data-testid={`provider-mark-${provider}`} className="inline-flex shrink-0 items-center" aria-hidden="true">
-      <CoderIcon size={Math.round(size * 0.8)} />
+      {mark}
     </span>
   )
 }

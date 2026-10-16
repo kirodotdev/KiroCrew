@@ -3361,6 +3361,14 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "type": "normalized",
         "normalize": _session_environments.validate_profiles,
     },
+    "session_environments.sprites_profiles": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_sprites_profiles,
+    },
+    "session_environments.boxd_profiles": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_boxd_profiles,
+    },
     "session_environments.default_profile": {
         "type": "normalized",
         "normalize": _session_environments.validate_default_profile,
@@ -3856,9 +3864,20 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 for optional in _session_environments.SECTION_OPTIONAL_KEYS:
                     if optional not in merged and optional in current:
                         merged[optional] = current[optional]
+                # A preserved provider list is checked against the lists this save
+                # sent: one profile id may not name two providers' profiles.
+                try:
+                    _session_environments.validate_session_environments(merged)
+                except _session_environments.SessionEnvironmentsError as exc:
+                    raise ConfigWriteRefused(str(exc)) from exc
                 section[parts[-1]] = merged
             else:
                 section[parts[-1]] = value
+            if parts[0] == "session_environments":
+                try:
+                    _session_environments.validate_profile_ids(data["session_environments"])
+                except _session_environments.SessionEnvironmentsError as exc:
+                    raise ConfigWriteRefused(str(exc)) from exc
             # Saving the old default of an auto-adopting superseded-default row
             # (a 7200 turn limit) is an explicit choice. Ack it here, under the
             # config lock and before the write, so the reload this write triggers

@@ -3383,6 +3383,12 @@ nothing else:
     "profiles": [
       {"id": "dev", "name": "Dev box", "template": "python-dev", "workdir": "/workspace/repo"}
     ],
+    "sprites_profiles": [
+      {"id": "fly", "name": "Fly box", "token_secret": "SPRITES_TOKEN", "workdir": "/workspace"}
+    ],
+    "boxd_profiles": [
+      {"id": "box", "name": "boxd box", "snapshot": "", "vcpu": 2, "workdir": "/workspace"}
+    ],
     "archived_retention_days": 7,
     "default_profile": "",
     "stop_on_shutdown": true
@@ -3412,14 +3418,30 @@ same value with a 400, writing nothing. An absent or non-object section loads as
 unmodelled key inside the section is preserved by `save()` like any other section
 key and omitted from the GET.
 
-`default_profile` is a saved profile id or `""` (this machine), and a
-whole-section save refuses a default the same save drops. `stop_on_shutdown` is
+`sprites_profiles` (Fly.io Sprites) holds at most 20 records, each exactly
+`{id, name, token_secret, workdir}`, and `boxd_profiles` at most 20, each exactly
+`{id, name, snapshot, vcpu, workdir}`. `id`, `name` and `workdir` follow the Coder
+profile rules. `token_secret` names the Settings > Secrets entry that holds the
+Sprites API token (a secret name: a letter or `_`, then letters, digits or `_`); the
+token itself is never stored here. `snapshot` is `""` or a boxd snapshot name or id,
+`vcpu` is one of 0 (the org default), 1, 2, 4 or 8, and a snapshot keeps its own
+size, so a profile naming both is refused. A session's choice is resolved by its
+profile id, so one id may not name profiles of two providers. Both leaf and
+whole-section saves check the final merged section under the config write lock,
+including lists the writer preserves. A load keeps cross-provider collisions
+visible: the picker omits those ids and launch refuses them as ambiguous rather
+than choosing one provider by list order. Each malformed entry of a hand-edited
+list is dropped individually at load.
+
+`default_profile` is a saved profile id of any provider or `""` (this machine), and
+a whole-section save refuses a default the same save drops. `stop_on_shutdown` is
 a boolean, default `true`. Unknown keys, including credentials, are refused.
 
-`PATCH /api/config/kirocrew` accepts six paths, all through the handler's
+`PATCH /api/config/kirocrew` accepts eight paths, all through the handler's
 `"normalized"` spec type (a shared normalizer that raises `ValueError` and returns the
 value to store): `session_environments` (the whole record),
 `session_environments.coder_url`, `session_environments.profiles`,
+`session_environments.sprites_profiles`, `session_environments.boxd_profiles`,
 `session_environments.default_profile`, `session_environments.stop_on_shutdown`, and
 `session_environments.archived_retention_days` (an int 0-7, default 7: days an
 archived session's stopped workspace is kept before it is deleted, see

@@ -1481,6 +1481,13 @@
       "description": "New chats you start in the dashboard run here unless you pick another environment in the composer before the first message. Existing chats, scheduled jobs and channel conversations keep running where they do now."
     },
     {
+      "id": "session-environments.machine-size",
+      "label": "Machine size",
+      "tab": "session-environments",
+      "route": "/settings/session-environments?highlight=session-environments.machine-size",
+      "description": "A snapshot keeps the size it was saved with, so this applies only to profiles without one."
+    },
+    {
       "id": "session-environments.start-new-chats-in-a-session-environment",
       "label": "Start new chats in a session environment",
       "tab": "session-environments",

@@ -98,7 +98,7 @@ _RESUME_TRANSIENT_LOCK_MARKERS: tuple[str, ...] = (
 
 
 async def _session_environments_configured() -> bool:
-    """Whether Session Environments has a Coder URL or a saved profile.
+    """Whether Session Environments has a Coder URL or any saved provider profile.
 
     Without either no session can be bound remotely, so its starts never read
     the session choices (a damaged file cannot refuse them).
@@ -111,7 +111,12 @@ async def _session_environments_configured() -> bool:
 
         config = await asyncio.to_thread(KiroCrewConfig.load)
     section = config.session_environments
-    return bool(section.coder_url or section.profiles)
+    return bool(
+        section.coder_url
+        or section.profiles
+        or getattr(section, "sprites_profiles", None)
+        or getattr(section, "boxd_profiles", None)
+    )
 
 
 def _unlink_dead_session_lock(session_id: str) -> bool:

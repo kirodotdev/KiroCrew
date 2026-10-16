@@ -2,8 +2,8 @@
 
 A remote session's files live in its guest workspace, so the dashboard's file,
 git and terminal views cannot use the gateway's disk or shell. These ask the
-guest instead, through the gateway's ``coder ssh`` (never autostarting a stopped
-workspace):
+guest instead: through the gateway's ``coder ssh`` (never autostarting a stopped
+workspace), ``boxd machine exec``, or the Sprites exec API:
 
 * :func:`browse_session` runs ``workspace_tools.py --browse``: ``list``, ``read``
   and read-only git views, with the agent tools' root confinement and caps. It
@@ -54,7 +54,8 @@ class WorkspaceNotRunning(SessionEnvironmentUnavailable):
 
 @dataclass(frozen=True)
 class _Target:
-    shell: CoderShell
+    #: A ``CoderShell``, ``BoxdShell`` or ``SpritesShell``.
+    shell: Any
     workdir: str
     binding_id: str
     home: Any
@@ -81,6 +82,11 @@ async def _resolve(session_key: str) -> _Target:
     if config is None:
         config = await asyncio.to_thread(KiroCrewConfig.load)
     section = config.session_environments
+    from kiro_crew.coder.session_launch import profile_provider
+
+    kind = profile_provider(section, profile_id)
+    if kind != "coder":
+        return await _resolve_persistent(kind, section, home, owner, profile_id)
     provider = CoderSessionEnvironments(section, home)
     profile = provider.profile(profile_id)
     registry = WorkspaceBindingRegistry(home / "coder" / "session-envs.json")
@@ -111,6 +117,36 @@ async def _resolve(session_key: str) -> _Target:
     )
 
 
+async def _resolve_persistent(
+    kind: str, section: Any, home: Any, owner: str, profile_id: str
+) -> _Target:
+    """The session's sprite or boxd machine, identity-checked. Never creates or wakes one."""
+    environments: Any
+    if kind == "sprites":
+        from kiro_crew.sprites_session.launch import SpritesSessionEnvironments
+
+        environments = SpritesSessionEnvironments(section, home)
+    else:
+        from kiro_crew.boxd_session.launch import BoxdSessionEnvironments
+
+        environments = BoxdSessionEnvironments(section, home)
+    found = await environments.existing(owner, profile_id)
+    if found is None:
+        raise WorkspaceNotRunning("this session's workspace has not been created yet")
+    row, record = found
+    if record is None:
+        raise SessionEnvironmentUnavailable(
+            "this session's workspace was deleted outside Kiro Crew"
+        )
+    profile = environments.profile(profile_id)
+    return _Target(
+        await environments.shell(profile, row.name),
+        str(profile.get("workdir") or ""),
+        environments.binding_id(row),
+        home,
+    )
+
+
 async def _ask(target: _Target, mode: str, request: dict[str, Any]) -> dict[str, Any]:
     # The workdir is operator config, quoted; the request travels on stdin.
     command = (
@@ -120,6 +156,9 @@ async def _ask(target: _Target, mode: str, request: dict[str, Any]) -> dict[str,
     payload = json.dumps(request).encode("utf-8")
 
     async def once() -> bytes:
+        if not isinstance(target.shell, (CoderShell, *_command_shell_types())):
+            # A shell with no dial command (a sprite's exec API) runs it itself.
+            return await asyncio.wait_for(target.shell.run(command, payload), _BROWSE_TIMEOUT)
         return await run_collect(
             target.shell.argv(command),
             payload,
@@ -151,6 +190,13 @@ async def _ask(target: _Target, mode: str, request: dict[str, Any]) -> dict[str,
     if not isinstance(result, dict):
         raise SessionEnvironmentUnavailable("the remote workspace sent an invalid reply")
     return result
+
+
+def _command_shell_types() -> tuple[type, ...]:
+    """Shells reached by a local command, besides ``coder ssh``."""
+    from kiro_crew.boxd_session.shell import BoxdShell
+
+    return (BoxdShell,)
 
 
 def _check_path(path: str) -> str:
@@ -237,8 +283,18 @@ async def remote_terminal_argv(session_key: str) -> list[str]:
     """argv for an interactive login shell in the session's remote workspace.
 
     ``coder ssh`` with no command opens a login shell in the agent's directory,
-    which the session template sets to the profile's workdir.
+    which the session template sets to the profile's workdir. Opening a terminal
+    is an explicit request for one, so a sprite or a boxd machine may wake.
     """
     target = await _resolve(session_key)
+    from kiro_crew.sprites_session.shell import SpritesShell
+
+    if isinstance(target.shell, SpritesShell):
+        from kiro_crew import platform_compat
+        from kiro_crew.sprites_session.terminal import bridge_argv
+
+        if not platform_compat.IS_POSIX:
+            raise SessionEnvironmentUnavailable("a Sprites terminal needs a macOS or Linux gateway")
+        return bridge_argv(target.shell.sprite, target.shell.token_secret, target.workdir)
     # Coder never autostarts a stopped workspace here.
     return list(target.shell.interactive_argv())

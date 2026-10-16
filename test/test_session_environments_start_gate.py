@@ -75,7 +75,7 @@ def test_unconfigured_gateway_starts_despite_unreadable_choices(section, backend
     assert _Runtime.made[0].remote is None
 
 
-@pytest.mark.parametrize("field", ["coder_url", "profiles"])
+@pytest.mark.parametrize("field", ["coder_url", "profiles", "sprites_profiles", "boxd_profiles"])
 @BACKENDS
 def test_configured_gateway_still_fails_closed_on_unreadable_choices(section, field, backend):
     setattr(section, field, "https://coder.example" if field == "coder_url" else [object()])

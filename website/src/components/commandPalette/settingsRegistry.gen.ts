@@ -2486,6 +2486,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "session-environments.machine-size",
+    "label": "Machine size",
+    "labelKey": "sessionEnvironments.boxdSize",
+    "description": "A snapshot keeps the size it was saved with, so this applies only to profiles without one.",
+    "tab": "session-environments",
+    "type": "select",
+    "occurrence": 1
+  },
+  {
     "id": "session-environments.start-new-chats-in-a-session-environment",
     "label": "Start new chats in a session environment",
     "labelKey": "sessionEnvironments.defaultEnabled",

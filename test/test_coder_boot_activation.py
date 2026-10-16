@@ -16,8 +16,8 @@ from kiro_crew.config.live import ConfigChange
 from kiro_crew.slack import gateway
 
 
-def config(url=""):
-    return SimpleNamespace(session_environments=SimpleNamespace(coder_url=url))
+def config(url="", **lists):
+    return SimpleNamespace(session_environments=SimpleNamespace(coder_url=url, **lists))
 
 
 @pytest.mark.asyncio
@@ -90,7 +90,11 @@ def test_config_applier_subscribes_the_activation_callback(monkeypatch):
     monkeypatch.setattr(owner, "_on_default_agent_config_change", Mock())
     gateway.GatewayOrchestrator._register_config_appliers(owner)
     assert (
-        ("session_environments.coder_url",),
+        (
+            "session_environments.coder_url",
+            "session_environments.sprites_profiles",
+            "session_environments.boxd_profiles",
+        ),
         owner._on_session_environment_config_change,
     ) in callbacks
 
@@ -116,3 +120,47 @@ def test_test_mode_never_activates_compute(monkeypatch):
         owner, ConfigChange(None, config("https://coder.example.test"), frozenset())
     )
     start.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sprites_profiles_alone_activates_retention(monkeypatch):
+    from kiro_crew.coder import retention
+
+    started = asyncio.Event()
+    parked = asyncio.Event()
+
+    async def sweep():
+        started.set()
+        await parked.wait()
+
+    monkeypatch.setattr(gateway, "_CODER_RETENTION_TASK", None)
+    monkeypatch.setattr(retention, "run_sweeper", sweep)
+    try:
+        gateway._start_coder_retention(config(sprites_profiles=[{"id": "p"}]))
+        await asyncio.wait_for(started.wait(), 30)
+    finally:
+        parked.set()
+        if gateway._CODER_RETENTION_TASK is not None:
+            await asyncio.wait_for(gateway._CODER_RETENTION_TASK, 30)
+
+
+@pytest.mark.asyncio
+async def test_boxd_profiles_alone_activates_retention(monkeypatch):
+    from kiro_crew.coder import retention
+
+    started = asyncio.Event()
+    parked = asyncio.Event()
+
+    async def sweep():
+        started.set()
+        await parked.wait()
+
+    monkeypatch.setattr(gateway, "_CODER_RETENTION_TASK", None)
+    monkeypatch.setattr(retention, "run_sweeper", sweep)
+    try:
+        gateway._start_coder_retention(config(boxd_profiles=[{"id": "p"}]))
+        await asyncio.wait_for(started.wait(), 30)
+    finally:
+        parked.set()
+        if gateway._CODER_RETENTION_TASK is not None:
+            await asyncio.wait_for(gateway._CODER_RETENTION_TASK, 30)

@@ -3298,6 +3298,8 @@
       "defaultValue": {
         "coder_url": "",
         "profiles": [],
+        "sprites_profiles": [],
+        "boxd_profiles": [],
         "archived_retention_days": 7,
         "default_profile": "",
         "stop_on_shutdown": true
@@ -3414,6 +3416,62 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "session_environments.sprites_profiles",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Sprites Profiles",
+      "help": "Named Fly.io Sprites profiles (at most 20), each {id, name, token_secret, workdir}. token_secret names the Settings > Secrets entry that holds the Sprites API token; the token itself is never stored here.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "session_environments.sprites_profiles.*",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "session_environments.boxd_profiles",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "boxd Profiles",
+      "help": "Named boxd machine profiles (at most 20), each {id, name, snapshot, vcpu, workdir}. The gateway machine's own boxd auth login authenticates; no credential is stored.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "session_environments.boxd_profiles.*",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "session_environments.archived_retention_days",

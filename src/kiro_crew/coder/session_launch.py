@@ -103,7 +103,7 @@ class SessionEnvironmentChoices:
         or for a subagent, the parent it inherited the environment from.
         """
         entry = self._read().get(session_key)
-        if not isinstance(entry, dict) or entry.get("provider") != PROVIDER_ID:
+        if not isinstance(entry, dict) or entry.get("provider") not in ("coder", "sprites", "boxd"):
             return None
         profile = entry.get("configuration")
         if not isinstance(profile, str) or not _PROFILE_ID_RE.match(profile):
@@ -135,7 +135,7 @@ class SessionEnvironmentChoices:
                     return None
                 profile, owner = parent
                 sessions[child_key] = {
-                    "provider": PROVIDER_ID,
+                    "provider": _choice_provider(profile),
                     "configuration": profile,
                     "parent": owner,
                 }
@@ -187,7 +187,10 @@ class SessionEnvironmentChoices:
                 if profile_id is None:
                     sessions.pop(session_key, None)
                 else:
-                    sessions[session_key] = {"provider": PROVIDER_ID, "configuration": profile_id}
+                    sessions[session_key] = {
+                        "provider": _choice_provider(profile_id),
+                        "configuration": profile_id,
+                    }
                 self._write(sessions)
 
 
@@ -439,11 +442,58 @@ async def prepare_for_session(
     if config is None:
         config = await asyncio.to_thread(KiroCrewConfig.load)
     section = config.session_environments
-    environments = CoderSessionEnvironments(section, home)
     # An inherited (subagent) session works in its owner's workspace: the
     # registry row is keyed by the owner, so this reuses that workspace and never
     # allocates a second one. Each runtime still gets its own guest worker.
+    # The id names the provider; collisions in a hand-edited config fail closed.
+    provider = profile_provider(section, profile_id)
+    if provider == "sprites":
+        from kiro_crew.sprites_session.launch import SpritesSessionEnvironments
+
+        return await SpritesSessionEnvironments(section, home).prepare(owner_key, profile_id)
+    if provider == "boxd":
+        from kiro_crew.boxd_session.launch import BoxdSessionEnvironments
+
+        return await BoxdSessionEnvironments(section, home).prepare(owner_key, profile_id)
+    environments = CoderSessionEnvironments(section, home)
     return await environments.prepare(owner_key, profile_id)
+
+
+def _dict_profile_ids(section: Any, key: str) -> set[str]:
+    return {
+        str(p.get("id"))
+        for p in (getattr(section, key, None) or [])
+        if isinstance(p, dict) and p.get("id")
+    }
+
+
+def profile_provider(section: Any, profile_id: str) -> str:
+    """Which provider serves ``profile_id``: ``sprites``, ``boxd`` or ``coder``.
+
+    ``coder`` also answers an id no list holds, so the Coder path reports the
+    profile as not configured, as it always has.
+    """
+    matches = []
+    if profile_id in {p.id for p in getattr(section, "profiles", None) or []}:
+        matches.append(PROVIDER_ID)
+    for key, provider in (("sprites_profiles", "sprites"), ("boxd_profiles", "boxd")):
+        if profile_id in _dict_profile_ids(section, key):
+            matches.append(provider)
+    if len(matches) > 1:
+        raise SessionEnvironmentUnavailable(
+            f"session environment profile {profile_id!r} is ambiguous across providers"
+        )
+    return matches[0] if matches else PROVIDER_ID
+
+
+def _choice_provider(profile_id: str) -> str:
+    from kiro_crew.config import live
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    config = live.snapshot()
+    if config is None:
+        config = KiroCrewConfig.load()
+    return profile_provider(config.session_environments, profile_id)
 
 
 async def forget_subagent_environment(child_key: str) -> None:

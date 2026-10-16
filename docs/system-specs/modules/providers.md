@@ -80,8 +80,8 @@ runtime and development tools execute. Its shared helpers live in
 the local-only tool fence and `SessionEnvironmentUnavailable`), separately from
 the LLM provider and harness selector, so execution placement does not add an
 `agent.provider` value or select a model. Gateway hosting, whole-Crew
-deployment, and application deployment are outside this contract. Coder is the
-workspace provider.
+deployment, and application deployment are outside this contract. Coder, Fly.io
+Sprites and boxd are the workspace providers.
 
 Coder configuration lives in Settings > Session Environments, revealed by the
 per-device toggle under Settings > Developer > Feature Previews. The Settings
@@ -331,7 +331,15 @@ boundary. Those
 stdlib-only files cannot import the gateway sandbox. A provider CLI running on
 the gateway does not qualify merely because it reaches a guest. The two `main`
 entries are separately justified as in-process `asyncio.run`, not subprocesses.
-No directory-wide exemption suppresses future spawn sites.
+No directory-wide exemption suppresses future spawn sites. The boxd lifecycle
+CLI is classified separately as a gateway spawn: fixed machine verbs, validated
+gateway-created names, saved snapshot/CPU settings and a validated retention
+duration, with no local shell or agent-selected cwd and stdin closed. Its host
+login is required. The Sprites terminal's `main` is an in-process `asyncio.run`,
+not a child spawn; its bridge argv uses isolated Python with explicit `-P` so
+the terminal working directory cannot shadow the standard library. Terminal
+integration tests await input, resize, output and exit signals through the
+shared lost-run-bound helpers, rather than fixed short timeouts.
 
 Guest file writers share a persistent empty lock sidecar. The Windows branch
 polls the non-blocking byte-range lock until acquired or the bounded ceiling
@@ -454,6 +462,75 @@ it) so it never dials an exited worker; a Coder workspace stops at its deadline,
 which only the gateway extends. Deletion of an archived session's workspace
 after its retention needs the gateway: a stopped Coder workspace keeps billing
 for storage while no gateway runs.
+
+**Sprites and boxd: one persistent VM per session.** Fly.io Sprites profiles
+(`session_environments.sprites_profiles`) and boxd profiles
+(`session_environments.boxd_profiles`) give each session its own VM that keeps
+its disk when idle. A choice row records the resolved provider alongside its
+profile id. Reading still derives the provider from the id through
+`session_launch.profile_provider` for `prepare_for_session`, `session_browse`
+and the dashboard, including legacy rows tagged as Coder. An id in multiple
+provider lists is unavailable at launch and omitted from the picker. Both share `coder/persistent_vm.py`: `SessionResourceRegistry`
+(one file per provider under the data home, read directly with no exists-check,
+fail-closed on a corrupt or unknown-version file, written atomically through a
+unique temp file under a blocking cross-process lock, so every call runs through
+`asyncio.to_thread`) and `PersistentVmEnvironments`, which owns when a VM is
+created, kept or deleted:
+
+- `prepare` bumps the owner's `retention.session_lifecycle` generation and runs
+  under its lock, exactly as the Coder path does, so a reopen supersedes a queued
+  archive and waits for one already running. `check_ready` (a Sprites token in the
+  vault, the boxd CLI installed) runs before anything is reserved.
+- A name is minted (`kirocrew-` or `kc-` plus 16 random hex digits) and its row
+  written BEFORE the create call, so a failed create can be reclaimed immediately
+  or by a later prepare or archive. Cleanup also reads the live VM before acting.
+  The provider id the create returns is recorded; a VM answering under the
+  recorded name with another id is refused, never adopted. A VM deleted outside
+  Kiro Crew is replaced under a new name (`created`, so the session is told its
+  workspace is empty).
+- `retention._archive` archives Sprites and boxd VMs inside the same lifecycle
+  lock and generation check as the Coder workspace: the row is stamped with
+  `archived_retention_days` before any remote call (0 stamps it due now and
+  attempts immediate deletion). boxd arms its own `delete-after` timer, including
+  at zero days, and hibernates the machine. A failed delete leaves the row due
+  for the sweep. A sprite needs nothing because it goes cold once idle. Live
+  identity is checked before arming a timer and again before deletion; a
+  same-name replacement is never touched. A reopen before the deadline clears
+  the stamp (and boxd's timer).
+- `retention.sweep_once` runs `PersistentVmEnvironments.sweep_due` for both
+  providers before the Coder sweep, whether or not a Coder URL is saved. It is
+  registry-only while nothing is due, and re-reads each due row under its
+  session's lifecycle lock before deleting, retaining the lifecycle object for
+  the entire critical section so a concurrent reopen obtains the same lock.
+  A session reopened after the scan keeps its VM. One provider's failure is logged once per distinct message and
+  never stops the other.
+- `stop_for_shutdown` hibernates every boxd machine (rows untouched, so a reopen
+  resumes the same machine); sprites need no call.
+
+Sprites is reached through its API alone (`sprites_session/client.py`): the
+token is read from the vault per call by the profile's `token_secret`, sent only
+as the `Authorization` header, and never framed, logged or passed to the sprite.
+`SpritesShell.run` is one non-TTY exec WebSocket with the worker secret on
+stdin, never in the exec URL, and `SpritesWorkerLaunch.dial` opens the proxy
+WebSocket to the worker's `127.0.0.1` port, so `RemoteWorkerLaunch`, the
+workspace relay and the git proxy run unchanged. A sprite is created with URL
+auth left at `sprite`, never `public`. The dashboard terminal runs
+`sprites_session.terminal` as its PTY child (`bridge_argv` accepts only a minted
+sprite name and a secret name, so no token reaches argv) on a POSIX gateway.
+boxd is reached through the gateway machine's own `boxd auth login`:
+`boxd machine exec <m> -- sh -c <cmd>` streams stdin and stdout and returns the
+remote exit code like `coder ssh`, so `BoxdShell` drops into the unchanged
+launch, and the terminal is `boxd machine connect <m>`. Every machine name is
+validated before any argv is built. The Files, Git and terminal views first look
+the session's VM up (`GET /v1/sprites/{name}`, `boxd machine get`) and never
+create one: a VM deleted outside Kiro Crew is reported, not recreated. The readiness
+check lists one sprite per Sprites profile to prove its token and runs one
+`boxd machine list` for all boxd profiles; neither creates or wakes anything.
+The Settings card stores a Sprites token through a masked field straight into
+the vault (`POST /api/secrets`), but never deletes vault entries. Changing or
+removing a profile keeps its token; unused secrets are removed manually in
+Settings → Secrets. A failed vault listing renders `ErrorNotice` with a local
+Retry that preserves drafts, never an empty-vault or stale-success claim.
 
 Dashboard views that read the gateway's project describe the wrong machine for a
 remote session, so they switch on `useSlotRemoteEnvironment`: the composer drops

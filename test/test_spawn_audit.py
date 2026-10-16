@@ -257,6 +257,13 @@ PREEXEC_EXEMPT: frozenset[str] = frozenset(
 # category breakdown and follow-up hardening candidates.
 BENIGN_SPAWNS: frozenset[str] = frozenset(
     {
+        # Gateway boxd lifecycle: resolved operator CLI, fixed machine verbs,
+        # gateway-minted validated names, saved snapshot / numeric CPU setting
+        # and validated retention duration. No local shell or agent-selected
+        # cwd; stdin is DEVNULL. The CLI requires its gateway-side login.
+        "boxd_session/cli.py::_run",
+        # asyncio.run drives the terminal bridge in-process, not a child spawn.
+        "sprites_session/terminal.py::main",
         # Coder lifecycle: resolved operator CLI, fixed verbs, saved template /
         # preset and gateway-generated validated workspace names; cwd is the
         # gateway data home, stdin DEVNULL, no shell. The CLI needs its host login.

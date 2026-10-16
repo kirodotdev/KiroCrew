@@ -954,11 +954,17 @@ export type GitLoginStatus = 'signed_in' | 'not_signed_in' | 'unchecked'
 export interface SessionEnvironmentsCheck {
   coder: { ok: boolean; owner?: string; error?: string }
   profiles: { id: string; ok: boolean; error?: string }[]
+  /** Per saved Sprites profile: API token saved and accepted. Older gateways omit it. */
+  sprites?: { id: string; ok: boolean; error?: string }[]
+  /** Per saved boxd profile: CLI installed and signed in. Older gateways omit it. */
+  boxd?: { id: string; ok: boolean; error?: string }[]
   git: Record<string, GitLoginStatus>
 }
 
 export interface SessionEnvironmentWorkspace {
   workspace: string
+  /** Older gateways omit it; those rows are Coder workspaces. */
+  provider?: 'coder' | 'sprites' | 'boxd'
   slot: string
   state: string
   template: string

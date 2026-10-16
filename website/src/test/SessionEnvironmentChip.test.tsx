@@ -83,7 +83,9 @@ describe('SessionEnvironmentChip', () => {
 
   it("shows each profile's provider mark, and the chosen one on the chip", async () => {
     const old = { id: 'old', name: 'Older gateway', provider: '', workdir: '/w' }
-    vi.spyOn(api, 'chatSlotEnvironment').mockResolvedValue(envResponse('dev', [DEV, old]))
+    const fly = { id: 'fly', name: 'Fly box', provider: 'sprites', workdir: '/w' }
+    const box = { id: 'bx', name: 'Boxd box', provider: 'boxd', workdir: '/w' }
+    vi.spyOn(api, 'chatSlotEnvironment').mockResolvedValue(envResponse('dev', [DEV, old, fly, box]))
     const u = userEvent.setup()
     wrap(<SessionEnvironmentChip slot="chat-1" />)
     const chip = await screen.findByRole('button', { name: 'Runs on Coder MicroVM' })
@@ -92,6 +94,8 @@ describe('SessionEnvironmentChip', () => {
     const item = (name: RegExp) => screen.getByRole('menuitemradio', { name })
     await screen.findByRole('menuitemradio', { name: /Older gateway/ })
     expect(item(/Coder MicroVM/).querySelector('[data-testid="provider-mark-coder"]')).not.toBeNull()
+    expect(item(/Fly box/).querySelector('[data-testid="provider-mark-sprites"]')).not.toBeNull()
+    expect(item(/Boxd box/).querySelector('[data-testid="provider-mark-boxd"]')).not.toBeNull()
     // An unknown provider keeps the generic cloud rather than guessing a brand.
     expect(item(/Older gateway/).querySelector('[data-testid^="provider-mark-"]')).toBeNull()
   })

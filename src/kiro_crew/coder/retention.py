@@ -1,4 +1,4 @@
-"""What happens to a session's Coder workspace when the session is archived.
+"""What happens to a session's remote workspace when the session is archived.
 
 Archiving stops the workspace and stamps its registry row with
 ``deletion_due_at`` = now + ``session_environments.archived_retention_days``
@@ -19,6 +19,10 @@ Safety properties:
 * A profile with ``compute_survives_stop: false`` names a template whose stop
   destroys the compute and its files. Neither archive nor shutdown stops such a
   workspace (:func:`compute_survives_stop`); its deletion stamp still ages.
+
+Sprites and boxd sessions keep one VM each (``coder/persistent_vm.py``); their
+archive, sweep and shutdown run here too, under the same per-session lifecycle
+lock and generation, with the same retention setting.
 """
 
 from __future__ import annotations
@@ -77,6 +81,49 @@ def _now() -> datetime:
 
 def _stamp(moment: datetime) -> str:
     return moment.isoformat().replace("+00:00", "Z")
+
+
+async def _section() -> Any:
+    from kiro_crew.config import live
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    config = live.snapshot()
+    if config is None:
+        config = await asyncio.to_thread(KiroCrewConfig.load)
+    return config.session_environments
+
+
+async def _persistent_environments() -> list[Any]:
+    """The Sprites and boxd environments: always, so their saved rows are swept
+    even after every profile of that provider is removed."""
+    from kiro_crew.boxd_session.launch import BoxdSessionEnvironments
+    from kiro_crew.config.paths import data_home
+    from kiro_crew.sprites_session.launch import SpritesSessionEnvironments
+
+    section = await _section()
+    home = await asyncio.to_thread(data_home)
+    return [SpritesSessionEnvironments(section, home), BoxdSessionEnvironments(section, home)]
+
+
+def retention_days(config: Any) -> int:
+    """``archived_retention_days``, or the default for a missing or invalid value.
+
+    A config object without the field (an older shape) keeps the default, never
+    0: a missing setting must not mean "delete immediately".
+    """
+    from kiro_crew.config.session_environments import (
+        ARCHIVED_RETENTION_DAYS_DEFAULT,
+        ARCHIVED_RETENTION_DAYS_MAX,
+    )
+
+    days = getattr(config, "archived_retention_days", ARCHIVED_RETENTION_DAYS_DEFAULT)
+    if (
+        isinstance(days, bool)
+        or not isinstance(days, int)
+        or not 0 <= days <= ARCHIVED_RETENTION_DAYS_MAX
+    ):
+        return ARCHIVED_RETENTION_DAYS_DEFAULT
+    return days
 
 
 async def _environments() -> Optional[Any]:
@@ -220,24 +267,45 @@ async def _archive(
 ) -> None:
     try:
         environments = await _environments()
-        if environments is None:
-            return
+        persistent = await _persistent_environments()
         for key, lifecycle, generation in requests:
             async with lifecycle.lock:
                 if generation != lifecycle.generation:
                     continue
-                survives = await _binding_survives_stop(environments, key)
+                survives = (
+                    True
+                    if environments is None
+                    else await _binding_survives_stop(environments, key)
+                )
                 await warn_unsaved_work((key,), notify, survives_stop=survives)
                 # A resume requested during the remote probe supersedes this close.
-                if generation == lifecycle.generation:
-                    await _archive_session(environments, key)
+                if generation != lifecycle.generation:
+                    continue
+                if environments is not None:
+                    try:
+                        await _archive_session(environments, key)
+                    except Exception:  # noqa: BLE001 -- the other providers still run
+                        logger.warning(
+                            "Archived session workspace: could not schedule its release",
+                            exc_info=True,
+                        )
+                for provider in persistent:
+                    try:
+                        await provider.archive_session(key)
+                    except Exception:  # noqa: BLE001 -- never surfaces into the close
+                        logger.warning(
+                            "Archived session %s machine: could not schedule its deletion",
+                            provider.label,
+                            exc_info=True,
+                        )
     except Exception:  # noqa: BLE001 -- never surfaces into a close that already succeeded
         logger.warning("Archived session workspace: could not schedule its release", exc_info=True)
 
 
 #: Ceiling on the whole shutdown stop: it runs beside the gateway's own graceful
 #: shutdown and must never hold the exit. Whatever it does not reach in time is
-#: stopped by the guest itself (the worker's orphan timeout, Coder's deadline).
+#: stopped by the guest itself (the worker's orphan timeout, Coder's deadline, a
+#: sprite going cold or a boxd machine hibernating once idle).
 SHUTDOWN_STOP_SECS = 20.0
 
 
@@ -259,12 +327,13 @@ async def stop_for_shutdown() -> dict[str, int]:
     """Stop every remote environment this gateway owns, because it is going away.
 
     Nothing is scheduled for deletion and no registry row is dropped, so a
-    session reopened after the next start resumes the same Coder workspace.
-    A workspace whose stop would destroy its files (:func:`compute_survives_stop`)
-    is left running and counted under ``skipped``. Best effort per workspace,
-    and never raises.
+    session reopened after the next start resumes the same Coder workspace or
+    boxd machine. Sprites need nothing: one goes cold by itself once its
+    connections close. A Coder workspace whose stop would destroy its files
+    (:func:`compute_survives_stop`) is left running and counted under
+    ``skipped``. Best effort per workspace, and never raises.
     """
-    counts = {"coder": 0, "skipped": 0}
+    counts = {"coder": 0, "boxd": 0, "skipped": 0}
 
     async def coder() -> None:
         environments = await _environments()
@@ -292,17 +361,40 @@ async def stop_for_shutdown() -> dict[str, int]:
             except CoderClientError as exc:
                 logger.info("Shutdown: Coder workspace stop failed (%s); auto-stop applies", exc)
 
-    try:
-        await coder()
-    except Exception:  # noqa: BLE001 -- shutdown must not fail on one provider
-        logger.warning("Shutdown: could not stop Coder session environments", exc_info=True)
+    async def boxd() -> None:
+        from kiro_crew.boxd_session.launch import BoxdSessionEnvironments
+        from kiro_crew.config.paths import data_home
+
+        environments = BoxdSessionEnvironments(await _section(), await asyncio.to_thread(data_home))
+        rows = await asyncio.to_thread(environments.registry.all)
+        if not rows:
+            return  # no CLI call, so a gateway without boxd pays nothing
+        cli = await environments.cli()
+        for row in rows:
+            try:
+                record = await cli.get(row.name)
+                if record is None:
+                    continue
+                environments.check_identity(row, record)
+                await cli.hibernate(row.name)
+                counts["boxd"] += 1
+            except Exception as exc:  # noqa: BLE001 -- boxd idles it on its own
+                logger.info("Shutdown: boxd hibernate failed (%s); boxd idles it", exc)
+
+    async def guarded(name: str, step: Callable[[], Any]) -> None:
+        try:
+            await step()
+        except Exception:  # noqa: BLE001 -- shutdown must not fail on one provider
+            logger.warning("Shutdown: could not stop %s session environments", name, exc_info=True)
+
+    await asyncio.gather(guarded("Coder", coder), guarded("boxd", boxd))
     if counts["skipped"]:
         logger.info(
             "Shutdown: left %d session environment(s) running: stopping their compute "
             "would destroy their files",
             counts["skipped"],
         )
-    if counts["coder"]:
+    if counts["coder"] or counts["boxd"]:
         logger.info("Shutdown: stopped session environments %s", counts)
     return counts
 
@@ -315,24 +407,11 @@ async def archive_session(environments: Any, session_key: str) -> Optional[Works
 
 
 async def _archive_session(environments: Any, session_key: str) -> Optional[WorkspaceBinding]:
-    from kiro_crew.config.session_environments import (
-        ARCHIVED_RETENTION_DAYS_DEFAULT,
-        ARCHIVED_RETENTION_DAYS_MAX,
-    )
-
     existing = await asyncio.to_thread(environments.registry.get_by_session, session_key)
     if existing is None or existing.deployment_id != environments.url:
         return None
 
-    # A config object without the field (an older shape) keeps the default,
-    # never 0: a missing setting must not mean "delete immediately".
-    days = getattr(environments._config, "archived_retention_days", ARCHIVED_RETENTION_DAYS_DEFAULT)
-    if (
-        isinstance(days, bool)
-        or not isinstance(days, int)
-        or not 0 <= days <= ARCHIVED_RETENTION_DAYS_MAX
-    ):
-        days = ARCHIVED_RETENTION_DAYS_DEFAULT
+    days = retention_days(environments._config)
     due = _now() + timedelta(days=days)
     binding = await asyncio.to_thread(
         environments.registry.schedule_deletion, session_key, _stamp(due)
@@ -411,15 +490,37 @@ def request_sweep() -> None:
         _wake.set()
 
 
-async def sweep_once() -> int:
-    """One sweep against the live config; 0 when Coder is not configured.
+#: provider label -> the last sweep failure logged for it, so the same failure
+#: every minute is one warning, not sixty.
+_last_vm_sweep_error: dict[str, str] = {}
 
-    Registry-only unless a row is due, so an idle gateway issues no Coder command.
+
+async def _sweep_persistent() -> int:
+    deleted = 0
+    for provider in await _persistent_environments():
+        try:
+            deleted += await provider.sweep_due()
+            _last_vm_sweep_error.pop(provider.label, None)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- one provider never stops the others
+            message = str(exc)
+            if _last_vm_sweep_error.get(provider.label) != message:
+                logger.warning("Archived session %s sweep failed: %s", provider.label, message)
+            _last_vm_sweep_error[provider.label] = message
+    return deleted
+
+
+async def sweep_once() -> int:
+    """One sweep against the live config: Sprites and boxd VMs, then Coder.
+
+    Registry-only unless a row is due, so an idle gateway issues no remote call.
     """
+    deleted = await _sweep_persistent()
     environments = await _environments()
     if environments is None:
-        return 0
-    return await sweep_due(environments)
+        return deleted
+    return deleted + await sweep_due(environments)
 
 
 async def run_sweeper(
