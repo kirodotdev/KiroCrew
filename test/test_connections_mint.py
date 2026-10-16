@@ -1370,7 +1370,7 @@ async def test_the_mint_pid_is_protected_while_readiness_is_still_stalled(monkey
         # claim above took on the process-global ``RUNTIME_TENANCY`` table, and
         # ``_SlowReady`` answers neither ``is_alive`` nor ``is_process_alive``, so
         # the table would hold pid 4242 "alive" for the rest of the worker: every
-        # later test on it that asks the kill gate about 4242 (``test_cron_reaper``
+        # later test on it that asks the kill gate about 4242 (``test_cron_reaper_failed_kill``
         # fabricates that pid) is then refused with "runtime still leased by
         # another tenant". Stubbing the releaser means owing the release.
         release_runtime_tenancy(holdings.pop("tenancy", "") or None)

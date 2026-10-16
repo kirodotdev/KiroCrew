@@ -401,6 +401,10 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
     assert _ignore_names() == {
         "test_macos_pool_ceiling_posix.py",
         "test_sandbox_argv.py",
+        "test_sandbox_argv_launcher_plan.py",
+        "test_sandbox_argv_profile.py",
+        "test_sandbox_argv_resource_ceilings.py",
+        "test_sandbox_argv_spawn.py",
         "test_sandbox_cc_mode.py",
         "test_sandbox_hardlink_scan.py",
         "test_sandbox_md_notebook_carveout.py",

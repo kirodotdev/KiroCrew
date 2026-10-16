@@ -22,6 +22,10 @@
 # Windows; residual per-test gaps belong in windows-expected-failures.txt.
 
 test_sandbox_argv.py               # OS sandbox is POSIX-only
+test_sandbox_argv_launcher_plan.py  # a test_sandbox_argv.py topic part; same suite
+test_sandbox_argv_profile.py       # a test_sandbox_argv.py topic part; same suite
+test_sandbox_argv_resource_ceilings.py  # a test_sandbox_argv.py topic part; same suite
+test_sandbox_argv_spawn.py         # a test_sandbox_argv.py topic part; same suite
 test_sandbox_cc_mode.py            # OS sandbox is POSIX-only
 test_sandbox_hardlink_scan.py      # OS sandbox is POSIX-only (launcher uses getuid)
 test_sandbox_md_notebook_carveout.py  # OS sandbox is POSIX-only (launcher uses getuid)

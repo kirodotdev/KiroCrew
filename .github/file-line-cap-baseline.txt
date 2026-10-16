@@ -235,7 +235,6 @@
 3011 test/test_crew_log_projection.py
 4247 test/test_crew_log_routes.py
 2195 test/test_crew_turn_proxy.py
-5105 test/test_cron_reaper.py
 3125 test/test_cron_script.py
 2247 test/test_cron_secret_env.py
 3175 test/test_dashboard_approval.py
@@ -335,7 +334,6 @@
 2147 test/test_recovery_l1_chat_runner.py
 5775 test/test_remote_crew_chaining.py
 3193 test/test_sandbox_absent_ceiling_seal.py
-4933 test/test_sandbox_argv.py
 2356 test/test_sandbox_governance_mask.py
 12647 test/test_security.py
 3048 test/test_security_conductor_ledger.py

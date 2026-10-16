@@ -1185,7 +1185,7 @@ class TestConcurrentStopsCoalesceIntoOneReap:
 class TestTheReapFencesTheKey:
     """The reap holds the key's ending fence from before its first read through the record and the audit.
 
-    Twin of the cron reaper's fence (``test_cron_reaper.py``): a claim or a cold
+    Twin of the cron reaper's fence (``test_cron_reaper_ending_fence.py``): a claim or a cold
     start under the key while the reap runs is HELD at the door of
     ``get_or_create`` and lands only once the run is recorded; a start already
     inside ``provider.start()`` when the fence went up -- nothing published for

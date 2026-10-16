@@ -1,6 +1,6 @@
 """The subagent force-stop path records what actually happened to the process.
 
-Twin of the cron reaper's contract (``test_cron_reaper.py``): ``_sigkill_session``
+Twin of the cron reaper's contract (``test_cron_reaper_failed_kill.py``): ``_sigkill_session``
 REPORTS a refused or failed signal instead of swallowing it, its callers audit
 that as ``failed`` rather than ``reaped`` / ``sigkill`` and name it in the run's
 error text, and both callers act on a process handle taken BEFORE the reset --
@@ -18,7 +18,8 @@ two probes -- the POSIX process-group probe and the Windows exact-tree cleanup
 pin -- are pinned "gone" for this whole module (:func:`_no_tree_behind_the_leader`):
 no test here builds a tree, and an unpinned ``os.killpg(number, 0)`` on a
 made-up pid answers whatever the host running the suite happens to run. The
-tree cases themselves are the shared module's, proven in ``test_cron_reaper.py``.
+tree cases themselves are the shared module's, proven in ``test_cron_reaper_kill_set.py``
+(the process group) and ``test_cron_reaper_process_identity.py`` (the Windows tree pin).
 
 The suite is split by behaviour. This file keeps the process handles the kill acts on: a
 handle taken before a reset that pops the session and hangs, a completed reset that is not

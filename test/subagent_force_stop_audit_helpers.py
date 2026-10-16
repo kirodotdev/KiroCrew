@@ -30,7 +30,7 @@ _REFUSAL = ValueError("kill_process_group: refusing broadcast/self process group
 def _kill_seam(monkeypatch: pytest.MonkeyPatch) -> None:
     """The kill path is POSIX-shaped here unless a test pins ``IS_WINDOWS`` itself.
 
-    The cron reaper's tests hold the same pin (``test_cron_reaper.py::_kill_seam``):
+    The cron reaper's tests hold the same pin (``cron_reaper_helpers.py::_kill_seam``):
     ``kill_verified_process`` reads ``platform_compat.IS_WINDOWS`` at call time --
     on POSIX the live root's captured group is signalled through
     ``kill_process_group``, which the POSIX-shaped tests here patch to land or

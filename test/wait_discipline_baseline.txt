@@ -7,6 +7,7 @@
 # its real count and drops files that are gone; it never raises or adds an entry.
 # `... --move OLD NEW` carries a line to a renamed file's path.
  2 chat_test_helpers.py
+ 2 cron_reaper_helpers.py
  1 e2e/scenarios/conftest.py
  4 e2e/test_gateway_boot_matrix.py
  2 e2e/test_memory_ui_evidence.py
@@ -130,7 +131,8 @@
  1 test_cron_loop_stall_breaker.py
  1 test_cron_merge_result_busy_store.py
  7 test_cron_merge_result_reload.py
- 6 test_cron_reaper.py
+ 2 test_cron_reaper_ending_fence.py
+ 2 test_cron_reaper_failed_kill.py
  2 test_cron_refused_one_shot_retry_floor.py
  5 test_cron_run_claim.py
  1 test_cron_thread_routing.py

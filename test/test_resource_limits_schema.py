@@ -332,7 +332,7 @@ class TestCgroupConsumerUnchanged:
         finally:
             # The degraded path arms the once-per-process warning latch; leaving
             # it set would silence the SECURITY warning for later tests on this
-            # worker (same reset as test_sandbox_argv.py's _reset_probe).
+            # worker (same reset as test_sandbox_argv_resource_ceilings.py's _reset_probe).
             sb._CGROUP_WARNED = False
         assert argv == ["/bin/true"]
         # Drift guard for the name's claim: degradation means NO properties,

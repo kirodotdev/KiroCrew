@@ -3224,7 +3224,7 @@ went red, or the fix lands in the wrong file and the leak stays.
   DROPPED the sibling `_gh_prefers_ssh` pin (so `gh config get` ran for real); a
   `functools.lru_cache`d `ssh -V` probe behind `_build_launcher_script` that whichever
   launcher-building test ran first paid (six sandbox files, one autouse pin each, the
-  house pattern from `test_sandbox_argv.py`); the doctor pinning only `shutil.which` while
+  house pattern from `sandbox_argv_helpers.py`); the doctor pinning only `shutil.which` while
   its sections resolved through `platform_compat.trusted_aws_bin` / `trusted_system_bin` /
   `trusted_git_bin`; and `code_fingerprint()`'s lru_cache deciding WHICH test pays a real
   `git` on the developer's checkout, so fixing the flagged tests only moved the spawn to
@@ -3843,7 +3843,7 @@ review finding; the version below is what the lane accepted.
   `event_type_not_owned` (a crew type in a session log); the helper compares now, and the
   site says what it means.
 - **A stubbed releaser leaves a process-global tenancy alive for the worker.**
-  `test_cron_reaper.py::test_a_refused_pid_is_audited_as_a_failed_kill_not_reaped` read
+  `test_cron_reaper_failed_kill.py::test_a_refused_pid_is_audited_as_a_failed_kill_not_reaped` read
   `kill failed: runtime still leased by another tenant` for its fabricated pid 4242 in one
   round of three -- the round xdist placed it after
   `test_connections_mint.py::test_the_mint_pid_is_protected_while_readiness_is_still_stalled`

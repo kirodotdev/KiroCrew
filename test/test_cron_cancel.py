@@ -45,7 +45,7 @@ from kiro_crew.dashboard.handlers.cron import api_cron_cancel
 
 @pytest.fixture(autouse=True)
 def _kill_seam(monkeypatch: pytest.MonkeyPatch) -> None:
-    """POSIX-shaped kill path unless a test pins ``IS_WINDOWS``; every kill primitive refuses unless the test pins it (see test_cron_reaper.py)."""
+    """POSIX-shaped kill path unless a test pins ``IS_WINDOWS``; every kill primitive refuses unless the test pins it (see cron_reaper_helpers.py)."""
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
     for name in _KILL_PRIMITIVES:
         guard = _refuse_unpinned_signal_async if name.endswith("_async") else _refuse_unpinned_signal
