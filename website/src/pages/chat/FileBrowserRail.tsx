@@ -458,12 +458,16 @@ function NameSearchResults({ query, projectRoot, treeRows, onOpenFile, onRevealF
  * Both tree modes render the SAME Pierre tree; Changed feeds it the git-status
  * path set and its opens land in diff mode (`onFileOpen`'s second argument).
  */
-export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext, selectedPath, active = true, fill = false, onOpenFolder }: {
+export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext, selectedPath, active = true, fill = false, rememberScroll = false, onOpenFolder }: {
   projectDir: string
   /** Take the host's full width instead of a resizable side column. The
    *  pinned Files tab has no preview pane beside the tree, so a fixed-width
    *  rail there left an empty pane holding only a hint. */
   fill?: boolean
+  /** Scroll the tree back to where the user left it when the rail remounts.
+   *  For a host with no `selectedPath` to keep in view: the pinned Files tab,
+   *  which unmounts whenever another panel tab is active. */
+  rememberScroll?: boolean
   /** `opts.line` opens the file scrolled to that line — a content-search hit. */
   onFileOpen: (absPath: string, diff: boolean, opts?: { line?: number }) => void
   /** Right-click "Add to context" on a tree row: forwards the ABSOLUTE path
@@ -839,6 +843,8 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
                   mode={changedMode ? 'changed' : 'all'}
                   projectDir={projectDir}
                   persistExpansion
+                  rememberScroll={rememberScroll}
+                  scrollRestorePaused={nameSearch}
                   onFileOpen={(abs) => onFileOpen(abs, changedMode)}
                   onAddToContext={onAddToContext}
                   searchQuery={nameSearch ? null : query || null}

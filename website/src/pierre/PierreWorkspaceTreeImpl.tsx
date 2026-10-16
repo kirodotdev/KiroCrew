@@ -42,6 +42,7 @@ import { isUntokenizableDirPath } from '../utils/dropClassify'
 import { errMessage } from '../utils/thunkError'
 import { PIERRE_TREE_STATE_ROW_CSS } from './config'
 import { recallExpandedPaths, rememberExpandedPaths } from './treeExpansionMemory'
+import { useTreeScrollAnchor } from './treeScrollAnchor'
 import { planTreeStateRows, stateRowsMatchingFilter, STATE_ROW_ACTION_DECORATION, STATE_ROW_DECORATION, type TreeStateRowLabels } from './treeStateRows'
 import { recallDismissedUnreadable, rememberDismissedUnreadable } from './treeUnreadableDismissals'
 import { TreeSkeleton, type TreeReveal } from './tree'
@@ -423,7 +424,7 @@ function dedupeTreePaths(paths: string[]): string[] {
 /** Open loaded folders one whole-tree poll re-reads, at most. */
 const FOLDER_REREADS_PER_POLL = 3
 
-export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext, searchQuery, mode = 'all', selectedPath, persistExpansion = false, onOpenFolder, reveal, onRevealed }: {
+export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext, searchQuery, mode = 'all', selectedPath, persistExpansion = false, rememberScroll = false, scrollRestorePaused = false, onOpenFolder, reveal, onRevealed }: {
   projectDir: string
   onFileOpen?: (absPath: string) => void
   /** Right-click "Add to context" on a row: hands the host the ABSOLUTE path
@@ -447,6 +448,14 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
    *  hosts of this shared tree keep their collapsed-by-default behavior.
    *  Applies to `all` mode only: `changed` mode starts fully open by design. */
   persistExpansion?: boolean
+  /** Remember the top visible row across remounts and scroll back to it
+   *  (keyed by `projectDir`, see `./treeScrollAnchor`). Opt-in per host, `all`
+   *  mode only: a host that echoes `selectedPath` keeps the tree on that file
+   *  instead. */
+  rememberScroll?: boolean
+  /** The host is covering the tree for now: hold the `rememberScroll`
+   *  restore until it is shown again. */
+  scrollRestorePaused?: boolean
   /** Activating the "not shown: limit reached" row under a folder hands that
    *  project-relative folder to the host, which opens it in a folder tab. */
   onOpenFolder?: (folder: string) => void
@@ -1149,6 +1158,20 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
     }
     model.getItem(rel)?.select()
   }, [ready, selectedPath, root, model])
+
+  // Scroll back to where the user left the tree. Declared after the reset,
+  // search and selection layout effects above, so its restore sees the
+  // projection they produce (see `./treeScrollAnchor`).
+  useTreeScrollAnchor({
+    model,
+    enabled: rememberScroll && mode === 'all',
+    paused: scrollRestorePaused,
+    ready,
+    projectDir,
+    mode,
+    pathsKey,
+    searchQuery,
+  })
 
   // Open on selection: single-click selects a file row; report it as an open.
   const onFileOpenRef = useRef(onFileOpen)

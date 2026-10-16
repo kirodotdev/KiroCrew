@@ -42,6 +42,8 @@ vi.mock('../pierre/tree', () => ({
     onFileOpen?: (abs: string) => void
     onOpenFolder?: (folder: string) => void
     reveal?: { path: string; nonce: number } | null
+    rememberScroll?: boolean
+    scrollRestorePaused?: boolean
   }) => (
     <>
       {/* Stands in for the limit row under a cut folder: present only when
@@ -58,6 +60,8 @@ vi.mock('../pierre/tree', () => ({
         data-query={p.searchQuery ?? ''}
         data-selected={p.selectedPath ?? ''}
         data-reveal={p.reveal?.path ?? ''}
+        data-remember-scroll={String(!!p.rememberScroll)}
+        data-scroll-paused={String(!!p.scrollRestorePaused)}
         onClick={() => p.onFileOpen?.(H.OPENED)}
       >
         tree
@@ -76,12 +80,12 @@ function newClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
 }
 
-function mount(props: { onFileOpen?: (p: string, d: boolean) => void; selectedPath?: string | null; projectDir?: string; active?: boolean; onOpenFolder?: (abs: string) => void } = {}) {
+function mount(props: { onFileOpen?: (p: string, d: boolean) => void; selectedPath?: string | null; projectDir?: string; active?: boolean; onOpenFolder?: (abs: string) => void; rememberScroll?: boolean } = {}) {
   const qc = newClient()
   const onFileOpen = props.onFileOpen ?? vi.fn()
   const utils = render(
     <QueryClientProvider client={qc}>
-      <FileBrowserRail projectDir={props.projectDir ?? DIR} onFileOpen={onFileOpen} selectedPath={props.selectedPath} active={props.active} onOpenFolder={props.onOpenFolder} />
+      <FileBrowserRail projectDir={props.projectDir ?? DIR} onFileOpen={onFileOpen} selectedPath={props.selectedPath} active={props.active} onOpenFolder={props.onOpenFolder} rememberScroll={props.rememberScroll} />
     </QueryClientProvider>,
   )
   return { qc, onFileOpen, ...utils }
@@ -111,6 +115,22 @@ beforeEach(() => {
   H.api.projectTree.mockClear()
   H.api.projectGitStatus.mockClear()
   H.fileGrep.mockClear()
+})
+
+describe('FileBrowserRail scroll memory opt-in', () => {
+  // Only a host with no `selectedPath` to keep in view opts in: the
+  // rail beside a file tab keeps the tree on that file instead.
+  it('leaves scroll memory off unless the host asks for it', async () => {
+    mount()
+    await waitFor(() => expect(H.api.projectTree).toHaveBeenCalled())
+    expect(tree().dataset.rememberScroll).toBe('false')
+  })
+
+  it('forwards the opt-in to the tree', async () => {
+    mount({ rememberScroll: true })
+    await waitFor(() => expect(H.api.projectTree).toHaveBeenCalled())
+    expect(tree().dataset.rememberScroll).toBe('true')
+  })
 })
 
 describe('FileBrowserRail mode segment', () => {
@@ -1149,6 +1169,17 @@ describe('FileBrowserRail past the tree row cap', () => {
     mount()
     await waitFor(() => expect(H.api.projectTree).toHaveBeenCalled())
     expect(screen.queryByTestId('tree-open-folder')).toBeNull()
+  })
+
+  it('holds the tree scroll restore while the filename search covers the tree', async () => {
+    H.api.projectTree.mockResolvedValue(truncatedTree)
+    H.api.fileSearch.mockResolvedValue({ root: DIR, results: [] })
+    mount({ rememberScroll: true })
+    await waitFor(() => expect(H.api.projectTree).toHaveBeenCalled())
+    expect(tree().dataset.rememberScroll).toBe('true')
+    expect(tree().dataset.scrollPaused).toBe('false')
+    fireEvent.change(screen.getByLabelText('Filter files…'), { target: { value: 'late' } })
+    await waitFor(() => expect(tree().dataset.scrollPaused).toBe('true'))
   })
 
   it('keeps a whole tree on the local filter', async () => {
