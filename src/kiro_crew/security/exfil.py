@@ -32,7 +32,7 @@ from collections import Counter
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, unquote, unquote_plus, urlparse
 
 from kiro_crew.credential_patterns import AWS_KEY_ID
@@ -875,53 +875,37 @@ _SLACK_APP_CREATE_PARAMS = frozenset({"new_app", "manifest_yaml"})
 _slack_manifest_re_slot: list[tuple[re.Pattern[str], ...] | None] = []
 
 
-def _slack_manifest_variant_re(rendered: str) -> re.Pattern[str] | None:
-    """Pattern matching ONE stripped manifest variant rendered with any one alias."""
-    from kiro_crew import slack_manifest
-
-    placeholder = slack_manifest.ALIAS_PLACEHOLDER
-    alias_body = slack_manifest.ALIAS_PATTERN
+def _slack_manifest_variant_re(slack_manifest: Any, combo: frozenset[str]) -> re.Pattern[str]:
+    """Pattern for one switch combination's stripped manifest with any one alias."""
+    rendered = slack_manifest.stripped_template(combo)
+    placeholder, alias_body = slack_manifest.ALIAS_PLACEHOLDER, slack_manifest.ALIAS_PATTERN
     command_slot = (re.escape(slack_manifest.COMMAND_PLACEHOLDER), "(?P<command>[a-z0-9_-]+)")
-    if not rendered or placeholder not in rendered:
-        return None
+    if placeholder not in rendered or slack_manifest.COMMAND_PLACEHOLDER not in rendered:
+        raise ValueError("manifest template lacks its alias or command placeholder")
     parts = rendered.split(placeholder)
     pattern = re.escape(parts[0]).replace(*command_slot)
     for index, part in enumerate(parts[1:]):
         slot = f"(?P<alias>{alias_body})" if index == 0 else "(?P=alias)"
         pattern += slot + re.escape(part).replace(*command_slot)
-    return re.compile(pattern) if command_slot[1] in pattern else None
+    return re.compile(pattern)
 
 
 def _slack_manifest_payload_re() -> tuple[re.Pattern[str], ...] | None:
-    """Patterns matching the bundled Slack manifest rendered with any one alias.
+    """One exact pattern per switch combination, built by the emitters' own
+    ``stripped_template()``; ``{{ALIAS}}`` repeats are backreferences, ``{{COMMAND}}``
+    is pinned by the caller. A variant that does not build is left out (refused)."""
+    if not _slack_manifest_re_slot:
+        built: list[re.Pattern[str]] = []
+        try:
+            from kiro_crew import slack_manifest
 
-    One pattern per Slack Code switch combination
-    (``slack_manifest.feature_sets()``): the manifest is toggle-aware and the set
-    of combinations is finite, so each variant is matched EXACTLY rather than by
-    one pattern loosened to accept optional lines. Derived from
-    ``slack_manifest.stripped_template()`` — the SAME procedure both emitters use
-    to build the payload — so the accepted payloads cannot drift from the emitted
-    ones. Every ``{{ALIAS}}`` after the first is a backreference, and
-    ``{{COMMAND}}`` a group the caller pins to ``slash_command(alias)``, so neither
-    can vary. Returns None when the template cannot be read or any variant fails
-    to build (fails closed).
-    """
-    if _slack_manifest_re_slot:
-        return _slack_manifest_re_slot[0]
-    compiled: tuple[re.Pattern[str], ...] | None = None
-    try:
-        from kiro_crew import slack_manifest
-
-        built = [
-            _slack_manifest_variant_re(slack_manifest.stripped_template(combo))
-            for combo in slack_manifest.feature_sets()
-        ]
-        if built and all(p is not None for p in built):
-            compiled = tuple(p for p in built if p is not None)
-    except Exception:
-        compiled = None
-    _slack_manifest_re_slot.append(compiled)
-    return compiled
+            for combo in slack_manifest.feature_sets():
+                with contextlib.suppress(Exception):
+                    built.append(_slack_manifest_variant_re(slack_manifest, combo))
+        except Exception:
+            pass
+        _slack_manifest_re_slot.append(tuple(built) or None)
+    return _slack_manifest_re_slot[0]
 
 
 def _kirocrew_slack_app_link_alias(
@@ -959,10 +943,7 @@ def _kirocrew_slack_app_link_alias(
     payloads = params["manifest_yaml"]
     if len(payloads) != 1:
         return None
-    patterns = _slack_manifest_payload_re()
-    if not patterns:
-        return None
-    for pattern in patterns:
+    for pattern in _slack_manifest_payload_re() or ():
         match = pattern.fullmatch(payloads[0])
         if match is not None and match["command"] == slack_manifest.slash_command(match["alias"]):
             return match.group("alias")

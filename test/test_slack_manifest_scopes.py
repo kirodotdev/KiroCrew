@@ -44,8 +44,6 @@ _BASE_BOT_SCOPES = [
     "reactions:write",
     "users:read",
 ]
-#: Granted only with ``slack.agent_sessions``: agents.sessions.* (status, title, Stop).
-_AGENT_SESSION_SCOPES = ["assistant:write"]
 #: Granted only with ``slack.code_channels``: agents.conversations.* plus the
 #: session identity override and the channel canvas.
 _CODE_CHANNEL_SCOPES = [
@@ -64,11 +62,6 @@ _BASE_BOT_EVENTS = [
     "message.channels",
     "message.groups",
     "message.im",
-]
-_AGENT_SESSION_EVENTS = [
-    "agent_session_stopped",
-    "agent_session_title_changed",
-    "app_context_changed",
 ]
 #: A code channel shows Slack's Stop button only when the app subscribes to it.
 _CODE_CHANNEL_EVENTS = ["agent_session_stopped"]
@@ -137,8 +130,6 @@ class TestManifestGrantsNothingMore:
     def test_bot_scopes_are_exactly_the_reviewed_set(self) -> None:
         for combo in _COMBOS:
             want = set(_BASE_BOT_SCOPES)
-            if slack_manifest.AGENT_SESSIONS in combo:
-                want |= set(_AGENT_SESSION_SCOPES)
             if slack_manifest.CODE_CHANNELS in combo:
                 want |= set(_CODE_CHANNEL_SCOPES)
             assert sorted(_bot_scopes(_manifest(combo))) == sorted(want), combo
@@ -146,8 +137,6 @@ class TestManifestGrantsNothingMore:
     def test_bot_events_are_exactly_the_reviewed_set(self) -> None:
         for combo in _COMBOS:
             want = set(_BASE_BOT_EVENTS)
-            if slack_manifest.AGENT_SESSIONS in combo:
-                want |= set(_AGENT_SESSION_EVENTS)
             if slack_manifest.CODE_CHANNELS in combo:
                 want |= set(_CODE_CHANNEL_EVENTS)
             events = _bot_events(_manifest(combo))
@@ -157,16 +146,15 @@ class TestManifestGrantsNothingMore:
     def test_feature_blocks_follow_the_switches(self) -> None:
         for combo in _COMBOS:
             feats = _manifest(combo)["features"]
-            assert ("agent_view" in feats) == (slack_manifest.AGENT_SESSIONS in combo), combo
+            # No switch registered here declares the app a Slack agent: the
+            # one-way agent_view lands with its runtime, never ahead of it.
+            assert "agent_view" not in feats, combo
             assert "assistant_view" not in feats, combo
             if slack_manifest.CODE_CHANNELS in combo:
                 # Socket Mode delivers channel commands: no slash_command_url.
                 assert feats["code_channels"] == {"enabled": True}, combo
             else:
                 assert "code_channels" not in feats, combo
-            if slack_manifest.AGENT_SESSIONS in combo:
-                assert feats["agent_view"]["agent_description"].strip()
-                assert len(feats["agent_view"]["agent_description"]) <= 300
 
     def test_user_token_scopes_are_exactly_the_reviewed_set(self) -> None:
         # The gateway itself runs on the bot token and calls nothing with a

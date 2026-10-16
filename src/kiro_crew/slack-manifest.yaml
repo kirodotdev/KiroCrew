@@ -8,9 +8,10 @@
 #   3. Run `kirocrew setup` and paste both tokens
 #
 ## Template notes (never rendered): a line ending in "#@<feature>" is rendered
-## only when that Slack Code switch is on (slack.agent_sessions /
-## slack.code_channels); "#@a|b" means either one. `kirocrew manifest` and
-## Settings → Slack render this file for the switches you have on.
+## only when that Slack Code switch (slack.<feature>, registered in
+## slack_manifest.FEATURE_SCOPES) is on; "#@a|b" means either one.
+## `kirocrew manifest` and Settings → Slack render this file for the
+## switches you have on.
 #
 # See docs/guides/slack-setup.md for the full walkthrough.
 
@@ -24,11 +25,6 @@ features:
     home_tab_enabled: true
     messages_tab_enabled: true
     messages_tab_read_only_enabled: false
-  # Declares the app a Slack agent: threads become agent sessions with a live  #@agent_sessions
-  # status, a title and Slack's native Stop button. Slack cannot switch an app  #@agent_sessions
-  # back from agent_view to assistant_view once this is saved.  #@agent_sessions
-  agent_view:  #@agent_sessions
-    agent_description: Your personal AI agent. Chat, run multi-step tasks unattended, schedule jobs, and keep memory across sessions.  #@agent_sessions
   # Code channels: one channel per coding task, with a context bar, a diff tab  #@code_channels
   # and channel commands. Socket Mode delivers the commands, so no URL is set.  #@code_channels
   code_channels:  #@code_channels
@@ -46,8 +42,6 @@ oauth_config:
   scopes:
     bot:
       - app_mentions:read
-      # agents.sessions.* (status, title, Stop) for the agent_view feature.  #@agent_sessions
-      - assistant:write  #@agent_sessions
       # agents.conversations.* (create, context bar, views, commands, archive);  #@code_channels
       # the invite scopes let the agent add people to the channel it opens.  #@code_channels
       - canvases:write  #@code_channels
@@ -90,11 +84,9 @@ settings:
       - message.groups
       - app_mention
       - app_home_opened
-      # Agent-session events: what the user is viewing, a rename, and the  #@agent_sessions|code_channels
-      # native Stop button (shown only while a session is processing).  #@agent_sessions|code_channels
-      - app_context_changed  #@agent_sessions
-      - agent_session_stopped  #@agent_sessions|code_channels
-      - agent_session_title_changed  #@agent_sessions
+      # A code channel's native Stop button (shown only while its session is  #@code_channels
+      # processing).  #@code_channels
+      - agent_session_stopped  #@code_channels
       - file_change
       - member_joined_channel
   interactivity:

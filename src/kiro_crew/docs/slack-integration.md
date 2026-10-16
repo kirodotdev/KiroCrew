@@ -263,19 +263,14 @@ things about it are worth knowing before you use it:
 Secrets are written to `.env` in the config directory with owner-only permissions, never
 to `config.json`.
 
-## Slack Code: agent sessions and code channels
+## Slack Code: code channels
 
-Two switches in the Slack channel view's **Slack Code** section, both off by default and
-applied without a restart. A switch that is on runs only once your installed Slack app
-can use the feature: its permissions (read from Slack each time the gateway connects)
-include the feature's scope, and Slack has not refused it for your workspace. Until then
-Slack works exactly as with the switch off, and the page says why under the switch.
+A switch in the Slack channel view's **Slack Code** section, off by default and applied
+without a restart. When it is on, it runs only once your installed Slack app can use the
+feature: its permissions (read from Slack each time the gateway connects) include the
+feature's scope, and Slack has not refused it for your workspace. Until then Slack works
+exactly as with the switch off, and the page says why under the switch.
 
-- **Agent sessions** (`slack.agent_sessions`) declares the Slack app an agent
-  (`features.agent_view`): threads show a live status and title, and Slack's own Stop
-  button cancels a running turn. Slack cannot switch an app back from the agent view to
-  the older assistant view once you save the updated manifest in Slack, so the page
-  asks you to confirm.
 - **Code channels** (`slack.code_channels`) lets the agent open a Slack code channel for
   coding work: one channel per task, with a context bar, a diff tab and channel commands.
   It adds the `code_channels:manage`, `chat:write.customize`, `canvases:write`,
@@ -286,8 +281,14 @@ Slack works exactly as with the switch off, and the page says why under the swit
 restart): a folder, an agent, a model and a reasoning effort. Set any of them; anything
 empty falls through:
 
+- folder: the default folder here, else a top-level **Code channels** folder. That folder is
+  created the first time a code channel needs it, with `kirocrew-conductor` as its default
+  agent, so a code channel with nothing set runs the conductor there. **New folder…** in
+  the folder list creates a sidebar folder (name, optional project directory and default
+  agent) and selects it;
 - agent: the default agent here, then the folder's default agent, then the agent Slack
-  already uses;
+  already uses. The list offers every agent a chat can run, the shipped ones included,
+  except background-only ones (`kirocrew-lite`, `kirocrew-guest`, `kirocrew-heartbeat`);
 - project: the folder's project directory, then the project of the thread the channel was
   opened from;
 - model and effort: set here, else the agent's own.
@@ -295,7 +296,7 @@ empty falls through:
 The page previews what a new code channel will run with. A folder or agent deleted after
 you saved it is flagged on the page and skipped; the other defaults still apply.
 
-**Updating an existing Slack app.** The switches change the manifest (scopes, events and
+**Updating an existing Slack app.** A switch changes the manifest (scopes, events and
 feature blocks), and Slack grants scopes only when the app is (re)installed. The
 **Update your Slack app** panel lists what each switch adds, compares it with the scopes
 your installed app holds, and reads one of: *Up to date*, *Needs update*, *Workspace not

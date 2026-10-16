@@ -310,9 +310,7 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
     # file may have gone corrupt between the snapshot and the locked reread),
     # and a refusal must not leave a credential already committed to .env
     # beside config the caller was told did not save. ──
-    _cfg_write = _LockedSectionWrite(
-        path, "slack", staged, merge_nested=("code_channel_defaults",)
-    )
+    _cfg_write = _LockedSectionWrite(path, "slack", staged, merge_nested=("code_channel_defaults",))
     # Hold the live-config watcher for the whole config+credential transaction:
     # the two files commit separately and a failed .env write rolls the config
     # back, so nothing between here and the end of the block may be applied to

@@ -14,12 +14,12 @@ import { renderWithProviders } from './helpers'
 import { api, type SlackConfigData, type SlackManifestStatus } from '../api/client'
 import { SlackPanel } from '../pages/settings/SlackPanel'
 import { slackCodePayload, slackCodeDraftFrom } from '../pages/settings/SlackCodePanel'
+import { markModelsDegraded } from '../providers/modelListHealth'
 
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async () => ({
     ok: true,
     json: async () => ({ entries: [
-      { path: 'slack.agent_sessions', type: 'boolean', requiresRestart: true },
       { path: 'slack.code_channels', type: 'boolean', requiresRestart: true },
     ] }),
   })) as unknown as typeof fetch)
@@ -36,7 +36,6 @@ const FOLDERS = [
 
 const NO_CHANGE = { added_scopes: [], removed_scopes: [], added_events: [], removed_events: [], added_features: [], removed_features: [] }
 const CHANGES = {
-  agent_sessions: { ...NO_CHANGE, added_features: ['agent_view'], added_scopes: ['assistant:write'], added_events: ['agent_session_stopped'] },
   code_channels: { ...NO_CHANGE, added_features: ['code_channels'], added_scopes: ['canvases:write', 'chat:write.customize', 'code_channels:manage'], added_events: ['agent_session_stopped'] },
 }
 
@@ -59,37 +58,46 @@ function config(over: Partial<SlackConfigData> = {}): SlackConfigData {
     bot_token_set: true, app_token_set: true, bot_token_preview: 'xoxb-••••', app_token_preview: 'xapp-••••',
     owner_id: 'U000OWNER', command: 'kirocrew', allowed_enterprise_ids: [],
     reactions_enabled: true, show_thinking: true,
-    agent_sessions: false, code_channels: false,
+    code_channels: false,
     code_channel_defaults: { folder: null, agent: null, model: null, reasoning_effort: null },
     code_channel_effective: {
       folder: null, agent: 'kirocrew', agent_source: 'slack', model: null, reasoning_effort: null,
       project_dir: null, project_source: '', slack_agent: 'kirocrew',
     },
     code_channel_warnings: [],
+    code_channel_auto_folder: { name: 'Code channels', agent: 'kirocrew-conductor', id: null },
+    code_channel_agents: ['builder', 'reviewer'],
     ...over,
   }
 }
 
-function seed(cfg: Partial<SlackConfigData> = {}, st: SlackManifestStatus = status()) {
+function seed(cfg: Partial<SlackConfigData> = {}, st: SlackManifestStatus = status(), folders: unknown[] = FOLDERS) {
   vi.spyOn(api, 'getSlackConfig').mockResolvedValue(config(cfg))
   vi.spyOn(api, 'getSlackManifest').mockResolvedValue({ alias: 'kirocrew', manifest: 'display_information: {}\n', create_url: 'https://example.invalid/new' })
   const getStatus = vi.spyOn(api, 'getSlackManifestStatus').mockResolvedValue(st)
-  vi.spyOn(api, 'chatFolders').mockResolvedValue(FOLDERS as never)
-  vi.spyOn(api, 'agentsInstalled').mockResolvedValue([{ name: 'builder' }, { name: 'reviewer' }])
+  vi.spyOn(api, 'chatFolders').mockResolvedValue(folders as never)
+  vi.spyOn(api, 'chatTags').mockResolvedValue([] as never)
   const save = vi.spyOn(api, 'saveSlackConfig').mockResolvedValue({ ok: true, restart_required: true, verify_warning: '' })
   renderWithProviders(<SlackPanel />)
   return { save, getStatus }
 }
 
 const hydrated = () => screen.findByRole('heading', { name: 'Slack', level: 3 })
-const saveBtn = () => screen.getByRole('button', { name: 'Save Slack settings' })
+/** The page's own save at the bottom (the pending note offers the same save inline). */
+const saveBtn = () => screen.getAllByRole('button', { name: 'Save Slack settings' }).at(-1)!
+/** The manifest panel and the capability lines appear only after a chain of
+ *  queries: the Slack config, the effect that seeds the draft from it, then the
+ *  manifest-status query. A loaded coverage runner can take longer than the
+ *  implicit one-second find deadline over that chain, so the waits on it name
+ *  their own. */
+const CHAINED = { timeout: 5000 }
 
 describe('Slack Code payload', () => {
   it('sends only what changed, so an unrelated save never re-validates a default', () => {
     const saved = slackCodeDraftFrom(config({ code_channel_defaults: { folder: 'aaaaaaaaaaaa', agent: null, model: 'gone-model', reasoning_effort: null } }))
     expect(slackCodePayload(saved, saved)).toEqual({})
     expect(slackCodePayload({ ...saved, effort: 'high' }, saved)).toEqual({ code_channel_defaults: { reasoning_effort: 'high' } })
-    expect(slackCodePayload({ ...saved, folder: '', code_channels: true }, saved)).toEqual({
+    expect(slackCodePayload({ ...saved, folder: '', switches: { code_channels: true } }, saved)).toEqual({
       code_channels: true,
       code_channel_defaults: { folder: null },
     })
@@ -102,13 +110,98 @@ describe('Slack Code payload', () => {
 })
 
 describe('Code channels card', () => {
+  it('with nothing configured, files into an auto-created Code channels folder run by the conductor', async () => {
+    seed({ code_channels: true }, status(), [])
+    await hydrated()
+    const card = await screen.findByTestId('slack-code-defaults', {}, CHAINED)
+    expect(within(card).getByLabelText('Default folder')).toHaveTextContent('Code channels (created automatically · kirocrew-conductor)')
+    expect(card).toHaveTextContent('No folders yet: create one with New folder…')
+    const preview = screen.getByTestId('slack-code-preview')
+    expect(preview).toHaveTextContent('Code channels (created on first use)')
+    expect(preview).toHaveTextContent('kirocrew-conductor')
+    expect(preview).toHaveTextContent('Folder default')
+  })
+
+  it('uses an existing Code channels folder as the default row, with its own agent', async () => {
+    const auto = { id: 'cccccccccccc', name: 'Code channels', order: 2, default_agent: 'reviewer', project_dir: '/repo/cc' }
+    seed({ code_channels: true }, status(), [...FOLDERS, auto])
+    await hydrated()
+    const card = await screen.findByTestId('slack-code-defaults', {}, CHAINED)
+    expect(within(card).getByLabelText('Default folder')).toHaveTextContent('Code channels (default · reviewer)')
+    const preview = screen.getByTestId('slack-code-preview')
+    expect(preview).toHaveTextContent('/repo/cc')
+    expect(preview).toHaveTextContent('reviewer')
+    // Listed once, as the default row, not again among the folders.
+    await userEvent.click(within(card).getByLabelText('Default folder'))
+    expect(screen.getAllByRole('option', { name: /Code channels/ })).toHaveLength(1)
+  })
+
+  it('offers the shipped agents the server lists, conductor and team lead included', async () => {
+    seed({ code_channels: true, code_channel_agents: ['kirocrew', 'kirocrew-conductor', 'kirocrew-team-lead'] })
+    await hydrated()
+    const card = await screen.findByTestId('slack-code-defaults', {}, CHAINED)
+    await userEvent.click(within(card).getByLabelText('Default agent'))
+    for (const name of ['kirocrew-conductor', 'kirocrew-team-lead']) {
+      expect(await screen.findByRole('option', { name })).toBeInTheDocument()
+    }
+  })
+
+  it('creates a folder from the picker through the sidebar create call and selects it', async () => {
+    const { save } = seed({ code_channels: true, code_channel_agents: ['kirocrew-conductor', 'kirocrew-team-lead'] }, status(), [])
+    const created = {
+      id: 'eeeeeeeeeeee', name: 'Payments', order: 0, project_dir: '/repo/payments', default_agent: 'kirocrew-team-lead',
+    }
+    const create = vi.spyOn(api, 'createChatFolder').mockImplementation(async () => {
+      // As on the server: the next folder read includes it.
+      vi.mocked(api.chatFolders).mockResolvedValue([created] as never)
+      return created as never
+    })
+    await hydrated()
+    const card = await screen.findByTestId('slack-code-defaults', {}, CHAINED)
+    await userEvent.click(within(card).getByLabelText('Default folder'))
+    await userEvent.click(await screen.findByRole('option', { name: 'New folder…' }))
+
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.type(within(dialog).getByLabelText('Name'), 'Payments')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Create folder' }))
+
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1))
+    expect(create.mock.calls[0][0]).toBe('Payments')
+    expect(create.mock.calls[0][1]).toBeUndefined()   // top level
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    // Selected, and the preview follows the new folder at once.
+    expect(within(card).getByLabelText('Default folder')).toHaveTextContent('Payments')
+    const preview = screen.getByTestId('slack-code-preview')
+    expect(preview).toHaveTextContent('/repo/payments')
+    expect(preview).toHaveTextContent('kirocrew-team-lead')
+
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ code_channel_defaults: { folder: 'eeeeeeeeeeee' } })
+  })
+
+  it('keeps the create dialog open with the reason when the server refuses', async () => {
+    seed({ code_channels: true }, status(), [])
+    const create = vi.spyOn(api, 'createChatFolder').mockRejectedValue(new Error('project_dir is not an existing directory'))
+    await hydrated()
+    const card = await screen.findByTestId('slack-code-defaults', {}, CHAINED)
+    await userEvent.click(within(card).getByLabelText('Default folder'))
+    await userEvent.click(await screen.findByRole('option', { name: 'New folder…' }))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.type(within(dialog).getByLabelText('Name'), 'Broken')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Create folder' }))
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1))
+    expect(await within(dialog).findByText(/not an existing directory/)).toBeInTheDocument()
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
   it('reveals the defaults, previews the folder resolution and saves the picks', async () => {
     const { save } = seed()
     await hydrated()
     expect(screen.queryByTestId('slack-code-defaults')).toBeNull()
 
     fireEvent.click(screen.getByRole('switch', { name: 'Code channels' }))
-    const card = await screen.findByTestId('slack-code-defaults')
+    const card = await screen.findByTestId('slack-code-defaults', {}, CHAINED)
     await userEvent.click(within(card).getByLabelText('Default folder'))
     await userEvent.click(await screen.findByRole('option', { name: /Slack Code/ }))
 
@@ -135,6 +228,31 @@ describe('Code channels card', () => {
     expect(await screen.findByText(/The saved folder no longer exists/)).toBeInTheDocument()
   })
 
+  it('says when the model list could not load', async () => {
+    markModelsDegraded('acp', true)
+    try {
+      seed({ code_channels: true })
+      expect(await screen.findByText(/Could not load the model list/, {}, CHAINED)).toBeInTheDocument()
+    } finally {
+      markModelsDegraded('acp', false)
+    }
+  })
+
+  it('previews a folder the server reports missing as unfiled, even if the list still has it', async () => {
+    seed({
+      code_channels: true,
+      code_channel_defaults: { folder: 'bbbbbbbbbbbb', agent: null, model: null, reasoning_effort: null },
+      code_channel_warnings: ['folder_missing'],
+    })
+    const preview = await screen.findByTestId('slack-code-preview', {}, CHAINED)
+    await waitFor(() => expect(preview).toHaveTextContent('Unfiled'))
+    expect(preview).not.toHaveTextContent('Slack Code')
+    expect(preview).not.toHaveTextContent('/repo/app')
+    expect(preview).not.toHaveTextContent('builder')
+    // The picker does not keep showing the folder the notice says is gone.
+    expect(within(screen.getByTestId('slack-code-defaults')).getByLabelText('Default folder')).toHaveTextContent('No folder')
+  })
+
   it('explains a saved agent that was removed since', async () => {
     seed({
       code_channels: true,
@@ -142,33 +260,6 @@ describe('Code channels card', () => {
       code_channel_warnings: ['agent_missing'],
     })
     expect(await screen.findByText(/“ghost” is no longer installed/)).toBeInTheDocument()
-  })
-})
-
-describe('Agent sessions switch', () => {
-  it('asks before turning on and says it cannot be undone in Slack', async () => {
-    const { save } = seed()
-    await hydrated()
-    fireEvent.click(screen.getByRole('switch', { name: 'Agent sessions' }))
-    const dialog = await screen.findByRole('dialog')
-    expect(dialog).toHaveTextContent(/cannot switch an app back/)
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
-    await waitFor(() => expect(screen.getByRole('switch', { name: 'Agent sessions' })).not.toBeChecked())
-
-    fireEvent.click(screen.getByRole('switch', { name: 'Agent sessions' }))
-    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Turn on agent sessions' }))
-    await waitFor(() => expect(screen.getByRole('switch', { name: 'Agent sessions' })).toBeChecked())
-    fireEvent.click(saveBtn())
-    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
-    expect(save.mock.calls[0][0]).toMatchObject({ agent_sessions: true })
-  })
-
-  it('turns off without a prompt', async () => {
-    seed({ agent_sessions: true })
-    await hydrated()
-    fireEvent.click(screen.getByRole('switch', { name: 'Agent sessions' }))
-    expect(screen.queryByRole('dialog')).toBeNull()
-    expect(screen.getByRole('switch', { name: 'Agent sessions' })).not.toBeChecked()
   })
 })
 
@@ -182,37 +273,47 @@ describe('Update your Slack app', () => {
 
   it('lists what code channels add, marks the missing scopes and gives the steps', async () => {
     seed({ code_channels: true }, status({ status: 'needs_update', missing_scopes: ['code_channels:manage'] }))
-    const panel = await screen.findByTestId('slack-manifest-update')
+    const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
     expect(within(panel).getByTestId('slack-manifest-status')).toHaveAttribute('data-status', 'needs_update')
     expect(panel).toHaveTextContent('features.code_channels')
     expect(panel).toHaveTextContent('code_channels:manage· missing')
     expect(panel).toHaveTextContent('reinstall the app')
+    expect(within(panel).getByTestId('slack-manifest-replace-warning')).toHaveTextContent('whole configuration')
     expect(within(panel).getByRole('link', { name: /Open App Manifest/ }))
       .toHaveAttribute('href', 'https://api.slack.com/apps/A0123ABCD/app-manifest')
   })
 
   it('reads Up to date after a reinstall, via Check again', async () => {
     const { getStatus } = seed({ code_channels: true }, status({ status: 'needs_update', missing_scopes: ['code_channels:manage'] }))
-    const panel = await screen.findByTestId('slack-manifest-update')
+    const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
     getStatus.mockResolvedValue(status())
+    const cfgCalls = () => vi.mocked(api.getSlackConfig).mock.calls.length
+    const cfgBefore = cfgCalls()
     fireEvent.click(within(panel).getByRole('button', { name: /Check again/ }))
     await waitFor(() => expect(getStatus).toHaveBeenLastCalledWith(true))
     await waitFor(() => expect(within(panel).getByTestId('slack-manifest-status')).toHaveAttribute('data-status', 'up_to_date'))
     expect(panel).toHaveTextContent('Nothing to update.')
+    // Lines the install holds no longer read as additions.
+    expect(panel).not.toHaveTextContent('+ code_channels:manage')
+    expect(panel).toHaveTextContent('code_channels:manage')
+    expect(screen.queryByTestId('slack-manifest-replace-warning')).toBeNull()
+    // The capability lines (config query) are re-read after the check.
+    await waitFor(() => expect(cfgCalls()).toBeGreaterThan(cfgBefore))
   })
 
   it('names a workspace that does not have code channels enabled', async () => {
     seed({ code_channels: true }, status({ status: 'feature_disabled', disabled_features: ['code_channels'] }))
-    const panel = await screen.findByTestId('slack-manifest-update')
+    const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
     expect(within(panel).getByTestId('slack-manifest-status')).toHaveTextContent('Workspace not enabled')
     expect(panel).toHaveTextContent('does not have Code channels enabled')
+    expect(panel).toHaveTextContent('No app update is needed')
     // Reinstalling does not enable a workspace feature, so no update steps.
     expect(panel).not.toHaveTextContent('reinstall the app')
   })
 
   it('shows a rejected bot token as an error, with no update steps', async () => {
     seed({ code_channels: true }, status({ status: 'token_rejected', reason: 'invalid_auth' }))
-    const panel = await screen.findByTestId('slack-manifest-update')
+    const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
     expect(within(panel).getByTestId('slack-manifest-status')).toHaveTextContent('Bot token rejected')
     expect(within(panel).getByText(/Slack rejected the saved bot token/)).toBeInTheDocument()
     expect(panel).not.toHaveTextContent('reinstall the app')
@@ -220,16 +321,116 @@ describe('Update your Slack app', () => {
 
   it('says when Slack would not report the scopes', async () => {
     seed({ code_channels: true }, status({ status: 'unknown', reason: 'scopes_unreadable' }))
-    const panel = await screen.findByTestId('slack-manifest-update')
+    const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
     expect(within(panel).getByTestId('slack-manifest-status')).toHaveTextContent('Cannot check')
+    // A scope Slack did not report is neither held nor to be added.
+    expect(panel).not.toHaveTextContent('+ code_channels:manage')
+    expect(panel).toHaveTextContent('code_channels:manage')
+    expect(within(panel).queryByText(/could not be reached/)).toBeNull()
+  })
+
+  it('shows a Slack call that failed as an error', async () => {
+    seed({ code_channels: true }, status({ status: 'unknown', reason: 'ConnectionError' }))
+    const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
+    expect(within(panel).getByText(/Slack could not be reached to check the app/)).toBeInTheDocument()
+    expect(panel).not.toHaveTextContent('did not report which permissions')
+  })
+
+  it('puts the hand-edited-app exception before the update steps', async () => {
+    seed({ code_channels: true }, status({ status: 'needs_update', missing_scopes: ['code_channels:manage'] }))
+    const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
+    const warning = within(panel).getByTestId('slack-manifest-replace-warning')
+    const steps = within(panel).getByRole('list')
+    expect(warning.compareDocumentPosition(steps) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('previews an unsaved switch as pending', async () => {
     seed({}, status({}, { features: [] }))
     await hydrated()
     fireEvent.click(screen.getByRole('switch', { name: 'Code channels' }))
-    expect(await screen.findByTestId('slack-manifest-pending')).toBeInTheDocument()
+    expect(await screen.findByTestId('slack-manifest-pending', {}, CHAINED)).toBeInTheDocument()
     expect(screen.getByTestId('slack-manifest-update')).toHaveTextContent('after you save')
+    expect(screen.getByTestId('slack-manifest-pending')).toHaveTextContent('Save Slack settings')
+    // The install reading is about the saved manifest: the pill does not
+    // call the on-screen one up to date.
+    expect(screen.getByTestId('slack-manifest-status')).toHaveAttribute('data-status', 'pending')
+    // The update steps wait for the save: the reading is about the saved
+    // manifest, so neither its detail line nor the steps show yet.
+    expect(screen.getByTestId('slack-manifest-update')).not.toHaveTextContent('reinstall the app')
+    expect(screen.getByTestId('slack-manifest-update')).not.toHaveTextContent('has every permission')
+  })
+
+  it('saves from the pending note, so the step after a flip is right there', async () => {
+    const { save } = seed({}, status({}, { features: [] }))
+    await hydrated()
+    fireEvent.click(screen.getByRole('switch', { name: 'Code channels' }))
+    const pending = await screen.findByTestId('slack-manifest-pending', {}, CHAINED)
+    fireEvent.click(within(pending).getByRole('button', { name: 'Save Slack settings' }))
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ code_channels: true })
+  })
+
+  it('keeps a default set elsewhere after a background refetch, on an unrelated save', async () => {
+    const { save } = seed({ code_channels: true })
+    const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
+    // The CLI sets the default agent while the page is open; a refetch (here
+    // the one Check again triggers) picks it up without reseeding the draft.
+    vi.mocked(api.getSlackConfig).mockResolvedValue(config({
+      code_channels: true,
+      code_channel_defaults: { folder: null, agent: 'builder', model: null, reasoning_effort: null },
+    }))
+    const cfgBefore = vi.mocked(api.getSlackConfig).mock.calls.length
+    fireEvent.click(within(panel).getByRole('button', { name: /Check again/ }))
+    await waitFor(() => expect(vi.mocked(api.getSlackConfig).mock.calls.length).toBeGreaterThan(cfgBefore), CHAINED)
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    // The draft never touched the defaults, so the save sends none of them.
+    expect(save.mock.calls[0][0]).not.toHaveProperty('code_channel_defaults')
+  })
+})
+
+describe('Slack Code section placement', () => {
+  it('sits right after the tokens, above identity and behavior', async () => {
+    seed({ code_channels: true })
+    await hydrated()
+    const section = await screen.findByTestId('slack-code-section', {}, CHAINED)
+    const tokens = screen.getByText('Required')
+    const behavior = screen.getByText('Behavior')
+    expect(tokens.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(section.compareDocumentPosition(behavior) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // The switch, its defaults and the update panel live in this one card.
+    expect(within(section).getByRole('switch', { name: 'Code channels' })).toBeInTheDocument()
+    expect(within(section).getByTestId('slack-code-defaults')).toBeInTheDocument()
+    expect(await within(section).findByTestId('slack-manifest-update', {}, CHAINED)).toBeInTheDocument()
+  })
+})
+
+describe('Slack Code switch registry', () => {
+  it('offers only the registered switches', async () => {
+    seed()
+    await hydrated()
+    expect(screen.getByRole('switch', { name: 'Code channels' })).toBeInTheDocument()
+    // Agent sessions lands with its runtime: this build offers no switch for it.
+    expect(screen.queryByRole('switch', { name: 'Agent sessions' })).toBeNull()
+  })
+
+  it('names a feature the server reports that this build does not register by its raw name', async () => {
+    seed(
+      { code_channels: true },
+      status({ status: 'feature_disabled', disabled_features: ['code_channels', 'future_switch'] }),
+    )
+    const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
+    expect(panel).toHaveTextContent('Code channels, future_switch')
+  })
+})
+
+describe('Capability line with a rejected token', () => {
+  it('says the token, not the scopes, is what to fix', async () => {
+    seed({
+      code_channels: true,
+      code_channels_capability: { available: false, reason: 'scopes_unknown', scope: 'code_channels:manage' },
+    }, status({ status: 'token_rejected', reason: 'invalid_auth' }))
+    await waitFor(() => expect(screen.getByTestId('slack-capability')).toHaveTextContent('Needs a new bot token'), CHAINED)
   })
 })
 
@@ -239,7 +440,7 @@ describe('Capability line under a saved toggle', () => {
       code_channels: true,
       code_channels_capability: { available: false, reason: 'missing_scope', scope: 'code_channels:manage' },
     }, status({ status: 'needs_update', missing_scopes: ['code_channels:manage'] }))
-    const line = await screen.findByTestId('slack-capability')
+    const line = await screen.findByTestId('slack-capability', {}, CHAINED)
     expect(line).toHaveAttribute('data-available', 'false')
     expect(line).toHaveTextContent('code_channels:manage')
     expect(line).toHaveTextContent('Slack works as before')
@@ -247,24 +448,24 @@ describe('Capability line under a saved toggle', () => {
 
   it('says a workspace without the feature keeps working as before', async () => {
     seed({
-      agent_sessions: true,
-      agent_sessions_capability: { available: false, reason: 'feature_disabled', scope: 'assistant:write' },
+      code_channels: true,
+      code_channels_capability: { available: false, reason: 'feature_disabled', scope: 'code_channels:manage' },
     })
-    const line = await screen.findByTestId('slack-capability')
+    const line = await screen.findByTestId('slack-capability', {}, CHAINED)
     expect(line).toHaveAttribute('data-reason', 'feature_disabled')
-    expect(line).toHaveTextContent('has not enabled this for your workspace')
+    expect(line).toHaveTextContent('Needs a workspace admin')
   })
 
-  it('reads Active once the app can use it', async () => {
+  it('reads Ready once the app holds the permissions', async () => {
     seed({
-      agent_sessions: true,
-      agent_sessions_capability: { available: true, reason: '', scope: 'assistant:write' },
+      code_channels: true,
+      code_channels_capability: { available: true, reason: '', scope: 'code_channels:manage' },
     })
-    expect(await screen.findByTestId('slack-capability')).toHaveTextContent('Active')
+    expect(await screen.findByTestId('slack-capability', {}, CHAINED)).toHaveTextContent('Ready')
   })
 
   it('shows nothing under a toggle that is off', async () => {
-    seed({ agent_sessions_capability: { available: false, reason: 'scopes_unknown', scope: 'assistant:write' } })
+    seed({ code_channels_capability: { available: false, reason: 'scopes_unknown', scope: 'code_channels:manage' } })
     await hydrated()
     expect(screen.queryByTestId('slack-capability')).toBeNull()
   })

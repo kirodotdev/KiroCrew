@@ -63,6 +63,10 @@ ALIAS_MAX = 32
 #: Accepted alias shape, anchored. Kept in sync with ``ALIAS_MAX``.
 ALIAS_RE = re.compile(rf"\A[A-Za-z0-9_-]{{1,{ALIAS_MAX}}}\Z")
 
+#: A slash-command name Slack accepts (no leading ``/``), as ``slack.command``
+#: stores it.
+_COMMAND_RE = re.compile(rf"\A[a-z0-9_-]{{1,{SLASH_COMMAND_MAX - 1}}}\Z")
+
 #: Alias body for embedding in a larger pattern (unanchored, no group).
 ALIAS_PATTERN = rf"[A-Za-z0-9_-]{{1,{ALIAS_MAX}}}"
 
@@ -90,12 +94,20 @@ def slash_command(alias: str) -> str:
     return SLASH_COMMAND_PREFIX + alias.lower()[:room]
 
 
-#: Slack Code switch: the app is a Slack agent (``features.agent_view``).
-AGENT_SESSIONS = "agent_sessions"
 #: Slack Code switch: the app may open code channels (``features.code_channels``).
 CODE_CHANNELS = "code_channels"
-#: Every switch the template gates on, in a fixed order.
-FEATURES: tuple[str, ...] = (AGENT_SESSIONS, CODE_CHANNELS)
+#: The Slack Code switch REGISTRY: switch name -> the bot scope it cannot run
+#: without. The name is also the switch's ``slack.<name>`` config key and the
+#: template's ``#@<name>`` gate. Registering a switch is one entry here, its
+#: gated lines in ``slack-manifest.yaml`` and its config field: the render, every
+#: combination the exfil validator rebuilds (:func:`feature_sets`), the
+#: requirement diffs, the drift probe, the capability record and the settings
+#: page's update panel all follow from this mapping.
+FEATURE_SCOPES: dict[str, str] = {
+    CODE_CHANNELS: "code_channels:manage",
+}
+#: Every registered switch, in a fixed (display) order.
+FEATURES: tuple[str, ...] = tuple(FEATURE_SCOPES)
 
 #: A gated template line: ``<content>  #@flag`` or ``#@flag1|flag2`` at line end.
 _GATE_RE = re.compile(r"\s+#@(?P<flags>[a-z_]+(?:\|[a-z_]+)*)\s*$")
@@ -153,16 +165,41 @@ def stripped_template(features: Iterable[str] | None = None) -> str:
 
 
 def render(
-    alias: str, *, strip_comments: bool = False, features: Iterable[str] | None = None
+    alias: str,
+    *,
+    strip_comments: bool = False,
+    features: Iterable[str] | None = None,
+    command: str | None = None,
 ) -> str:
     """The manifest with *alias* substituted, for the switches in *features*.
 
     ``strip_comments=False`` keeps the guidance comments, which is what a human
     reads or pastes into Slack. ``True`` yields exactly the deep-link payload.
     No *features* renders the manifest with every Slack Code switch off.
+    *command* overrides the slash command (default ``slash_command(alias)``):
+    the manifest an EXISTING app is updated from must keep the command that app
+    already registers, which the gateway answers as ``slack.command``. A
+    command of the wrong shape is ignored. The deep link never takes one: its
+    payload must stay one the exfil validator can rebuild from the alias.
     """
     text = stripped_template(features) if strip_comments else template(features)
-    return text.replace(COMMAND_PLACEHOLDER, slash_command(alias)).replace(ALIAS_PLACEHOLDER, alias)
+    slash = command if command and _COMMAND_RE.match(command) else slash_command(alias)
+    return text.replace(COMMAND_PLACEHOLDER, slash).replace(ALIAS_PLACEHOLDER, alias)
+
+
+def alias_for_command(command: str) -> str:
+    """The alias whose manifest registers *command*, else :data:`DEFAULT_ALIAS`.
+
+    Inverts :func:`slash_command` for ``kirocrew-<alias>`` commands. The alias is
+    lowercase by then (Slack command names are), so an app created from a
+    mixed-case alias gets the lowercase spelling back; the slash command, which
+    is what routing depends on, is the same either way.
+    """
+    if command.startswith(SLASH_COMMAND_PREFIX):
+        candidate = command[len(SLASH_COMMAND_PREFIX) :]
+        if valid_alias(candidate):
+            return candidate
+    return DEFAULT_ALIAS
 
 
 def deep_link(alias: str, features: Iterable[str] | None = None) -> str:
@@ -192,7 +229,7 @@ class ManifestRequirements:
 
     bot_scopes: frozenset[str] = field(default_factory=frozenset)
     bot_events: frozenset[str] = field(default_factory=frozenset)
-    #: ``features.*`` blocks the manifest declares (``agent_view``, ``code_channels``…).
+    #: ``features.*`` blocks the manifest declares (``code_channels``…).
     features: frozenset[str] = field(default_factory=frozenset)
 
 

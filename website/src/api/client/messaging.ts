@@ -7,8 +7,21 @@
 
 import type { ClientTransport } from './transport'
 
+/** A registered Slack Code switch: its `slack.<key>` config key, the
+ *  manifest feature it renders and the key the GET reports it under. The union
+ *  mirrors the server's `slack_manifest.FEATURE_SCOPES`; a new switch is
+ *  registered by adding its key here (and to `SLACK_CODE_SWITCHES`), and the
+ *  config, save and capability fields below follow from it. */
+export type SlackCodeSwitchKey = 'code_channels'
+
+/** Per registered switch, the toggle as saved (`<key>`) and whether the
+ *  installed app can run it (`<key>_capability`). */
+export type SlackCodeSwitchFields =
+  & { [K in SlackCodeSwitchKey]?: boolean }
+  & { [K in SlackCodeSwitchKey as `${K}_capability`]?: SlackCapability }
+
 /** Slack config as returned by GET /api/slack/config (secrets masked). */
-export interface SlackConfigData {
+export interface SlackConfigData extends SlackCodeSwitchFields {
   connected: boolean
   connect_error: string
   configured: boolean
@@ -26,19 +39,24 @@ export interface SlackConfigData {
   session_folder?: string
   /** Open a Slack thread in the owner's bot DM for every new dashboard session on its first message. */
   auto_link_sessions?: boolean
-  /** Slack Code: threads run as Slack agent sessions (manifest agent_view). */
-  agent_sessions?: boolean
-  /** Slack Code: the agent may open Slack code channels. */
-  code_channels?: boolean
   /** What a new code-channel session starts with (null = not set here). */
   code_channel_defaults?: SlackCodeChannelDefaults
   /** How a new code-channel session resolves right now, from the saved defaults. */
   code_channel_effective?: SlackCodeChannelEffective
   /** Saved defaults that no longer resolve: "folder_missing", "agent_missing". */
   code_channel_warnings?: string[]
-  /** Whether the installed app can use each feature (a toggle runs only when it can). */
-  agent_sessions_capability?: SlackCapability
-  code_channels_capability?: SlackCapability
+  /** What an unset default folder means: the auto folder (top level), the agent
+   *  it is created with, and its id once it exists. */
+  code_channel_auto_folder?: SlackCodeAutoFolder
+  /** The agents the code-channel default-agent picker offers; null when they
+   *  could not be listed. */
+  code_channel_agents?: string[] | null
+}
+
+export interface SlackCodeAutoFolder {
+  name: string
+  agent: string
+  id: string | null
 }
 
 /** One feature's capability. reason: "" | missing_scope | feature_disabled |
@@ -46,7 +64,7 @@ export interface SlackConfigData {
 export interface SlackCapability {
   available: boolean
   reason: string
-  /** The bot scope the feature needs (assistant:write, code_channels:manage). */
+  /** The bot scope the feature needs (e.g. code_channels:manage). */
   scope: string
 }
 
@@ -71,6 +89,10 @@ export interface SlackCodeChannelEffective {
   project_source: string
   /** The agent Slack uses when nothing else names one. */
   slack_agent: string
+  /** The folder's path; the auto folder's name when no folder is set. */
+  folder_path?: string | null
+  /** The auto folder does not exist yet; the first code channel creates it. */
+  folder_auto_create?: boolean
 }
 
 /** One manifest delta: what a switch adds to (or removes from) the Slack app. */
@@ -105,8 +127,9 @@ export interface SlackManifestStatus {
   app_manifest_url: string | null
 }
 
-/** Writable Slack config fields sent to PUT /api/slack/config. */
-export interface SlackConfigSave {
+/** Writable Slack config fields sent to PUT /api/slack/config. Each registered
+ *  Slack Code switch is sent under its own `slack.<key>` key. */
+export interface SlackConfigSave extends Partial<Record<SlackCodeSwitchKey, boolean>> {
   bot_token: string
   bot_token_clear: boolean
   app_token: string
@@ -120,8 +143,6 @@ export interface SlackConfigSave {
   session_folder?: string
   /** Open a Slack thread in the owner's bot DM for every new dashboard session on its first message. */
   auto_link_sessions?: boolean
-  agent_sessions?: boolean
-  code_channels?: boolean
   /** Keys sent replace the stored value (null clears); omitted keys are kept. */
   code_channel_defaults?: Partial<SlackCodeChannelDefaults>
 }

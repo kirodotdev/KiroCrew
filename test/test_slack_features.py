@@ -8,11 +8,14 @@ thread (project).
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.section_builders import _build_slack_config
 from kiro_crew.slack import features
+from kiro_crew.testing.wait import async_wait_until
 
 _FOLDERS = [
     {"id": "aaaaaaaaaaaa", "name": "Dev", "parent_id": "", "project_dir": "/repo/dev"},
@@ -27,30 +30,56 @@ _FOLDERS = [
 ]
 
 
+#: A second switch registered only for the test, the way a later PR registers
+#: one: an entry in ``slack_manifest.FEATURE_SCOPES``. Nothing else in
+#: ``features`` names a switch, so registering it is all the reader needs.
+_FAKE = "fake_switch"
+_FAKE_SCOPE = "fake:write"
+
+
+@pytest.fixture
+def fake_switch(monkeypatch: pytest.MonkeyPatch) -> str:
+    from kiro_crew import slack_manifest
+
+    monkeypatch.setitem(slack_manifest.FEATURE_SCOPES, _FAKE, _FAKE_SCOPE)
+    monkeypatch.setattr(slack_manifest, "FEATURES", tuple(slack_manifest.FEATURE_SCOPES))
+    return _FAKE
+
+
+def _slack(**switches: object) -> SimpleNamespace:
+    """A Slack section carrying arbitrary switch fields (a registered fake one too)."""
+    return SimpleNamespace(**switches)
+
+
 class TestSwitches:
     def test_defaults_are_off(self) -> None:
         cfg = KiroCrewConfig()
-        assert features.agent_sessions_enabled(cfg) is False
         assert features.code_channels_enabled(cfg) is False
         assert features.code_channel_defaults(cfg) == features.CodeChannelDefaults()
         assert features.code_channel_defaults(cfg).is_empty
 
     @pytest.mark.parametrize("raw", ["true", 1, "yes", None, [], {}])
     def test_only_a_real_true_turns_a_switch_on(self, raw: object) -> None:
-        slack = _build_slack_config({"agent_sessions": raw, "code_channels": raw})
-        assert features.agent_sessions_toggle(slack) is False
+        slack = _build_slack_config({"code_channels": raw})
         assert features.code_channels_toggle(slack) is False
+        assert features.toggle(_slack(code_channels=raw), "code_channels") is False
 
-    def test_true_turns_each_switch_on_independently(self) -> None:
-        slack = _build_slack_config({"code_channels": True})
+    def test_true_turns_each_switch_on_independently(self, fake_switch: str) -> None:
+        slack = _slack(code_channels=True, fake_switch=False)
         assert features.code_channels_toggle(slack) is True
-        assert features.agent_sessions_toggle(slack) is False
+        assert features.toggle(slack, fake_switch) is False
+        assert features.manifest_features(slack) == {"code_channels"}
+        assert features.manifest_features(_slack(fake_switch=True)) == {fake_switch}
+
+    def test_an_unregistered_switch_is_off_even_when_set(self) -> None:
+        assert features.toggle(_slack(not_registered=True), "not_registered") is False
+        assert features.manifest_features(_slack(not_registered=True)) == frozenset()
 
     def test_reader_accepts_full_config_or_slack_section(self) -> None:
         cfg = KiroCrewConfig()
-        cfg.slack = _build_slack_config({"agent_sessions": True})
-        assert features.agent_sessions_toggle(cfg) is True
-        assert features.agent_sessions_toggle(cfg.slack) is True
+        cfg.slack = _build_slack_config({"code_channels": True})
+        assert features.code_channels_toggle(cfg) is True
+        assert features.code_channels_toggle(cfg.slack) is True
 
     def test_a_reader_handed_something_unrelated_is_off(self) -> None:
         assert features.code_channels_toggle(object()) is False
@@ -130,8 +159,10 @@ class TestResolution:
         assert got.folder_id == "bbbbbbbbbbbb"
 
     def test_slack_agent_is_the_last_agent_fallback(self) -> None:
+        # The auto folder exists but its default agent was cleared.
+        folders = [*_FOLDERS, {"id": "cccccccccccc", "name": "Code channels", "parent_id": ""}]
         got = features.resolve_code_channel_session(
-            features.CodeChannelDefaults(), _FOLDERS, slack_agent="slackbot"
+            features.CodeChannelDefaults(), folders, slack_agent="slackbot"
         )
         assert (got.agent, got.agent_source) == ("slackbot", "slack")
 
@@ -142,6 +173,8 @@ class TestResolution:
             origin_project_dir="/repo/origin",
         )
         assert (got.project_dir, got.project_source) == ("/repo/dev", "folder")
+        assert got.folder_path == "Dev/Slack Code"
+        assert got.folder_auto_create is False
 
     def test_origin_project_when_no_folder_project(self) -> None:
         got = features.resolve_code_channel_session(
@@ -149,10 +182,53 @@ class TestResolution:
         )
         assert (got.project_dir, got.project_source) == ("/repo/origin", "origin")
 
-    def test_nothing_resolves_to_nothing(self) -> None:
-        got = features.resolve_code_channel_session(features.CodeChannelDefaults(), [])
-        assert (got.agent, got.project_dir, got.folder_id) == (None, None, None)
-        assert got.folder_missing is False
+    def test_nothing_configured_runs_the_conductor_in_the_auto_folder(self) -> None:
+        got = features.resolve_code_channel_session(
+            features.CodeChannelDefaults(), [], slack_agent="slackbot"
+        )
+        assert got.folder_id is None
+        assert got.folder_path == features.AUTO_FOLDER_NAME == "Code channels"
+        assert got.folder_auto_create is True
+        assert (got.agent, got.agent_source) == ("kirocrew-conductor", "folder")
+        assert features.AUTO_FOLDER_AGENT == "kirocrew-conductor"
+        assert (got.project_dir, got.folder_missing) == (None, False)
+
+    def test_an_existing_auto_folder_is_used_and_not_recreated(self) -> None:
+        folders = [
+            *_FOLDERS,
+            {
+                "id": "cccccccccccc",
+                "name": "code channels",
+                "parent_id": "",
+                "default_agent": "builder",
+                "project_dir": "/repo/cc",
+            },
+        ]
+        got = features.resolve_code_channel_session(features.CodeChannelDefaults(), folders)
+        assert (got.folder_id, got.folder_auto_create) == ("cccccccccccc", False)
+        assert got.folder_path == "code channels"
+        # Its own settings apply once it exists, conductor or not.
+        assert (got.agent, got.agent_source) == ("builder", "folder")
+        assert (got.project_dir, got.project_source) == ("/repo/cc", "folder")
+
+    def test_explicit_agent_beats_the_auto_folder_agent(self) -> None:
+        got = features.resolve_code_channel_session(
+            features.CodeChannelDefaults(agent="reviewer"), []
+        )
+        assert (got.agent, got.agent_source) == ("reviewer", "default")
+        assert got.folder_auto_create is True
+
+    def test_a_nested_or_duplicated_auto_name_is_not_the_auto_folder(self) -> None:
+        nested = [
+            *_FOLDERS,
+            {"id": "cccccccccccc", "name": "Code channels", "parent_id": "aaaaaaaaaaaa"},
+        ]
+        assert features.find_auto_folder(nested) is None
+        twice = [
+            {"id": "cccccccccccc", "name": "Code channels", "parent_id": ""},
+            {"id": "dddddddddddd", "name": "Code Channels", "parent_id": ""},
+        ]
+        assert features.find_auto_folder(twice) is None
 
     def test_deleted_folder_is_flagged_and_other_defaults_still_apply(self) -> None:
         got = features.resolve_code_channel_session(
@@ -163,6 +239,7 @@ class TestResolution:
         )
         assert got.folder_missing is True
         assert got.folder_id is None
+        assert (got.folder_path, got.folder_auto_create) == (None, False)
         assert (got.agent_source, got.project_source) == ("slack", "origin")
         assert (got.model, got.reasoning_effort) == ("m1", "low")
 
@@ -211,42 +288,43 @@ def caps():
 
 
 def _on():
-    return _build_slack_config({"agent_sessions": True, "code_channels": True})
+    return _slack(code_channels=True, fake_switch=True)
 
 
 class TestCapability:
     def test_toggle_off_is_off_whatever_the_install_can_do(self, caps) -> None:
-        caps.record_granted_scopes({"assistant:write", "code_channels:manage"})
+        caps.record_granted_scopes({"code_channels:manage"})
         off = _build_slack_config({})
-        assert not caps.agent_sessions_enabled(off)
         assert not caps.code_channels_enabled(off)
-        assert caps.agent_sessions_available() and caps.code_channels_available()
+        assert caps.code_channels_available()
 
     def test_toggle_on_before_the_probe_is_off(self, caps) -> None:
         assert caps.availability("code_channels") == (False, "scopes_unknown")
         assert not caps.code_channels_enabled(_on())
 
-    def test_toggle_on_with_scopes_missing_is_off(self, caps) -> None:
+    def test_toggle_on_with_scopes_missing_is_off(self, caps, fake_switch: str) -> None:
         caps.record_granted_scopes({"chat:write"})
-        assert caps.availability("agent_sessions") == (False, "missing_scope")
-        assert not caps.agent_sessions_enabled(_on())
+        assert caps.availability("code_channels") == (False, "missing_scope")
+        assert not caps.code_channels_enabled(_on())
         # The manifest still asks for the scope: it is how the install gains it.
-        assert caps.manifest_features(_on()) == {"agent_sessions", "code_channels"}
+        assert caps.manifest_features(_on()) == {"code_channels", fake_switch}
 
-    def test_toggle_on_with_scopes_granted_is_on_independently(self, caps) -> None:
-        caps.record_granted_scopes({"assistant:write"})
-        assert caps.agent_sessions_enabled(_on())
+    def test_toggle_on_with_scopes_granted_is_on_independently(
+        self, caps, fake_switch: str
+    ) -> None:
+        caps.record_granted_scopes({_FAKE_SCOPE})
+        assert caps.enabled(_on(), fake_switch)
         assert not caps.code_channels_enabled(_on())
 
     @pytest.mark.parametrize(
         "error", ["feature_disabled", "missing_scope", "not_allowed_token_type"]
     )
-    def test_a_refusal_latches_the_feature_off(self, caps, error: str) -> None:
-        caps.record_granted_scopes({"assistant:write", "code_channels:manage"})
+    def test_a_refusal_latches_the_feature_off(self, caps, fake_switch: str, error: str) -> None:
+        caps.record_granted_scopes({_FAKE_SCOPE, "code_channels:manage"})
         assert caps.latch_unavailable("code_channels", error) is True
         assert not caps.code_channels_enabled(_on())
         assert caps.availability("code_channels") == (False, error)
-        assert caps.agent_sessions_enabled(_on())  # the other feature is untouched
+        assert caps.enabled(_on(), _FAKE)  # the other feature is untouched
 
     @pytest.mark.parametrize("error", ["ratelimited", "channel_not_found", "", "internal_error"])
     def test_other_errors_do_not_latch(self, caps, error: str) -> None:
@@ -265,9 +343,13 @@ class TestCapability:
 
     def test_a_reinstall_lifts_a_missing_scope_latch(self, caps) -> None:
         caps.record_granted_scopes({"chat:write"})
-        caps.latch_unavailable("agent_sessions", "missing_scope")
-        caps.record_granted_scopes({"chat:write", "assistant:write"})
-        assert caps.agent_sessions_available()
+        caps.latch_unavailable("code_channels", "missing_scope")
+        caps.record_granted_scopes({"chat:write", "code_channels:manage"})
+        assert caps.code_channels_available()
+
+    def test_an_unregistered_feature_never_latches(self, caps) -> None:
+        assert caps.latch_unavailable("not_registered", "feature_disabled") is False
+        assert caps.latched() == {}
 
     def test_feature_disabled_survives_a_scope_refresh(self, caps) -> None:
         caps.record_granted_scopes({"code_channels:manage"})
@@ -285,19 +367,15 @@ class TestConnectProbe:
         asyncio.run(scope_probe.refresh_capabilities(client, probe_code_channels=True))
 
     def test_reads_granted_scopes_from_auth_test(self, caps) -> None:
-        self._run(
-            _Client(
-                "chat:write,assistant:write,code_channels:manage", views_error="not_agent_channel"
-            )
-        )
-        assert caps.agent_sessions_available() and caps.code_channels_available()
+        self._run(_Client("chat:write,code_channels:manage", views_error="not_agent_channel"))
+        assert caps.code_channels_available()
+        assert caps.granted_scopes() == {"chat:write", "code_channels:manage"}
 
     def test_workspace_without_code_channels_latches_them(self, caps) -> None:
         seen: list[tuple[str, str]] = []
         caps.set_capability_notifier(lambda f, e: seen.append((f, e)))
-        self._run(_Client("assistant:write,code_channels:manage", views_error="feature_disabled"))
+        self._run(_Client("code_channels:manage", views_error="feature_disabled"))
         assert caps.availability("code_channels") == (False, "feature_disabled")
-        assert caps.agent_sessions_available()
         assert seen == [("code_channels", "feature_disabled")]
 
     def test_no_feature_probe_without_the_scope(self, caps) -> None:
@@ -306,20 +384,20 @@ class TestConnectProbe:
         assert client.calls == ["auth.test"]
         assert caps.availability("code_channels") == (False, "missing_scope")
 
-    def test_unreadable_scopes_leave_both_off(self, caps) -> None:
+    def test_unreadable_scopes_leave_it_off(self, caps) -> None:
         self._run(_Client(None))
-        assert caps.availability("agent_sessions") == (False, "scopes_unknown")
+        assert caps.availability("code_channels") == (False, "scopes_unknown")
 
-    def test_wrong_token_type_latches_both(self, caps) -> None:
+    def test_wrong_token_type_latches_every_registered_feature(self, caps, fake_switch) -> None:
         self._run(_Client("", auth_error="not_allowed_token_type"))
-        assert caps.availability("agent_sessions") == (False, "not_allowed_token_type")
+        assert caps.availability(fake_switch) == (False, "not_allowed_token_type")
         assert caps.availability("code_channels") == (False, "not_allowed_token_type")
 
     def test_a_reconnect_clears_old_latches_and_re_probes(self, caps) -> None:
-        caps.record_granted_scopes({"assistant:write"})
-        caps.latch_unavailable("agent_sessions", "feature_disabled")
-        self._run(_Client("assistant:write"))
-        assert caps.agent_sessions_available()
+        caps.record_granted_scopes({"code_channels:manage"})
+        caps.latch_unavailable("code_channels", "missing_scope")
+        self._run(_Client("code_channels:manage", views_error="not_agent_channel"))
+        assert caps.code_channels_available()
 
 
 class TestReconnectHook:
@@ -333,7 +411,12 @@ class TestReconnectHook:
 
         async def _probe(client: object, *, probe_code_channels: bool = False) -> None:
             calls.append(client)
+            probes.append(probe_code_channels)
 
+        probes: list[bool] = []
+        cfg = KiroCrewConfig()
+        cfg.slack = _build_slack_config({"code_channels": True})
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls, *a, **k: cfg))
         monkeypatch.setattr(scope_probe, "refresh_capabilities", _probe)
         orch = SimpleNamespace(
             dashboard_state=None, _socket_client=SimpleNamespace(message_listeners=[])
@@ -346,7 +429,15 @@ class TestReconnectHook:
             await listener(None, {"type": "hello"}, "")
             await listener(None, {"type": "events_api"}, "")
             await listener(None, {"type": "hello"}, "")  # a reconnect
-            await asyncio.sleep(0)
+            # Each probe reads the live config off the loop first.
+            await async_wait_until(lambda: len(calls) == 2, describe=lambda: calls)
 
         asyncio.run(_drive())
         assert calls == [web, web]
+        # The workspace-feature probe follows the live Code channels toggle.
+        assert probes == [True, True]
+        cfg.slack = _build_slack_config({})
+        calls.clear()
+        probes.clear()
+        asyncio.run(_drive())
+        assert probes == [False, False]
