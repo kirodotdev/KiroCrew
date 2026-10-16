@@ -24,23 +24,15 @@
  1 overload_fakes.py
  1 slack_handler_helpers.py
  2 spawn_test_helpers.py
- 6 test_acp_client.py
  1 test_acp_client_compaction.py
  1 test_acp_client_stale_turn.py
- 5 test_acp_frame_record.py
- 5 test_acp_frame_record_provider_safety.py
  4 test_acp_refactor_facade.py
-12 test_acp_refactor_runtime_start.py
- 8 test_acp_refactor_transport_framing.py
  3 test_acp_register_before_send.py
-10 test_acp_runtime_exit_watcher.py
  4 test_acp_runtime_failed_start_reap.py
- 7 test_acp_sandbox_init_classification.py
  3 test_acp_session_handle_abandoned_turn.py
  1 test_acp_session_handle_stream_command.py
  1 test_acp_set_mode_projection_fallback.py
  4 test_acp_set_mode_projection_race.py
- 8 test_acp_spawn_offload.py
  4 test_acp_stale_recovery.py
  2 test_acp_turn_lock.py
  1 test_acp_turn_state_parity.py
@@ -181,8 +173,6 @@
  2 test_feishu_client.py
  4 test_fork_reconciles_after_flush.py
  1 test_gateway_lock_diagnosis.py
- 8 test_gatewayd_more_coverage.py
-10 test_gatewayd_self_exit.py
  2 test_handlers_memory_coverage.py
  1 test_handlers_taskrunner_coverage.py
  1 test_hang_resilience_metrics.py
@@ -291,7 +281,6 @@
  1 test_papyrus_latex.py
  6 test_pathres_loop_starvation.py
  1 test_pid_lifecycle_process_sweeps.py
-13 test_pid_lifecycle_provider_tree.py
  2 test_plan_mode.py
 11 test_platform_compat.py
  3 test_platform_log_append.py
@@ -317,8 +306,6 @@
  9 test_resume_publishes_hydrated_slot.py
  4 test_run_tests_reap.py
  5 test_runloop_integration.py
-13 test_runtime_cleanup_regression.py
-15 test_runtime_ownership_founding.py
  1 test_runtime_start_gate_headroom.py
  3 test_safe_read_file_bytes_descriptor.py
  1 test_sandbox_argv.py

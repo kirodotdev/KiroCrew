@@ -51,6 +51,7 @@ from kiro_crew.sandbox import (
     kiro_internal_sandbox_switch,
     wrapped_by_crew_sandbox,
 )
+from kiro_crew.testing.wait import await_until
 
 # The reported three-line burst, verbatim. Only the first line is sandbox-specific.
 HARNESS_SANDBOX_STDERR = [
@@ -831,8 +832,12 @@ async def test_a_wedged_drain_cannot_hold_the_failure_path():
         # An OUTER deadline, generously above the inner one: an unbounded settle
         # would otherwise hang this test rather than fail it, and a hang in CI is
         # a timeout nobody attributes.
-        await asyncio.wait_for(runtime.settle_stderr(timeout=0.05), timeout=5)
-    except asyncio.TimeoutError:  # pragma: no cover - the defect this pins
+        await await_until(
+            asyncio.ensure_future(runtime.settle_stderr(timeout=0.05)),
+            timeout=5,
+            what="the stderr settle",
+        )
+    except (TimeoutError, AssertionError):  # pragma: no cover - the defect this pins
         raise AssertionError(
             "the stderr settle is unbounded, so a wedged drain holds a failure "
             "path open instead of letting it report"
@@ -902,7 +907,7 @@ async def test_the_eof_settle_ends_a_drain_held_open_past_its_budget():
     client._stderr_task = asyncio.ensure_future(_wedged())
     try:
         with pytest.raises(AcpError, match="ACP process exited"):
-            await asyncio.wait_for(client._read_message(timeout=5), timeout=5)
+            await await_until(asyncio.ensure_future(client._read_message(timeout=5)))
         assert client._stderr_task.done()
     finally:
         client._stderr_task.cancel()
@@ -929,7 +934,7 @@ async def test_a_task_that_absorbed_an_earlier_cancel_still_absorbs_the_drains()
     waiter = asyncio.ensure_future(_caller())
     await asyncio.sleep(0)
     waiter.cancel()
-    await asyncio.wait_for(cancelled_once.wait(), timeout=5)
+    await await_until(cancelled_once)
     await asyncio.sleep(0)  # the waiter is now parked inside the settle
     runtime._stderr_task.cancel()
     await _settled(waiter)
@@ -954,7 +959,7 @@ async def test_the_failed_start_cleanup_still_kills_when_it_is_cancelled_in_the_
     runtime.settle_stderr = _spy
     cleanup = asyncio.ensure_future(runtime._failed_start_cleanup())
     try:
-        await asyncio.wait_for(entered.wait(), timeout=5)
+        await await_until(entered)
         await asyncio.sleep(0.1)
         cleanup.cancel()
         await _settled(cleanup)
@@ -1012,7 +1017,7 @@ async def test_a_cancel_during_the_startup_settle_spawns_no_second_child():
     client._settle_stderr = _spy
     startup = asyncio.ensure_future(client.ensure_ready())
     try:
-        await asyncio.wait_for(entered.wait(), timeout=5)
+        await await_until(entered)
         # Timers fire in deadline order, so this lands inside the 0.5 s settle.
         await asyncio.sleep(0.1)
         startup.cancel()
@@ -1064,7 +1069,7 @@ async def test_a_cancel_during_the_last_attempts_settle_also_cleans_up():
     client._settle_stderr = _spy
     startup = asyncio.ensure_future(client.ensure_ready())
     try:
-        await asyncio.wait_for(entered.wait(), timeout=5)
+        await await_until(entered)
         await asyncio.sleep(0.1)
         startup.cancel()
         await _settled(startup)
@@ -1099,7 +1104,7 @@ async def test_a_cancel_during_the_throttle_read_is_not_reported_as_a_death():
     client._settle_stderr = _spy
     reader = asyncio.ensure_future(client._registration_throttle_line())
     try:
-        await asyncio.wait_for(entered.wait(), timeout=5)
+        await await_until(entered)
         reader.cancel()
         await _settled(reader)
         assert reader.cancelled()

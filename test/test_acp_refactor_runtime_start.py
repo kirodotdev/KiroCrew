@@ -28,6 +28,7 @@ from kiro_crew.acp import runtime as acp_runtime
 from kiro_crew.acp.session_handle import AcpRuntimeDead
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.start_priority import StartPriority
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # Upper bound for an await the test itself must unblock. It exists so a hang fails
 # here by name rather than as pytest's --timeout; no passing run measures it.
@@ -164,7 +165,7 @@ async def test_start_collector_outcome(resolve, adopter, timeout, outcome, sessi
     rt = _FakeRuntime()
     future: asyncio.Future = asyncio.get_running_loop().create_future()
     gate = acp_runtime.SessionStartGate(2)
-    permit = await asyncio.wait_for(gate.acquire(), timeout=_BACKSTOP)
+    permit = await await_until(asyncio.ensure_future(gate.acquire()))
     assert permit.hold_for_collector() is True
     collector = acp_runtime.StartCollector(rt, _REQ_ID, future, permit=permit, timeout=timeout)
     rt._start_collectors[_REQ_ID] = collector
@@ -178,8 +179,8 @@ async def test_start_collector_outcome(resolve, adopter, timeout, outcome, sessi
     try:
         if resolve is not None:
             resolve(future)
-        await asyncio.wait_for(collector.settled.wait(), timeout=_BACKSTOP)
-        await asyncio.wait_for(task, timeout=_BACKSTOP)
+        await await_until(collector.settled)
+        await await_until(task)
     finally:
         if not task.done():
             task.cancel()
@@ -201,7 +202,7 @@ async def test_gate_is_sized_from_the_live_snapshot_when_armed(monkeypatch):
     monkeypatch.setattr(
         acp_runtime, "_resolve_session_start_concurrency", lambda: resolved.append(True) or 9
     )
-    gate = await asyncio.wait_for(acp_runtime.session_start_gate(), timeout=_BACKSTOP)
+    gate = await await_until(asyncio.ensure_future(acp_runtime.session_start_gate()))
     assert (gate.limit, gate.collector_hold_ceiling) == (3, 2)
     assert await acp_runtime.session_start_gate() is gate
     assert resolved == []
@@ -211,17 +212,17 @@ async def test_gate_is_sized_from_the_live_snapshot_when_armed(monkeypatch):
 async def test_unreadable_live_value_falls_back_to_the_config_read(monkeypatch):
     monkeypatch.setattr(live_mod, "snapshot", _live_concurrency("x"))
     monkeypatch.setattr(acp_runtime, "_resolve_session_start_concurrency", lambda: 5)
-    gate = await asyncio.wait_for(acp_runtime.session_start_gate(), timeout=_BACKSTOP)
+    gate = await await_until(asyncio.ensure_future(acp_runtime.session_start_gate()))
     assert gate.limit == 5
 
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("gate_sized_two")
 async def test_gate_counts_track_the_current_loop_gate():
-    gate = await asyncio.wait_for(acp_runtime.session_start_gate(), timeout=_BACKSTOP)
+    gate = await await_until(asyncio.ensure_future(acp_runtime.session_start_gate()))
     assert gate.limit == 2
     assert (gate.active, gate.queued) == (0, 0)
-    permit = await asyncio.wait_for(gate.acquire(), timeout=_BACKSTOP)
+    permit = await await_until(asyncio.ensure_future(gate.acquire()))
     assert permit.gate_counts() == (1, 0)
     permit.release()
     assert (gate.active, gate.queued) == (0, 0)
@@ -230,7 +231,7 @@ async def test_gate_counts_track_the_current_loop_gate():
 @pytest.mark.asyncio
 async def test_permit_bookkeeping_is_idempotent():
     gate = acp_runtime.SessionStartGate(3)
-    permit = await asyncio.wait_for(gate.acquire(), timeout=_BACKSTOP)
+    permit = await await_until(asyncio.ensure_future(gate.acquire()))
     assert permit.queue_wait_ms >= 0.0
     assert (permit.hold_for_collector(), permit.hold_for_collector()) == (True, False)
     assert gate.collector_holds == 1
@@ -243,7 +244,7 @@ async def test_permit_bookkeeping_is_idempotent():
 async def test_single_permit_gate_reserves_its_only_slot():
     gate = acp_runtime.SessionStartGate(1)
     assert gate.collector_hold_ceiling == 0
-    permit = await asyncio.wait_for(gate.acquire(), timeout=_BACKSTOP)
+    permit = await await_until(asyncio.ensure_future(gate.acquire()))
     assert permit.hold_for_collector() is False
     assert permit.collector_held is False
     permit.release()
@@ -257,18 +258,14 @@ def test_gate_limit_is_clamped_to_the_floor(requested, limit):
 @pytest.mark.asyncio
 async def test_cold_start_admission_cancelled_while_queued():
     admission = acp_runtime._ColdStartAdmission(1)
-    await asyncio.wait_for(admission.acquire(StartPriority.BACKGROUND), timeout=_BACKSTOP)
+    await await_until(asyncio.ensure_future(admission.acquire(StartPriority.BACKGROUND)))
     queued = asyncio.ensure_future(admission.acquire(StartPriority.BACKGROUND))
     try:
 
-        async def _until_queued() -> None:
-            while admission.queued != 1:
-                await asyncio.sleep(0)
-
-        await asyncio.wait_for(_until_queued(), timeout=_BACKSTOP)
+        await async_wait_until(lambda: admission.queued == 1)
         queued.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(queued, timeout=_BACKSTOP)
+            await await_until(queued)
     finally:
         if not queued.done():
             queued.cancel()

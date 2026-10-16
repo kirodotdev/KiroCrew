@@ -34,6 +34,7 @@ from kiro_crew.acp import _frame_record
 from kiro_crew.acp import client as client_module
 from kiro_crew.acp import runtime as runtime_module
 from kiro_crew.acp_backends import ACP_BACKEND_KIRO, ACP_BACKENDS_KNOWN
+from kiro_crew.testing.wait import await_until
 
 # The recorder is POSIX-only (see the module docstring of ``_frame_record``):
 # every test here exercises the pinned-descriptor path. The one Windows
@@ -912,12 +913,12 @@ async def test_record_frame_returns_while_the_writer_is_wedged(monkeypatch, tmp_
         monkeypatch.setattr(_frame_record, "write_frame", slow)
         try:
             for i in range(3):
-                await asyncio.wait_for(
+                await asyncio.wait_for(  # flake-ok: latency assertion – record_frame must not await write_frame; wedged writer takes ~10 s
                     _frame_record.record_frame("kas", {"jsonrpc": "2.0", "id": i}), timeout=0.5
                 )
         finally:
             gate.set()
-        await asyncio.wait_for(_frame_record.flush_for_tests(), timeout=10)
+        await await_until(asyncio.ensure_future(_frame_record.flush_for_tests()))
         ids = [json.loads(ln)["id"] for ln in (tmp_path / "kas.jsonl").read_text().splitlines()]
         assert ids == [0, 1, 2], "frames must land in arrival order"
 
@@ -933,7 +934,9 @@ async def test_a_full_queue_drops_and_stands_down_instead_of_waiting(monkeypatch
         monkeypatch.setattr(_frame_record, "write_frame", lambda *a: gate.wait(timeout=10))
         try:
             for i in range(4):
-                await asyncio.wait_for(_frame_record.record_frame("kas", {"id": i}), timeout=0.5)
+                await asyncio.wait_for(  # flake-ok: latency assertion – record_frame must not await write_frame; wedged writer takes ~10 s
+                    _frame_record.record_frame("kas", {"id": i}), timeout=0.5
+                )
         finally:
             gate.set()
         assert _frame_record.recording_destination() == "", "an overflow must stand recording down"
@@ -958,7 +961,7 @@ async def test_a_burst_of_large_frames_is_bounded_by_bytes_not_count(monkeypatch
         monkeypatch.setattr(_frame_record, "write_frame", lambda *a: gate.wait(timeout=10))
         try:
             for i in range(3):
-                await asyncio.wait_for(
+                await asyncio.wait_for(  # flake-ok: latency assertion – record_frame must not await write_frame; wedged writer takes ~10 s
                     _frame_record.record_frame("kas", {"id": i}, wire_bytes=1024), timeout=0.5
                 )
                 if i < 2:
@@ -1124,7 +1127,7 @@ async def test_one_failure_logs_once_and_discards_the_backlog(monkeypatch, tmp_p
             for i in range(5):
                 await _frame_record.record_frame("kas", {"id": i}, wire_bytes=10)
             gate.set()
-            await asyncio.wait_for(_frame_record.flush_for_tests(), timeout=10)
+            await await_until(asyncio.ensure_future(_frame_record.flush_for_tests()))
         assert attempts == [0], f"queued frames were retried after the stand-down: {attempts}"
         warnings = [r for r in caplog.records if "recording failed" in r.getMessage()]
         assert len(warnings) == 1, [r.getMessage() for r in warnings]

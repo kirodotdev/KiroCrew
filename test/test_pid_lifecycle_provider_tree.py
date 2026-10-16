@@ -19,6 +19,7 @@ import pytest
 from pid_lifecycle_helpers import _POSIX_ONLY
 
 from kiro_crew import platform_compat
+from kiro_crew.testing.wait import wait_until
 
 # A grandchild that ignores SIGTERM, so only a SIGKILL that actually reaches it
 # can end it. ``{setsid}`` is filled with ``os.setsid()`` for the variant that
@@ -180,24 +181,28 @@ class TestSyncKillProviderTree:
         """Wait for the root's fork to appear; return the (pinned) descendant pids."""
         from kiro_crew.acp.client import _get_child_pids
 
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            found = _get_child_pids(pid)
-            if found:
-                self._pin(*found)
-                return found
-            time.sleep(0.05)
-        raise AssertionError(f"grandchild of {pid} never appeared")
+        found = wait_until(
+            lambda: _get_child_pids(pid),
+            timeout=timeout,
+            describe=lambda: f"no descendants of {pid} yet",
+        )
+        self._pin(*found)
+        return found
 
     @staticmethod
     def _await_gone(pids: list[int], timeout: float = 10.0) -> list[int]:
         """Return the pids still alive after waiting up to *timeout*."""
-        deadline = time.monotonic() + timeout
         alive = list(pids)
-        while alive and time.monotonic() < deadline:
-            alive = [p for p in alive if platform_compat.pid_exists(p)]
-            if alive:
-                time.sleep(0.05)
+
+        def _all_gone() -> bool:
+            nonlocal alive
+            alive = [p for p in pids if platform_compat.pid_exists(p)]
+            return not alive
+
+        try:
+            wait_until(_all_gone, timeout=timeout)
+        except AssertionError:
+            pass  # return survivors below
         return alive
 
     #: ``os.waitid`` is Linux-only in CPython -- macOS has the syscall but the module
@@ -278,7 +283,7 @@ class TestSyncKillProviderTree:
             return None
         return None if state[0].startswith("Z") else state[0]
 
-    def _assert_tree_stopped(self, root: "subprocess.Popen", descendants: list[int]) -> None:
+    def _assert_tree_stopped(self, root: subprocess.Popen, descendants: list[int]) -> None:
         """Nothing of the tree is running, and the root's status is accounted for.
 
         STOPPED is what the teardown promises: the root exited and no recorded
@@ -315,10 +320,16 @@ class TestSyncKillProviderTree:
             return max(0.0, deadline - time.monotonic())
 
         alive = list(descendants)
-        while alive and time.monotonic() < deadline:
+
+        def _desc_gone() -> bool:
+            nonlocal alive
             alive = [pid for pid in alive if platform_compat.pid_exists(pid)]
-            if alive:
-                time.sleep(0.05)
+            return not alive
+
+        try:
+            wait_until(_desc_gone, timeout=max(0.0, deadline - time.monotonic()))
+        except AssertionError:
+            pass
         running = {pid: state for pid in alive if (state := self._running_state(pid)) is not None}
         assert not running, f"the teardown left a descendant running: {running}"
 
@@ -326,8 +337,11 @@ class TestSyncKillProviderTree:
             # Where a non-destructive peek exists, observe the EXIT separately: a
             # still-running child answers the peek with "nothing to collect", which the
             # collection assertion below cannot tell from a status already taken.
-            while time.monotonic() < deadline and not self._our_child_exited(root.pid):
-                time.sleep(0.05)
+            wait_until(
+                lambda: self._our_child_exited(root.pid),
+                timeout=max(0.0, deadline - time.monotonic()),
+                describe=lambda: "the teardown left the root running",
+            )
             assert self._our_child_exited(root.pid), "the teardown left the root running"
 
         # WHO COLLECTED THE STATUS, asserted of production on every platform and
@@ -337,8 +351,11 @@ class TestSyncKillProviderTree:
         # same question is read through the pid: a collected child is released, so a
         # pid that still answers is one whose status nobody has taken -- and that
         # reading also covers the exit, because a running child answers too.
-        while time.monotonic() < deadline and self._status_still_collectable(root.pid):
-            time.sleep(0.05)
+        wait_until(
+            lambda: not self._status_still_collectable(root.pid),
+            timeout=max(0.0, deadline - time.monotonic()),
+            describe=lambda: "root exit status still uncollected",
+        )
         assert not self._status_still_collectable(root.pid), (
             "the teardown left the root's exit status uncollected: "
             "_reap_provider_root did not reap it"
@@ -372,11 +389,18 @@ class TestSyncKillProviderTree:
         for pid in pids:
             assert pid in self._pinned, f"pid {pid} was never pinned; call _pin at spawn"
             identity = platform_compat.process_start_time(pid)
-            for _ in range(3):
-                if identity is not None or not platform_compat.pid_exists(pid):
-                    break
-                time.sleep(0.2)
-                identity = platform_compat.process_start_time(pid)
+            if identity is None and platform_compat.pid_exists(pid):
+                try:
+                    found = wait_until(
+                        lambda pid=pid: platform_compat.process_start_time(pid)
+                        or not platform_compat.pid_exists(pid),
+                        timeout=0.6,
+                        describe=lambda pid=pid: f"start time for {pid} still unreadable",
+                    )
+                    if isinstance(found, str):
+                        identity = found  # use the identity the predicate already read
+                except AssertionError:
+                    pass  # unreadable after retries; unconfirmable path handles it
             if identity is None and platform_compat.pid_exists(pid):
                 unconfirmable.append(pid)
                 continue
@@ -413,9 +437,13 @@ class TestSyncKillProviderTree:
         live = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
         try:
             deadline = time.monotonic() + 10.0
-            while platform_compat.pid_exists(zombie.pid) and self._running_state(zombie.pid):
-                assert time.monotonic() < deadline, "the child never became a zombie"
-                time.sleep(0.01)
+            wait_until(
+                lambda: not (
+                    platform_compat.pid_exists(zombie.pid) and self._running_state(zombie.pid)
+                ),
+                timeout=max(0.0, deadline - time.monotonic()),
+                describe=lambda: "child never became a zombie",
+            )
             assert platform_compat.pid_exists(
                 zombie.pid
             ), "the pid was collected, so there is no zombie left to classify"
@@ -475,8 +503,11 @@ class TestSyncKillProviderTree:
             escaped = grandchildren[0]
             # Precondition: it left the group, so killpg provably misses it.
             deadline = time.monotonic() + 10.0
-            while os.getpgid(escaped) == root.pid and time.monotonic() < deadline:
-                time.sleep(0.05)
+            wait_until(
+                lambda: os.getpgid(escaped) != root.pid,
+                timeout=max(0.0, deadline - time.monotonic()),
+                describe=lambda: f"pid {escaped} still in root's group",
+            )
             assert os.getpgid(escaped) != root.pid
 
             _sync_kill_provider(self._provider(root.pid))
@@ -860,7 +891,7 @@ class TestSyncKillProviderTree:
             provider = self._provider(root.pid)
             real_start_id = platform_compat.get_process_start_id
 
-            def _unreadable_once_exited(probe_pid: int) -> "str | None":
+            def _unreadable_once_exited(probe_pid: int) -> str | None:
                 if probe_pid == root.pid and self._our_child_exited(probe_pid):
                     return None
                 return real_start_id(probe_pid)
@@ -872,8 +903,11 @@ class TestSyncKillProviderTree:
             _sync_kill_provider(provider)
 
             deadline = time.monotonic() + 10.0
-            while time.monotonic() < deadline and not self._our_child_exited(root.pid):
-                time.sleep(0.05)
+            wait_until(
+                lambda: self._our_child_exited(root.pid),
+                timeout=max(0.0, deadline - time.monotonic()),
+                describe=lambda: "the root was not killed",
+            )
             assert self._our_child_exited(root.pid), "the root was not killed"
             assert self._await_gone(grandchildren) == [], "a descendant kept running"
             assert self._status_still_collectable(
@@ -914,9 +948,11 @@ class TestSyncKillProviderTree:
             child.kill()
             if self._HAS_WAITID:
                 deadline = time.monotonic() + 10
-                while not self._our_child_exited(child.pid):
-                    assert time.monotonic() < deadline, "the child never exited"
-                    time.sleep(0.01)
+                wait_until(
+                    lambda: self._our_child_exited(child.pid),
+                    timeout=max(0.0, deadline - time.monotonic()),
+                    describe=lambda: "the child never exited",
+                )
             else:
                 # No non-destructive peek here, and consuming the status to look at it
                 # would destroy what the refusal arm inspects. SIGKILL cannot be caught
@@ -1099,7 +1135,7 @@ class TestSyncKillProviderTree:
             deadline = time.monotonic() + 1.0
             while time.monotonic() < deadline:
                 assert bystander.poll() is None, "a pid failing verification was signalled"
-                time.sleep(0.05)
+                time.sleep(0.05)  # flake-ok: absence check over bounded window; no signal to await
         finally:
             self._reap([root.pid, bystander.pid])
             root.wait(timeout=10)
@@ -1222,13 +1258,12 @@ class TestSyncKillProviderTree:
             tmp_path
         )
         try:
-            deadline = time.monotonic() + 10.0
-            while time.monotonic() < deadline:
-                if (tmp_path / str(witness_pid)).exists() and (
-                    tmp_path / str(unrecorded_pid)
-                ).exists():
-                    break
-                time.sleep(0.05)
+            wait_until(
+                lambda: (tmp_path / str(witness_pid)).exists()
+                and (tmp_path / str(unrecorded_pid)).exists(),
+                timeout=10.0,
+                describe=lambda: "children never installed SIGTERM handlers",
+            )
             assert (
                 tmp_path / str(witness_pid)
             ).exists(), "the recorded child never installed its SIGTERM handler"
@@ -1460,18 +1495,18 @@ class TestReapProviderRoot:
     """
 
     @staticmethod
-    def _zombie() -> "tuple[subprocess.Popen, int]":
+    def _zombie() -> tuple[subprocess.Popen, int]:
         """A real unreaped zombie: exited, never waited on. Returns it and its pid."""
         proc = subprocess.Popen([sys.executable, "-c", "raise SystemExit(0)"])
-        deadline = time.monotonic() + 10.0
-        while time.monotonic() < deadline:
+        wait_until(
+            lambda: TestSyncKillProviderTree._status_still_collectable(proc.pid),
+            timeout=10.0,
             # Deliberately NOT poll()/wait() -- either would reap it and free the pid.
-            if TestSyncKillProviderTree._status_still_collectable(proc.pid):
-                return proc, proc.pid
-            time.sleep(0.02)
-        raise AssertionError(f"child {proc.pid} never became a zombie")
+            describe=lambda: f"child {proc.pid} never became a zombie",
+        )
+        return proc, proc.pid
 
-    def _assert_refused(self, live_id: "str | None", monkeypatch: pytest.MonkeyPatch) -> None:
+    def _assert_refused(self, live_id: str | None, monkeypatch: pytest.MonkeyPatch) -> None:
         from kiro_crew import session_pid as sp
 
         proc, pid = self._zombie()

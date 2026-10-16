@@ -23,6 +23,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.security import paths as security_paths
 from kiro_crew.session_cleanup import SessionCleanup
+from kiro_crew.testing.wait import await_until
 from kiro_crew.watchdog import CleanupHook, SessionWatchdog
 
 
@@ -201,11 +202,11 @@ def child_lines(lifecycle):
 @pytest.mark.parametrize("resume", [False, True], ids=["new", "load"])
 async def test_session_start_persists_new_descendants(lifecycle, monkeypatch, resume):
     rt, resident, _ = make_runtime(lifecycle, monkeypatch)
-    sibling = await asyncio.wait_for(rt.create_session(mcp_servers=[]), 5)
+    sibling = await await_until(asyncio.ensure_future(rt.create_session(mcp_servers=[])))
     sibling_record = dict(rt._child_pids)
     assert child_lines(lifecycle) == {"1001:1000:child-1001"}
 
-    handle = await asyncio.wait_for(open_session(rt, resume), 5)
+    handle = await await_until(asyncio.ensure_future(open_session(rt, resume)))
 
     assert resident[handle.session_id] == 1002
     assert rt._child_pids == {**sibling_record, 1002: ("child-1002", b"node")}
@@ -221,7 +222,7 @@ async def test_cancelled_descendant_scan_terminates_only_failed_session(
     lifecycle, monkeypatch, resume
 ):
     rt, resident, terminated = make_runtime(lifecycle, monkeypatch)
-    sibling = await asyncio.wait_for(rt.create_session(mcp_servers=[]), 5)
+    sibling = await await_until(asyncio.ensure_future(rt.create_session(mcp_servers=[])))
     entered = asyncio.Event()
     snapshot = rt._snapshot_descendants
 
@@ -232,17 +233,17 @@ async def test_cancelled_descendant_scan_terminates_only_failed_session(
     monkeypatch.setattr(rt, "_snapshot_descendants", observed_snapshot)
     # Hold the real scan lock. The wrapper signals before delegating, and the
     # task cannot yield back until the production scan waits on this lock.
-    await asyncio.wait_for(rt._descendant_scan_lock.acquire(), 5)
+    await await_until(asyncio.ensure_future(rt._descendant_scan_lock.acquire()))
     task = asyncio.create_task(open_session(rt, resume))
     try:
-        await asyncio.wait_for(entered.wait(), 5)
+        await await_until(entered)
         failed_sid = "resumed" if resume else "session-1"
         assert resident[failed_sid] == 1002
         assert failed_sid in rt._session_queues
         assert not task.done()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 5)
+            await await_until(task)
         assert terminated == [failed_sid]
         assert resident == {sibling.session_id: 1001}
         assert 1002 not in lifecycle.kernel.tokens
@@ -250,13 +251,13 @@ async def test_cancelled_descendant_scan_terminates_only_failed_session(
         assert child_lines(lifecycle) == {"1001:1000:child-1001"}
         assert rt.is_alive()
         # Exercise a real handle operation after the failed co-tenant's unwind.
-        await asyncio.wait_for(sibling.set_mode("kirocrew"), 5)
+        await await_until(asyncio.ensure_future(sibling.set_mode("kirocrew")))
         assert lifecycle.kernel.signals == []
     finally:
         rt._descendant_scan_lock.release()
         if not task.done():
             task.cancel()
-        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 5)
+        await await_until(asyncio.gather(task, return_exceptions=True))
 
 
 @pytest.mark.asyncio
@@ -282,7 +283,7 @@ async def test_repeated_kill_retains_escapees_for_periodic_cleanup(lifecycle, mo
         await asyncio.to_thread(session_pid._track_pid, root)
         await asyncio.to_thread(session_pid._track_session_pid, root)
         session_pid.register_protected_pid(root)
-        await asyncio.wait_for(rt._snapshot_descendants(), 5)
+        await await_until(asyncio.ensure_future(rt._snapshot_descendants()))
         assert len(rt._child_pids) == 4
         # Three leave the group. One is then recycled; another moves under a
         # live foreign parent. Only the exact recorded orphan may be signalled.
@@ -291,7 +292,7 @@ async def test_repeated_kill_retains_escapees_for_periodic_cleanup(lifecycle, mo
         kernel.tokens[recycled] = "unrelated-incarnation"
         kernel.parents[foreign] = 900
         before = len(kernel.signals)
-        await asyncio.wait_for(rt.kill(expected=True), 5)
+        await await_until(asyncio.ensure_future(rt.kill(expected=True)))
         assert rt._process is None and rt._dead and rt._child_pids == {}
         assert root not in session_pid._PROTECTED_PIDS
         assert (lifecycle.home / "kiro_session_pids.txt").read_text(encoding="utf-8") == ""
@@ -301,7 +302,7 @@ async def test_repeated_kill_retains_escapees_for_periodic_cleanup(lifecycle, mo
         assert ordinary not in kernel.tokens
         assert kernel.signals[before:] == [(root, platform_compat.SIGTERM)]
 
-        await asyncio.wait_for(watchdog.tick(), 5)
+        await await_until(asyncio.ensure_future(watchdog.tick()))
         assert escapee not in kernel.tokens, "periodic hook must recover the recorded escapee"
         assert kernel.tokens[recycled] == "unrelated-incarnation"
         assert kernel.tokens[foreign] == f"child-{foreign}"
@@ -311,6 +312,6 @@ async def test_repeated_kill_retains_escapees_for_periodic_cleanup(lifecycle, mo
         ]
         assert child_lines(lifecycle) == set()
         # Retrying teardown and ticking an empty file cannot signal twice.
-        await asyncio.wait_for(rt.kill(expected=True), 5)
-        await asyncio.wait_for(watchdog.tick(), 5)
+        await await_until(asyncio.ensure_future(rt.kill(expected=True)))
+        await await_until(asyncio.ensure_future(watchdog.tick()))
         assert len(kernel.signals) == before + 2

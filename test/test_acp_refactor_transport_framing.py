@@ -21,6 +21,7 @@ import pytest
 
 from kiro_crew.acp import client as acp_client
 from kiro_crew.acp import runtime as acp_runtime
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # Upper bound for an await the test itself must unblock. It exists so a hang fails
 # here by name rather than as pytest's --timeout; no passing run measures it.
@@ -127,7 +128,7 @@ async def test_awaitable_completing_as_the_window_closes_counts_as_completed():
             await aw
         except Exception:
             pass
-        raise asyncio.TimeoutError()
+        raise TimeoutError()
 
     async def _ok() -> int:
         return 1
@@ -163,27 +164,23 @@ async def test_notification_cancelled_waiting_for_the_lock_writes_nothing():
     try:
         # The level is probed once the lock acquire is in flight, right before the
         # bounded wait on it begins: that is the moment to cancel.
-        await asyncio.wait_for(transport.probed.wait(), timeout=_BACKSTOP)
+        await await_until(transport.probed)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=_BACKSTOP)
+            await await_until(task)
     finally:
         if not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         lock.release()
 
-    async def _until_unlocked() -> None:
-        while lock.locked():
-            await asyncio.sleep(0)
-
-    await asyncio.wait_for(_until_unlocked(), timeout=_BACKSTOP)
+    await async_wait_until(lambda: not lock.locked())
     assert stdin.writes == []
 
 
 async def _overrun(reader: asyncio.StreamReader) -> asyncio.LimitOverrunError:
     with pytest.raises(asyncio.LimitOverrunError) as caught:
-        await asyncio.wait_for(reader.readuntil(b"\n"), timeout=_BACKSTOP)
+        await await_until(asyncio.ensure_future(reader.readuntil(b"\n")))
     return caught.value
 
 
@@ -193,11 +190,9 @@ async def test_drain_discards_one_line_and_leaves_the_reader_on_the_next_frame()
     reader.feed_data(b"0123456789ABCDEF\nNEXT\n")
     reader.feed_eof()
     exc = await _overrun(reader)
-    drained = await asyncio.wait_for(
-        acp_client._drain_oversize_line(reader, exc), timeout=_BACKSTOP
-    )
+    drained = await await_until(asyncio.ensure_future(acp_client._drain_oversize_line(reader, exc)))
     assert drained == 17
-    assert await asyncio.wait_for(reader.readuntil(b"\n"), timeout=_BACKSTOP) == b"NEXT\n"
+    assert await await_until(asyncio.ensure_future(reader.readuntil(b"\n"))) == b"NEXT\n"
 
 
 @pytest.mark.asyncio
@@ -205,9 +200,10 @@ async def test_drain_refuses_a_zero_byte_prefix():
     reader = asyncio.StreamReader(limit=8)
     reader.feed_eof()
     with pytest.raises(acp_client.OversizeLineUnrecoverable) as caught:
-        await asyncio.wait_for(
-            acp_client._drain_oversize_line(reader, asyncio.LimitOverrunError("x", 0)),
-            timeout=_BACKSTOP,
+        await await_until(
+            asyncio.ensure_future(
+                acp_client._drain_oversize_line(reader, asyncio.LimitOverrunError("x", 0))
+            )
         )
     assert str(caught.value) == "stream reported a 0-byte oversize prefix"
 
@@ -220,5 +216,5 @@ async def test_drain_budget_is_read_through_the_facade(monkeypatch):
     reader.feed_eof()
     exc = await _overrun(reader)
     with pytest.raises(acp_client.OversizeLineUnrecoverable) as caught:
-        await asyncio.wait_for(acp_client._drain_oversize_line(reader, exc), timeout=_BACKSTOP)
+        await await_until(asyncio.ensure_future(acp_client._drain_oversize_line(reader, exc)))
     assert str(caught.value) == "discarded 64 bytes with no frame boundary (limit 10)"

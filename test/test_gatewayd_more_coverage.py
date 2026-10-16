@@ -24,7 +24,7 @@ import logging
 import sys
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -38,6 +38,7 @@ from kiro_crew.mcp_gateway.backend import (
     has_recyclable_in_flight,
 )
 from kiro_crew.mcp_gateway.pool import BackendUnavailable, PoolAtCapacity, PoolKey
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 pytestmark = pytest.mark.xdist_group("mcp_gateway")
 
@@ -204,9 +205,7 @@ def peer_ok(monkeypatch):
 
 class TestPeerGate:
     @pytest.mark.asyncio
-    async def test_mismatched_peer_is_refused_before_the_first_frame_is_read(
-        self, monkeypatch
-    ):
+    async def test_mismatched_peer_is_refused_before_the_first_frame_is_read(self, monkeypatch):
         """On a platform with no identity mechanism a positively-parsed foreign
         principal is still refused -- and refused before any frame is read."""
         monkeypatch.setattr(gw.socketsec, "PEER_IDENTITY_SUPPORTED", False)
@@ -304,16 +303,12 @@ class TestControlFrames:
         ]
 
     @pytest.mark.asyncio
-    async def test_stats_omits_warm_keys_when_prewarming_is_disabled(
-        self, peer_ok, monkeypatch
-    ):
+    async def test_stats_omits_warm_keys_when_prewarming_is_disabled(self, peer_ok, monkeypatch):
         _fb = {"window_secs": 1, "total": 0, "by_server": {}, "by_reason": {}}
         monkeypatch.setattr(gw, "stub_fallback_counts", lambda: _fb)
         writer = _FakeWriter()
         await _handle(_ScriptedReader({"type": "stats"}), writer, _fake_pool())
-        assert writer.frames() == [
-            {"type": "stats", "backends": 0, "stub_fallbacks": _fb}
-        ]
+        assert writer.frames() == [{"type": "stats", "backends": 0, "stub_fallbacks": _fb}]
 
     @pytest.mark.asyncio
     async def test_abort_frame_cancels_in_flight_work_for_the_named_runtime(self, peer_ok):
@@ -342,9 +337,7 @@ class TestControlFrames:
 
         monkeypatch.setattr(backend_mod, "_mcp_apps_enabled", lambda: False)
         audits: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
-        monkeypatch.setattr(
-            app_call_mod, "_audit", lambda *a, **k: audits.append((a, k))
-        )
+        monkeypatch.setattr(app_call_mod, "_audit", lambda *a, **k: audits.append((a, k)))
         forwarded = AsyncMock()
         monkeypatch.setattr(app_call_mod, "handle_app_call", forwarded)
         writer = _FakeWriter()
@@ -470,9 +463,7 @@ class TestRegisterBookkeeping:
         assert frames[0]["capabilities"] == list(gw.REGISTERED_CAPABILITIES)
 
     @pytest.mark.asyncio
-    async def test_peer_identity_resolution_failure_leaves_the_stub_unidentified(
-        self, monkeypatch
-    ):
+    async def test_peer_identity_resolution_failure_leaves_the_stub_unidentified(self, monkeypatch):
         monkeypatch.setattr(gw.socketsec, "PEER_IDENTITY_SUPPORTED", True)
         monkeypatch.setattr(
             gw.socketsec, "check_peer_is_self", lambda w: gw.socketsec.PeerCredResult.MATCH
@@ -503,7 +494,7 @@ class TestRegisterBookkeeping:
         """A failed start-token snapshot must degrade to 'unknown', not deny:
         an empty map makes every later claim count as a match."""
 
-        def _boom(pid: int) -> Optional[str]:
+        def _boom(pid: int) -> str | None:
             raise OSError("procfs unreadable")
 
         monkeypatch.setattr(gw, "_get_process_start_id", _boom)
@@ -616,9 +607,7 @@ class TestBridgeFrameHygiene:
     @pytest.mark.parametrize(
         "bad_frame",
         [
-            b'{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"n":'
-            + b"9" * 5000
-            + b"}}\n",
+            b'{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"n":' + b"9" * 5000 + b"}}\n",
             b'{"jsonrpc":"2.0","id":7,"method":"tools/list","params":{"s":"\xff"}}\n',
             b'{"method":"tools/list","params":{"s":"\xff"},"jsonrpc":"2.0","id":7}\n',
         ],
@@ -666,16 +655,12 @@ class TestBridgeFrameHygiene:
         assert [f.get("type") for f in writer.frames()] == ["registered", "pong"]
 
     @pytest.mark.asyncio
-    async def test_bridge_ping_is_answered_without_acquiring_a_backend(
-        self, peer_ok, monkeypatch
-    ):
+    async def test_bridge_ping_is_answered_without_acquiring_a_backend(self, peer_ok, monkeypatch):
         acquire = AsyncMock()
         monkeypatch.setattr(gw, "_acquire_backend", acquire)
         writer = _FakeWriter()
 
-        await _handle(
-            _ScriptedReader(_register_frame(), {"type": "ping"}), writer, _fake_pool()
-        )
+        await _handle(_ScriptedReader(_register_frame(), {"type": "ping"}), writer, _fake_pool())
 
         assert [f["type"] for f in writer.frames()] == ["registered", "pong"]
         acquire.assert_not_awaited()
@@ -763,9 +748,7 @@ class TestEnsureBackendRejections:
         monkeypatch.setattr(
             gw, audit, lambda caller, label, reason: audited.append((caller, label, reason))
         )
-        reader = _ScriptedReader(
-            _register_frame(), {"type": "ensure_backend"}, {"type": "ping"}
-        )
+        reader = _ScriptedReader(_register_frame(), {"type": "ensure_backend"}, {"type": "ping"})
         writer = _FakeWriter()
 
         await _handle(reader, writer, _fake_pool())
@@ -785,9 +768,7 @@ class TestEnsureBackendRejections:
         pool = _fake_pool()
         writer = _FakeWriter()
 
-        await _handle(
-            _ScriptedReader(_register_frame(), {"type": "ensure_backend"}), writer, pool
-        )
+        await _handle(_ScriptedReader(_register_frame(), {"type": "ensure_backend"}), writer, pool)
 
         assert [f["type"] for f in writer.frames()] == ["registered", "ready"]
         # Reservation released once the attach made refcount>0 protect the key,
@@ -807,9 +788,7 @@ class TestEnsureBackendRejections:
         register.pop("poolable")
         pool = _fake_pool()
 
-        await _handle(
-            _ScriptedReader(register, {"type": "ensure_backend"}), _FakeWriter(), pool
-        )
+        await _handle(_ScriptedReader(register, {"type": "ensure_backend"}), _FakeWriter(), pool)
 
         pool.unreserve.assert_not_called()
         pool.release_exclusive.assert_awaited_once_with(_STUB)
@@ -847,9 +826,7 @@ class TestLazySpawnRejections:
         writer = _FakeWriter()
 
         await _handle(
-            _ScriptedReader(
-                _register_frame(), {"jsonrpc": "2.0", "id": 4, "method": "tools/list"}
-            ),
+            _ScriptedReader(_register_frame(), {"jsonrpc": "2.0", "id": 4, "method": "tools/list"}),
             writer,
             _fake_pool(),
         )
@@ -893,9 +870,7 @@ class TestBackendGoneHandling:
         assert reader.remaining == 1, "a terminal error must close the connection"
 
     @pytest.mark.asyncio
-    async def test_a_refused_replacement_tells_the_session_why(
-        self, peer_ok, monkeypatch
-    ):
+    async def test_a_refused_replacement_tells_the_session_why(self, peer_ok, monkeypatch):
         """A validated-and-rejected replacement is not the same event as an
         unrecoverable spawn, and the client is the only party that could act on
         knowing the tool set moved — the log and the audit trail are not visible
@@ -941,7 +916,7 @@ class TestBackendGoneHandling:
         monkeypatch.setattr(gw, "_acquire_backend", AsyncMock(return_value=(backend, True)))
 
         fresh = _fake_backend(pid=5151)
-        inbox: "asyncio.Queue[bytes]" = asyncio.Queue()
+        inbox: asyncio.Queue[bytes] = asyncio.Queue()
         replacement = asyncio.create_task(asyncio.Event().wait(), name="cov-drain")
         respawn_args: list[tuple[Any, ...]] = []
 
@@ -1026,8 +1001,7 @@ class TestDisconnectTeardown:
             _ScriptedReader(
                 _register_frame(),
                 {"type": "ensure_backend"},
-                {"jsonrpc": "2.0", "method": "notifications/cancelled",
-                 "params": {"requestId": 7}},
+                {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 7}},
             ),
             _FakeWriter(),
             _fake_pool(),
@@ -1041,9 +1015,7 @@ class TestDisconnectTeardown:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("method", sorted(_RECYCLE_EXEMPT_METHODS))
-    async def test_an_abandoned_listing_keeps_the_warm_backend(
-        self, peer_ok, monkeypatch, method
-    ):
+    async def test_an_abandoned_listing_keeps_the_warm_backend(self, peer_ok, monkeypatch, method):
         """a stub that leaves with only a listing in flight must not cost
         the backend it just started."""
         backend = _fake_backend()
@@ -1144,9 +1116,7 @@ class TestDisconnectTeardown:
     ):
         backend = _fake_backend()
         monkeypatch.setattr(gw, "_acquire_backend", AsyncMock(return_value=(backend, True)))
-        pool = _fake_pool(
-            release_exclusive=AsyncMock(side_effect=RuntimeError("pool wedged"))
-        )
+        pool = _fake_pool(release_exclusive=AsyncMock(side_effect=RuntimeError("pool wedged")))
 
         # The handler must return normally: a teardown-time failure here would
         # otherwise skip the writer-task cancel and mask the real cause.
@@ -1228,11 +1198,11 @@ class TestRunGatewaydLifecycle:
             )
         )
         try:
-            await asyncio.wait_for(first_warm.wait(), timeout=10)
+            await await_until(first_warm)
             assert socket_path.exists(), "the endpoint must be bound before warming"
         finally:
             stop_event.set()
-            await asyncio.wait_for(daemon, timeout=15)
+            await await_until(daemon)
 
         # max_backends=2 clamps prewarm_count 5 -> 1, so only the hottest key
         # is warmed and audited.
@@ -1266,15 +1236,12 @@ class TestRunGatewaydLifecycle:
             )
         )
         try:
-            for _ in range(500):
-                if socket_path.exists():
-                    break
-                await asyncio.sleep(0.02)
+            await async_wait_until(socket_path.exists)
             assert socket_path.exists(), "the daemon never bound its endpoint"
             with caplog.at_level(logging.ERROR, logger=gw.logger.name):
                 _, writer = await asyncio.open_unix_connection(str(socket_path))
                 writer.close()
-                await asyncio.wait_for(handled.wait(), timeout=10)
+                await await_until(handled)
                 # The accept loop survives a crashing handler: a second
                 # connection is still accepted.
                 _, writer2 = await asyncio.open_unix_connection(str(socket_path))
@@ -1282,7 +1249,7 @@ class TestRunGatewaydLifecycle:
                 await asyncio.sleep(0.05)
         finally:
             stop_event.set()
-            await asyncio.wait_for(daemon, timeout=15)
+            await await_until(daemon)
 
         assert any("connection handler crashed" in rec.message for rec in caplog.records)
 
@@ -1310,23 +1277,18 @@ class TestRunGatewaydLifecycle:
             )
         )
         try:
-            for _ in range(500):
-                if socket_path.exists():
-                    break
-                await asyncio.sleep(0.02)
+            await async_wait_until(socket_path.exists)
             assert socket_path.exists(), "the daemon never bound its endpoint"
             with caplog.at_level(logging.ERROR, logger=gw.logger.name):
                 _, writer = await asyncio.open_unix_connection(str(socket_path))
                 writer.close()
-                await asyncio.wait_for(handled.wait(), timeout=10)
+                await await_until(handled)
                 # A reset peer is routine: the accept loop still serves.
                 _, writer2 = await asyncio.open_unix_connection(str(socket_path))
                 writer2.close()
                 await asyncio.sleep(0.05)
         finally:
             stop_event.set()
-            await asyncio.wait_for(daemon, timeout=15)
+            await await_until(daemon)
 
-        assert not any(
-            "connection handler crashed" in rec.message for rec in caplog.records
-        )
+        assert not any("connection handler crashed" in rec.message for rec in caplog.records)

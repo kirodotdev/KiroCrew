@@ -41,6 +41,7 @@ import kiro_crew.acp.runtime as runtime_mod
 from kiro_crew.acp.client import AcpClient, _resolve_spawn_env
 from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
+from kiro_crew.testing.wait import await_until
 
 # A pid above every supported platform's pid_max: a cleanup path that signals it
 # reaches nothing on the runner (same spelling as test/test_update_provider.py).
@@ -594,7 +595,10 @@ class TestRuntimeSpawnCarriesItsInstance:
 
     @pytest.mark.asyncio
     async def test_env_instance_matches_process_instance(self, tmp_path, monkeypatch) -> None:
-        from kiro_crew.constants import KIROCREW_SPAWN_INSTANCE_ENV, KIROCREW_SPAWNED_ENV
+        from kiro_crew.constants import (
+            KIROCREW_SPAWN_INSTANCE_ENV,
+            KIROCREW_SPAWNED_ENV,
+        )
 
         class _StopSpawn(Exception):
             pass
@@ -645,9 +649,9 @@ class TestRuntimeProjectedLaunchDocuments:
         *,
         inherits: bool,
         projected_error: type[Exception] | None = None,
-        mid_spawn: "Callable[[AcpRuntime], None] | None" = None,
-        mid_record: "Callable[[AcpRuntime], None] | None" = None,
-        before_spawn: "Callable[[AcpRuntime], None] | None" = None,
+        mid_spawn: Callable[[AcpRuntime], None] | None = None,
+        mid_record: Callable[[AcpRuntime], None] | None = None,
+        before_spawn: Callable[[AcpRuntime], None] | None = None,
         member_plan: dict[str, str] | None = None,
     ) -> tuple[AcpRuntime, list[dict]]:
         from kiro_crew import member_essential_context
@@ -1349,13 +1353,10 @@ class TestRuntimeShieldSurvivesAFailedAppend:
             readers = []
             try:
                 if raise_in != "finish_suspended_spawn":
-                    await asyncio.wait_for(initialized.wait(), 5)
+                    await await_until(initialized)
                     readers = [runtime._reader_task, runtime._stderr_task]
-                    await asyncio.wait_for(
-                        asyncio.gather(
-                            process.stdout.reading.wait(), process.stderr.reading.wait()
-                        ),
-                        5,
+                    await await_until(
+                        asyncio.gather(process.stdout.reading.wait(), process.stderr.reading.wait())
                     )
                     assert all(reader is not None and not reader.done() for reader in readers)
                     assert root in session_pid._PROTECTED_PIDS
@@ -1379,13 +1380,13 @@ class TestRuntimeShieldSurvivesAFailedAppend:
                         )
                 if raise_in == "cancel":
                     with pytest.raises(asyncio.CancelledError, match="cancel pending initialize"):
-                        await asyncio.wait_for(task, 5)
+                        await await_until(task)
                 elif raise_in == "initialize":
                     with pytest.raises(runtime_mod.AcpRuntimeError, match="initialize rejected"):
-                        await asyncio.wait_for(task, 5)
+                        await await_until(task)
                 else:
                     with pytest.raises(OSError) as caught:
-                        await asyncio.wait_for(task, 5)
+                        await await_until(task)
                     assert caught.value is boom
                     assert runtime._reader_task is None and runtime._stderr_task is None
 
@@ -1416,8 +1417,10 @@ class TestRuntimeShieldSurvivesAFailedAppend:
                 for pending in owned:
                     if pending is not None and not pending.done():
                         pending.cancel()
-                await asyncio.wait_for(
-                    asyncio.gather(*(t for t in owned if t is not None), return_exceptions=True), 5
+                await await_until(
+                    asyncio.ensure_future(
+                        asyncio.gather(*(t for t in owned if t is not None), return_exceptions=True)
+                    )
                 )
 
     @pytest.mark.asyncio
@@ -1607,7 +1610,7 @@ class TestRuntimeRootTrackingOffLoop:
 
         runtime = AcpRuntime(work_dir=tmp_path / "workspace")
         task = asyncio.ensure_future(runtime.spawn())
-        await asyncio.wait_for(reached_hop.wait(), timeout=10)
+        await await_until(reached_hop)
         await asyncio.sleep(0)
         assert not task.done()
 
@@ -1665,7 +1668,7 @@ class TestRuntimeRootTrackingOffLoop:
 
         runtime = AcpRuntime(work_dir=tmp_path / "workspace")
         task = asyncio.ensure_future(runtime.spawn())
-        await asyncio.wait_for(reached_hop.wait(), timeout=10)
+        await await_until(reached_hop)
         await asyncio.sleep(0)
 
         task.cancel()  # first: at the hop

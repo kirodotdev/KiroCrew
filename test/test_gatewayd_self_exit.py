@@ -28,6 +28,7 @@ import pytest
 from conftest import host_abs
 from kiro_crew import session_pid as sp
 from kiro_crew.mcp_gateway import gatewayd as gw
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # POSIX process/socket semantics: ``os.killpg`` does not exist on Windows
 # (even patching it fails with AttributeError), and the daemon's endpoint
@@ -51,10 +52,10 @@ class TestSocketLivenessSweeper:
             await asyncio.sleep(0.05)
             assert not stop.is_set(), "must not exit while the path exists"
             sock.unlink()
-            await asyncio.wait_for(stop.wait(), timeout=5)
+            await await_until(stop)
             # stop_event fired by the sweeper itself — the task finishes
             # cleanly on its own.
-            await asyncio.wait_for(task, timeout=5)
+            await await_until(task)
         finally:
             if not task.done():
                 task.cancel()
@@ -68,12 +69,10 @@ class TestSocketLivenessSweeper:
         await asyncio.sleep(0.2)  # ~20 intervals, all hits
         assert not stop.is_set()
         stop.set()
-        await asyncio.wait_for(task, timeout=5)
+        await await_until(task)
 
     @pytest.mark.asyncio
-    async def test_inconclusive_stat_failure_never_triggers_exit(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_inconclusive_stat_failure_never_triggers_exit(self, tmp_path: Path) -> None:
         """EACCES-style failures are not misses — the daemon must stay up."""
         sock = tmp_path / "gw.sock"
         sock.write_text("")
@@ -90,12 +89,10 @@ class TestSocketLivenessSweeper:
             await asyncio.sleep(0.2)  # far more than 3 intervals of EACCES
             assert not stop.is_set()
             stop.set()
-            await asyncio.wait_for(task, timeout=5)
+            await await_until(task)
 
     @pytest.mark.asyncio
-    async def test_non_consecutive_misses_never_trigger_exit(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_non_consecutive_misses_never_trigger_exit(self, tmp_path: Path) -> None:
         """Misses interleaved with hits must never exit.
 
         Mutation guard for the CONSECUTIVE requirement: both removing the
@@ -120,14 +117,11 @@ class TestSocketLivenessSweeper:
             task = asyncio.create_task(gw._socket_liveness_sweeper(sock, 0.01, stop))
             # Wait for enough probes that a cumulative counter would have
             # fired many times over.
-            for _ in range(500):
-                if calls["n"] >= 12:
-                    break
-                await asyncio.sleep(0.01)
+            await async_wait_until(lambda: calls["n"] >= 12)
             assert calls["n"] >= 12, "sweeper did not probe enough to prove anything"
             assert not stop.is_set()
             stop.set()
-            await asyncio.wait_for(task, timeout=5)
+            await await_until(task)
 
     def test_armed_only_after_bind(self) -> None:
         """Structural ratchet: the liveness task is created after the bind.
@@ -148,9 +142,7 @@ class TestSocketLivenessSweeper:
 @_POSIX_ONLY
 class TestRunGatewaydSelfExit:
     @pytest.mark.asyncio
-    async def test_daemon_self_exits_when_socket_is_unlinked(
-        self, short_sock_dir: Path
-    ) -> None:
+    async def test_daemon_self_exits_when_socket_is_unlinked(self, short_sock_dir: Path) -> None:
         """End to end: bind a real endpoint, unlink it, daemon exits cleanly."""
         socket_path = short_sock_dir / "gw-selfexit.sock"
         stop_event = asyncio.Event()
@@ -168,10 +160,7 @@ class TestRunGatewaydSelfExit:
             )
         )
         try:
-            for _ in range(500):
-                if socket_path.exists():
-                    break
-                await asyncio.sleep(0.02)
+            await async_wait_until(socket_path.exists)
             assert socket_path.exists(), "the daemon never bound its endpoint"
             socket_path.unlink()
             # 3 consecutive misses at 0.5s intervals ≈ 1.5–2s, then the
@@ -181,7 +170,7 @@ class TestRunGatewaydSelfExit:
         finally:
             if not daemon.done():
                 stop_event.set()
-                await asyncio.wait_for(daemon, timeout=15)
+                await await_until(daemon)
 
     @pytest.mark.asyncio
     async def test_windows_never_arms_the_liveness_sweeper(
@@ -207,10 +196,7 @@ class TestRunGatewaydSelfExit:
             )
         )
         try:
-            for _ in range(500):
-                if socket_path.exists():
-                    break
-                await asyncio.sleep(0.02)
+            await async_wait_until(socket_path.exists)
             assert socket_path.exists(), "the daemon never bound its endpoint"
             socket_path.unlink()
             await asyncio.sleep(2.5)  # > 3 sweep intervals + margin
@@ -218,7 +204,7 @@ class TestRunGatewaydSelfExit:
             assert not stop_event.is_set()
         finally:
             stop_event.set()
-            await asyncio.wait_for(daemon, timeout=15)
+            await await_until(daemon)
 
 
 # ── session_pid gatewayd sweep predicate ───────────────────────────
@@ -266,9 +252,7 @@ class TestIsSweepableOrphanGatewayd:
         cmdline = _gatewayd_cmdline(host_abs("nonexistent-dir-3315", "gw.sock"))
         assert sp._is_sweepable_orphan_gatewayd(cmdline) is True
 
-    def test_duplicate_socket_flags_use_the_last_occurrence(
-        self, tmp_path: Path
-    ) -> None:
+    def test_duplicate_socket_flags_use_the_last_occurrence(self, tmp_path: Path) -> None:
         """argparse binds last-wins, so the LAST --socket is the path the
         daemon actually created. Statting the first would terminate a
         reachable daemon whose live socket is named later in argv."""
@@ -278,14 +262,12 @@ class TestIsSweepableOrphanGatewayd:
         base = [b"/usr/bin/python3", b"-m", b"kiro_crew.mcp_gateway.gatewayd"]
         # gone first, live last -> daemon is reachable -> NOT sweepable.
         cmdline = b"\x00".join(
-            base
-            + [b"--socket", os.fsencode(str(gone)), b"--socket", os.fsencode(str(live))]
+            base + [b"--socket", os.fsencode(str(gone)), b"--socket", os.fsencode(str(live))]
         )
         assert sp._is_sweepable_orphan_gatewayd(cmdline) is False
         # live first, gone last -> daemon bound the gone path -> sweepable.
         cmdline = b"\x00".join(
-            base
-            + [b"--socket", os.fsencode(str(live)), b"--socket", os.fsencode(str(gone))]
+            base + [b"--socket", os.fsencode(str(live)), b"--socket", os.fsencode(str(gone))]
         )
         assert sp._is_sweepable_orphan_gatewayd(cmdline) is True
         # last occurrence relative -> unresolvable -> fail closed.
@@ -447,7 +429,6 @@ class TestKillOrphanGatewayd:
         def fake_kill(pid: int, sig: int) -> None:
             if sig == signal.SIGKILL:
                 raise AssertionError("recycled PID must not be SIGKILLed")
-            return None
 
         with (
             patch("kiro_crew.session_pid.os.kill", side_effect=fake_kill),
@@ -460,9 +441,7 @@ class TestKillOrphanGatewayd:
         killpg.assert_not_called()
 
     @_POSIX_ONLY
-    def test_kill_orphan_mcps_routes_gatewayd_through_term_first(
-        self, tmp_path: Path
-    ) -> None:
+    def test_kill_orphan_mcps_routes_gatewayd_through_term_first(self, tmp_path: Path) -> None:
         """End to end through kill_orphan_mcps: fresh-cmdline re-verify picks
         the gatewayd branch and TERMs (not SIGKILLs) the daemon."""
         gone = tmp_path / "vanished.sock"
@@ -499,9 +478,7 @@ class TestKillOrphanGatewayd:
         killpg.assert_not_called()
 
     @_POSIX_ONLY
-    def test_kill_phase_age_floor_protects_a_recycled_pid(
-        self, tmp_path: Path
-    ) -> None:
+    def test_kill_phase_age_floor_protects_a_recycled_pid(self, tmp_path: Path) -> None:
         """A candidate that exits after the find phase can have its PID
         recycled by a brand-new gatewayd that has not bound its socket yet.
         The kill-phase age recheck must skip such a young process — without

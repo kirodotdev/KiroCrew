@@ -17,6 +17,7 @@ from kiro_crew.acp.client import (
 )
 from kiro_crew.acp.types import JSONRPC_METHOD_NOT_FOUND
 from kiro_crew.agent_sdk import host_auth
+from kiro_crew.testing.wait import await_until
 
 
 def _scripted_process(lines, *, returncode=None):
@@ -70,7 +71,7 @@ class TestWaitForResponseDeferral:
         resp = {"jsonrpc": "2.0", "id": 7, "result": {"ok": True}}
         client._process = _scripted_process([perm, resp])
 
-        result = await asyncio.wait_for(client._wait_for_response(7, timeout=5.0), timeout=10.0)
+        result = await await_until(asyncio.ensure_future(client._wait_for_response(7, timeout=5.0)))
         assert result == {"ok": True}
         # Permission request must be re-injected (not dropped, not spun).
         assert len(client._buffer) == 1
@@ -85,7 +86,7 @@ class TestWaitForResponseDeferral:
         resp = {"jsonrpc": "2.0", "id": 3, "result": {"ok": True}}
         client._process = _scripted_process([foreign, resp])
 
-        result = await asyncio.wait_for(client._wait_for_response(3, timeout=5.0), timeout=10.0)
+        result = await await_until(asyncio.ensure_future(client._wait_for_response(3, timeout=5.0)))
         assert result == {"ok": True}
         assert len(client._buffer) == 1
         assert client._buffer.popleft().id == 99
@@ -97,7 +98,7 @@ class TestWaitForResponseDeferral:
         resp = {"jsonrpc": "2.0", "id": 5, "result": {"ok": True}}
         client._process = _scripted_process([notif, resp])
 
-        result = await asyncio.wait_for(client._wait_for_response(5, timeout=5.0), timeout=10.0)
+        result = await await_until(asyncio.ensure_future(client._wait_for_response(5, timeout=5.0)))
         assert result == {"ok": True}
         # Notification buffered for drain, NOT re-injected into _buffer.
         assert len(client._buffer) == 0
@@ -119,7 +120,7 @@ class TestWaitForResponseDeferral:
         client._process = _scripted_process([first, second])
 
         with pytest.raises(AcpError):
-            await asyncio.wait_for(client._wait_for_response(7, timeout=1.0), timeout=10.0)
+            await await_until(asyncio.ensure_future(client._wait_for_response(7, timeout=1.0)))
         assert len(client._buffer) == 2
         m0 = client._buffer.popleft()
         m1 = client._buffer.popleft()
@@ -264,7 +265,7 @@ class TestWaitForResponseActivityDeadline:
 
         monkeypatch.setattr("kiro_crew.acp.client.time.monotonic", fake_monotonic)
 
-        result = await asyncio.wait_for(client._wait_for_response(4, timeout=0.1), timeout=10.0)
+        result = await await_until(asyncio.ensure_future(client._wait_for_response(4, timeout=0.1)))
         assert result == {"loaded": True}
         # All 20 notifications were drained while the deadline kept extending.
         assert len(client._mcp_notifications) == 20
@@ -295,7 +296,7 @@ class TestWaitForResponseActivityDeadline:
         monkeypatch.setattr("kiro_crew.acp.client.time.monotonic", fake_monotonic)
 
         with pytest.raises(AcpError):
-            await asyncio.wait_for(client._wait_for_response(1, timeout=0.1), timeout=10.0)
+            await await_until(asyncio.ensure_future(client._wait_for_response(1, timeout=0.1)))
 
 
 class TestProcessMessageUnknownServerRequest:
@@ -980,7 +981,10 @@ class TestCompactionFailureDetail:
         assert "failed" in detail
 
     def test_is_bounded_and_redacted(self):
-        from kiro_crew.acp.client import _COMPACTION_DETAIL_MAX_CHARS, compaction_failure_detail
+        from kiro_crew.acp.client import (
+            _COMPACTION_DETAIL_MAX_CHARS,
+            compaction_failure_detail,
+        )
 
         detail = compaction_failure_detail({"status": {"type": "failed", "error": "x" * 5000}})
         assert len(detail) == _COMPACTION_DETAIL_MAX_CHARS

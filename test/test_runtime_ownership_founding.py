@@ -13,6 +13,7 @@ import asyncio
 import pytest
 
 from kiro_crew import runtime_ownership as ro
+from kiro_crew.testing.wait import await_until
 
 
 class _Runtime:
@@ -48,7 +49,7 @@ async def _settle() -> None:
 
 
 async def _wait(event: asyncio.Event) -> None:
-    await asyncio.wait_for(event.wait(), timeout=2)
+    await await_until(event)
 
 
 @pytest.mark.asyncio
@@ -62,7 +63,7 @@ async def test_foundings_on_different_keys_overlap() -> None:
     await _wait(b.started)
     a.finish.set()
     b.finish.set()
-    got_a, got_b = await asyncio.wait_for(asyncio.gather(ta, tb), timeout=2)
+    got_a, got_b = await await_until(asyncio.gather(ta, tb))
     assert (got_a.runtime.pid, got_b.runtime.pid) == (1, 2)
     assert not got_a.joined and not got_b.joined
 
@@ -74,10 +75,10 @@ async def test_a_release_completes_while_a_spawn_is_in_flight() -> None:
     launch = _Launch(1)
     task = asyncio.create_task(reg.acquire("key-b", "s-new", launch, cap=1))
     await _wait(launch.started)
-    released = await asyncio.wait_for(reg.release(held.lease), timeout=1)
+    released = await await_until(asyncio.ensure_future(reg.release(held.lease)))
     assert released is not None and released.pid == 9
     launch.finish.set()
-    await asyncio.wait_for(task, timeout=2)
+    await await_until(task)
 
 
 @pytest.mark.asyncio
@@ -90,7 +91,7 @@ async def test_a_same_key_burst_under_cap_founds_one_runtime() -> None:
     await _settle()
     assert second.calls == 0, "an arrival with room on the launch waits for it"
     founder.finish.set()
-    first, joined = await asyncio.wait_for(asyncio.gather(t1, t2), timeout=2)
+    first, joined = await await_until(asyncio.gather(t1, t2))
     assert joined.runtime is first.runtime and joined.joined and not first.joined
     assert first.lease != joined.lease and joined.leases_on_runtime == 2
 
@@ -107,7 +108,7 @@ async def test_an_arrival_with_no_room_on_the_launch_founds_concurrently() -> No
     await _wait(second.started)
     first.finish.set()
     second.finish.set()
-    a, b = await asyncio.wait_for(asyncio.gather(t1, t2), timeout=2)
+    a, b = await await_until(asyncio.gather(t1, t2))
     assert a.runtime is not b.runtime and not a.joined and not b.joined
 
 
@@ -124,7 +125,7 @@ async def test_waiters_beyond_the_launchs_room_found_concurrently() -> None:
     assert waiter.calls == 0
     founder.finish.set()
     third.finish.set()
-    r1, r2, r3 = await asyncio.wait_for(asyncio.gather(t1, t2, t3), timeout=2)
+    r1, r2, r3 = await await_until(asyncio.gather(t1, t2, t3))
     assert r2.runtime is r1.runtime and r3.runtime is not r1.runtime
 
 
@@ -138,9 +139,9 @@ async def test_a_raising_spawn_leaves_no_marker_and_no_parked_waiter() -> None:
     await _settle()
     founder.finish.set()
     with pytest.raises(RuntimeError, match="launch failed"):
-        await asyncio.wait_for(t1, timeout=2)
+        await await_until(t1)
     # The waiter is not handed the founder's error; it founds on its own.
-    got = await asyncio.wait_for(t2, timeout=1)
+    got = await await_until(t2)
     assert got.runtime.pid == 2 and not got.joined
     assert reg._foundings == []
 
@@ -155,8 +156,8 @@ async def test_a_cancelled_founder_wakes_its_waiters_and_clears_its_marker() -> 
     await _settle()
     t1.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(t1, timeout=2)
-    got = await asyncio.wait_for(t2, timeout=1)
+        await await_until(t1)
+    got = await await_until(t2)
     assert got.runtime.pid == 2 and reg._foundings == [] and len(reg._entries) == 1
 
 
@@ -171,9 +172,9 @@ async def test_a_cancelled_waiter_does_not_cancel_the_shared_launch() -> None:
     await _settle()
     quitter.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(quitter, timeout=2)
+        await await_until(quitter)
     founder.finish.set()
-    first, joined = await asyncio.wait_for(asyncio.gather(t1, stayer), timeout=2)
+    first, joined = await await_until(asyncio.gather(t1, stayer))
     assert joined.runtime is first.runtime and joined.leases_on_runtime == 2
 
 
@@ -189,12 +190,12 @@ async def test_a_cancelled_waiter_returns_its_reservation() -> None:
     await _settle()
     quitter.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(quitter, timeout=2)
+        await await_until(quitter)
     t3 = asyncio.create_task(reg.acquire("k", "s3", late, cap=2))
     await _settle()
     assert late.calls == 0
     founder.finish.set()
-    first, joined = await asyncio.wait_for(asyncio.gather(t1, t3), timeout=2)
+    first, joined = await await_until(asyncio.gather(t1, t3))
     assert joined.runtime is first.runtime
 
 
