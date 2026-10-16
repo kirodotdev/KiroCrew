@@ -56,6 +56,19 @@ export interface UseListKeyboardNavOptions {
   /** Close the surface (Escape). */
   onClose: () => void
   /**
+   * Called when ArrowUp/ArrowDown move the selection. Optional.
+   *
+   * Only the hook's OWN keyboard movement fires this, not a host's
+   * {@link ListKeyboardNav.setSelected} call — a host that moved the selection
+   * itself (hover, a reset when the filter changes) already knows it did, and
+   * firing there would report those as the user working the keyboard.
+   *
+   * It exists because this listener is at DOCUMENT CAPTURE and stops
+   * propagation, so the arrow never reaches the owning surface: a host
+   * watching its own subtree cannot see this movement at all.
+   */
+  onMove?: () => void
+  /**
    * Alt/Option+Enter handler. Return `true` if the alternate action was
    * handled (so the hook can stop further processing). Optional.
    */
@@ -99,7 +112,7 @@ export interface ListKeyboardNav {
 }
 
 export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboardNav {
-  const { open, count, onChoose, onClose, onAltEnter, wrap = false, releaseKeysWhenEmpty = false } = opts
+  const { open, count, onChoose, onClose, onAltEnter, onMove, wrap = false, releaseKeysWhenEmpty = false } = opts
 
   const [selected, setSelected] = useState(0)
   const selectedRef = useRef(0)
@@ -115,6 +128,8 @@ export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboar
   onCloseRef.current = onClose
   const onAltEnterRef = useRef(onAltEnter)
   onAltEnterRef.current = onAltEnter
+  const onMoveRef = useRef(onMove)
+  onMoveRef.current = onMove
 
   // IME guard for the hook's keyboard actions. This listener receives NATIVE
   // KeyboardEvents (document capture), which `useImeGuard`'s synthetic-only
@@ -196,11 +211,13 @@ export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboar
     if (e.key === 'ArrowDown') {
       e.preventDefault()
       e.stopPropagation()
+      onMoveRef.current?.()
       const next = selectedRef.current + 1
       move(wrap ? next % n : Math.min(next, n - 1))
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
       e.stopPropagation()
+      onMoveRef.current?.()
       const next = selectedRef.current - 1
       move(wrap ? (next + n) % n : Math.max(next, 0))
     } else if (e.key === 'Enter') {
