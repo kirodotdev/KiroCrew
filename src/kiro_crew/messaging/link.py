@@ -104,9 +104,10 @@ def channel_namespace_of(key: str) -> str:
 #: are live session keys that are not listed here, and ``wf-scope`` needs no entry
 #: because it names a workflow run's memory anchor, never a session. But a namespace whose
 #: transcripts reach disk also needs classifying at
-#: ``dashboard/handlers/sessions.py::_MACHINE_NAMESPACES``, which decides whether the
-#: Older-sessions pane presents it as a conversation. Unclassified means VISIBLE there,
-#: so a new machine namespace silently repopulates that pane until it is added.
+#: ``dashboard/handlers/sessions_parts/history_reads.py::_MACHINE_NAMESPACES``, which
+#: decides whether the Older-sessions pane presents it as a conversation. Unclassified
+#: means VISIBLE there, so a new machine namespace silently repopulates that pane until
+#: it is added.
 _TELEMETRY_LOCAL_PREFIXES: tuple[tuple[str, str], ...] = (
     ("dashboard", "dashboard"),
     ("cron", "cron"),

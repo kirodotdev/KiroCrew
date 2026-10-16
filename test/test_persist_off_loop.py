@@ -495,7 +495,7 @@ def test_all_candidates_corrupt_yields_no_floor(bad: str) -> None:
 # passes the function as a bare Name, which is not a call at that point.
 #
 # Scoped to an explicit allow-list of bulk-restore drivers (chat_persistence.py and
-# sessions.py), not repo-wide. Repo-wide, these three methods have many legitimate
+# the handlers/sessions family), not repo-wide. Repo-wide, these three methods have many legitimate
 # on-loop callers reading one small metadata line; the invariant being pinned is
 # about the BULK restore path, and a gate that fires everywhere would be turned
 # off rather than obeyed.
@@ -541,6 +541,16 @@ def test_no_startup_restore_read_runs_on_the_event_loop() -> None:
     targets = [
         _src_root() / "dashboard" / "chat_persistence.py",
         _src_root() / "dashboard" / "handlers" / "sessions.py",
+        _src_root() / "dashboard" / "handlers" / "sessions_parts" / "usage_scrape.py",
+        _src_root() / "dashboard" / "handlers" / "sessions_parts" / "app_scope.py",
+        _src_root() / "dashboard" / "handlers" / "sessions_parts" / "history_reads.py",
+        _src_root() / "dashboard" / "handlers" / "sessions_parts" / "summaries.py",
+        _src_root() / "dashboard" / "handlers" / "sessions_parts" / "delete_claim.py",
+        _src_root() / "dashboard" / "handlers" / "sessions_parts" / "slot_teardown.py",
+        _src_root() / "dashboard" / "handlers" / "sessions_parts" / "delete_routes.py",
+        _src_root() / "dashboard" / "handlers" / "sessions_parts" / "live_turn.py",
+        _src_root() / "dashboard" / "handlers" / "sessions_parts" / "tool_policy.py",
+        _src_root() / "dashboard" / "handlers" / "sessions_parts" / "restart.py",
     ]
     all_violations: list[tuple[str, int]] = []
     for target in targets:

@@ -719,7 +719,7 @@ when done. See [acp-client.md](acp-client.md) for `AcpRuntime` /
 
 **Cheapest-model bg tasks**: the categorical/classification background tasks
 (folder-icon `chat_folders.py`, link-summary `chat_nav.py`, session title
-`chat_title.py`, session-summary `handlers/sessions.py`, STT endpointing
+`chat_title.py`, session-summary `handlers/sessions_parts/summaries.py`, STT endpointing
 `stt_stream.py`, and the lesson-contradiction check `dashboard/handlers/cron.py`,
 plus tips generation) express a `"auto"` model preference and pass it to a
 best-effort per-session `set_model`. The wire chokepoint
@@ -2345,7 +2345,7 @@ each one `rewind` does not carry, so nobody reads it as already shared:
   Residuals, deliberately: `_materialise_slot_from_history` publishes a slot
   rebuilt from disk rather than retracting a live one, so it keeps only the
   narrower in-lock `expected_slot_name` re-read. The history-delete pop in
-  `handlers/sessions.py` needs no wait for a different reason: `delete_session`
+  `handlers/sessions_parts/slot_teardown.py` needs no wait for a different reason: `delete_session`
   unlinks under the SAME `_locked` region the save takes, so the **delete-won
   guard** refuses the write outright instead of resurrecting the transcript.
   Making registration automatic at the `_save_slot_to_history` layer, so a new

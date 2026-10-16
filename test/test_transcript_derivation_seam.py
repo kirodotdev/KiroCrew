@@ -102,7 +102,8 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
         ("kiro_crew/dashboard/handlers/session_control.py", "read_messages"),
         # The History browser showing the user their own transcript. Its
         # list_sessions(summarize=true) leg goes through the seam (derive_recent).
-        ("kiro_crew/dashboard/handlers/sessions.py", "read_messages"),
+        ("kiro_crew/dashboard/handlers/sessions_parts/app_scope.py", "read_messages"),
+        ("kiro_crew/dashboard/handlers/sessions_parts/history_reads.py", "read_messages"),
         ("kiro_crew/decisions/points/compaction_keep.py", "read_messages"),
         # Thread diagnostics probe `recent`, not a transcript.
         ("kiro_crew/diag/threads.py", "recent"),
@@ -219,6 +220,16 @@ _PUBLISH_MODULES = frozenset(
     {
         "kiro_crew/dashboard/chat_summary.py",
         "kiro_crew/dashboard/handlers/sessions.py",
+        "kiro_crew/dashboard/handlers/sessions_parts/app_scope.py",
+        "kiro_crew/dashboard/handlers/sessions_parts/delete_claim.py",
+        "kiro_crew/dashboard/handlers/sessions_parts/delete_routes.py",
+        "kiro_crew/dashboard/handlers/sessions_parts/history_reads.py",
+        "kiro_crew/dashboard/handlers/sessions_parts/live_turn.py",
+        "kiro_crew/dashboard/handlers/sessions_parts/restart.py",
+        "kiro_crew/dashboard/handlers/sessions_parts/slot_teardown.py",
+        "kiro_crew/dashboard/handlers/sessions_parts/summaries.py",
+        "kiro_crew/dashboard/handlers/sessions_parts/tool_policy.py",
+        "kiro_crew/dashboard/handlers/sessions_parts/usage_scrape.py",
         "kiro_crew/dashboard/session_export.py",
         "kiro_crew/dashboard/handlers_instances.py",
         "kiro_crew/history_consolidation.py",
@@ -236,7 +247,7 @@ _EXPECTED_PUBLISHERS = Counter(
             "set_cached_intent_summary",
         ): 1,
         (
-            "kiro_crew/dashboard/handlers/sessions.py",
+            "kiro_crew/dashboard/handlers/sessions_parts/summaries.py",
             "_publish_if_derivation_is_allowed",
             "set_cached_summary",
         ): 1,

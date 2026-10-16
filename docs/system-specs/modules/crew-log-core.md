@@ -768,7 +768,7 @@ toward keeping the file. The LAST close in the file is the one read, because a r
 appends to the crew log it already had and only the newest close describes the life that ended.
 
 **Permanently deleting a session removes its crew log; closing a tab does not.** The dashboard's
-history-delete funnel (`dashboard/handlers/sessions.py` `_remove_session_crew_logs`) runs only once
+history-delete funnel (`dashboard/handlers/sessions_parts/slot_teardown.py` `_remove_session_crew_logs`) runs only once
 the teardown SUCCEEDED, because `destroy_if` refuses when the session was replaced by a successor
 generation, is busy, or still has a live slot owner, and in each of those cases the session may be
 writing right now. It flushes the emitter first, so the teardown entry lands and releases the cached
