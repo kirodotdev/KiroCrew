@@ -345,6 +345,18 @@ def _select_effort_level(requested: str, supported: list[str]) -> Optional[str]:
     return eligible[-1] if eligible else None
 
 
+def _repair_agent_spec() -> bool:
+    """Rewrite the installed :data:`AGENT_NAME` spec from its template if it drifted.
+
+    True when the file was rewritten. The installer's module is imported here, not
+    at the top, because it pulls in ``kiro_crew.agent``, which nothing else in this
+    module needs. Blocking: callers run it with ``asyncio.to_thread``.
+    """
+    from kiro_crew.agent_materialization.service_agents import repair_knowledge_agent_spec
+
+    return repair_knowledge_agent_spec()
+
+
 class Worker(ABC):
     """Abstract base for a long-lived LLM worker."""
 
@@ -479,11 +491,16 @@ class AcpWorker(Worker):
         # spec itself, so the authored spec is read before the spawn and again
         # after start, and both reads must declare an empty list. A worker that
         # cannot confirm the ban does not start: Kiro is the last fallback.
+        #
+        # Every spawn repairs the installed spec first (``_spawn_client``), so an
+        # unconfirmed spec was most likely rewritten from outside between that
+        # repair and the harness reading it. When a second repair finds and undoes
+        # such a rewrite, the worker is spawned once more and confirmed from
+        # scratch. When the file is already the template, another spawn would read
+        # the same thing, so the refusal stands without one.
         if routing_for(acp_backend) is Routing.AGENT_SPEC and not (
-            await asyncio.to_thread(
-                self._client.effective_spec_declares_zero_tools,
-                authored_before_spawn=authored_before_spawn,
-            )
+            await self._confirm_zero_tools(authored_before_spawn)
+            or await self._respawn_after_repair(acp_backend, sandbox_mode)
         ):
             logger.warning(
                 'AcpWorker: agent=%s backend=%s spec does not declare "tools": []; '
@@ -499,8 +516,8 @@ class AcpWorker(Worker):
             raise RuntimeError(
                 f"knowledge agent {AGENT_NAME!r} could not be confirmed to declare a "
                 "zero-tool spec (a project-level spec may shadow the installed one, "
-                "or the spec could not be read); refusing to run the knowledge pool "
-                "without a confirmed tool ban"
+                "or the installed one could not be read or restored); refusing to run "
+                "the knowledge pool without a confirmed tool ban"
             )
         await self._apply_effort()
         # Shield the live worker PID from the periodic orphan sweep for as long
@@ -517,8 +534,44 @@ class AcpWorker(Worker):
             getattr(self._client, "_pid", "unknown"),
         )
 
+    async def _confirm_zero_tools(self, authored_before_spawn: bool) -> bool:
+        """Whether the live client's effective spec declares ``"tools": []``."""
+        assert self._client is not None
+        return await asyncio.to_thread(
+            self._client.effective_spec_declares_zero_tools,
+            authored_before_spawn=authored_before_spawn,
+        )
+
+    async def _respawn_after_repair(self, acp_backend: str, sandbox_mode: str) -> bool:
+        """Respawn once when a repair undid a rewrite, and confirm the new client.
+
+        False, leaving the unconfirmed client in place for the caller's refusal,
+        when the repair wrote nothing: the file is already the template, or this
+        data home may not write it.
+        """
+        if not await asyncio.to_thread(_repair_agent_spec):
+            return False
+        logger.warning(
+            "AcpWorker: agent=%s spec was not its template when the worker started; "
+            "rewrote it and starting the worker once more",
+            AGENT_NAME,
+        )
+        assert self._client is not None
+        try:
+            await self._client.shutdown()
+        except Exception:
+            logger.debug("AcpWorker: repaired-spec client shutdown failed", exc_info=True)
+        self._client, authored_before_spawn = await self._spawn_client(acp_backend, sandbox_mode)
+        return await self._confirm_zero_tools(authored_before_spawn)
+
     async def _spawn_client(self, acp_backend: str, sandbox_mode: str) -> tuple[AcpClient, bool]:
         """Build the client for *acp_backend*, bring it up, and return it with the pre-spawn read.
+
+        The installed spec is repaired from its template first
+        (:func:`_repair_agent_spec`), on every backend, because every one of them
+        resolves the agent by name from the shared agents directory, where another
+        tool may have rewritten it since the boot rebuild. The confirmation in
+        :meth:`start` still decides whether the worker runs.
 
         The client is stored as ``self._client`` before ``ensure_ready`` so a failed
         start still leaves it reachable. For a backend routed through
@@ -527,6 +580,7 @@ class AcpWorker(Worker):
         post-start confirmation can require both reads to agree when no projection
         was prepared. Any other backend returns False.
         """
+        await asyncio.to_thread(_repair_agent_spec)
         client = AcpClient(
             agent=AGENT_NAME,
             sandbox_mode=sandbox_mode,
