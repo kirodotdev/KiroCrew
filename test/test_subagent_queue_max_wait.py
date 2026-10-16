@@ -110,7 +110,7 @@ class _Harness:
             self.mgr._drain_queue()
             task = getattr(self.mgr, "_drain_task", None)
             if task is not None:
-                await asyncio.wait_for(asyncio.shield(task), 30)
+                await await_until(task)
             await self.settle()
 
     async def spawn(self, task: str = "work", parent: str = _PARENT, **kwargs: Any) -> Any:
