@@ -1,11 +1,42 @@
-"""Git proxy admission and caller capability."""
+"""Git proxy admission, caller capability and workspace-relative browsing."""
 
 from pathlib import Path
 
 import pytest
+from test_remote_git_credential_isolation import git_workdir as _git_workdir
 
-from kiro_crew.remote_session import git_gateway
+from kiro_crew.remote_session import git_gateway, workspace_tools
 from kiro_crew.testing.wait import await_until
+
+git_workdir = _git_workdir
+
+
+def test_status_paths_diff_from_a_nested_workdir(git_workdir):
+    ws, git = git_workdir
+    root = Path(ws.root)
+    (root / "app").mkdir()
+    tracked = root / "app" / "tracked.txt"
+    outside = root / "outside.txt"
+    tracked.write_text("before\n")
+    outside.write_text("outside before\n")
+    git("add", ".")
+    git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-m", "files")
+    tracked.write_text("after\n")
+    outside.write_text("outside after\n")
+    (root / "app" / "new.txt").write_text("new file\n")
+    nested = workspace_tools.Workspace(str(root / "app"))
+    status = workspace_tools.browse(nested, {"op": "git_status"})
+    assert " M app/tracked.txt\0" in status["output"]
+    assert "?? app/new.txt\0" in status["output"]
+    for name, expected in (("app/tracked.txt", "after\n"), ("app/new.txt", "new file\n")):
+        diff = workspace_tools.browse(nested, {"op": "git_bodies", "path": name})
+        assert diff["git"] is True
+        assert expected == diff["new"]
+    for name in ("outside.txt", "app/../../outside.txt"):
+        refused = workspace_tools.browse(nested, {"op": "git_bodies", "path": name})
+        assert "outside the workspace" in refused["error"]
+    directory = workspace_tools.browse(nested, {"op": "git_bodies", "path": "app"})
+    assert directory["code"] == "git_failed" and "directory" in directory["error_text"]
 
 
 def test_proxy_requires_its_own_capability_and_exact_host():

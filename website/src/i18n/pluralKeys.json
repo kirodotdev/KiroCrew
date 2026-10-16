@@ -373,5 +373,7 @@
   "pages.chatSidebar.crew_work_waiting",
   "pages.chatSidebar.crew_work_waiting_title",
   "pages.chatSidebar.crew_work_stalled",
-  "pages.chatSidebar.crew_work_stalled_title"
+  "pages.chatSidebar.crew_work_stalled_title",
+  "sessionEnvironments.remoteGit.notPushed",
+  "sessionEnvironments.remoteGit.notPulled"
 ]
