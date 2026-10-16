@@ -11,6 +11,7 @@ write boundaries that use it.
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -394,6 +395,132 @@ def test_a_repeated_image_is_not_charged_twice_to_the_budget(sessions, tmp_path,
     assert len(stored) == 1
     copied = attachments_dir(sessions, STEM) / stored[0]
     assert out == f"![x]({_dest(copied)}) ![y]({_dest(copied)})"
+
+
+def _prefill(sessions, size):
+    """Store *size* bytes in the session's attachments directory ahead of a test."""
+    target = attachments_dir(sessions, STEM)
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "0000000000000000-earlier.png").write_bytes(b"\x00" * size)
+
+
+def test_a_session_at_its_ceiling_keeps_a_new_image_as_written(
+    sessions, tmp_path, monkeypatch, caplog
+):
+    """Past the per-session ceiling no copy lands and nothing stored is removed;
+    the operator hears it once per session, not once per row."""
+    import kiro_crew.chat_attachments as mod
+
+    monkeypatch.setattr(mod, "MAX_ATTACHMENT_BYTES_PER_SESSION", 64)
+    _prefill(sessions, 64)
+    source = _write_png(tmp_path / "scratch" / "new.png")
+    text = f"![n]({source})"
+
+    with caplog.at_level(logging.WARNING, logger=mod.logger.name):
+        first = persist_inline_images(text, sessions_dir=sessions, stem=STEM)
+        second = persist_inline_images(text, sessions_dir=sessions, stem=STEM)
+
+    assert first == text and second == text
+    assert _stored_files(sessions) == ["0000000000000000-earlier.png"]
+    assert len([r for r in caplog.records if r.name == mod.logger.name]) == 1
+
+
+def test_an_image_already_stored_is_still_rewritten_at_the_ceiling(sessions, tmp_path, monkeypatch):
+    """The ceiling bounds disk, and a repeat of bytes already stored costs none."""
+    import kiro_crew.chat_attachments as mod
+
+    first = _write_png(tmp_path / "a" / "one.png")
+    persist_inline_images(f"![a]({first})", sessions_dir=sessions, stem=STEM)
+    stored = _stored_files(sessions)
+    monkeypatch.setattr(mod, "MAX_ATTACHMENT_BYTES_PER_SESSION", 0)
+    again = _write_png(tmp_path / "b" / "one.png")
+
+    out = persist_inline_images(f"![b]({again})", sessions_dir=sessions, stem=STEM)
+
+    assert _stored_files(sessions) == stored
+    assert out == f"![b]({_dest(attachments_dir(sessions, STEM) / stored[0])})"
+
+
+def test_the_session_ceiling_is_a_total_a_copy_must_fit_under(sessions, tmp_path, monkeypatch):
+    """A copy that takes the directory exactly to the ceiling lands; one byte past
+    it is skipped, so the directory never grows beyond the number."""
+    import kiro_crew.chat_attachments as mod
+
+    _prefill(sessions, 64)
+    source = _write_png(tmp_path / "scratch" / "new.png")
+    text = f"![n]({source})"
+
+    monkeypatch.setattr(mod, "MAX_ATTACHMENT_BYTES_PER_SESSION", 64 + len(PNG_BYTES) - 1)
+    assert persist_inline_images(text, sessions_dir=sessions, stem=STEM) == text
+    assert len(_stored_files(sessions)) == 1
+
+    monkeypatch.setattr(mod, "MAX_ATTACHMENT_BYTES_PER_SESSION", 64 + len(PNG_BYTES))
+    out = persist_inline_images(text, sessions_dir=sessions, stem=STEM)
+    assert str(source) not in out
+    assert len(_stored_files(sessions)) == 2
+
+
+def test_the_session_total_is_read_once_per_row_and_only_for_a_new_copy(
+    sessions, tmp_path, monkeypatch
+):
+    """The sum runs under the session lock: a row pays one scan at most, and a row
+    whose pictures are stored already -- the slot save re-flushing it -- pays none."""
+    import kiro_crew.chat_attachments as mod
+
+    scans: list[Path] = []
+    real = mod._stored_bytes
+
+    def counting(target_dir):
+        scans.append(target_dir)
+        return real(target_dir)
+
+    monkeypatch.setattr(mod, "_stored_bytes", counting)
+    first = _write_png(tmp_path / "scratch" / "a.png")
+    second = _write_png(tmp_path / "scratch" / "b.png", OTHER_PNG_BYTES)
+
+    once = persist_inline_images(f"![a]({first}) ![b]({second})", sessions_dir=sessions, stem=STEM)
+    assert scans == [attachments_dir(sessions, STEM)]
+    assert len(_stored_files(sessions)) == 2
+
+    persist_inline_images(once, sessions_dir=sessions, stem=STEM)
+    assert len(scans) == 1
+
+
+def test_a_rows_own_copies_count_against_the_session_room(sessions, tmp_path, monkeypatch):
+    """The total is read once per row, so each copy the row lands is charged to it."""
+    import kiro_crew.chat_attachments as mod
+
+    room = len(PNG_BYTES) + len(OTHER_PNG_BYTES) - 1
+    monkeypatch.setattr(mod, "MAX_ATTACHMENT_BYTES_PER_SESSION", room)
+    first = _write_png(tmp_path / "scratch" / "a.png")
+    second = _write_png(tmp_path / "scratch" / "b.png", OTHER_PNG_BYTES)
+
+    out = persist_inline_images(f"![a]({first}) ![b]({second})", sessions_dir=sessions, stem=STEM)
+
+    assert len(_stored_files(sessions)) == 1
+    assert str(first) not in out and str(second) in out
+
+
+def test_only_the_directorys_own_regular_files_count_toward_the_ceiling(
+    sessions, tmp_path, monkeypatch
+):
+    """Links are not followed and subdirectories are not entered: neither is an
+    attachment this module stored."""
+    import kiro_crew.chat_attachments as mod
+
+    monkeypatch.setattr(mod, "MAX_ATTACHMENT_BYTES_PER_SESSION", len(PNG_BYTES))
+    target = attachments_dir(sessions, STEM)
+    (target / "nested").mkdir(parents=True)
+    (target / "nested" / "big.png").write_bytes(b"\x00" * 1024)
+    if sys.platform != "win32":  # creating a link needs a privilege on Windows
+        outside = tmp_path / "outside.png"
+        outside.write_bytes(b"\x00" * 1024)
+        (target / "linked.png").symlink_to(outside)
+    source = _write_png(tmp_path / "scratch" / "new.png")
+
+    out = persist_inline_images(f"![n]({source})", sessions_dir=sessions, stem=STEM)
+
+    assert str(source) not in out
 
 
 def test_a_path_needing_markdown_quoting_is_angle_wrapped(tmp_path):

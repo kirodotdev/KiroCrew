@@ -2563,13 +2563,20 @@ check-to-use window remains.
 `archive/`, and those rows still name their attachments — so rotation orphans
 nothing and must not sweep; sweeping against the live transcript alone would
 break the references the archive keeps. An attachment becomes genuinely
-unreferenced only when archive retention expires its last row. The ceilings are
-**per message** (12 images, 64 MiB, 25 MiB each); across messages a session's
-attachments grow with every distinct image it posts until the session is
-deleted — content-addressing dedups repeats, not a stream of unique pictures. A
-per-session byte ceiling, or a sweep coupled to archive-retention expiry, is a
-follow-up ([issue #10437](https://github.com/kirodotdev/KiroCrew/issues/10437)), not part of the write
-boundary.
+unreferenced only when archive retention expires its last row, so growth is
+bounded at the write instead. The ceilings are **per message** (12 images,
+64 MiB, 25 MiB each) and **per session**: `MAX_ATTACHMENT_BYTES_PER_SESSION`,
+1 GiB. Before a row's first write, the directory's regular files are summed once
+(links not followed, subdirectories not entered); a copy that would take the
+total past 1 GiB is skipped and its reference keeps the path the agent wrote —
+the fail-open outcome, so the picture shows while that file lasts — with one
+WARNING per directory per process. Nothing stored is removed to make room, and a
+destination already inside the directory or a content-addressed repeat is still
+rewritten, since neither costs disk. A row whose pictures are all stored already,
+such as the slot save re-flushing it, never scans. A refused picture keeps its
+markup, so its row is tried again, read and scan included, each time it is
+persisted again; the slot save does that only for a row its entry cache does not
+answer.
 
 **Known limitation:** the rewritten destination is the absolute path of the
 attachments directory. Relocating or restoring the data home under a different
