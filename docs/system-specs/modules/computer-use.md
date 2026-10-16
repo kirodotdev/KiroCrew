@@ -1144,8 +1144,8 @@ a Zoom annotation overlay: every public method refused or silently did nothing.
   open-source reverse-engineering work, attributed in `NOTICE` rather than in code
   comments (no third-party code is copied — the implementation is independent);
 - the private ABI lives in ONE module, `macos_skylight.py`, so a macOS point release
-  that changes a byte offset has one review boundary. `macos_ffi.py` keeps its
-  "public frameworks only" property, which is what makes it reviewable against
+  that changes a byte offset has one review boundary. `macos_ffi.py` and its owners keep their
+  "public frameworks only" property, which is what makes them reviewable against
   Apple's documentation. `test_computer_use_skylight.py` asserts that quarantine
   structurally — the private symbols must not appear in any other module;
 - it **fails closed with a readable refusal.** `available()` reports which symbols
@@ -1397,7 +1397,7 @@ list position — position and index are not interchangeable.
 
 ## The ctypes layer: four findings from running real code
 
-All in-gateway macOS native work is confined to `macos_ffi.py`; the separate
+All in-gateway macOS native work is confined to `macos_ffi.py` and its owners; the separate
 cursor-overlay child owns its explicitly documented ctypes exception. `import ctypes`
 is a top-level import statement (AUTOSDE `top-level-imports`), but **no `CDLL`/`find_library`
 runs at module scope** — the four frameworks (CoreFoundation,
@@ -1745,7 +1745,7 @@ asyncio loop, so the overlay cannot live in the gateway at all. `overlay_proc.py
 is therefore its own process (`python -m kiro_crew.computer_use.overlay_proc`,
 fixed argv, nothing agent-supplied in it) driven by newline-delimited JSON on
 stdin. It has its **own ctypes surface**, which is the one documented exception to
-"`macos_ffi.py` is the only module that touches ctypes": that invariant exists so a
+"`macos_ffi.py` and its owners are the only modules that touch ctypes": that invariant exists so a
 native fault cannot take down the gateway, and a fault in a separate short-lived
 child costs one animation. The child's docstring says so.
 
@@ -1840,7 +1840,7 @@ missing so a user learns something and a maintainer finds the next step. When
 
 Reading and input both work through real UI Automation, and the whole layer above
 the driver (the keystone, schema validation, the snapshot index, fingerprint
-drift, redaction, the SEL audit) runs unchanged. Files: `windows_ffi.py` (the only module touching Windows-native code),
+drift, redaction, the SEL audit) runs unchanged. Files: `windows_ffi.py` and its owners (the Windows-native surface),
 `apps_windows.py`, `snapshot_windows.py`, `capture_windows.py`, `windows_driver.py`.
 
 Five things differ from macOS in ways that are load-bearing rather than
@@ -2607,7 +2607,10 @@ computer use.
 | `computer_use/tools.py` | The single in-gateway dispatch chokepoint: validation, enable, audit, target/freshness/input checks, driver dispatch and response shaping |
 | `computer_use/service.py` | Blocking snapshot/index/screenshot orchestration over the active backend; no policy decisions |
 | `computer_use/windows_driver.py` | `WindowsBackend`: observation + all seven input verbs — the UIA pattern ladder, pointer confinement, verified focus, and the closed `perform_action` vocabulary |
-| `computer_use/windows_ffi.py` | The ONLY module touching Windows-native code: the UIA COM client, the one vtable-slot table, VARIANT/BSTR marshalling, the fail-closed secure read, the bounded walk, the DPI scope, `window_render_scale`, window enumeration |
+| `computer_use/windows_ffi.py` | The Windows-native surface's import path and patch surface (a `_facade_mirror` facade over the three owners below), and the `SendInput` keyboard and mouse synthesis |
+| `computer_use/windows_ffi_com.py` | ABI constants and structures, the flat-function table and the one vtable-slot table, the library loader and `vcall`, COM reference discipline, the per-thread apartment and UIA client |
+| `computer_use/windows_ffi_uia.py` | VARIANT/BSTR marshalling, the fail-closed secure read, the control-pattern ladder and focus, the bounded cached walk |
+| `computer_use/windows_ffi_window.py` | The DPI scope, window enumeration and geometry, `window_render_scale`, `quantize_point` and the hit test |
 | `computer_use/apps_windows.py` | Window-list app enumeration keyed on the top-level HWND (a pid fronts many apps), the transient-popup filter, `find_window_for` (the launch verb's non-raising lookup) + `hwnd_owns_point`, the confinement predicate |
 | `computer_use/snapshot_windows.py` | Iterative bounded UIA walk, UIA role vocabulary, window-local frames, truncation flags |
 | `computer_use/capture_windows.py` | `PW_RENDERFULLCONTENT` into a 32bpp DIB sized to what the window renders + GDI+ JPEG encode, with pixel validation because a blank capture reports success. No `BitBlt` fallback: it reads the screen |
@@ -2615,7 +2618,11 @@ computer use.
 | `computer_use/launch_macos.py` | The macOS resolver: `.app` bundles under the conventional roots, handed to `/usr/bin/open -a` (pinned absolute) with no document and no arguments |
 | `computer_use/linux_driver.py` | Typed refusal + the implementation plan |
 | `computer_use/macos_skylight.py` | The quarantined private SkyLight ABI behind `click_method: "sky_click"` (a click on a window behind others, without raising it or moving the pointer); the only module allowed to touch undocumented Apple ABI, never reached from `auto`, and reported unavailable (`available()`) when a symbol is missing |
-| `computer_use/macos_ffi.py` | The only in-gateway macOS module touching ctypes: `_FN_SPECS`, structs, binder, CF hygiene, key/scroll/mouse event synthesis |
+| `computer_use/macos_ffi.py` | The in-gateway macOS ctypes surface's import path and patch surface (a `_facade_mirror` facade over the four owners below), and key/scroll/mouse event synthesis |
+| `computer_use/macos_ffi_bind.py` | ABI constants, structs, `_FN_SPECS` and the one bind pass, the cached framework handles, type ids and private event source |
+| `computer_use/macos_ffi_cf.py` | CF hygiene: CFString lifetime, type-checked number/bool/array reads, the CF dictionary |
+| `computer_use/macos_ffi_ax.py` | Accessibility reads, actions and settable writes, with the messaging timeout and the Create Rule |
+| `computer_use/macos_ffi_window.py` | The CoreGraphics window list, `executable_path`, in-process window capture and the JPEG size check |
 | `computer_use/apps_macos.py` | Window-list app enumeration + pid resolution (never `pgrep`). Bundle `Info.plist` reads honour `security.is_sensitive_path`, so a bundle planted under a protected directory resolves to "identity unknown" rather than being opened |
 | `computer_use/snapshot_macos.py` | Iterative AX walk, `AXManualAccessibility` retry, secure detection |
 | `computer_use/capture_macos.py` | In-process capture + ImageIO encode + `0o700` persistence + ring trim |

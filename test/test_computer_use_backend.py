@@ -380,10 +380,10 @@ class TestPlatformSelection:
 
         The permitted bail-outs, each reached WITHOUT going through the selector:
 
-        * ``macos_ffi.py`` guards its framework load (raising
+        * ``macos_ffi_bind.py`` guards its framework load (raising
           ``ComputerUseUnsupported`` off macOS) — the one place a native load must be
           refused regardless of what the selector chose;
-        * ``windows_ffi.py`` guards its library load the same way, and reads
+        * ``windows_ffi_com.py`` guards its library load the same way, and reads
           ``IS_WINDOWS`` for it. A native guard asks about its OWN platform, so the
           flag it may read is the one its libraries belong to — that is still a
           local bail-out rather than a competing selector, because it answers "can I
@@ -439,12 +439,12 @@ class TestPlatformSelection:
         # platform's. A guard that read a second flag would be deciding which
         # platform this is, which is the selector's job.
         guards = {
-            "macos_ffi.py": {"IS_MACOS"},
+            "macos_ffi_bind.py": {"IS_MACOS"},
             "macos_skylight.py": {"IS_MACOS"},
             "permissions.py": {"IS_MACOS"},
             "overlay.py": {"IS_MACOS"},
             "overlay_proc.py": {"IS_MACOS"},
-            "windows_ffi.py": {"IS_WINDOWS"},
+            "windows_ffi_com.py": {"IS_WINDOWS"},
             "launch_windows.py": {"IS_WINDOWS"},
         }
         assert set(readers) <= {"backend.py"} | set(guards), readers

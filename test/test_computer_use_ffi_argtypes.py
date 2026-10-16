@@ -1,4 +1,4 @@
-"""The ctypes binding-discipline tripwire for ``computer_use/macos_ffi.py``.
+"""The ctypes binding-discipline tripwire for ``computer_use/macos_ffi.py`` and its owners.
 
 The single most valuable test in the computer-use suite, and the cheapest: it
 pins the exact defect that produced a real ``EXIT=139`` during prototyping.
@@ -43,6 +43,7 @@ text, and never loads a framework or calls a symbol.
 from __future__ import annotations
 
 import ctypes
+import importlib
 import inspect
 
 import pytest
@@ -303,13 +304,14 @@ def test_global_event_tap_is_confined_to_the_pointer_moving_functions():
     ``test_app_targeted_posting_is_the_default_for_every_non_pointer_path`` above,
     which asserts the converse.
     """
-    src = inspect.getsource(macos_ffi)
+    src = _family_source()
     assert "CGEventPostToPid" in src
     allowed = ("post_mouse_global", "post_mouse_drag_global")
     callers = {
         name
-        for name, fn in vars(macos_ffi).items()
-        if callable(fn) and getattr(fn, "__module__", "") == macos_ffi.__name__
+        for module in _family()
+        for name, fn in vars(module).items()
+        if callable(fn) and getattr(fn, "__module__", "") == module.__name__
         # ``cg.CGEventPost(`` is the call; ``CGEventPostToPid(`` is a different
         # symbol whose name contains it, so the open paren is what separates them.
         and "CGEventPost(" in _safe_source(fn)
@@ -320,15 +322,26 @@ def test_global_event_tap_is_confined_to_the_pointer_moving_functions():
     )
     warpers = {
         name
-        for name, fn in vars(macos_ffi).items()
+        for module in _family()
+        for name, fn in vars(module).items()
         if callable(fn)
-        and getattr(fn, "__module__", "") == macos_ffi.__name__
+        and getattr(fn, "__module__", "") == module.__name__
         and "CGWarpMouseCursorPosition(" in _safe_source(fn)
     }
     assert warpers <= set(allowed), (
         f"CGWarpMouseCursorPosition moves the operator's physical cursor and is "
         f"called from {sorted(warpers - set(allowed))}"
     )
+
+
+def _family() -> list:
+    """The ``macos_ffi`` facade and every owner module it serves names from."""
+    return [macos_ffi, *(importlib.import_module(owner) for owner in macos_ffi._OWNERS)]
+
+
+def _family_source() -> str:
+    """The source of the facade and of every owner: the text ``macos_ffi.py`` was."""
+    return "".join(inspect.getsource(module) for module in _family())
 
 
 def _safe_source(fn: object) -> str:
@@ -395,7 +408,7 @@ def test_never_binds_or_calls_request_screen_capture_access():
     symbols = {_symbol_of(row) for row in _spec_rows()}
     assert "CGPreflightScreenCaptureAccess" in symbols
     assert "CGRequestScreenCaptureAccess" not in symbols
-    assert "CGRequestScreenCaptureAccess(" not in inspect.getsource(macos_ffi)
+    assert "CGRequestScreenCaptureAccess(" not in _family_source()
 
 
 def test_every_copy_rule_symbol_has_a_release_path():
@@ -446,7 +459,7 @@ def test_no_cdll_at_module_scope():
     statement itself is fine (and required by the top-level-imports rule); it is
     the *call* that must be deferred.
     """
-    src = inspect.getsource(macos_ffi)
+    src = _family_source()
     for line in src.splitlines():
         stripped = line.strip()
         if stripped.startswith("#") or not stripped:

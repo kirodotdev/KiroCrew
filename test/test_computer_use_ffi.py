@@ -1,6 +1,6 @@
 """Behavioural tests for the ctypes layer, driven by FAKE frameworks.
 
-Exercises the REAL bodies in ``computer_use/macos_ffi.py`` — the bind pass, the
+Exercises the REAL bodies in ``computer_use/macos_ffi.py`` and its owners — the bind pass, the
 CFString lifetime discipline, the type-checked AX reads, the private-event-source
 key posting, the non-variadic scroll and the in-process ImageIO encode — against
 in-Python stand-ins for CoreFoundation / ApplicationServices / CoreGraphics /

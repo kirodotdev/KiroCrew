@@ -60,9 +60,9 @@ flipping ``platform_compat.IS_WINDOWS``.
 
 The remaining hazards live with the code that contains them: the COM vtable slot
 map, the fail-closed secure read, the bounded walk, the DPI scope and the
-``SendInput`` records are all in :mod:`windows_ffi` (the only module here that
-touches native code — see its docstring for why a wrong slot index is a process
-abort rather than an exception), the tree shape is in :mod:`snapshot_windows`, HWND
+``SendInput`` records are all in :mod:`windows_ffi` and its owners (see its docstring
+for why a wrong slot index is a process abort rather than an exception), the tree
+shape is in :mod:`snapshot_windows`, HWND
 confinement is in :mod:`apps_windows`, and the blank-frame gate is in
 :mod:`capture_windows`. The measured cross-cutting findings are collected in
 ``docs/system-specs/modules/computer-use.md`` § The Windows driver.

@@ -46,8 +46,6 @@
 5223 src/kiro_crew/cli_commands.py
 2478 src/kiro_crew/cli_doctor.py
 3552 src/kiro_crew/cli_server.py
-2105 src/kiro_crew/computer_use/macos_ffi.py
-2723 src/kiro_crew/computer_use/windows_ffi.py
 2339 src/kiro_crew/connections/warm.py
 5311 src/kiro_crew/crew_log/emit.py
 2260 src/kiro_crew/crew_log/session_tree_projection.py
