@@ -110,6 +110,10 @@ A note published from a crewmate's pinned DM session carries `member: {slug, nam
 
 `website/src/components/notifications/CrewmateNoteFace.tsx` draws the attribution on `NotificationCard` (bell popover and banner), the panel `NotificationFeed` row and `NotificationDetailPanel`: the crewmate's avatar replaces the kind icon and its display label sits above the title. Face and label come from the row of `membersRosterQuery` (the Crewmates page's query, invalidated by the gateway's `refresh` frame and by every crew save) whose slug and exact name match the note's `member`; while that query loads, or when no such row exists, the kind icon renders and no label shows. When that query fails, `CrewmateRosterError` renders one inline `ErrorNotice` with a Retry that refetches the roster: in a crewmate note's detail panel, and at the top of a feed showing a crewmate note unless the selected note is a crewmate note (its open detail panel already reports it), and in the footer of the first full `NotificationBanner` card showing a crewmate note (deck shells draw no face, and the banner is suppressed while the popover or the inbox is on screen, so it never repeats their notice). The notice carries no agent hand-off because all three surfaces are overlays over a page that may hold an unsaved draft; a feed with no crewmate note never reads the roster. `NotificationCrewmateFace.test.tsx` pins these states.
 
+### Crewmate messages
+
+A crewmate's message in its DM thread is a notification of its own: `dashboard/member_message_notes.py` publishes one note for every live `assistant` row with text in a member DM slot. `DashboardState._record_member_row`, the slot's `_on_row` hook, calls it; `Slot.append` fires that hook only for live rows, never for a replay (`broadcast=False`) or a wire-only role, and the module drops every role but `assistant` and a row with no text, so tool calls, tool results, injected, subagent and streamed rows never notify. The note goes on the `system.member` channel (default priority, mutable in Settings -> Notifications on its own; muting `system.agent` does not silence it) and keeps the legacy `kind` `agent`, as `system.monitor` notes do. `member` comes from `members.member_identity_for_session` on the slot key, read off the event loop before the note is pushed back on it, and a member slot with no live binding publishes nothing. The title is the crewmate's name and the body the message text (capped by `payload_from_legacy`, redacted on delivery); `url` is `/members?member=<exact name>`, `slot` names the thread, `group_key` is the slot key so one crewmate's messages stack, and `publisher_session` is the slot, so a muted thread's note is delivered silenced. A message the user is watching is still published; the banner decides whether to show it (see Suppression). `test_member_message_notes.py` pins the producer, the roles and slots that publish nothing, and the channel.
+
 `DashboardState.sweep_expired_notifications` removes only passive notes with a positive integer `ttl` whose parseable timestamp has elapsed; ambiguous timestamps and other priorities remain. `DashboardState` invokes the sweep while loading persisted history and before each delivery. The in-memory sweep becomes durable on a later full rewrite, so already-open clients retain an expired row until their next reload or refresh.
 
 ## Inline actions and grouping
@@ -453,7 +457,11 @@ loop it.
 off; the note is passive or silenced; the bell popover is open (or closing); the
 route is `/notifications`; the note describes what is already on screen —
 `targetsCurrentView`: while the window is focused, a note whose `slot` is the
-active chat on a chat route, or whose `url` path is the current route. Opening
+active chat on a chat route, or whose `url` path is the current route. A
+crewmate's message (`system.member`) instead counts as on screen only when its
+`slot` is the active chat on a chat route or the thread the Members page
+registered in `lib/viewedThread`, read at arrival: its `url` is the whole
+Members page, which shows one thread at a time. Opening
 the popover, landing on the inbox page, or switching the preference off also
 retires every pending card.
 
