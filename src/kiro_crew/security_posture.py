@@ -2470,17 +2470,21 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # The kirocrew-core tool handlers, moved out of mcp_core.py into their
         # domain modules. Same classification as mcp_core.py above for the same
         # reason: a tool result's user-visible surface is a registered sink
-        # downstream, and these redact before returning to it. `learn.py` is
-        # absent because it calls no redactor -- the allowlist is checked for
-        # stale entries too.
+        # downstream, and these redact before returning to it. The owner modules
+        # of the control and spawn facades are classified with their domain.
+        # `learn.py` and `spawn.py` are absent because they call no redactor (the
+        # spawn reads that redact are in its `spawn_parts` owners) -- the allowlist
+        # is checked for stale entries too.
         "mcp_tools/apps.py",
         "mcp_tools/artifacts.py",
         "mcp_tools/control.py",
+        "mcp_tools/control_parts/monitor.py",
         "mcp_tools/knowledge.py",
         "mcp_tools/messaging.py",
         "mcp_tools/sessions.py",
         "mcp_tools/skills.py",
-        "mcp_tools/spawn.py",
+        "mcp_tools/spawn_parts/listing.py",
+        "mcp_tools/spawn_parts/wave.py",
         "mcp_tools/workflows.py",
         "workflows/agent_exec.py",
         "workflows/agent_pool.py",

@@ -38,7 +38,7 @@ Three streams currently work on the same problem, which is keeping an agent turn
 |---|---|---|
 | structured monitors | `src/kiro_crew/monitoring/` | merged: [#5180](https://github.com/kirodotdev/KiroCrew/pull/5180), [#5181](https://github.com/kirodotdev/KiroCrew/pull/5181), [#5182](https://github.com/kirodotdev/KiroCrew/pull/5182), [#5183](https://github.com/kirodotdev/KiroCrew/pull/5183), [#5184](https://github.com/kirodotdev/KiroCrew/pull/5184). [#5185](https://github.com/kirodotdev/KiroCrew/pull/5185), [#5186](https://github.com/kirodotdev/KiroCrew/pull/5186), [#5305](https://github.com/kirodotdev/KiroCrew/pull/5305) |
 | irq kernel | `irq.py`, `probes/gh_pr.py` | merged: [#5273](https://github.com/kirodotdev/KiroCrew/pull/5273), [#5886](https://github.com/kirodotdev/KiroCrew/pull/5886), [#6071](https://github.com/kirodotdev/KiroCrew/pull/6071), [#6279](https://github.com/kirodotdev/KiroCrew/pull/6279), [#7431](https://github.com/kirodotdev/KiroCrew/pull/7431), [#7634](https://github.com/kirodotdev/KiroCrew/pull/7634), [#8122](https://github.com/kirodotdev/KiroCrew/pull/8122), [#8326](https://github.com/kirodotdev/KiroCrew/pull/8326) |
-| self-armed loops for member slots | `autonudge_selfarm.py` (new), `autonudge.py`, `autonudge_authz.py`, `mcp_tools/control.py` | merged: [#8919](https://github.com/kirodotdev/KiroCrew/pull/8919) |
+| self-armed loops for member slots | `autonudge_selfarm.py` (new), `autonudge.py`, `autonudge_authz.py`, `mcp_tools/control_parts/monitor.py` | merged: [#8919](https://github.com/kirodotdev/KiroCrew/pull/8919) |
 
 This document states the target shape, what gets deleted, and the order.
 

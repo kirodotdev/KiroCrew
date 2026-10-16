@@ -7003,7 +7003,9 @@ class TestManagedToolsInProcessNamesOnly:
         import kiro_crew.mcp_tools.spawn as spawn
 
         for mod in (spawn, control):
-            source = Path(mod.__file__).read_text(encoding="utf-8")
+            path = Path(mod.__file__)
+            parts = sorted(path.with_name(f"{path.stem}_parts").glob("*.py"))
+            source = "".join(p.read_text(encoding="utf-8") for p in (path, *parts))
             assert "get_running_loop(" not in source, (
                 f"{mod.__name__} reintroduced a get_running_loop skip; the names-only "
                 "read path (build_tool_names / schemas(names_only=True)) is what keeps "

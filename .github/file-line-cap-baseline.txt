@@ -83,8 +83,6 @@
 4804 src/kiro_crew/mcp_dashboard.py
 3778 src/kiro_crew/mcp_discovery.py
 3415 src/kiro_crew/mcp_shared.py
-2530 src/kiro_crew/mcp_tools/control.py
-2188 src/kiro_crew/mcp_tools/spawn.py
 2129 src/kiro_crew/members.py
 2440 src/kiro_crew/name_grant.py
 2646 src/kiro_crew/pinned_fs.py

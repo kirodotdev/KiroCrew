@@ -641,8 +641,8 @@ class TestSurface:
         assert fields == _BASE_NUDGELOOP_FIELDS
 
     def test_importing_the_facade_keeps_the_heavy_graphs_lazy(self) -> None:
-        """``mcp_tools/control.py`` and ``workflows/service.py`` import the facade at the
-        top, so everything it pulls in is paid by every MCP server process."""
+        """``mcp_tools/control_parts/monitor.py`` and ``workflows/service.py`` import the
+        facade at the top, so everything it pulls in is paid by every MCP server process."""
         code = (
             "import sys, kiro_crew.autonudge\n"
             "print('\\n'.join(sorted(m for m in sys.modules if m.startswith('kiro_crew'))))"

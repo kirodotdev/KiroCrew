@@ -480,11 +480,15 @@ class TestTheSpawnEndpointActuallyDelegates:
 
     def test_the_crew_field_description_does_not_gate_on_triggers(self):
         """The tool text is what an agent reads before it delegates."""
+        import importlib
         import inspect
 
         from kiro_crew.mcp_tools import spawn as spawn_tool
 
-        src = inspect.getsource(spawn_tool)
+        src = "".join(
+            inspect.getsource(importlib.import_module(name))
+            for name in (spawn_tool.__name__, *spawn_tool._OWNERS)
+        )
         assert "Naming a member is enough" in src
         assert "must have non-empty Triggers" not in src
         assert "delegated tasks" not in src
@@ -526,7 +530,12 @@ class TestTheSpawnEndpointActuallyDelegates:
         import kiro_crew
 
         root = Path(kiro_crew.__file__).parent
-        for rel in ("mcp_tools/control.py",):
+        for rel in (
+            "mcp_tools/control.py",
+            "mcp_tools/control_parts/schemas.py",
+            "mcp_tools/control_parts/directive.py",
+            "mcp_tools/control_parts/monitor.py",
+        ):
             text = (root / rel).read_text()
             assert 'spawn_run(agent="<name>"' not in text, rel
             assert "spawn_run(agent=<crew>" not in text, rel

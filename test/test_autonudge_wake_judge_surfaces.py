@@ -40,9 +40,9 @@ class TestUpdatePathCarriesTheBrief:
     """
 
     def test_the_tool_copies_a_validated_brief_into_the_patch(self) -> None:
-        from kiro_crew.mcp_tools import control
+        from kiro_crew.mcp_tools.control_parts import monitor
 
-        assert 'patch["judge"] = validate_judge_spec(args["judge"])' in inspect.getsource(control)
+        assert 'patch["judge"] = validate_judge_spec(args["judge"])' in inspect.getsource(monitor)
 
     def test_the_reader_hands_over_the_observation_time(self) -> None:
         """``last_observed_at`` is a sibling field, not a key inside the observation.
@@ -142,9 +142,9 @@ class TestTheReaderOnlyAnswersForItsOwnSubject:
 
     def test_an_empty_object_survives_as_a_clear(self) -> None:
         """``{}`` is falsy, so an ``if args.get(...)`` guard would silently eat it."""
-        from kiro_crew.mcp_tools import control
+        from kiro_crew.mcp_tools.control_parts import monitor
 
-        source = inspect.getsource(control)
+        source = inspect.getsource(monitor)
         guard = source[: source.index('patch["judge"] = validate_judge_spec')].rsplit("if ", 1)[1]
         assert "is not None" in guard, "a truthiness guard would drop the clear"
 

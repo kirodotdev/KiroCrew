@@ -237,7 +237,9 @@ def test_a11_blocking_wait_timeout_loses_nothing_duplicates_nothing():
     test_subagent_stop_reason_consistency.py::test_blocking_wait_expiry_does_not_fail_the_child.
     Smoke: the blocking tool's expiry path names ``still_running`` and never
     cancels a child (source pin)."""
-    src = (_REPO_ROOT / "src" / "kiro_crew" / "mcp_tools" / "spawn.py").read_text(encoding="utf-8")
+    src = (_REPO_ROOT / "src" / "kiro_crew" / "mcp_tools" / "spawn_parts" / "wave.py").read_text(
+        encoding="utf-8"
+    )
     assert '"still_running"' in src
     assert "task_ids" in src
 

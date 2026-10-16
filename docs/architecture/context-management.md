@@ -375,7 +375,7 @@ agent's own contract is not overridden. A run resumed after an unexpected
 cancellation also carries `_CANCEL_RESUME_PREFIX`.
 
 **Switchable context groups.** `spawn_run` exposes three booleans, all defaulting
-to true, declared once in `mcp_tools/spawn.py` → `_context_group_props` so the two
+to true, declared once in `mcp_tools/spawn_parts/schemas.py` → `_context_group_props` so the two
 spawn tools cannot drift:
 
 | Flag | Drops | Advertised rule |
@@ -693,7 +693,7 @@ per-member permission control; both exist today, in the forms above.
 | Steering and hooks | `src/kiro_crew/context_assembly/agent_spec.py` (`_load_steering_resources`, `steering_target_admissible`), `src/kiro_crew/hooks.py` |
 | Post-compaction re-injection | `src/kiro_crew/messaging/turn_bracket.py` (`TurnBracket`, `consume_reinjection`, `rearm_reinjection`; re-exported by `messaging/dispatch.py`) |
 | Ledger snapshot on nudge turns | `src/kiro_crew/session_ledger.py` (`render_snapshot`), `src/kiro_crew/dashboard/handlers/autonudge.py` |
-| Sub-agent context scope | `src/kiro_crew/subagent_parts/run_record.py` (`_context_groups_of`), `src/kiro_crew/mcp_tools/spawn.py` |
+| Sub-agent context scope | `src/kiro_crew/subagent_parts/run_record.py` (`_context_groups_of`), `src/kiro_crew/mcp_tools/spawn.py`, `src/kiro_crew/mcp_tools/spawn_parts/schemas.py`, `src/kiro_crew/mcp_tools/spawn_parts/wave.py` |
 | Sub-agent prompt assembly, shared vs dedicated | `src/kiro_crew/subagent_manager/run.py` |
 | Scratch directories | `src/kiro_crew/agent_scratch.py` (`allocate_scratch`, `scratch_env`) |
 | The worker agent spec | `src/kiro_crew/agent_materialization/worker_agent.py` (`_write_worker_spec`) |

@@ -1075,7 +1075,7 @@ invariants:
   its own.
 
 The advisory figure the `spawn_run` tool description advertises
-(`mcp_tools/spawn.py::schemas`) prefers the execution cap IN FORCE
+(`mcp_tools/spawn_parts/schemas.py::schemas`) prefers the execution cap IN FORCE
 (`resource_status.adaptive_exec_cap`, the in-process controller registry) and
 falls back to `resolve_max_subagents(KiroCrewConfig.load())`, re-resolved on
 each tool listing and LABELLED as a ceiling, so the advertised and enforced
