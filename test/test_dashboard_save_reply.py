@@ -53,7 +53,7 @@ def test_the_reply_lists_each_error_with_its_place_in_the_page():
     assert "3. refused by the frame's policy: Connecting to" in out
     assert "... and 2 more." in out
     assert "note: This check runs offline" in out
-    assert "call dashboard_save again before you describe the page" in out
+    assert "call dashboard_save again before you apply it" in out
     # The verdict leads: it is what the agent has to act on before anything else.
     assert out.index("verification: failed") < out.index("Next: call dashboard_apply")
 

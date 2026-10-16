@@ -8,7 +8,7 @@ describes. The runtime loads none of them by id; this is source to read.
 
 Each is a complete `kind="dashboard"` package: `view.html` carries the markup,
 the CSS and the script, and `model` lists the fields it may be sent. Copy the
-directory, change `bound_to`, change what it binds, stage it.
+directory, change `bound_to`, change what it binds, then `dashboard_save` it and `dashboard_apply` with no arguments.
 
 | package | the question its reader asks |
 |---|---|

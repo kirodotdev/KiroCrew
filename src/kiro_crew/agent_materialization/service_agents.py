@@ -300,8 +300,8 @@ def _install_dashboard_manager_agent() -> None:
         "name": agent_mod.DASHBOARD_MANAGER_AGENT_NAME,
         "description": (
             "Changes ONE crewmate's Dashboard page on request: searches the "
-            "template catalog, stages a preview, asks before keeping it, and "
-            "rolls back to an earlier version. Never does the crewmate's own work."
+            "template catalog, puts the one that fits live, and rolls back to "
+            "an earlier version. Never does the crewmate's own work."
         ),
         "model": model,
         "includeMcpJson": False,

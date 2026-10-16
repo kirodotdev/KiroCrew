@@ -1141,7 +1141,7 @@ async def api_member_dashboard_preview_apply(request: web.Request) -> web.Respon
         request,
         "members.dashboard_preview_apply",
         "only the person can keep a previewed page from the Dashboard tab; an agent "
-        "keeps one with dashboard_apply after they say yes",
+        "puts one live with dashboard_apply",
     )
     if agent is not None:
         return agent
