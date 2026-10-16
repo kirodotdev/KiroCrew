@@ -22,6 +22,7 @@ import pytest
 import yarl
 from aiohttp import web  # noqa: F401  (used by builtin re-shell tests)
 from aiohttp.test_utils import TestClient, TestServer  # noqa: F401
+from git_maintenance_helpers import git_maintenance_off_entries
 
 import kiro_crew.apps.builtins.dev_fleet.server as mod
 from kiro_crew import platform_compat
@@ -3554,6 +3555,19 @@ def test_git_env_neutralizers_present():
         assert f"GIT_CONFIG_VALUE_{i}" in n, f"key {i} has no value beside it"
 
 
+def _allowlisted_fixture_git_env() -> dict[str, str]:
+    """The fixture git env of the object-graph test below: the module's allowlist, no global config.
+
+    The allowlist drops the suite's ``GIT_CONFIG_*`` entries, so they are added
+    back to keep auto maintenance off.
+    """
+    env = {k: v for k, v in os.environ.items() if mod._is_safe_env_key(k)}
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_SYSTEM"] = os.devnull
+    env.update(git_maintenance_off_entries(env))
+    return env
+
+
 @pytest.mark.skipif(
     shutil.which("git") is None,
     reason="git is required to exercise a real refs/replace graft",
@@ -3604,9 +3618,7 @@ def test_the_neutralizers_answer_from_the_real_object_graph(tmp_path, monkeypatc
     # would fail these fixture commits on their machine and nowhere else.
     # Repository-local config still applies, which is what the identity below is
     # set through.
-    base_env = {k: v for k, v in os.environ.items() if mod._is_safe_env_key(k)}
-    base_env["GIT_CONFIG_GLOBAL"] = os.devnull
-    base_env["GIT_CONFIG_SYSTEM"] = os.devnull
+    base_env = _allowlisted_fixture_git_env()
 
     def run(*args, env=None):
         # ``cwd=repo`` alongside ``-C repo``: the location is pinned twice on
@@ -3655,6 +3667,14 @@ def test_the_neutralizers_answer_from_the_real_object_graph(tmp_path, monkeypatc
 # =============================================================================
 # _audited decorator exists and is applied
 # =============================================================================
+
+
+def test_the_object_graph_test_carries_its_git_skip():
+    # A mark on a plain helper is inert, so the skip must sit on the test: on a
+    # host with no git it would otherwise raise TypeError instead of skipping.
+    marks = getattr(test_the_neutralizers_answer_from_the_real_object_graph, "pytestmark", [])
+    assert [mark.name for mark in marks] == ["skipif"]
+    assert not hasattr(_allowlisted_fixture_git_env, "pytestmark")
 
 
 def test_audited_decorator_applied_to_mutations():

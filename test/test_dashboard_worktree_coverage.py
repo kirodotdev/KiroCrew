@@ -31,6 +31,7 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from git_maintenance_helpers import git_maintenance_off_entries
 
 from kiro_crew.dashboard.handlers import worktree as wt
 
@@ -983,6 +984,7 @@ class TestCreateWorktreeSyncRealGit:
                 "GIT_COMMITTER_EMAIL": "synthetic@example.invalid",
             }
         )
+        env.update(git_maintenance_off_entries(env))
 
         def plain_git(args, cwd, *, stdout_decoder=None):
             return subprocess.run(
@@ -1079,6 +1081,7 @@ class TestWorktreeInUseIgnoresSubmodules:
                 "GIT_COMMITTER_EMAIL": "synthetic@example.invalid",
             }
         )
+        env.update(git_maintenance_off_entries(env))
 
         def plain_git(args, cwd, *, stdout_decoder=None):
             return subprocess.run(

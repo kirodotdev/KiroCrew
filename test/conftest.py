@@ -1792,7 +1792,7 @@ def _restore_default_child_watcher():
 
 
 @pytest.fixture(autouse=True)
-def _git_identity(_floor_monkeypatch) -> None:
+def _git_identity(_floor_monkeypatch, _git_global_config) -> None:
     """Make git tests hermetic: pin identity AND neutralize host global/system config.
 
     Two independent host-environment bleeds must be closed for git-backed tests
@@ -1804,17 +1804,17 @@ def _git_identity(_floor_monkeypatch) -> None:
     2. Global/system config — the host's ``~/.gitconfig`` (via
        ``core.excludesFile`` → e.g. ``~/.gitignore_global`` containing ``*.png``)
        silently makes ``git add -A`` skip files, so a "commit a binary file"
-       test sees an empty tree and gets an empty sha. Point
-       ``GIT_CONFIG_GLOBAL``/``GIT_CONFIG_SYSTEM`` at ``/dev/null`` so no
-       host-level config (excludes, aliases, hooks, signing) leaks into tests.
+       test sees an empty tree and gets an empty sha. Point ``GIT_CONFIG_SYSTEM``
+       at ``/dev/null`` and ``GIT_CONFIG_GLOBAL`` at the root conftest's hermetic
+       file, which holds only the keys that turn git's auto maintenance off, so
+       no host-level config (excludes, aliases, hooks, signing) leaks into tests.
     """
     _floor_monkeypatch.setenv("GIT_AUTHOR_NAME", "Test")
     _floor_monkeypatch.setenv("GIT_AUTHOR_EMAIL", "test@example.com")
     _floor_monkeypatch.setenv("GIT_COMMITTER_NAME", "Test")
     _floor_monkeypatch.setenv("GIT_COMMITTER_EMAIL", "test@example.com")
-    # Isolate from the host's global/system git config (Git >= 2.32). An empty
-    # file (/dev/null) means git reads no global or system settings.
-    _floor_monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    # Isolate from the host's global/system git config (Git >= 2.32).
+    _floor_monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(_git_global_config))
     _floor_monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
 
 

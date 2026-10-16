@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from git_maintenance_helpers import git_maintenance_off_entries
 from installer_test_helpers import run_bounded
 from skill_script_helpers import load_skill_script
 
@@ -1211,6 +1212,10 @@ def test_publish_workflow_signing_step_runs_verbatim_against_the_helper(
             "GIT_COMMITTER_EMAIL": "t@example.invalid",
         }
     )
+    # Dropping GIT_* also drops the suite's maintenance entries, so they go back
+    # on: a detached maintenance run would otherwise keep writing under .git
+    # after the commit returns.
+    hermetic.update(git_maintenance_off_entries(hermetic))
     for argv in (
         ["git", "init", "-q"],
         ["git", "add", "-A"],

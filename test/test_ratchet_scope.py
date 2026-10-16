@@ -30,6 +30,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from git_maintenance_helpers import git_maintenance_off_entries
 
 from kiro_crew.platform.update_governance import _GIT_LOCATION_VARS, git_command_env
 
@@ -75,6 +76,8 @@ def _fixture_git_env() -> dict[str, str]:
     env[f"GIT_CONFIG_KEY_{count}"] = "init.templateDir"
     env[f"GIT_CONFIG_VALUE_{count}"] = ""
     env["GIT_CONFIG_COUNT"] = str(count + 1)
+    # Last, so the entry lands after the GIT_CONFIG_COUNT this helper set.
+    env.update(git_maintenance_off_entries(env))
     return env
 
 

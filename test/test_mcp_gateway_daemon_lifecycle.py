@@ -34,6 +34,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from git_maintenance_helpers import git_maintenance_off_entries
 
 from kiro_crew import code_fingerprint as cf
 from kiro_crew.mcp_gateway import gatewayd as gw
@@ -94,6 +95,7 @@ class TestCodeFingerprint:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, real_git_fingerprint: None
     ) -> None:
         env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "HOME": str(tmp_path)}
+        env.update(git_maintenance_off_entries(env))
         pkg = tmp_path / "pkg"
         pkg.mkdir()
         (pkg / "a.py").write_text("x = 1\n", encoding="utf-8")

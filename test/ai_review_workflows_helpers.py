@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from git_maintenance_helpers import git_global_config_text
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -1037,7 +1038,8 @@ class UxEvidenceGateHarness:
         every write below land in THAT repository despite `cwd=repo`, so every
         `GIT_*` location variable is dropped. Global and system config are
         pointed away too, so a host-wide `commit.gpgsign` or hook path cannot
-        reach the fixture.
+        reach the fixture. The global file it points at turns auto maintenance
+        off, since dropping `GIT_*` also drops the suite's own entries.
 
         `RUNNER_TEMP` is given its own per-case directory for the same reason,
         and it matters as soon as a step under test keeps anything there. The
@@ -1054,7 +1056,7 @@ class UxEvidenceGateHarness:
         """
         env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
         gitconfig = tmp_path / "gitconfig"
-        gitconfig.touch()
+        gitconfig.write_text(git_global_config_text(), encoding="utf-8")
         env["GIT_CONFIG_GLOBAL"] = str(gitconfig)
         env["GIT_CONFIG_NOSYSTEM"] = "1"
         runner_temp = tmp_path / "runner-temp"

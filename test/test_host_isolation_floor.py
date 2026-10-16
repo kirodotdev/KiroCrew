@@ -34,14 +34,16 @@ import logging
 import os
 import pathlib
 import queue
+import subprocess
 import sys
 import tempfile
 import threading
 from logging.handlers import QueueListener
 
 import pytest
+from git_maintenance_helpers import auto_maintenance_starts, trace_git_spawns
 
-from kiro_crew import cli
+from kiro_crew import cli, platform_compat
 from kiro_crew.log_redaction import install_log_redaction
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -1586,6 +1588,459 @@ class TestInheritedShellEnvironmentIsScrubbed:
         finally:
             mp.undo()
             os.environ.pop("BASH_FUNC_kcfloor%%", None)
+
+
+#: The values the floor gives every key it turns off (``GIT_MAINTENANCE_OFF_CONFIG``).
+_MAINTENANCE_OFF = {"maintenance.auto": "false", "gc.auto": "0"}
+
+
+def _git_config_values(cwd, *scope: str, env=None) -> dict[str, str]:
+    """What git reads for each maintenance key in *cwd*, in *scope* (all scopes if none)."""
+    git = platform_compat.trusted_git_bin()
+    if git is None:
+        pytest.fail(
+            "prerequisite missing: git is not installed, so the maintenance keys cannot be read"
+        )
+    return {
+        key: subprocess.run(
+            [git, "config", *scope, "--get", key],
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            encoding="utf-8",
+            check=False,
+        ).stdout.strip()
+        for key in _MAINTENANCE_OFF
+    }
+
+
+@pytest.fixture(scope="module")
+def _maintenance_config_before_any_test(tmp_path_factory) -> tuple[dict, dict]:
+    """What git reads for the maintenance keys before the function-scoped floor runs."""
+    cwd = tmp_path_factory.mktemp("module-git")
+    return _git_config_values(cwd), _git_config_values(cwd, "--global")
+
+
+class TestGitAutoMaintenanceIsOff:
+    """The repo-root ``conftest`` turns git's auto maintenance off for every test and fixture.
+
+    A commit otherwise leaves a detached ``git maintenance run --auto`` adding and
+    removing lock files under .git after it returns, so a test that walks or copies
+    the repo right after can see a file vanish. ``_git_global_config`` covers
+    session, module and class fixtures on every testpath, through a global config
+    file and ``GIT_CONFIG_COUNT``; ``_git_maintenance_off`` re-adds the entries for
+    a test whose environment lost them. A fixture helper that sets its own
+    ``GIT_CONFIG_COUNT`` applies ``git_maintenance_off_entries`` to its env.
+    """
+
+    @staticmethod
+    def _floor():
+        floor = _root._git_maintenance_off
+        return getattr(floor, "__wrapped__", floor)
+
+    def test_git_reads_both_keys_as_off_in_a_module_fixture(
+        self, _maintenance_config_before_any_test: tuple[dict, dict]
+    ) -> None:
+        # Session-, module- and class-scoped fixtures run before the
+        # function-scoped floor, and some commit a template every test copies.
+        effective, global_file = _maintenance_config_before_any_test
+        assert effective == _MAINTENANCE_OFF
+        assert global_file == _MAINTENANCE_OFF
+
+    @pytest.mark.parametrize(
+        ("environ", "expected"),
+        [
+            pytest.param(
+                {"GIT_CONFIG_COUNT": "many"},
+                {
+                    "GIT_CONFIG_KEY_0": "maintenance.auto",
+                    "GIT_CONFIG_VALUE_0": "false",
+                    "GIT_CONFIG_KEY_1": "gc.auto",
+                    "GIT_CONFIG_VALUE_1": "0",
+                    "GIT_CONFIG_COUNT": "2",
+                },
+                id="malformed-count-restarts-at-0",
+            ),
+            pytest.param(
+                {"GIT_CONFIG_COUNT": "-1"},
+                {
+                    "GIT_CONFIG_KEY_0": "maintenance.auto",
+                    "GIT_CONFIG_VALUE_0": "false",
+                    "GIT_CONFIG_KEY_1": "gc.auto",
+                    "GIT_CONFIG_VALUE_1": "0",
+                    "GIT_CONFIG_COUNT": "2",
+                },
+                id="negative-count-restarts-at-0",
+            ),
+            pytest.param(
+                {
+                    "GIT_CONFIG_COUNT": "2",
+                    "GIT_CONFIG_KEY_0": "maintenance.auto",
+                    "GIT_CONFIG_VALUE_0": "false",
+                    "GIT_CONFIG_KEY_1": "GC.Auto",
+                    "GIT_CONFIG_VALUE_1": "0",
+                },
+                {},
+                id="already-off-adds-nothing",
+            ),
+            pytest.param(
+                {
+                    "GIT_CONFIG_COUNT": "1",
+                    "GIT_CONFIG_KEY_0": "maintenance.auto",
+                    "GIT_CONFIG_VALUE_0": "false",
+                },
+                {
+                    "GIT_CONFIG_KEY_1": "maintenance.auto",
+                    "GIT_CONFIG_VALUE_1": "false",
+                    "GIT_CONFIG_KEY_2": "gc.auto",
+                    "GIT_CONFIG_VALUE_2": "0",
+                    "GIT_CONFIG_COUNT": "3",
+                },
+                id="gc-auto-missing-appends-both",
+            ),
+            pytest.param(
+                {
+                    "GIT_CONFIG_COUNT": "3",
+                    "GIT_CONFIG_KEY_0": "maintenance.auto",
+                    "GIT_CONFIG_VALUE_0": "false",
+                    "GIT_CONFIG_KEY_1": "gc.auto",
+                    "GIT_CONFIG_VALUE_1": "0",
+                    "GIT_CONFIG_KEY_2": "Maintenance.Auto",
+                    "GIT_CONFIG_VALUE_2": "true",
+                },
+                {
+                    "GIT_CONFIG_KEY_3": "maintenance.auto",
+                    "GIT_CONFIG_VALUE_3": "false",
+                    "GIT_CONFIG_KEY_4": "gc.auto",
+                    "GIT_CONFIG_VALUE_4": "0",
+                    "GIT_CONFIG_COUNT": "5",
+                },
+                id="a-later-true-entry-is-overridden",
+            ),
+        ],
+    )
+    def test_the_entries_follow_what_the_environment_already_carries(
+        self, environ: dict[str, str], expected: dict[str, str]
+    ) -> None:
+        assert _root._git_maintenance_off_entries(environ) == expected
+
+    def test_git_reads_both_keys_as_off_inside_a_test(self, tmp_path) -> None:
+        assert _git_config_values(tmp_path) == _MAINTENANCE_OFF
+        assert _git_config_values(tmp_path, "--global") == _MAINTENANCE_OFF
+
+    def test_the_global_file_keeps_the_includes_ahead_of_the_keys(self) -> None:
+        # The keys must come after the includes, or an included file could
+        # turn auto maintenance back on.
+        text = _root._GIT_MAINTENANCE.git_global_config_text(['C:/a "b"\\c'])
+        assert text == (
+            '[include]\n\tpath = "C:/a \\"b\\"\\\\c"\n'
+            "[maintenance]\n\tauto = false\n"
+            "[gc]\n\tauto = 0\n"
+        )
+
+    def test_a_local_push_starts_receive_pack_with_both_keys_off(self, tmp_path) -> None:
+        # A push over the local transport starts receive-pack in the remote
+        # without GIT_CONFIG_* (git's local_repo_env), so only a config file
+        # reaches it. The remote here has no repo config of its own.
+        git = platform_compat.trusted_git_bin()
+        if git is None:
+            pytest.fail("prerequisite missing: git is not installed, so the push cannot be run")
+
+        def run(cwd, *args: str) -> None:
+            subprocess.run([git, *args], cwd=cwd, capture_output=True, check=True)
+
+        remote = tmp_path / "remote.git"
+        run(tmp_path, "init", "-q", "--bare", str(remote))
+        hook = remote / "hooks" / "post-receive"
+        hook.write_text(
+            "#!/bin/sh\n"
+            "git config --get maintenance.auto > seen-maintenance.txt\n"
+            "git config --get gc.auto > seen-gc.txt\n",
+            encoding="utf-8",
+        )
+        hook.chmod(0o755)
+        work = tmp_path / "work"
+        run(tmp_path, "clone", "-q", str(remote), str(work))
+        (work / "a.txt").write_text("x\n", encoding="utf-8")
+        run(work, "add", "a.txt")
+        run(work, "commit", "-q", "-m", "one")
+        run(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+        seen = {
+            "maintenance.auto": (remote / "seen-maintenance.txt").read_text(encoding="utf-8"),
+            "gc.auto": (remote / "seen-gc.txt").read_text(encoding="utf-8"),
+        }
+        assert {key: value.strip() for key, value in seen.items()} == _MAINTENANCE_OFF
+
+    @pytest.mark.parametrize(
+        ("module_name", "helper_name", "takes_repo"),
+        [
+            ("test_governance_updates", "_fixture_git_env", True),
+            ("test_pipeline_conductor_claim_preflight", "_fixture_git_env", False),
+            ("test_preflight_write_permission", "_fixture_git_env", False),
+            ("test_prepare_pr_diff_signals", "_git_env", False),
+            ("test_prepare_pr_local_review", "_fixture_git_env", False),
+            ("test_push_guard", "_fixture_git_env", False),
+            ("test_ratchet_scope", "_fixture_git_env", False),
+        ],
+    )
+    def test_a_fixture_git_env_that_sets_its_own_config_count_keeps_maintenance_off(
+        self, module_name: str, helper_name: str, takes_repo: bool, tmp_path, monkeypatch
+    ) -> None:
+        # These helpers set GIT_CONFIG_COUNT themselves, which drops the floor's
+        # entries. The floor's global file is held away here, as most of them
+        # do themselves, so only the entries the helper applies can pass this.
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+        helper = getattr(importlib.import_module(module_name), helper_name)
+        env = helper(str(tmp_path)) if takes_repo else helper()
+        assert _git_config_values(tmp_path, env=env) == _MAINTENANCE_OFF
+
+    @pytest.mark.parametrize(
+        "driver",
+        [
+            "add_contributor_git_env",
+            "ai_review_git",
+            "ai_review_shallow_fetch_env",
+            "apps_registry_init",
+            "dev_fleet_allowlisted_env",
+            "file_line_cap_git",
+            "macos_gate_git_env",
+        ],
+    )
+    def test_a_helper_that_builds_its_own_git_env_starts_no_auto_maintenance(
+        self, driver: str, tmp_path, monkeypatch
+    ) -> None:
+        # These helpers drop or never carry the suite's GIT_CONFIG_* entries
+        # (they strip GIT_*, build the env from nothing, or filter os.environ
+        # through an allowlist). Setting GIT_TRACE2_EVENT in os.environ cannot
+        # see their git, so trace_git_spawns adds it to each spawn's own env.
+        # The control commit proves the trace reaches git under that helper.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        trace = trace_git_spawns(monkeypatch, tmp_path / "trace")
+        run = getattr(self, f"_drive_{driver}")(repo, tmp_path)
+        run("-c", "maintenance.auto=true", "commit", "-q", "--allow-empty", "-m", "control")
+        control = auto_maintenance_starts(trace)
+        assert control, f"the trace did not see the control commit under {driver}"
+        for entry in trace.iterdir():
+            entry.unlink()
+        run("commit", "-q", "--allow-empty", "-m", "fixture")
+        assert auto_maintenance_starts(trace) == []
+
+    @staticmethod
+    def _run_git(repo, env):
+        git = platform_compat.trusted_git_bin()
+        if git is None:
+            pytest.fail("prerequisite missing: git is not installed, so the helper cannot be run")
+
+        def run(*args: str) -> None:
+            subprocess.run(
+                [git, "-c", "user.name=t", "-c", "user.email=t@example.invalid", *args],
+                cwd=repo,
+                env=env,
+                capture_output=True,
+                check=True,
+            )
+
+        return run
+
+    def _drive_add_contributor_git_env(self, repo, tmp_path):
+        module = importlib.import_module("test_add_contributor_push_skip")
+        env = module._git_env(tmp_path, tmp_path)
+        module._git(repo, "init", "-q", env=env)
+        return lambda *args: module._git(repo, *args, env=env)
+
+    def _drive_ai_review_git(self, repo, tmp_path):
+        cls = importlib.import_module("ai_review_workflows_helpers").UxEvidenceGateHarness
+        case = cls()
+        case._git(repo, "init", "-q")
+        return lambda *args: case._git(repo, *args)
+
+    def _drive_ai_review_shallow_fetch_env(self, repo, tmp_path):
+        module = importlib.import_module("test_ai_review_shallow_fetch")
+        run = self._run_git(repo, module._git_env(tmp_path))
+        run("init", "-q")
+        return run
+
+    def _drive_apps_registry_init(self, repo, tmp_path):
+        module = importlib.import_module("test_apps_registry")
+        run = self._run_git(repo, module._registry_fixture_env(tmp_path))
+        module._init_registry_fixture_repo(run)
+        return run
+
+    def _drive_dev_fleet_allowlisted_env(self, repo, tmp_path):
+        module = importlib.import_module("test_dev_fleet_app")
+        run = self._run_git(repo, module._allowlisted_fixture_git_env())
+        run("init", "-q")
+        return run
+
+    def _drive_file_line_cap_git(self, repo, tmp_path):
+        module = importlib.import_module("test_file_line_cap")
+        module._git(repo, "init", "-q")
+        return lambda *args: module._git(repo, *args)
+
+    def _drive_macos_gate_git_env(self, repo, tmp_path):
+        module = importlib.import_module("test_macos_platform_tests_gate")
+        run = self._run_git(repo, module._fixture_git_env(tmp_path))
+        run("init", "-q")
+        return run
+
+    #: What a git hook exports to a suite it starts: ``GIT_INDEX_FILE`` always,
+    #: ``GIT_DIR`` and ``GIT_WORK_TREE`` when its caller set them.
+    _HOOK_LOCATION_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")
+
+    @staticmethod
+    def _expected_stripped() -> frozenset[str]:
+        """What the floor must strip, read from the production list, not from the floor."""
+        from kiro_crew.platform.update_governance import _GIT_LOCATION_VARS
+
+        assert "GIT_CEILING_DIRECTORIES" in _GIT_LOCATION_VARS
+        return (_GIT_LOCATION_VARS - {"GIT_CEILING_DIRECTORIES"}) | {"GIT_CONFIG_PARAMETERS"}
+
+    @staticmethod
+    def _outer_values(sentinel) -> dict[str, str]:
+        """A value for every stripped variable, each aimed at the *sentinel* repository."""
+        git_dir = sentinel / ".git"
+        return {
+            "GIT_DIR": str(git_dir),
+            "GIT_COMMON_DIR": str(git_dir),
+            "GIT_WORK_TREE": str(sentinel),
+            "GIT_INDEX_FILE": str(git_dir / "index"),
+            "GIT_OBJECT_DIRECTORY": str(git_dir / "objects"),
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(git_dir / "objects"),
+            "GIT_DISCOVERY_ACROSS_FILESYSTEM": "1",
+            "GIT_NAMESPACE": "outer",
+            "GIT_CONFIG_PARAMETERS": "'maintenance.auto'='true'",
+        }
+
+    @pytest.mark.parametrize(
+        "driver",
+        [
+            "inherited_env",
+            "add_contributor_git_env",
+            "ai_review_git",
+            "ai_review_shallow_fetch_env",
+            "apps_registry_init",
+            "dev_fleet_allowlisted_env",
+            "file_line_cap_git",
+            "macos_gate_git_env",
+        ],
+    )
+    @pytest.mark.parametrize(
+        "outer_vars",
+        [("GIT_INDEX_FILE",), _HOOK_LOCATION_VARS, None],
+        ids=["index-only", "dir-work-tree-index", "every-stripped-var"],
+    )
+    def test_a_fixture_commit_under_a_hook_env_leaves_the_outer_index_alone(
+        self, driver: str, outer_vars: tuple[str, ...] | None, tmp_path, monkeypatch
+    ) -> None:
+        # The location variables point at a sentinel repository, as they point
+        # at the operator's when a hook runs the suite. The floor removes them,
+        # so a fixture repo's add and commit, under each helper or an inherited
+        # env, cannot stage into the sentinel's index.
+        sentinel = tmp_path / "sentinel"
+        sentinel.mkdir()
+        outer = self._run_git(sentinel, None)
+        outer("init", "-q")
+        (sentinel / "kept.txt").write_text("kept\n", encoding="utf-8")
+        outer("add", "kept.txt")
+        index = sentinel / ".git" / "index"
+        before = index.read_bytes()
+        outer_env = self._outer_values(sentinel)
+        assert set(outer_env) == self._expected_stripped()
+        for name in sorted(outer_env) if outer_vars is None else outer_vars:
+            monkeypatch.setenv(name, outer_env[name])
+        floor = _root._git_location_unset
+        getattr(floor, "__wrapped__", floor)(monkeypatch, None)
+        assert sorted(name for name in outer_env if name in os.environ) == []
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        run = getattr(self, f"_drive_{driver}")(repo, tmp_path)
+        (repo / "fixture.txt").write_text("fixture\n", encoding="utf-8")
+        failed = None
+        try:
+            run("add", "fixture.txt")
+            run("commit", "-q", "-m", "fixture")
+        except subprocess.CalledProcessError as exc:
+            failed = exc
+        # The sentinel first: a commit that staged into it can then fail on
+        # the sentinel's objects, which would hide where the add went.
+        assert index.read_bytes() == before
+        assert failed is None, failed.stderr
+
+    def test_the_session_floor_removes_them_before_any_fixture_runs(
+        self, tmp_path, tmp_path_factory, monkeypatch
+    ) -> None:
+        # Session, module and class fixtures run before the function-scoped
+        # floor, and some commit a template repo every test copies.
+        outer = self._outer_values(tmp_path)
+        assert set(outer) == self._expected_stripped()
+        for name, value in outer.items():
+            monkeypatch.setenv(name, value)
+        session = _root._git_global_config
+        floor = getattr(session, "__wrapped__", session)(tmp_path / "xdg", tmp_path_factory)
+        try:
+            next(floor)
+            assert [name for name in outer if name in os.environ] == []
+        finally:
+            floor.close()
+        assert {name: os.environ.get(name) for name in outer} == outer
+
+    def test_the_discovery_ceiling_survives_the_strip(self, monkeypatch) -> None:
+        # The floor sets GIT_CEILING_DIRECTORIES itself for every test, after the
+        # session strip, so only the function strip could remove it.
+        ceiling = os.environ.get("GIT_CEILING_DIRECTORIES")
+        assert ceiling, "the floor's discovery ceiling is unset inside a test"
+        floor = _root._git_location_unset
+        getattr(floor, "__wrapped__", floor)(monkeypatch, None)
+        assert os.environ.get("GIT_CEILING_DIRECTORIES") == ceiling
+
+    def test_an_operator_config_parameter_cannot_turn_maintenance_back_on(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # A hook started by `git -c ...` exports GIT_CONFIG_PARAMETERS, which git
+        # reads over the floor's GIT_CONFIG_COUNT entries. The control shows it
+        # does; the floor strips it.
+        operator = "'maintenance.auto'='true'"
+        control = _git_config_values(
+            tmp_path, env={**os.environ, "GIT_CONFIG_PARAMETERS": operator}
+        )
+        assert control["maintenance.auto"] == "true"
+        monkeypatch.setenv("GIT_CONFIG_PARAMETERS", operator)
+        floor = _root._git_location_unset
+        getattr(floor, "__wrapped__", floor)(monkeypatch, None)
+        assert "GIT_CONFIG_PARAMETERS" not in os.environ
+        assert _git_config_values(tmp_path) == _MAINTENANCE_OFF
+
+    def _drive_inherited_env(self, repo, tmp_path):
+        # As test_a_local_push_starts_receive_pack_with_both_keys_off runs git.
+        run = self._run_git(repo, None)
+        run("init", "-q")
+        return run
+
+    def test_the_entries_are_appended_after_config_the_environment_already_carries(
+        self,
+    ) -> None:
+        mp = pytest.MonkeyPatch()
+        try:
+            mp.setenv("GIT_CONFIG_COUNT", "2")
+            mp.setenv("GIT_CONFIG_KEY_0", "core.fsmonitor")
+            mp.setenv("GIT_CONFIG_VALUE_0", "false")
+            mp.setenv("GIT_CONFIG_KEY_1", "core.hooksPath")
+            mp.setenv("GIT_CONFIG_VALUE_1", os.devnull)
+            self._floor()(mp, None)
+            assert os.environ["GIT_CONFIG_COUNT"] == "4"
+            entries = [
+                (os.environ[f"GIT_CONFIG_KEY_{i}"], os.environ[f"GIT_CONFIG_VALUE_{i}"])
+                for i in range(4)
+            ]
+            assert entries == [
+                ("core.fsmonitor", "false"),
+                ("core.hooksPath", os.devnull),
+                ("maintenance.auto", "false"),
+                ("gc.auto", "0"),
+            ]
+        finally:
+            mp.undo()
 
 
 # ── the logging record factory ─────────────────────────────────────────────

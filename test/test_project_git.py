@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from git_maintenance_helpers import git_maintenance_off_entries
 
 import kiro_crew.dashboard.handlers.files as files_mod
 from kiro_crew import platform_compat
@@ -82,6 +83,21 @@ def mock_sel():
         yield m.return_value
 
 
+def _fixture_git_env() -> dict[str, str]:
+    """The suite's env with a fixed identity, no host config and auto maintenance off."""
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "T",
+        "GIT_AUTHOR_EMAIL": "t@example.com",
+        "GIT_COMMITTER_NAME": "T",
+        "GIT_COMMITTER_EMAIL": "t@example.com",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+    }
+    env.update(git_maintenance_off_entries(env))
+    return env
+
+
 def _git(cwd, *args, check: bool = True) -> subprocess.CompletedProcess:
     """Every git this module runs: from *cwd*, with the host's config held away.
 
@@ -99,15 +115,7 @@ def _git(cwd, *args, check: bool = True) -> subprocess.CompletedProcess:
         # which is FUNCTION-scoped and so does not cover the session-scoped template
         # builder below. os.devnull rather than a literal /dev/null: this file is
         # collected on Windows, where that path does not exist.
-        env={
-            **os.environ,
-            "GIT_AUTHOR_NAME": "T",
-            "GIT_AUTHOR_EMAIL": "t@example.com",
-            "GIT_COMMITTER_NAME": "T",
-            "GIT_COMMITTER_EMAIL": "t@example.com",
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_CONFIG_SYSTEM": os.devnull,
-        },
+        env=_fixture_git_env(),
     )
 
 

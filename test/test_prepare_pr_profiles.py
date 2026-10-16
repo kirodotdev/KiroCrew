@@ -20,6 +20,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from git_maintenance_helpers import git_maintenance_off_entries
 from skill_script_helpers import load_skill_script
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -63,7 +64,9 @@ def _hermetic_git(monkeypatch) -> dict[str, str]:
         monkeypatch.delenv(name, raising=False)
     for name, value in _HERMETIC_GIT.items():
         monkeypatch.setenv(name, value)
-    return dict(os.environ)
+    env = dict(os.environ)
+    env.update(git_maintenance_off_entries(env))
+    return env
 
 
 def _git(cwd: Path, *args: str) -> None:

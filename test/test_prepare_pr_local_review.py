@@ -31,6 +31,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from git_maintenance_helpers import git_maintenance_off_entries
 from skill_script_helpers import load_skill_script
 
 from kiro_crew.platform.update_governance import _GIT_LOCATION_VARS
@@ -104,6 +105,8 @@ def _fixture_git_env() -> dict[str, str]:
             "GIT_CONFIG_VALUE_0": "",
         }
     )
+    # Last, so the entry lands after the GIT_CONFIG_COUNT this helper set.
+    env.update(git_maintenance_off_entries(env))
     return env
 
 

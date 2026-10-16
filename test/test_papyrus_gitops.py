@@ -32,6 +32,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from git_maintenance_helpers import GIT_MAINTENANCE_OFF_CONFIG
 
 from conftest import make_dir_link, requires_symlinks
 from kiro_crew import sandbox
@@ -833,6 +834,10 @@ class TestPackProgramsArePinnedForEveryRemote:
             )
 
         _run("init", "-q", "--bare", "-b", "main", str(upstream), cwd=tmp_path)
+        # The push starts receive-pack here with no env config and no global
+        # file, so only the remote's own config keeps auto maintenance off.
+        for key, value in GIT_MAINTENANCE_OFF_CONFIG:
+            _run("config", key, value, cwd=upstream)
         _run("clone", "-q", str(upstream), str(work), cwd=tmp_path)
         _run("config", "user.email", "t@example.invalid")
         _run("config", "user.name", "t")

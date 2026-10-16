@@ -22,6 +22,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from git_maintenance_helpers import git_maintenance_off_entries
 
 from kiro_crew import sandbox as sandbox_mod
 from kiro_crew.dashboard.handlers import worktree as wt_mod
@@ -146,8 +147,14 @@ def _git(*args: str, cwd) -> None:
         check=True,
         capture_output=True,
         text=True,
-        env={**os.environ, **_GIT_ENV},
+        env=_fixture_git_env(),
     )
+
+
+def _fixture_git_env() -> dict[str, str]:
+    env = {**os.environ, **_GIT_ENV}
+    env.update(git_maintenance_off_entries(env))
+    return env
 
 
 @functools.lru_cache(maxsize=1)

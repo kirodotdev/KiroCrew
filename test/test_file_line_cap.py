@@ -25,6 +25,7 @@ import warnings
 from pathlib import Path
 
 import pytest
+from git_maintenance_helpers import git_maintenance_off_entries
 
 from kiro_crew.platform.update_governance import _GIT_LOCATION_VARS, git_command_env
 
@@ -74,6 +75,8 @@ def _git(repo: Path, *args: str) -> None:
         "GIT_COMMITTER_EMAIL": "test@example.invalid",
     }
     env.pop("GIT_CONFIG_PARAMETERS", None)
+    # Last, so the entries land after the GIT_CONFIG_COUNT git_command_env set.
+    env.update(git_maintenance_off_entries(env))
     subprocess.run(
         ["git", "-c", "init.templateDir=", *args],
         cwd=repo,

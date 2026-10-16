@@ -28,6 +28,7 @@ from ai_review_workflows_helpers import (
     _step_script,
     _workflow,
 )
+from git_maintenance_helpers import git_maintenance_off_entries
 
 
 @functools.lru_cache(maxsize=1)
@@ -773,10 +774,19 @@ class TestScopeConclusionLadderLivesInOnePlace:
         gitconfig.touch()
         git_env["GIT_CONFIG_GLOBAL"] = str(gitconfig)
         git_env["GIT_CONFIG_NOSYSTEM"] = "1"
+        # Stripping GIT_* drops the suite's maintenance entries.
+        git_env.update(git_maintenance_off_entries(git_env))
 
         def git(*args: str) -> str:
             return subprocess.run(
-                ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                [
+                    "git",
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    *args,
+                ],
                 check=True,
                 capture_output=True,
                 text=True,

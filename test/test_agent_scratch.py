@@ -7,6 +7,7 @@ real ``<data home>/scratch`` is never touched.
 from __future__ import annotations
 
 import errno
+import json
 import os
 import stat
 import subprocess
@@ -15,6 +16,7 @@ import time
 from pathlib import Path
 
 import pytest
+from git_maintenance_helpers import git_maintenance_off_entries
 
 from kiro_crew import agent_scratch as sc
 from kiro_crew import platform_compat
@@ -930,8 +932,16 @@ class TestLivenessSweep:
 _GIT = platform_compat.trusted_git_bin()
 
 
-def _git(cwd: Path, *args: str) -> str:
-    """Run git for a fixture, with no host config and a fixed identity."""
+def _git(
+    cwd: Path, *args: str, trace_to: Path | None = None, auto_maintenance: bool = False
+) -> str:
+    """Run git for a fixture, with no host config and a fixed identity.
+
+    *trace_to* names a file that receives git's trace2 event stream, so a test
+    can see which child processes a fixture command started. *auto_maintenance*
+    leaves git's own auto-maintenance defaults in place; only the regression
+    test's control command sets it.
+    """
     assert _GIT is not None
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env.update(
@@ -942,8 +952,21 @@ def _git(cwd: Path, *args: str) -> str:
         GIT_COMMITTER_NAME="Scratch Test",
         GIT_COMMITTER_EMAIL="scratch-test@example.invalid",
     )
+    if trace_to is not None:
+        env["GIT_TRACE2_EVENT"] = str(trace_to)
+    # A commit otherwise starts a detached ``git maintenance run --auto`` that
+    # outlives this call and creates and removes lock files under .git, so a
+    # walk of the tree right after can list a file that is gone when it is
+    # touched. Stripping GIT_* dropped the suite's maintenance entries, so they
+    # go back on for every fixture command.
+    env.update(git_maintenance_off_entries(env))
+    flags = ["-c", "init.defaultBranch=main", "-c", "commit.gpgsign=false"]
+    if auto_maintenance:
+        # Explicit, so the control starts maintenance over the entries above:
+        # -c wins.
+        flags += ["-c", "maintenance.auto=true"]
     result = subprocess.run(
-        [_GIT, "-c", "init.defaultBranch=main", "-c", "commit.gpgsign=false", *args],
+        [_GIT, *flags, *args],
         cwd=cwd,
         env=env,
         capture_output=True,
@@ -1035,6 +1058,72 @@ class TestGitTreesAreQuarantined:
         _git(clone, "add", "feature.py")
         _git(clone, "commit", "-q", "-m", "feature")
         return path, clone
+
+    # -- the fixtures ------------------------------------------------------
+
+    @staticmethod
+    def _background_children(events: Path) -> tuple[list[list[str]], list[list[str]]]:
+        """Every child a traced git command started, and the auto-maintenance ones."""
+        started = [
+            event["argv"]
+            for event in map(json.loads, events.read_text(encoding="utf-8").splitlines())
+            if event.get("event") == "child_start"
+        ]
+        return started, [argv for argv in started if argv[1:2] in (["maintenance"], ["gc"])]
+
+    def test_fixture_git_leaves_no_process_writing_into_the_tree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The tests below walk, snapshot and move a tree right after building
+        # it, so no git command may leave a detached child (auto maintenance or
+        # auto gc) still adding and removing lock files in it. The suite's own
+        # maintenance.auto=false entry is dropped here, so this checks the
+        # helper's flags and not whatever the environment happens to carry.
+        monkeypatch.setenv("GIT_CONFIG_COUNT", "0")
+        control_events = tmp_path / "control.json"
+        control = tmp_path / "control"
+        control.mkdir()
+        _git(control, "init", "-q")
+        _git(
+            control,
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "x",
+            trace_to=control_events,
+            auto_maintenance=True,
+        )
+        control_started, control_background = self._background_children(control_events)
+        # Searched in every argv word, independent of the filter below, so a
+        # filter that stops recognising the child fails here instead of passing.
+        if not any({"maintenance", "gc"} & set(argv) for argv in control_started):
+            pytest.fail(
+                "prerequisite missing: the control git started no auto maintenance, "
+                f"so this test cannot show the helper's flags suppress it: {control_started}"
+            )
+        assert control_background, f"the filter missed the control's maintenance: {control_started}"
+
+        events = tmp_path / "trace2.json"
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git(repo, "init", "-q", trace_to=events)
+        (repo / "a.txt").write_text("one\n")
+        _git(repo, "add", "a.txt", trace_to=events)
+        _git(repo, "commit", "-q", "-m", "first", trace_to=events)
+        _git(tmp_path, "clone", "-q", str(repo), "clone", trace_to=events)
+        clone = tmp_path / "clone"
+        _git(clone, "checkout", "-q", "-b", "feature", trace_to=events)
+        (clone / "b.txt").write_text("two\n")
+        _git(clone, "add", "b.txt", trace_to=events)
+        _git(clone, "commit", "-q", "-m", "feature", trace_to=events)
+        (clone / "a.txt").write_text("stashed\n")
+        _git(clone, "stash", "-q", trace_to=events)
+        _git(repo, "worktree", "add", "-q", "-b", "side", str(tmp_path / "wt"), trace_to=events)
+
+        started, background = self._background_children(events)
+        assert started, "the trace recorded no child processes at all"
+        assert background == []
 
     # -- what is moved -----------------------------------------------------
 

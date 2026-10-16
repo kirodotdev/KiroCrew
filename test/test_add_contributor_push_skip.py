@@ -33,6 +33,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from git_maintenance_helpers import git_maintenance_off_entries
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "add-contributor.yml"
@@ -137,6 +138,8 @@ def _git_env(home: Path, tmp: Path) -> dict[str, str]:
         value = os.environ.get(name)
         if value is not None:
             env[name] = value
+    # Built from nothing, so the suite's own entries are gone: add them back.
+    env.update(git_maintenance_off_entries(env))
     return env
 
 

@@ -23,6 +23,7 @@ This file lives in ``test/`` (not ``tests/``) so the ``setup.cfg``
 from __future__ import annotations
 
 import asyncio
+import functools
 import importlib.machinery
 import importlib.util
 import json
@@ -36,6 +37,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from git_maintenance_helpers import GIT_MAINTENANCE_OFF_CONFIG
 
 from conftest import requires_symlinks
 from kiro_crew import platform_compat
@@ -1236,6 +1238,32 @@ async def test_credentialed_pull_appends_exec_neutralizers_after_inherited_confi
             }
 
 
+def _registry_fixture_env(home) -> dict[str, str]:
+    """The fixture git env of the transport tests: no global or system config.
+
+    It carries no ``GIT_CONFIG_*`` entries on purpose, since the tests index the
+    entries the transport env appends, so :func:`_init_registry_fixture_repo`
+    keeps auto maintenance off through the repository's own config instead.
+    """
+    return {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": str(home),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_AUTHOR_NAME": "Registry Test",
+        "GIT_AUTHOR_EMAIL": "registry@example.invalid",
+        "GIT_COMMITTER_NAME": "Registry Test",
+        "GIT_COMMITTER_EMAIL": "registry@example.invalid",
+    }
+
+
+def _init_registry_fixture_repo(git) -> None:
+    """``git init`` through *git*, then turn auto maintenance off in the repo's own config."""
+    git("init", "--quiet", "--template=")
+    for key, value in GIT_MAINTENANCE_OFF_CONFIG:
+        git("config", key, value)
+
+
 @pytest.mark.skipif(
     not platform_compat.IS_POSIX,
     reason="real Git hook inheritance and executable-bit semantics are POSIX-only",
@@ -1262,16 +1290,7 @@ def test_credential_transport_env_prevents_checkout_and_merge_hooks_from_seeing_
     home.mkdir()
     hooks.mkdir()
 
-    fixture_env = {
-        "PATH": os.environ.get("PATH", ""),
-        "HOME": str(home),
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_AUTHOR_NAME": "Registry Test",
-        "GIT_AUTHOR_EMAIL": "registry@example.invalid",
-        "GIT_COMMITTER_NAME": "Registry Test",
-        "GIT_COMMITTER_EMAIL": "registry@example.invalid",
-    }
+    fixture_env = _registry_fixture_env(home)
     commands: list[list[str]] = []
 
     def _git(*args: str, env: dict[str, str] | None = None) -> None:
@@ -1293,7 +1312,7 @@ def test_credential_transport_env_prevents_checkout_and_merge_hooks_from_seeing_
             pytest.skip("git is unavailable")
         assert completed.returncode == 0, completed.stderr
 
-    _git("init", "--quiet", "--template=")
+    _init_registry_fixture_repo(_git)
     _git("checkout", "--quiet", "-b", "main")
     (repo / "payload.txt").write_text("base\n", encoding="utf-8")
     _git("add", "payload.txt")
@@ -1443,16 +1462,7 @@ def test_checkout_filter_sees_secret_only_when_given_network_environment(tmp_pat
         encoding="utf-8",
     )
     filter_command = f'"{sys.executable}" "{filter_script}"'
-    fixture_env = {
-        "PATH": os.environ.get("PATH", ""),
-        "HOME": str(tmp_path),
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_AUTHOR_NAME": "Registry Test",
-        "GIT_AUTHOR_EMAIL": "registry@example.invalid",
-        "GIT_COMMITTER_NAME": "Registry Test",
-        "GIT_COMMITTER_EMAIL": "registry@example.invalid",
-    }
+    fixture_env = _registry_fixture_env(tmp_path)
 
     def _git(*args, env):
         try:
@@ -1471,7 +1481,7 @@ def test_checkout_filter_sees_secret_only_when_given_network_environment(tmp_pat
             pytest.skip("git is unavailable")
         assert completed.returncode == 0, completed.stderr
 
-    _git("init", "--quiet", "--template=", env=fixture_env)
+    _init_registry_fixture_repo(functools.partial(_git, env=fixture_env))
     (repo / ".gitattributes").write_text("payload.txt filter=leak\n", encoding="utf-8")
     (repo / "payload.txt").write_text("payload\n", encoding="utf-8")
     _git("add", ".gitattributes", "payload.txt", env=fixture_env)

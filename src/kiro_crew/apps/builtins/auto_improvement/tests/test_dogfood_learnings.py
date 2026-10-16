@@ -8656,3 +8656,29 @@ class TestOnlyTheCommitThePipelineMadeIsPublished:
         assert clean is False, "a credential in the committer identity was scanned as clean"
         # The note is a fixed literal from `describe_scan`, so nothing scanned reaches a log.
         assert "AKIAIOSFODNN7EXAMPLE" not in note, note
+
+
+class TestFixtureGitHasAutoMaintenanceOff:
+    """The repo-root conftest's git floor reaches this testpath too.
+
+    `test_red_base_staging_does_not_dereference_a_credential_symlink` commits and then
+    copies the worktree, `.git` included. A commit with auto maintenance on leaves a
+    detached `git maintenance run --auto` adding and removing lock files there, so the
+    copy could list a file that is gone by the time it is read. What git resolves from
+    these is pinned in `test/test_host_isolation_floor.py`; this reads the environment
+    alone, so it spawns nothing.
+    """
+
+    _OFF = {"maintenance.auto": "false", "gc.auto": "0"}
+
+    def test_the_environment_entries_turn_auto_maintenance_off(self) -> None:
+        last: dict[str, str] = {}
+        for index in range(int(os.environ.get("GIT_CONFIG_COUNT") or 0)):
+            key = os.environ.get(f"GIT_CONFIG_KEY_{index}", "").lower()
+            last[key] = os.environ.get(f"GIT_CONFIG_VALUE_{index}", "")
+        assert {key: last.get(key) for key in self._OFF} == self._OFF
+
+    def test_the_global_config_file_turns_auto_maintenance_off(self) -> None:
+        text = Path(os.environ["GIT_CONFIG_GLOBAL"]).read_text(encoding="utf-8")
+        tail = text[text.rindex("[maintenance]") :]
+        assert tail == "[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n"

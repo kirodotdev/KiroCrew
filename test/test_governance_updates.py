@@ -12,6 +12,7 @@ import shutil
 import sys
 
 import pytest
+from git_maintenance_helpers import git_maintenance_off_entries
 
 from conftest import host_abs
 from kiro_crew.platform import update_governance
@@ -473,6 +474,8 @@ def _fixture_git_env(repo: str) -> dict:
     env[f"GIT_CONFIG_KEY_{count}"] = "init.templateDir"
     env[f"GIT_CONFIG_VALUE_{count}"] = ""
     env["GIT_CONFIG_COUNT"] = str(count + 1)
+    # Last, so the entries land after the GIT_CONFIG_COUNT this helper set.
+    env.update(git_maintenance_off_entries(env))
     return env
 
 

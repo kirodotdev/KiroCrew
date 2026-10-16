@@ -37,6 +37,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from git_maintenance_helpers import git_maintenance_off_entries
 from macos_lane_helpers import verdict_script as _verdict_script
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +56,25 @@ def _triggers(document: dict) -> dict:
 def _needs(job: dict) -> list[str]:
     needs = job.get("needs", [])
     return [needs] if isinstance(needs, str) else list(needs)
+
+
+def _fixture_git_env(home: Path) -> dict[str, str]:
+    """A git env built from nothing but ``PATH``, with *home* as ``HOME``.
+
+    Built from nothing, it carries none of the suite's ``GIT_CONFIG_*``
+    entries, so it adds back the ones that keep auto maintenance off.
+    """
+    env = {
+        "PATH": os.environ["PATH"],
+        "HOME": str(home),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.invalid",
+    }
+    env.update(git_maintenance_off_entries(env))
+    return env
 
 
 def _grep_has_pcre() -> bool:
@@ -397,15 +417,7 @@ class TestTheOnDemandLaneCannotBecomeAGate:
         block = run[start:end]
         repo = tmp_path / "repo"
         repo.mkdir()
-        env = {
-            "PATH": os.environ["PATH"],
-            "HOME": str(tmp_path),
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_AUTHOR_NAME": "t",
-            "GIT_AUTHOR_EMAIL": "t@example.invalid",
-            "GIT_COMMITTER_NAME": "t",
-            "GIT_COMMITTER_EMAIL": "t@example.invalid",
-        }
+        env = _fixture_git_env(tmp_path)
 
         def git(*args: str) -> str:
             return subprocess.run(

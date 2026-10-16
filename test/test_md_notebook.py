@@ -31,6 +31,7 @@ import pytest
 import yarl
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from git_maintenance_helpers import GIT_MAINTENANCE_OFF_CONFIG
 from windows_sim import replace_sharing_violation
 
 from conftest import requires_symlinks
@@ -82,6 +83,11 @@ def _build_seed_repo(base: Path) -> None:
     _git("init", "-b", "main", ".", cwd=seed)
     _git("config", "user.email", "test@example.invalid", cwd=seed)
     _git("config", "user.name", "Test", cwd=seed)
+    # The notebook builds its own git env, and a push starts receive-pack in the
+    # remote without ours, so both repos carry it (see git_maintenance_helpers).
+    for key, value in GIT_MAINTENANCE_OFF_CONFIG:
+        _git("config", key, value, cwd=remote)
+        _git("config", key, value, cwd=seed)
     (seed / "One.md").write_text("# One\n\nlinks to [[Two]]\n", encoding="utf-8")
     (seed / "sub").mkdir()
     (seed / "sub" / "Two.md").write_text("---\ntitle: Two\n---\n\nbody #tag\n", encoding="utf-8")
@@ -105,6 +111,15 @@ def _seed_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
     template = tmp_path_factory.mktemp("md-notebook-seed")
     _build_seed_repo(template)
     return template
+
+
+def test_the_seed_template_keeps_auto_maintenance_off(_seed_template: Path) -> None:
+    # The notebook runs git with its own env, and a push starts receive-pack in
+    # the remote without ours, so only each repo's own config reaches both.
+    for repo in ("remote.git", "seed"):
+        for key, value in GIT_MAINTENANCE_OFF_CONFIG:
+            got = _git("config", "--local", "--get", key, cwd=_seed_template / repo)
+            assert (key, got) == (key, value), repo
 
 
 def _seed_repo(base: Path, template: Path) -> tuple[Path, Path]:
