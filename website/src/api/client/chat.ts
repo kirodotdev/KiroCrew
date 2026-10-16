@@ -169,6 +169,8 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     regenerateSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/regenerate').then(j),
     /** Pick an interrupted turn back up. NOT `/resume` — that path opens a history session into a tab. */
     continueSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/continue').then(j),
+    /** The bulk form of `continueSlot`: Resume every idle session whose last turn ended without a reply. Owner-only. Starts a background run and answers at once (409 `resume_all_running` with that run's id and total while one is in flight); the outcome arrives as a `resume_all_done` frame. */
+    chatSlotsResumeAll: () => post('/api/chat/slots/resume-all').then(j) as Promise<{ ok: boolean; total: number; run_id: string }>,
     /** Drop the slot's native conversation; the next turn starts a fresh one seeded from a text replay of the transcript (`replay: true`). The transcript stays. */
     resetConversation: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/reset-conversation', { replay: true }).then(j) as Promise<{ slot: string; reset: boolean; replay: boolean }>,
     switchVariant: (slot: string, index: number) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/switch-variant', { index }).then(j),

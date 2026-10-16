@@ -57,7 +57,7 @@ import { DASHBOARD_FIELDS_FRAME, handleDashboardFields } from './websocket/dashb
 import { useChatStream } from './websocket/chatStream'
 import { useTurnCompletion } from './websocket/turnCompletion'
 import { attachFocusRelay } from './websocket/attention'
-import { emitAppReload, emitChannelEvent, emitComputerUseFrame, emitCronHistory } from './websocket/browserEvents'
+import { emitAppReload, emitChannelEvent, emitComputerUseFrame, emitCronHistory, emitResumeAllDone } from './websocket/browserEvents'
 import { runFirstConnect, runReconnectCatchUp } from './websocket/reconnectCatchUp'
 
 /* The dashboard's single multiplexed WebSocket. `useWebSocket` composes the
@@ -81,6 +81,8 @@ export { identityOf, askIdsOf, reconcileQuestions, staleAskIds } from './websock
 export { resolvedSince } from './websocket/retiredIds'
 export { UPDATE_RESTART_LATCH_KEY, UPDATE_RESTART_LATCH_TTL_MS, consumeUpdateRestartLatch } from './websocket/bundleReload'
 export { emitSlotFocused } from './websocket/attention'
+// The window event a bulk Resume run's outcome frame is re-broadcast as.
+export { RESUME_ALL_DONE_EVENT } from './websocket/browserEvents'
 // The revision ledger is module state, so it has one home and is reached through
 // this facade like every other owner binding.
 // The crew-log panel's cache key and frame applier, reached through this facade
@@ -316,6 +318,11 @@ export function useWebSocket() {
           }
           case 'artifact_update':
             handleArtifactUpdate(queryClient, data)
+            break
+          case 'resume_all_done':
+            // Owner-only frame: one bulk Resume run's outcome. The sidebar row
+            // that started the run shows it; the slots push already moved the rows.
+            emitResumeAllDone(data)
             break
           case 'notification': {
             const n = data as Notification

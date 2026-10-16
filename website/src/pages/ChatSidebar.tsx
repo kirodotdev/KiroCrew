@@ -87,6 +87,7 @@ import { renderFolderModal } from './chat-sidebar/folderModal'
 import { renderSessionCleanupPanel, useSessionCleanup } from './chat-sidebar/sessionCleanup'
 import { renderBulkModelPanel, useBulkModelSwitch } from './chat-sidebar/bulkModelSwitch'
 import BroadcastPanel from './chat-sidebar/BroadcastPanel'
+import { useResumeAll } from './chat-sidebar/resumeAll'
 
 /** Stable empty group list for the board, which groups nothing. */
 const NO_CREW_GROUPS: CrewGroup[] = []
@@ -295,6 +296,7 @@ function ChatSidebar({
   const sessionCleanup = useSessionCleanup({ cleanupOpen, setCleanupOpen, activeSlot, dispatch, queryClient })
 
   const bulkModel = useBulkModelSwitch({ localSlots })
+  const resumeAll = useResumeAll({ localSlots, connected })
 
   const {
     pinned, pinnedOrder, pinnedRank, reorderPinned, orderState: pinnedOrderState,
@@ -767,7 +769,7 @@ function ChatSidebar({
     openHistoryPane, orderedColumns, paintedSidebarWidth, pinned, popoverPos, queryClient, rawColumns,
     recentAmountDraft, recentUnitDraft, recentWindowMs, refetchColumns, refetchFolders, refetchTags,
     remoteCrewChatPreview, remoteCrewError, remoteCrewErrorId, remoteSessionsError, renameCommit,
-    renameError, reorderColumnsMutation, reportDndActive, restorePreBoardWidth, revealedContainers,
+    renameError, reorderColumnsMutation, reportDndActive, restorePreBoardWidth, resumeAll, revealedContainers,
     revealFlash, rootFolderIds, rootFolders, rowActions, rowAnimEnabled, rowViews, searchRanked, seedError,
     seedStateLanesMutation, selectInstance, selectRecentPreset, sessionCleanup, setAllFiltersPaused,
     setAutoTitleError, setBoardError, setCleanupOpen, setCollapsedHistoryGroups, setColumnEditId,

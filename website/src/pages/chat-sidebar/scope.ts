@@ -28,6 +28,7 @@ import type { useSidebarModels } from './models'
 import type { usePinnedKeyboardReorder, usePinnedSessionOrder } from './pinnedOrder'
 import type { useFolderRename, useSessionAutoTitle, useSessionRename } from './rename'
 import type { useSidebarResize } from './resize'
+import type { useResumeAll } from './resumeAll'
 import type { useSidebarReveal } from './reveal'
 import type { SidebarRows } from './rows'
 import type { useSearchMatches } from './search'
@@ -311,6 +312,9 @@ export interface SidebarScope {
 
   // From `useBulkModelSwitch`
   bulkModel: ReturnType<typeof useBulkModelSwitch>
+
+  // From `useResumeAll`
+  resumeAll: ReturnType<typeof useResumeAll>
 
   // From `usePinnedSessionOrder`
   pinned: ReturnType<typeof usePinnedSessionOrder>['pinned']

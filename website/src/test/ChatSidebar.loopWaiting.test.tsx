@@ -200,7 +200,8 @@ describe('chat sidebar — loop waiting-on-you subtitle', () => {
   it('a stalled loop keeps its danger reading — a dead turn cannot collect the answer', () => {
     const slots = [{ key: 'k', title: 'loop', running: false, messages: 5, has_options: true, interrupted: true }]
     const { getByText, queryByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 7, max_cycles: 24 } } })
-    expect(getByText(/interrupted/)).toBeTruthy()
+    // The row's own reading, not the shelf's "N interrupted sessions" row.
+    expect(getByText(/— interrupted/)).toBeTruthy()
     expect(queryByText(WAITING_LABEL)).toBeNull()
   })
 

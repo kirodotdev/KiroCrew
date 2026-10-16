@@ -304,6 +304,7 @@ const FRAME_CASES: Array<[string, Frame[], Frame[]]> = [
   ['pins_changed', [], [{ type: 'pins_changed', data: { slot_key: ACTIVE } }, { type: 'pins_changed', data: {} }]],
   ['artifact_update', [], [{ type: 'artifact_update', data: { slug: 'doc' } }]],
   ['artifact_update deleted', [], [{ type: 'artifact_update', data: { slug: 'doc', deleted: true } }, { type: 'artifact_update', data: {} }]],
+  ['resume_all_done', [], [{ type: 'resume_all_done', data: { run_id: 'run-1', total: 1, resumed: [ACTIVE], skipped: [], failed: [] } }]],
   ['notification', [], [{ type: 'notification', data: { kind: 'info', title: 'Hello', ts: '1790000001' } }]],
   ['notification silenced and passive', [], [
     { type: 'notification', data: { kind: 'info', title: 'Muted', ts: '1790000002', silenced: true } },
@@ -976,6 +977,9 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'event kirocrew:artifact-deleted {"slug":"doc"}',
     'query invalidateQueries ["artifacts"]',
     'query invalidateQueries ["command-center","artifacts"]',
+  ],
+  "resume_all_done": [
+    'event kirocrew:resume-all-done {"run_id":"run-1","total":1,"resumed":["slot-a"],"skipped":[],"failed":[]}',
   ],
   "notification": [
     'action notifications/addNotification {"kind":"info","title":"Hello","ts":"1790000001"}',

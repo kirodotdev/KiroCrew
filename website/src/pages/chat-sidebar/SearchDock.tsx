@@ -33,6 +33,7 @@ import type { SessionFilterKey } from './types'
 import { SESSION_FILTERS } from './filters'
 import { modelFilterLabel } from './models'
 import { DisclosureChevron } from './chrome'
+import { renderResumeAllRow } from './resumeAll'
 import type { SidebarScope } from './scope'
 
 /**
@@ -861,6 +862,11 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
   )
   const shelf = (
         <>
+      {/* Resume every interrupted idle session. FIRST in the shelf: after a
+          gateway restart this is the one list-level action the person came to
+          the sidebar for, and the chips below describe a view, not a repair.
+          Absent when nothing is interrupted (see renderResumeAllRow). */}
+      {renderResumeAllRow(shell)}
       {/* One aggregate chip in its OWN row, never per-tag chips in the row below.
           AUTOSDE max-two-buttons-per-row grandfathers that row's existing filter
           chips but forbids growing it, and per-tag chips grow it without bound.

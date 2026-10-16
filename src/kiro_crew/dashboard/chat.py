@@ -15,6 +15,7 @@ The actual implementation lives in:
 - chat_voice.py       — TTS config + synthesis (optional)
 - chat_slack.py       — Slack link, handoff, channels
 - chat_fork.py        — fork session
+- chat_resume_all.py  — bulk Resume of every interrupted idle session
 """
 
 from __future__ import annotations
@@ -122,6 +123,7 @@ from kiro_crew.dashboard.chat_regenerate import (  # noqa: F401
     api_chat_slot_regenerate,
     api_chat_slot_switch_variant,
 )
+from kiro_crew.dashboard.chat_resume_all import api_chat_slots_resume_all  # noqa: F401
 from kiro_crew.dashboard.chat_rewind import api_chat_slot_rewind  # noqa: F401
 from kiro_crew.dashboard.chat_runner import (  # noqa: F401
     _expand_prompt_mention,

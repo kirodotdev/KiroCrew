@@ -75,6 +75,10 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/chat/slots", chat.api_chat_slot_create)
     app.router.add_post("/api/chat/slots/cleanup", chat.api_chat_slots_cleanup)
     app.router.add_post("/api/chat/slots/model", chat.api_chat_slots_model)
+    # Bulk Resume: the literal sits with cleanup/model, before every ``{slot}``
+    # POST below, so aiohttp's registration-order resolution cannot read
+    # "resume-all" as a slot name and answer it from a per-slot handler.
+    app.router.add_post("/api/chat/slots/resume-all", chat.api_chat_slots_resume_all)
     # Static segment BEFORE the ``/api/chat/slots/{slot}`` GET below, for the reason
     # the import route's own note gives: aiohttp resolves in registration order, so a
     # later wildcard would shadow this path and answer it as a slot detail read.

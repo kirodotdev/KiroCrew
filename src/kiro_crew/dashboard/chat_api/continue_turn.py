@@ -290,7 +290,11 @@ async def continue_slot_turn(
         # Lost a race for the queue entry (a concurrent dequeue consumed it).
         # The turn is running either way, so this is not an error for the caller.
         logger.info("continue: queue entry consumed by a concurrent dequeue (slot %s)", slot.key)
-    state.push_slots_update()
+    # The turn is dispatched; a failed sidebar push must not report it as failed.
+    try:
+        state.push_slots_update()
+    except Exception:
+        logger.warning("continue: slots push failed (slot %s)", slot.key, exc_info=True)
     return "resumed" if interrupted else "continued"
 
 
