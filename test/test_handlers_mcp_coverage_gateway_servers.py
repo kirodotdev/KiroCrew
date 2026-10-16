@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -24,6 +23,7 @@ from handlers_mcp_coverage_helpers import _effective_stubs, _payload, _request
 
 from kiro_crew.dashboard.handlers import mcp as mcp_mod
 from kiro_crew.mcp_discovery import McpServerInfo
+from kiro_crew.testing.wait import LoopHop, async_wait_until, await_until, default_timeout
 
 # ── GET /api/mcp-gateway/servers ────────────────────────────────────────
 
@@ -321,15 +321,20 @@ class TestGatewayServers:
         monkeypatch.setattr(loader, "config_path", lambda: cfg_path)
 
         entered = threading.Event()
+        cancel_sent = threading.Event()
         finished = threading.Event()
         real = loader.update_config_locked
+        hop = LoopHop(asyncio.get_running_loop())
+
+        async def _one_loop_turn() -> None:
+            return None
 
         def _slow_update(path=None, **kwargs):  # type: ignore[no-untyped-def]
             entered.set()
-            # Long enough that the cancellation below lands while this is running.
-            # flake-ok: pre-existing 400 ms hold so the cancellation lands mid-update, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-            time.sleep(0.4)
+            # Held until the cancellation below has been sent and the loop has run
+            # the step that delivers it, so it lands while this write is running.
+            assert cancel_sent.wait(timeout=default_timeout()), "the request was never cancelled"
+            hop.run(_one_loop_turn(), "a loop turn after the cancel")
             try:
                 return real(path, **kwargs)
             finally:
@@ -340,10 +345,14 @@ class TestGatewayServers:
         task = asyncio.create_task(
             mcp_mod.api_mcp_gateway_set_stub(_request({"name": "a-mcp", "stub": True}))
         )
-        await asyncio.to_thread(entered.wait, 5)
-        task.cancel()
+        try:
+            await async_wait_until(entered.is_set, describe=lambda: f"task.done()={task.done()}")
+            task.cancel()
+        finally:
+            cancel_sent.set()
         with pytest.raises(asyncio.CancelledError):
-            await task
+            await await_until(task, what="the cancelled request")
+        hop.check()
 
         assert finished.is_set(), (
             "cancellation was observable before the offloaded write completed, so "

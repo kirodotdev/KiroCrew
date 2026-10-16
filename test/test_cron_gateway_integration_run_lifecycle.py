@@ -10,6 +10,7 @@ one-shot whose payload never ran.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import threading
 from contextlib import nullcontext
@@ -26,6 +27,7 @@ from cron_gateway_integration_helpers import (
 
 import kiro_crew.executors as ex
 from kiro_crew.cron import CronJob, CronSchedule
+from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout, finished
 
 
 async def _stalled_gate(*_args, **_kwargs):
@@ -37,8 +39,35 @@ async def _stalled_gate(*_args, **_kwargs):
     state where ``asyncio.wait_for`` in ``_execute_with_timeout`` cancels the
     coroutine AT the await -- no internal deadline sizing can prevent it.
     """
-    # flake-ok: a stand-in gate that outlasts the wake deadline until it is cancelled, moved verbatim
-    await asyncio.sleep(30)
+    await asyncio.Event().wait()  # parked until the wake deadline cancels it
+
+
+async def _occupy_every_worker(executor, workers, release, hold_secs):
+    """Submit one blocker per worker and return once each holds a thread.
+
+    Returns the blockers' futures for :func:`_drain_blockers`.
+    """
+    entered: list[int] = []
+    lock = threading.Lock()
+
+    def _block() -> None:
+        with lock:
+            entered.append(1)
+        release.wait(hold_secs)
+
+    futures = [executor.submit(_block) for _ in range(workers)]
+    await async_wait_until(
+        lambda: len(entered) == workers, describe=lambda: f"{len(entered)} of {workers} started"
+    )
+    return futures
+
+
+async def _drain_blockers(futures) -> None:
+    """Wait for released blockers to return before their pool is shut down."""
+    if futures:
+        await finished(
+            asyncio.gather(*(asyncio.wrap_future(f) for f in futures)), "the released blockers"
+        )
 
 
 class TestAutoPause:
@@ -174,10 +203,11 @@ def test_shutdown_cancel_keeps_the_last_completed_result(tmp_path) -> None:
 
     from kiro_crew.cron import CronJob, CronSchedule, CronService
 
+    started = asyncio.Event()
+
     async def _hang(*args, **kwargs):
-        # flake-ok: a stand-in execute that hangs until the test cancels it, moved verbatim
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(9999)
+        started.set()
+        await asyncio.Event().wait()  # parked until the test cancels the run
 
     async def _drive() -> CronJob:
         svc = CronService(base_dir=tmp_path)
@@ -194,12 +224,11 @@ def test_shutdown_cancel_keeps_the_last_completed_result(tmp_path) -> None:
         with patch.object(svc, "_execute", side_effect=_hang):
             claim = svc._claim_run(job.id, "scheduled")
             task = asyncio.create_task(svc._run_job_isolated(job, claim))
-            # flake-ok: pre-existing 50 ms yield so the run starts before the cancel, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.05)
+            # Cancel the run inside its execute, the way a gateway stop lands.
+            await await_until(started, what="the run's execute")
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await task
+                await await_until(task, what="the cancelled run")
         return job
 
     job = asyncio.run(_drive())
@@ -397,14 +426,13 @@ class TestCronPoolQueueWait:
 
         ex.shutdown_maintenance_executor()
         release = threading.Event()
+        blockers: list = []
         try:
             svc = CronService(base_dir=tmp_path, on_job=lambda *a, **k: None)
             job = _make_command_job(timeout_secs=2)
-            for _ in range(ex._MAX_CRON_WORKERS):
-                ex.cron_executor().submit(release.wait, 3.0)
-            # flake-ok: pre-existing 200 ms pause for the blockers to take every worker, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.2)
+            blockers = await _occupy_every_worker(
+                ex.cron_executor(), ex._MAX_CRON_WORKERS, release, 3.0
+            )
 
             ran = threading.Event()
 
@@ -418,9 +446,7 @@ class TestCronPoolQueueWait:
             assert job.last_error != "Timed out after 2s"
         finally:
             release.set()
-            # flake-ok: pre-existing 50 ms pause for the released blockers to drain before shutdown, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.05)
+            await _drain_blockers(blockers)
             ex.shutdown_maintenance_executor()
 
     @pytest.mark.asyncio
@@ -443,9 +469,7 @@ class TestCronPoolQueueWait:
         job.timeout_secs = 2
 
         async def _slow(_job, _meta=None):
-            # flake-ok: a stand-in job that outlasts its timeout until it is cancelled, moved verbatim
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(30)
+            await asyncio.Event().wait()  # parked until the wake budget cancels it
 
         svc._execute = _slow  # type: ignore[method-assign]
         await svc._execute_with_timeout(job)
@@ -548,10 +572,20 @@ class TestCronPoolQueueWait:
         svc._jobs = [job]
         reaped = _AsyncMock()
         svc._force_reap = reaped  # type: ignore[method-assign]
+        # Every sweep asks the claim whether its run finished before it decides,
+        # so a second ask proves the first sweep's decision has been taken.
+        sweeps = 0
+        real_discard = svc.discard_finished_run
+
+        def _counted_discard(job_id):
+            nonlocal sweeps
+            sweeps += 1
+            return real_discard(job_id)
+
+        svc.discard_finished_run = _counted_discard  # type: ignore[method-assign]
         with patch("kiro_crew.cron._REAPER_INTERVAL", 0.01):
             loop_task = asyncio.ensure_future(svc._reaper_loop())
-            # flake-ok: pre-existing 250 ms window for the reaper loop's first sweeps before the cancel, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.25)
+            await async_wait_until(lambda: sweeps >= 2, describe=lambda: f"sweeps={sweeps}")
             loop_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await loop_task
@@ -649,6 +683,7 @@ class TestCronPoolQueueWait:
 
         ex.shutdown_maintenance_executor()
         release = threading.Event()
+        blockers: list = []
         try:
             gw = _make_gw()
             captured_cb = None
@@ -673,11 +708,9 @@ class TestCronPoolQueueWait:
 
                 # The defect's own premise: long-running pool jobs holding every
                 # worker, held well past the message job's whole 2s budget.
-                for _ in range(ex._MAX_CRON_WORKERS):
-                    ex.cron_executor().submit(release.wait, 5.0)
-                # flake-ok: pre-existing 200 ms pause for the blockers to take every worker, moved verbatim; tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.2)
+                blockers = await _occupy_every_worker(
+                    ex.cron_executor(), ex._MAX_CRON_WORKERS, release, 5.0
+                )
 
                 job = CronJob(
                     id="mj-gate",
@@ -697,21 +730,28 @@ class TestCronPoolQueueWait:
             assert job.last_error != "Timed out after 2s"
         finally:
             release.set()
-            # flake-ok: pre-existing 50 ms pause for the released blockers to drain before shutdown, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.05)
+            await _drain_blockers(blockers)
             ex.shutdown_maintenance_executor()
 
     @pytest.fixture
     def gate_pool(self):
-        """Fresh pools, plus a release event so a starved gate never outlives the test."""
+        """Fresh pools, plus a release event so a starved gate never outlives the test.
+
+        The blockers a starved run parks on the gate pool are drained after the
+        release, so none of their threads is still running past the shutdown.
+        """
         ex.shutdown_maintenance_executor()
         release = threading.Event()
+        self._gate_blockers: list = []
         try:
             yield release
         finally:
             release.set()
+            _, still_running = concurrent.futures.wait(
+                self._gate_blockers, timeout=default_timeout()
+            )
             ex.shutdown_maintenance_executor()
+            assert not still_running, f"{len(still_running)} gate blocker(s) never returned"
 
     async def _message_one_shot_run(
         self,
@@ -759,10 +799,9 @@ class TestCronPoolQueueWait:
             assert captured_cb is not None
 
             if starve:
-                for _ in range(ex._MAX_CRON_GATE_WORKERS):
-                    ex.cron_gate_executor().submit(release.wait, 20.0)
-                # flake-ok: pre-existing 200 ms pause for the blockers to take every gate worker, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.2)
+                self._gate_blockers += await _occupy_every_worker(
+                    ex.cron_gate_executor(), ex._MAX_CRON_GATE_WORKERS, release, 20.0
+                )
 
             svc = CronService(base_dir=tmp_path, on_job=captured_cb)
             svc._load()

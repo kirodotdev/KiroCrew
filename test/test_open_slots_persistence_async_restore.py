@@ -23,6 +23,7 @@ from kiro_crew.dashboard.chat_persistence import (
     restore_open_slots_async,
 )
 from kiro_crew.dashboard.chat_utils import _history_key_for
+from kiro_crew.testing.clock import ManualClock
 
 # ── Startup must not block the event loop (stall-watchdog crash-loop) ──
 #
@@ -878,12 +879,13 @@ def test_an_older_close_does_not_block_an_open_slot_restore(tmp_path, monkeypatc
     # eligibility arithmetic on every platform. 60 s is far inside
     # ``_CLOSE_TOMBSTONE_TTL_SECS`` (3600 s), so the tombstone still EXISTS when
     # the guard consults it and the assertion cannot pass vacuously.
-    closed_at = time.time() - 60.0
+    # The clock goes on ``channel_slots`` alone, for this one call, so the
+    # restore below reads real time. A whole second survives the clock's
+    # nanosecond storage exactly, so the returned instant compares equal.
+    closed_at = float(int(time.time()) - 60)
     with monkeypatch.context() as mp:
-        # flake-ok: pre-existing stdlib clock patch scoped to one note_slot_closed call, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-stdlib-clock-rebound -- pre-existing stdlib clock rebind, moved verbatim; tracked for a de-flake pass
-        mp.setattr(time, "time", lambda: closed_at)
-        channel_slots.note_slot_closed(state2, "chat-1-reopened")  # then reopened
+        ManualClock(start=closed_at).install(mp, channel_slots)
+        assert channel_slots.note_slot_closed(state2, "chat-1-reopened") == closed_at  # reopened
 
     assert asyncio.run(restore_open_slots_async(state2)) == 1
     assert "chat-1-reopened" in state2._slots

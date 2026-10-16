@@ -22,6 +22,12 @@ from kiro_prerequisite_helpers import _make_executable, _no_audit
 
 from kiro_crew.agent_files import AGENT_FILENAME
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService, PrerequisiteStatus, ProcessResult
+from kiro_crew.testing.wait import async_wait_until, await_until
+
+
+def _parked_on(lock: asyncio.Lock) -> bool:
+    """Whether a task is parked waiting for ``lock`` (a woken waiter does not count)."""
+    return any(not waiter.done() for waiter in (getattr(lock, "_waiters", None) or ()))
 
 
 class TestAgentSpecsNarrowReadiness:
@@ -1206,15 +1212,21 @@ class TestAgentSpecRepair:
         first = asyncio.ensure_future(service.repair_agent_specs("owner"))
         # Wait until the first caller is INSIDE the rebuild, off-loop so the await
         # does not starve it.
-        await asyncio.to_thread(entered.wait, 10)
+        await async_wait_until(entered.is_set, describe=lambda: f"first.done()={first.done()}")
         second = asyncio.ensure_future(service.repair_agent_specs("owner"))
-        # Give the second caller room to run its own overlay + check. Unlocked, it
-        # gets through both and starts a second rebuild here.
-        for _ in range(20):
-            # flake-ok: pre-existing 10 ms yield loop that lets the second repair reach the lock before the release, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.01)
-        release.set()
-        first_result, second_result = await asyncio.gather(first, second)
+        try:
+            # Wait for the second caller to settle one way or the other: parked on
+            # the repair lock, or (unlocked) through its own overlay + check and
+            # into a second rebuild.
+            await async_wait_until(
+                lambda: len(calls) >= 2 or _parked_on(service._repair_lock),
+                describe=lambda: f"calls={calls} second.done()={second.done()}",
+            )
+        finally:
+            release.set()
+        first_result, second_result = await await_until(
+            asyncio.gather(first, second), what="both repairs"
+        )
 
         assert calls == [1], "the second repair must be a no-op, not a second rebuild"
         # Both callers still get a truthful post-repair answer.

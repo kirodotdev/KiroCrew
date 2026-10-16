@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import os
 import threading
-import time
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +19,7 @@ from design_tweak_backend_helpers import _JsonHandler
 
 from conftest import requires_symlinks
 from kiro_crew.apps.builtins.design_tweak.backend import server
+from kiro_crew.testing.wait import wait_until
 
 
 class TestThreadGrowthIsBounded:
@@ -870,21 +870,61 @@ class TestLatestRouteRedaction:
         assert h.sent[0] == (200, {})
 
 
-def _widen_the_race(monkeypatch, delay: float = 0.05):
-    """Make the read→write gap wide enough that an unlocked transaction MUST lose.
+def _widen_the_race(monkeypatch, contenders: int = 2):
+    """Hold the first write until every other contender has reached the queue.
 
-    Without this the test would depend on thread scheduling; with it, a version
-    that takes no lock (or takes it only around the write) fails every run, and a
-    version holding it across read-through-write passes every run.
+    A contender has reached it once it has asked for the queue lock or read the
+    queue (a request file or the pending listing). A version holding the lock
+    across read-through-write parks every other contender on that lock, so the
+    write goes ahead and they read what it wrote. A version that takes no lock,
+    or takes it only around the write, lets them read the queue before the write
+    lands, so a lost update is forced on every run rather than left to thread
+    scheduling.
     """
+    reached: set[int] = set()
+    guard = threading.Lock()
+    first_write = threading.Event()
+    real_lock = server._QUEUE_LOCK
     real_write = server._write_request
+    real_read = server._read_request
+    real_pending = server._pending_files
 
-    def slow_write(fp, req):
-        # flake-ok: a deliberate delay that widens the read-to-write window so an unlocked writer loses, moved verbatim
-        time.sleep(delay)
+    def _arrived() -> None:
+        with guard:
+            reached.add(threading.get_ident())
+
+    class _ObservedLock:
+        def __enter__(self):
+            _arrived()
+            return real_lock.__enter__()
+
+        def __exit__(self, *exc):
+            return real_lock.__exit__(*exc)
+
+    def observed_read(fp):
+        _arrived()
+        return real_read(fp)
+
+    def observed_pending():
+        _arrived()
+        return real_pending()
+
+    def held_write(fp, req):
+        with guard:
+            first = not first_write.is_set()
+            first_write.set()
+        if first:
+            me = threading.get_ident()
+            wait_until(
+                lambda: len(reached - {me}) >= contenders - 1,
+                describe=lambda: f"{len(reached - {me})} of {contenders - 1} others reached",
+            )
         real_write(fp, req)
 
-    monkeypatch.setattr(server, "_write_request", slow_write)
+    monkeypatch.setattr(server, "_QUEUE_LOCK", _ObservedLock())
+    monkeypatch.setattr(server, "_read_request", observed_read)
+    monkeypatch.setattr(server, "_pending_files", observed_pending)
+    monkeypatch.setattr(server, "_write_request", held_write)
 
 
 _AT_LIMIT_RID = "1700000000000-atlimit"
@@ -1021,8 +1061,8 @@ class TestConcurrentQueueWrites:
         drafts all numbered 1, which is the same lost-update bug wearing a
         different hat.
         """
-        _widen_the_race(monkeypatch)
         labels = [f"c{n}" for n in range(4)]
+        _widen_the_race(monkeypatch, contenders=len(labels))
         _run_concurrently([lambda t=t: _submit("p-fresh", t) for t in labels])
 
         files = sorted(server.QUEUE_DIR.glob("*.json"))

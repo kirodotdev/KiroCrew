@@ -212,7 +212,6 @@
  3 test_kas_manual_compact.py
  2 test_kas_mcp_sign_in.py
  4 test_kas_session_teardown.py
- 1 test_kiro_prerequisite_agent_specs.py
  3 test_kiro_prerequisite_handlers.py
  1 test_kiro_prerequisite_readiness_state.py
  2 test_kiro_prerequisite_supervisor.py
