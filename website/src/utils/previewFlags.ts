@@ -51,6 +51,9 @@ export interface PreviewFlagChange {
   on: boolean
 }
 
+/** Developer-only Session Environments configuration. Reveals settings, not runtime availability. */
+export const PREVIEW_SESSION_ENVIRONMENTS = `${PREVIEW_FLAG_PREFIX}session-environments`
+
 /** Inbound webhooks (`/webhooks`): functional, not yet polished enough to ship. */
 export const PREVIEW_WEBHOOKS = `${PREVIEW_FLAG_PREFIX}webhooks`
 

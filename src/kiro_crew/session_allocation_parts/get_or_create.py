@@ -65,6 +65,29 @@ if TYPE_CHECKING:
     from kiro_crew.session_allocation import LLMProvider, ProviderFactory, SessionAllocationService
 
 
+async def _session_runs_remotely(session_key: str) -> bool:
+    """Whether this session is bound to a remote session environment.
+
+    Fails closed: an unreadable choice record answers True, so the session
+    cold-starts and the runtime seam reports the error instead of a warm local
+    engine quietly serving it.
+    """
+    from kiro_crew.coder.session_launch import SessionEnvironmentChoices
+    from kiro_crew.config.paths import data_home
+    from kiro_crew.session_environment import SessionEnvironmentUnavailable
+
+    def check() -> bool:
+        path = data_home() / "coder" / "session-choices.json"
+        if not path.exists():
+            return False
+        try:
+            return SessionEnvironmentChoices(path).get(session_key) is not None
+        except SessionEnvironmentUnavailable:
+            return True
+
+    return await asyncio.to_thread(check)
+
+
 async def _reacquire_and_validate(
     self: SessionAllocationService,
     key: str,
@@ -671,6 +694,10 @@ async def _get_or_create_impl(
         # ``""`` is a Kiro request, and under a non-Kiro default the pooled
         # child is on the wrong backend for it too.
         pool_decision = "bypass_backend_override"
+    elif await _session_runs_remotely(key):
+        # A pooled child is a LOCAL engine; claiming it would run a session
+        # the operator put on remote compute on this machine instead.
+        pool_decision = "bypass_remote_environment"
     elif await self._crew_pins_effort(agent, extra_factory_kwargs.get("crew_agent")):
         # A CREW's pinned effort is fixed at spawn time and the warm-pool
         # claim path never re-pushes it, so a warm hit would silently run

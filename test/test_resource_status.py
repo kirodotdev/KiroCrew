@@ -51,7 +51,7 @@ _REAL_SLICE_PROBE = rs._read_agent_slice_tasks
     [
         (16.0, rs.POSTURE_AMPLE),
         (4.01, rs.POSTURE_AMPLE),
-        (4.0, rs.POSTURE_TIGHT),   # boundary: <= pressure
+        (4.0, rs.POSTURE_TIGHT),  # boundary: <= pressure
         (2.5, rs.POSTURE_TIGHT),
         (2.0, rs.POSTURE_CRITICAL),  # boundary: <= critical
         (0.5, rs.POSTURE_CRITICAL),
@@ -191,7 +191,7 @@ def test_off_switch_disables_line_not_posture(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(rs, "_read_available_gb", lambda: 1.0)
     status = rs.probe(_cfg(0.0, 2.0))
     assert status.posture == rs.POSTURE_CRITICAL
-    assert status.context_line() == ""            # line suppressed
+    assert status.context_line() == ""  # line suppressed
     assert "CRITICAL" in "\n".join(status.summary_lines())  # tool still honest
 
 
@@ -213,9 +213,9 @@ def test_tool_registered_and_rejects_stray_args() -> None:
 
     assert "resource_status" in MCP_CORE_SCHEMAS
     schema = MCP_CORE_SCHEMAS["resource_status"]
-    assert validate_tool_args({}, schema) == {}          # zero-arg call is valid
+    assert validate_tool_args({}, schema) == {}  # zero-arg call is valid
     with pytest.raises(ValidationError):
-        validate_tool_args({"bogus": 1}, schema)          # stray arg rejected
+        validate_tool_args({"bogus": 1}, schema)  # stray arg rejected
 
 
 # ── prewarm_allowance: host-derived cap on idle pre-warmed sessions ─────────
@@ -224,8 +224,8 @@ def test_tool_registered_and_rejects_stray_args() -> None:
 @pytest.mark.parametrize(
     "avail,expected",
     [
-        (0.5, 0),   # critical band: no idle agent process at all
-        (2.0, 0),   # inclusive, like _classify
+        (0.5, 0),  # critical band: no idle agent process at all
+        (2.0, 0),  # inclusive, like _classify
         (2.01, 1),  # tight band: one
         (4.0, 1),
         (4.01, 3),  # ample: the historical fixed cap
@@ -239,9 +239,9 @@ def test_prewarm_allowance_bands(avail: float, expected: int) -> None:
 @pytest.mark.parametrize(
     "avail,expected",
     [
-        (6.0, 0),    # under the tuned critical band
-        (8.0, 0),    # inclusive, like _classify
-        (8.01, 1),   # tuned tight band
+        (6.0, 0),  # under the tuned critical band
+        (8.0, 0),  # inclusive, like _classify
+        (8.01, 1),  # tuned tight band
         (16.0, 1),
         (16.01, 3),  # ample on the tuned scale
         (64.0, 3),
@@ -293,11 +293,19 @@ def test_prewarm_allowance_tracks_the_advisory_thresholds() -> None:
     reads CRITICAL pre-warms nothing and one that reads TIGHT pre-warms one."""
     defaults = _cfg(rs._DEFAULT_PRESSURE_GB, rs._DEFAULT_CRITICAL_GB)
     assert rs.prewarm_allowance(rs._DEFAULT_CRITICAL_GB - 0.01, defaults) == 0
-    assert rs._classify(rs._DEFAULT_CRITICAL_GB - 0.01, rs._DEFAULT_PRESSURE_GB,
-                        rs._DEFAULT_CRITICAL_GB) == rs.POSTURE_CRITICAL
+    assert (
+        rs._classify(
+            rs._DEFAULT_CRITICAL_GB - 0.01, rs._DEFAULT_PRESSURE_GB, rs._DEFAULT_CRITICAL_GB
+        )
+        == rs.POSTURE_CRITICAL
+    )
     assert rs.prewarm_allowance(rs._DEFAULT_PRESSURE_GB - 0.01, defaults) == 1
-    assert rs._classify(rs._DEFAULT_PRESSURE_GB - 0.01, rs._DEFAULT_PRESSURE_GB,
-                        rs._DEFAULT_CRITICAL_GB) == rs.POSTURE_TIGHT
+    assert (
+        rs._classify(
+            rs._DEFAULT_PRESSURE_GB - 0.01, rs._DEFAULT_PRESSURE_GB, rs._DEFAULT_CRITICAL_GB
+        )
+        == rs.POSTURE_TIGHT
+    )
 
 
 # ── agent-slice task ceiling ─────────────────────────────────────────────────
@@ -426,13 +434,13 @@ def test_slice_tasks_probe_never_raises(monkeypatch) -> None:
 @pytest.mark.parametrize(
     "current,limit,tight",
     [
-        (29492, 32768, True),   # boundary: exactly the 90% ratio
+        (29492, 32768, True),  # boundary: exactly the 90% ratio
         (29491, 32768, False),  # one task below it
         (32768, 32768, True),
         (1000, 32768, False),
-        (29500, 0, False),      # no ceiling → nothing to approach
-        (-1, 32768, False),     # unreadable count raises nothing
-        (29500, -1, False),     # unreadable ceiling raises nothing
+        (29500, 0, False),  # no ceiling → nothing to approach
+        (-1, 32768, False),  # unreadable count raises nothing
+        (29500, -1, False),  # unreadable ceiling raises nothing
     ],
 )
 def test_slice_tasks_tight_band(current: int, limit: int, tight: bool) -> None:
@@ -597,9 +605,7 @@ class TestSliceOwnership:
         assert out.healthy is False
 
     def test_a_claim_on_a_pid_that_is_not_running_is_counted_as_stale(self) -> None:
-        out = rs.slice_ownership(
-            [10, 99], slice_pids=[10], pid_alive=self._alive({10})
-        )
+        out = rs.slice_ownership([10, 99], slice_pids=[10], pid_alive=self._alive({10}))
         assert out.owned_dead == 1
         assert out.unowned_alive == 0
         assert out.healthy is False
@@ -608,15 +614,11 @@ class TestSliceOwnership:
         """Intersecting the claims with the slice first would hide exactly the
         claims that have outlived their process -- once the scope is released
         such a pid is absent from the slice."""
-        out = rs.slice_ownership(
-            [4242], slice_pids=[], pid_alive=self._alive(set())
-        )
+        out = rs.slice_ownership([4242], slice_pids=[], pid_alive=self._alive(set()))
         assert out.owned_dead == 1
 
     def test_a_fully_accounted_slice_is_healthy(self) -> None:
-        out = rs.slice_ownership(
-            [10, 11], slice_pids=[10, 11], pid_alive=self._alive({10, 11})
-        )
+        out = rs.slice_ownership([10, 11], slice_pids=[10, 11], pid_alive=self._alive({10, 11}))
         assert (out.unowned_alive, out.owned_dead, out.owned_alive) == (0, 0, 2)
         assert out.healthy is True
 
@@ -628,9 +630,7 @@ class TestSliceOwnership:
     def test_an_unreadable_slice_reports_minus_one_and_is_not_healthy(self) -> None:
         """A host whose slice cannot be enumerated has not been shown to be
         clean, so it must not publish zeros."""
-        out = rs.slice_ownership(
-            [10], slice_pids=None, pid_alive=self._alive({10})
-        )
+        out = rs.slice_ownership([10], slice_pids=None, pid_alive=self._alive({10}))
         # slice_pids=None takes the real probe; on a host without the slice it is
         # unreadable, and on one WITH it the counts are real but never negative.
         if not out.readable:
@@ -640,9 +640,7 @@ class TestSliceOwnership:
             assert out.unowned_alive >= 0 and out.owned_dead >= 0
 
     def test_a_claimed_pid_alive_outside_the_slice_counts_as_owned_alive(self) -> None:
-        out = rs.slice_ownership(
-            [77], slice_pids=[], pid_alive=self._alive({77})
-        )
+        out = rs.slice_ownership([77], slice_pids=[], pid_alive=self._alive({77}))
         assert (out.owned_alive, out.owned_dead, out.unowned_alive) == (1, 0, 0)
         assert out.healthy is True
 
@@ -655,9 +653,7 @@ class TestSliceOwnership:
         assert out.healthy is False
 
     def test_the_payload_carries_every_field_a_reader_needs(self) -> None:
-        out = rs.slice_ownership(
-            [10, 99], slice_pids=[10, 12], pid_alive=self._alive({10, 12})
-        )
+        out = rs.slice_ownership([10, 99], slice_pids=[10, 12], pid_alive=self._alive({10, 12}))
         assert out.as_dict() == {
             "unowned_alive": 1,
             "owned_dead": 1,
@@ -788,3 +784,38 @@ def test_an_unknown_level_off_macos_says_nothing(monkeypatch, caplog) -> None:
     with caplog.at_level("WARNING", logger="kiro_crew.resource_status"):
         rs.probe(_cfg(4.0, 2.0))
     assert not any("memory-pressure level" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("free_gb", [3.0, 0.5])
+def test_a_remote_session_line_scopes_the_reading_to_the_gateway(free_gb):
+    """A remote session's builds run elsewhere: no "run targeted tests" advice."""
+    from kiro_crew import resource_status as rs
+
+    status = rs.ResourceStatus(
+        available_gb=free_gb,
+        cpu_count=8,
+        load_per_cpu=None,
+        posture=rs.POSTURE_CRITICAL if free_gb <= 1.0 else rs.POSTURE_TIGHT,
+        pressure_gb=4.0,
+        critical_gb=1.0,
+    )
+    local = status.context_line()
+    remote = status.context_line(remote=True)
+    assert "targeted tests" in local or "CRITICALLY" in local
+    assert remote.startswith("[RESOURCES] The gateway machine")
+    assert "this does not measure" in remote and "targeted tests" not in remote
+    assert f"~{free_gb:.1f} GB free" in remote
+
+
+def test_a_clear_gateway_keeps_a_remote_session_silent():
+    from kiro_crew import resource_status as rs
+
+    status = rs.ResourceStatus(
+        available_gb=20.0,
+        cpu_count=8,
+        load_per_cpu=None,
+        posture=rs.POSTURE_AMPLE,
+        pressure_gb=4.0,
+        critical_gb=1.0,
+    )
+    assert status.context_line(remote=True) == ""

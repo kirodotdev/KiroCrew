@@ -38,6 +38,8 @@ vi.mock('../../api/client', () => ({
     // state every case not about the greeting wants: the chat opens bare.
     crewBoard: vi.fn(() => Promise.reject(Object.assign(new Error('no_ledger'), { status: 404 }))),
     memberRecap: vi.fn(() => Promise.reject(new Error('no recap in this test'))),
+    // The side panel opens Files only for a slot confirmed to run locally.
+    chatSlotEnvironment: vi.fn(() => Promise.resolve({ profile: null, profiles: [] })),
     memberThread: vi.fn(),
     // Mate's first greeting: the server decides, so the page only asks.
     memberGreet: vi.fn(() => Promise.resolve({ outcome: 'started' })),

@@ -275,7 +275,7 @@ function touchSelectHint(status: TouchSelectStatus): string {
   }
 }
 
-function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: string; cwd?: string; visible: boolean; onSendToChat?: (text: string) => void }) {
+function TerminalView({ sessionId, cwd, remoteSlot, visible, onSendToChat }: { sessionId: string; cwd?: string; remoteSlot?: string; visible: boolean; onSendToChat?: (text: string) => void }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
   const entryRef = useRef<{ term: Terminal; fit: FitAddon } | null>(null)
@@ -332,8 +332,8 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
   // panel/route unmounts; torn down only on explicit tab close. Unmounting this
   // component does not disconnect — the module-level manager owns the socket.
   useEffect(() => {
-    ensureTerminalConnection(sessionId, term, fit, cwd)
-  }, [sessionId, term, fit, cwd])
+    ensureTerminalConnection(sessionId, term, fit, cwd, remoteSlot)
+  }, [sessionId, term, fit, cwd, remoteSlot])
 
   // Attach terminal to DOM
   useEffect(() => {
@@ -707,16 +707,18 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
  * Sessions are chat-specific by virtue of living in usePanelTabs' per-slot
  * bucket; the module-level termCache keeps them warm across tab/chat switches.
  */
-export default function CliPanel({ sessionId, cwd, visible = true, onSendToChat }: {
+export default function CliPanel({ sessionId, cwd, remoteSlot, visible = true, onSendToChat }: {
   sessionId: string
   cwd?: string
+  /** Open the shell in this chat's REMOTE session workspace instead of locally. */
+  remoteSlot?: string
   visible?: boolean
   onSendToChat?: (text: string) => void
 }) {
   useEffect(() => { ensureThemeObserver(); ensureTerminalFontSync() }, [])
   return (
     <div className="flex flex-col w-full h-full overflow-hidden bg-bg px-3 pt-2">
-      <TerminalView sessionId={sessionId} cwd={cwd} visible={visible} onSendToChat={onSendToChat} />
+      <TerminalView sessionId={sessionId} cwd={cwd} remoteSlot={remoteSlot} visible={visible} onSendToChat={onSendToChat} />
     </div>
   )
 }

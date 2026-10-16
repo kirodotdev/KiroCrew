@@ -17,6 +17,13 @@ from kiro_crew.config.sections_defaults import (
     DEFAULT_WATCHDOG_RSS_MAX_MB,
     SectionReader,
 )
+from kiro_crew.config.session_environments import (
+    ARCHIVED_RETENTION_DAYS_DEFAULT,
+    load_archived_retention_days,
+    load_default_profile,
+    load_session_environments,
+    load_stop_on_shutdown,
+)
 
 
 def _archive_retention_days(session_data: dict) -> int:
@@ -412,6 +419,124 @@ def _migrate_workspaces(raw_workspaces: dict) -> dict[str, WorkspaceConfig]:
     if not result:
         result["default"] = WorkspaceConfig()
     return result
+
+
+@dataclass
+class SessionEnvironmentProfileConfig:
+    """One named remote workspace profile the Session Environments UI offers.
+
+    Configuration only: a profile names a template and a working directory, it
+    does not provision anything. Validated by
+    ``config.session_environments.validate_profile``.
+    """
+
+    id: str = field(
+        default="",
+        metadata=_meta(
+            "Profile ID",
+            "Stable identifier: an ASCII letter or digit first, then letters, "
+            "digits, '_' or '-'; at most 64 characters and unique within the list.",
+        ),
+    )
+    name: str = field(
+        default="",
+        metadata=_meta("Profile Name", "Display name shown in the picker (1-128 characters)."),
+    )
+    template: str = field(
+        default="",
+        metadata=_meta(
+            "Template", "Name of the workspace template this profile uses (1-255 characters)."
+        ),
+    )
+    workdir: str = field(
+        default="",
+        metadata=_meta(
+            "Working Directory",
+            "Absolute POSIX path sessions start in inside the workspace "
+            "(at most 1024 characters).",
+        ),
+    )
+    compute_survives_stop: bool = field(
+        default=True,
+        metadata=_meta(
+            "Files Survive A Stop",
+            "Whether the template's workspace storage survives a workspace stop. "
+            "Turn it off for a template whose stop destroys the compute and its "
+            "files (such as MicroVM): Kiro Crew then never stops that workspace "
+            "itself, and its session is not recoverable after a stop.",
+        ),
+    )
+
+
+@dataclass
+class SessionEnvironmentsConfig:
+    """Persisted Session Environments settings (configuration only).
+
+    Saving this section registers no provider, activates no remote runtime and
+    contacts nothing. It holds no credential. The UI is gated by the per-device
+    preview flag, so there is deliberately no ``enabled`` field here.
+    """
+
+    coder_url: str = field(
+        default="",
+        metadata=_meta(
+            "Coder URL",
+            "Base URL of the Coder deployment: empty, or an http(s) URL with a "
+            "hostname and no username, password, query or fragment.",
+        ),
+    )
+    profiles: list[SessionEnvironmentProfileConfig] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Profiles",
+            "Named workspace profiles (at most 20), each {id, name, template, workdir, "
+            "compute_survives_stop}.",
+        ),
+    )
+
+    archived_retention_days: int = field(
+        default=ARCHIVED_RETENTION_DAYS_DEFAULT,
+        metadata=_meta(
+            "Keep Archived Workspaces",
+            "Days an archived session's workspace is kept, stopped, before it is "
+            "deleted along with its files (0-7, 0 deletes it as soon as the session "
+            "is archived). Reopening the session before then keeps the workspace.",
+        ),
+    )
+
+    default_profile: str = field(
+        default="",
+        metadata=_meta(
+            "Default Environment",
+            "Profile id new dashboard chats start on; empty runs them on this machine. "
+            "Applied once, when a chat is created, and changeable in its composer until "
+            "the first message. Scheduled jobs, channels and subagents are unaffected "
+            "(a subagent follows its parent).",
+        ),
+    )
+
+    stop_on_shutdown: bool = field(
+        default=True,
+        metadata=_meta(
+            "Stop On Shutdown",
+            "Stop every remote session environment when the gateway shuts down, except "
+            "one whose files do not survive a workspace stop. Off keeps them running "
+            "across a restart, which reconnects faster. Coder's own auto-stop still "
+            "applies either way.",
+        ),
+    )
+
+    @classmethod
+    def from_raw(cls, section: object) -> "SessionEnvironmentsConfig":
+        """Build from the raw section, keeping every valid part (never raises)."""
+        coder_url, profiles = load_session_environments(section)
+        return cls(
+            coder_url=coder_url,
+            profiles=[SessionEnvironmentProfileConfig(**p) for p in profiles],
+            archived_retention_days=load_archived_retention_days(section),
+            default_profile=load_default_profile(section),
+            stop_on_shutdown=load_stop_on_shutdown(section),
+        )
 
 
 @dataclass

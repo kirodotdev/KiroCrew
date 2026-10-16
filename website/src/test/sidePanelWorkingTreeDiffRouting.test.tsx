@@ -31,6 +31,10 @@ vi.mock('../utils/terminalRegistry', () => ({
 }))
 vi.mock('../hooks/useDevMode', () => ({ useDevMode: () => false }))
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => false }))
+// These editor tests run on a positively confirmed local session.
+vi.mock('../components/sessionEnvironmentHooks', () => ({
+  useSlotEnvironmentPlacement: () => ({ remote: null, error: null }),
+}))
 
 // FilesHomePanel is the pinned Files tab body. Mock it to expose two buttons
 // that fire its `onFileOpen` with the diff flag off (plain open) and on (the

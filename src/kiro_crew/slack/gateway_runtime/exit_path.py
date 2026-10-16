@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         UPDATE_INSTALLER_STOP_SECS,
         Any,
         GatewayOrchestrator,
+        _stop_session_environments,
         drain_sign_in_refresher,
         flush_audit_queue_before_hard_exit,
         listener_guard_exit_code,
@@ -473,11 +474,15 @@ async def _shutdown_and_exit(
     # same budget: an in-flight renewal finishes and persists the rotated
     # refresh credential instead of being cut off by os._exit below.
     _sign_in_drain = asyncio.create_task(drain_sign_in_refresher(self._sign_in_refresher_task))
+    # Remote session environments stop with the gateway that drives them, in
+    # parallel with the graceful shutdown and under their own ceiling.
+    _env_stop = asyncio.create_task(_stop_session_environments())
     try:
         await asyncio.wait_for(self._shutdown(), timeout=GRACEFUL_SHUTDOWN_SECS)
     except (asyncio.TimeoutError, Exception):
         logger.warning("Graceful shutdown timed out — force exiting")
     await _sign_in_drain
+    await _env_stop
 
     print("👻 Goodbye!")
     # Kill any kiro-cli processes that survived graceful shutdown.

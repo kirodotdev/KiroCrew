@@ -314,7 +314,8 @@ describe('CliPanel mount', () => {
     expect(term.openCalls).toBe(1)
     expect(container.querySelector('.xterm')).not.toBeNull()
     expect(fit.fit).toHaveBeenCalled()
-    expect(registry.ensureTerminalConnection).toHaveBeenCalledWith(sessionId, term, fit, '/srv/app')
+    // The fifth argument is the remote-workspace slot; a local terminal has none.
+    expect(registry.ensureTerminalConnection).toHaveBeenCalledWith(sessionId, term, fit, '/srv/app', undefined)
     // A visible pane takes focus and is re-measured (monospace toggle + restore).
     expect(term.focusCalls).toBe(1)
     expect(term.fontFamilyWrites.slice(-2)).toEqual(['monospace', term.options.fontFamily])

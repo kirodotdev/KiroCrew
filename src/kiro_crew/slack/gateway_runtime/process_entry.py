@@ -2,7 +2,8 @@
 
 ``run_gateway`` with its boot preflight (the token signing key) and the background
 sweeps it starts (KAS kiro-cli floor, predecessor work directories, orphaned
-read-only specs).
+read-only specs), and the remote session environments' retention sweeper with its
+shutdown stop.
 
 Orchestrator fields read: none.
 Orchestrator fields written: none.
@@ -53,6 +54,7 @@ if TYPE_CHECKING:
     _AGENTS_JANITOR_TASK: asyncio.Task[None] | None
     _AGENT_SCRATCH_SWEEP_TASK: asyncio.Task[None] | None
     _KIRO_CLI_LOG_CAP_TASK: asyncio.Task[None] | None
+    _CODER_RETENTION_TASK: asyncio.Task[None] | None
 
 
 def _live_session_work_dirs(sessions: Any) -> list[str]:
@@ -209,6 +211,49 @@ def _start_kas_cli_floor(cfg: KiroCrewConfig) -> "asyncio.Task[None]":
 
     _KAS_CLI_FLOOR_TASK = asyncio.create_task(_run(), name="kas-cli-floor")
     return _KAS_CLI_FLOOR_TASK
+
+
+def _start_coder_retention(cfg: KiroCrewConfig) -> None:
+    """Activate the optional Coder subsystem only after readiness/configuration."""
+    global _CODER_RETENTION_TASK
+    if not cfg.session_environments.coder_url:
+        return
+    if _CODER_RETENTION_TASK is not None and not _CODER_RETENTION_TASK.done():
+        return
+
+    async def run() -> None:
+        from kiro_crew.coder.retention import run_sweeper
+
+        await run_sweeper()
+
+    _CODER_RETENTION_TASK = asyncio.create_task(run(), name="coder-retention")
+
+
+async def _stop_session_environments() -> None:
+    """Stop the remote session environments on shutdown; bounded, never raises."""
+    sweeper = _CODER_RETENTION_TASK
+    if sweeper is None:
+        return
+    if not sweeper.done():
+        sweeper.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await sweeper
+    try:
+        from kiro_crew.coder.retention import (
+            SHUTDOWN_STOP_SECS,
+            stop_for_shutdown,
+            stop_on_shutdown_enabled,
+        )
+
+        if not await stop_on_shutdown_enabled():
+            # The operator chose fast restarts: each guest still stops on its own
+            # once no gateway reaches it (the worker's orphan timeout and the rest).
+            return
+        await asyncio.wait_for(stop_for_shutdown(), timeout=SHUTDOWN_STOP_SECS)
+    except asyncio.TimeoutError:
+        logger.warning("Session environments did not all stop in time; they stop when idle")
+    except Exception:  # noqa: BLE001 -- the gateway exits regardless
+        logger.warning("Session environments shutdown stop failed", exc_info=True)
 
 
 async def run_gateway(

@@ -406,6 +406,17 @@ def _dispatch(
             agent=agent,
             tool_name=tool_name,
         )
+    # A session bound to a remote environment works on another machine; this
+    # desktop is never its desktop. Not a governance scope (computer use stays
+    # ungoverned): a fact about which machine the session lives on. The server
+    # is also withheld from such a session entirely; this holds if it is reached.
+    from kiro_crew.session_environment import refuse_local_only_tool
+
+    remote_refusal = refuse_local_only_tool(session_key, "kirocrew-computer", tool_name)
+    if remote_refusal:
+        return _static_refusal(
+            remote_refusal, session_key=session_key, agent=agent, tool_name=tool_name
+        )
     clean = validate_tool_args(
         coerce_mcp_tool_args(dict(args), MCP_COMPUTER_SCHEMAS[tool_name]),
         MCP_COMPUTER_SCHEMAS[tool_name],

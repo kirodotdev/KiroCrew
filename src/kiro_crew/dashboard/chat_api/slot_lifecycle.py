@@ -963,6 +963,13 @@ async def _close_slot(
     # it unless the key is still ours.
     if _slot_still_ours(state, name, slot):
         await state.sessions.remove(_history_key_for(name))
+        # The archived session's remote workspace is stopped and kept for the
+        # configured retention. Background and best effort: never delays or
+        # fails a close that already happened, and a key with no workspace is a
+        # no-op. Inside the identity check, so a replacement's is never touched.
+        from kiro_crew.coder.retention import feed_notifier, schedule_archived
+
+        schedule_archived((_history_key_for(name), closing_key), feed_notifier(state))
     _release_closed_execution(state, slot, closing_key, closing_execution)
     _sync_dashboard_slots(state)
     state.push_slot_removed(name)
@@ -1270,6 +1277,10 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
             logger.warning("Cleanup: session remove failed for %s", name, exc_info=True)
         else:
             _release_closed_execution(state, removed, closing_key, closing_execution)
+        # Same retention as a single archive (see _close_slot).
+        from kiro_crew.coder.retention import feed_notifier, schedule_archived
+
+        schedule_archived((_history_key_for(name), closing_key), feed_notifier(state))
         archived.append(name)
         # Collect running tasks for concurrent cancellation after the loop
         if removed.running and removed.task is not None:

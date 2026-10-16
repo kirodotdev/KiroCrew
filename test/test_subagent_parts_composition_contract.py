@@ -452,7 +452,11 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "function",
             "(agents: 'list[SubagentInfo]', *, running_count: 'int', cost_gb: 'float', next_start_gb: 'float | None' = None, settled_gb: 'Mapping[str, float] | None' = None, claim_prices: 'Iterable[float]' = (), now: 'float | None' = None) -> 'float'",
         ),
-        ("_cost_bucket", "function", "(agent: 'str', execution: 'Any') -> 'str'"),
+        (
+            "_cost_bucket",
+            "function",
+            "(agent: 'str', execution: 'Any', *, remote: 'bool' = False) -> 'str'",
+        ),
     ),
 }
 

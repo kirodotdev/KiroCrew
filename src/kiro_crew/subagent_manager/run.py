@@ -1363,6 +1363,13 @@ class RunEventCoordinator(ManagerComponent):
                 # no entry, which now means exactly "nothing left to wait for".
                 self._manager._teardown_gates.pop(info.id, None)
                 self._forget_finished_live_state(info)
+                if info._remote_workspace:
+                    # Last, since it awaits: the bookkeeping above must not be
+                    # skippable by a cancellation here. A continuation
+                    # re-inherits the parent's environment before it starts.
+                    from kiro_crew.coder.session_launch import forget_subagent_environment
+
+                    await forget_subagent_environment(session_key)
 
         # The report itself already ran (or is running) on the shielded task
         # spawned in the finally above; block until it completes so sequencing is
@@ -2399,10 +2406,27 @@ class RunEventCoordinator(ManagerComponent):
         # below still applies, because a record can be pruned or released between the
         # two runs; it is one of two things standing between a shared-arm run and its
         # follow-up rather than the only one.
+        # ── Remote session environment: the child works where the parent does ──
+        # A subagent of a session bound to a remote environment is bound to the
+        # SAME workspace, so its file and shell tools are fenced exactly like the
+        # parent's instead of acting on the gateway machine. It must take the
+        # dedicated arm: a shared runtime hosts its sessions in one process
+        # whose remote workspace server was launched for the parent (its one-use
+        # tunnel secret is spent), and the companion runtime is a local engine.
+        # Failure to bind raises and refuses the run; it never runs locally.
+        from kiro_crew.coder.session_launch import inherit_environment_for_subagent
+
+        inherits_remote = bool(info.parent_session_key) and (
+            await inherit_environment_for_subagent(info.parent_session_key, session_key)
+        )
+        info._remote_workspace = inherits_remote
         if info.keep:
             self._manager._sessions.mark_continuable(session_key)
             self._manager._conversations[session_key] = time.monotonic()
-        use_session_sharing = plan.shared
+        # A child bound to its parent's remote workspace needs its own runtime:
+        # the parent's shared one carries the parent's workspace server, not the
+        # child's. A start priced shared then takes the dedicated top-up below.
+        use_session_sharing = plan.shared and not inherits_remote
         if use_session_sharing:
             # Local import: run.py's ``*_impl`` bodies resolve globals through
             # ``kiro_crew.subagent``, which does not export this name.
@@ -4382,7 +4406,9 @@ class RunEventCoordinator(ManagerComponent):
         floor, cost = _spawn_memory_floor_and_cost()
         settled = self._manager._learned_settled_gb
         info._start_price_gb = _dedicated_start_price_gb(
-            cost, settled, _cost_bucket(info.agent, info.execution_context)
+            cost,
+            settled,
+            _cost_bucket(info.agent, info.execution_context, remote=bool(info._remote_workspace)),
         )
         if floor <= 0:
             info._start_priced_shared = False

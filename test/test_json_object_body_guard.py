@@ -202,6 +202,17 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # Installed exact-read keys allow 32,768 characters. Escaped astral characters
     # need 12 JSON bytes each; 512 KiB covers those keys plus the control envelope.
     "handlers/prompts.py::api_skills": ("512 * 1024", _BOUNDED_EXPLICIT),
+    # A remote file save carries the file (capped at MAX_WRITE_BYTES by the
+    # worker) and the text the editor opened, for the change check, plus the path.
+    "handlers/session_environments.py::api_chat_slot_environment_file_put": (
+        "2 * MAX_WRITE_BYTES + 8192",
+        _BOUNDED_EXPLICIT,
+    ),
+    # A session's environment binding is one profile id, so 4 KB is ample.
+    "handlers/session_environments.py::api_chat_slot_environment_put": (
+        "4096",
+        _BOUNDED_EXPLICIT,
+    ),
     # agents.py tranche.
     "agent_admin/agent_config.py::api_agent_config": ("None", _UNBOUNDED_USER_CONTENT),
     "agent_admin/default_agent.py::api_default_agent": ("None", _CONTROL_FIELDS_CAP_PENDING),

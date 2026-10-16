@@ -51,6 +51,7 @@ interface ChatTranscriptViewProps {
   slotLoading: boolean
   slotRunning: boolean
   slotState: ReturnType<typeof useActiveSlotState>['slotState']
+  environmentStart: ReturnType<typeof useActiveSlotState>['environmentStart']
   slotStopping: boolean
   slotSwitchTarget: string | null
   turnDisclosure: Record<string, boolean>
@@ -92,7 +93,7 @@ interface ChatTranscriptViewProps {
  */
 export default function ChatTranscriptView({
   embedded, popout, activeSlot, appToolCallIds, titleInTopbar, activityOpen, completedTurnCount, cursorIsForActiveSlot, kiroCrewVersion, loadingOlder, olderFailed, setTurnDisclosureFor, slotHasMore,
-  slotLoading, slotRunning, slotState, slotStopping, slotSwitchTarget, turnDisclosure, turnRowMayBeLive, setInput, isWelcomeState, chatConfig, scrollerRef, bindScroller, handleSurveyLayoutChange,
+  slotLoading, slotRunning, slotState, environmentStart, slotStopping, slotSwitchTarget, turnDisclosure, turnRowMayBeLive, setInput, isWelcomeState, chatConfig, scrollerRef, bindScroller, handleSurveyLayoutChange,
   onScrollPin, pinned, approve, dismissApproval, currentSlot, regenerating, sendUnconfirmed, dockH, lastRole, streamTick, toggleAct, renderedDisplayItems, stableMsgKey, virtualKey, handleLoadEarlier,
   spinnerNearTop, virt, visibleDisplayItems, chatNav, navigateToTurn, turnStepAnnouncement, renderFarmItem, renderMessage, renderTurnItem,
 }: ChatTranscriptViewProps) {
@@ -203,7 +204,7 @@ export default function ChatTranscriptView({
           scrollerEl={() => scrollerRef.current}
         />
         {/* Footer */}
-        <ChatFooter running={slotRunning} stopping={slotStopping} state={slotState} lastRole={lastRole} streamTick={streamTick} regenerating={regenerating} stopState={currentSlot?.stop_state} sendUnconfirmed={sendUnconfirmed} />
+        <ChatFooter statusLabel={environmentStart} running={slotRunning} stopping={slotStopping} state={slotState} lastRole={lastRole} streamTick={streamTick} regenerating={regenerating} stopState={currentSlot?.stop_state} sendUnconfirmed={sendUnconfirmed} />
         {activeSlot && !slotLoading && !embedded && !popout && slotSwitchTarget !== activeSlot && (
           <div className="px-4 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
             <SessionPulseSurveyCard

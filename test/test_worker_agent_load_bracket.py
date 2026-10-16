@@ -769,6 +769,7 @@ def _runtime_for_create_session(monkeypatch, tmp_path, sent, terminated):
     rt._crew_agent = "kirocrew"
     rt._work_dir = tmp_path / "wd"
     rt._member_context = False
+    rt._remote_workspace = None
     rt._native_launch_sources = {}
     rt._mcp_gateway_overlay = None
     rt._agent_capabilities = {}

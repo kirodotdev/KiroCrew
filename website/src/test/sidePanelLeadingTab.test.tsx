@@ -48,6 +48,10 @@ vi.mock('../utils/terminalRegistry', () => ({
 }))
 vi.mock('../hooks/useDevMode', () => ({ useDevMode: () => false }))
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => false }))
+// These menu/host tests run on a positively confirmed local session.
+vi.mock('../components/sessionEnvironmentHooks', () => ({
+  useSlotEnvironmentPlacement: () => ({ remote: null, error: null }),
+}))
 // One installed app contributes a panel tab, so the `'app'` withdrawal below
 // has something to withhold. Only the descriptor hook is mocked; the pure
 // helpers stay real (same shape as sidePanelAppTab.test.tsx).

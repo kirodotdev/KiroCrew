@@ -304,6 +304,7 @@ _OWNER_CONFIG_IMPORTS = {
     "kiro_crew.config.sections_session": {
         "kiro_crew.config.fields",
         "kiro_crew.config.sections_defaults",
+        "kiro_crew.config.session_environments",
     },
     "kiro_crew.config.sections_limits": {
         "kiro_crew.config.fields",

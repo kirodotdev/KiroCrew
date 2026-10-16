@@ -1083,6 +1083,13 @@
       "description": "Start a gateway on this machine. Leave it on unless this app's port already reaches a crew on another machine, or the app cannot connect the next time it opens, which is when this takes effect. That needs the crew saved for this port with “Set Remote Host…” in the Connection menu, plus a tunnel: tick “Keep an SSH tunnel to this crew open” there (macOS and Linux) or keep your own SSH tunnel running. Settings → Remote Crew connections stop when this is off, so they do not count."
     },
     {
+      "id": "developer.session-environments",
+      "label": "Session Environments",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.session-environments",
+      "description": "Preview Coder configuration for development sessions. This switch only shows settings on this device."
+    },
+    {
       "id": "developer.webhooks",
       "label": "Webhooks",
       "tab": "developer",
@@ -1449,6 +1456,44 @@
       "tab": "security",
       "route": "/settings/security/rules?highlight=security.your-custom-denies",
       "description": "Add your own deny patterns (Python-compatible regex). These are enforced at {{productName}}'s PreToolUse gate alongside the built-in rules."
+    },
+    {
+      "id": "session-environments.coder-url",
+      "label": "Coder URL",
+      "tab": "session-environments",
+      "route": "/settings/session-environments?highlight=key%3Asession_environments.coder_url",
+      "description": "Use the deployment URL without credentials, query parameters, or fragments.",
+      "configKey": "session_environments.coder_url"
+    },
+    {
+      "id": "session-environments.days-to-keep-archived-session-environments",
+      "label": "Days to keep archived session environments",
+      "tab": "session-environments",
+      "route": "/settings/session-environments?highlight=key%3Asession_environments.archived_retention_days",
+      "description": "When you archive a session, its session environment is stopped and kept this many days, then deleted with its files. Reopening the session before then keeps the same session environment. 0 deletes it right away. At most 7.",
+      "configKey": "session_environments.archived_retention_days"
+    },
+    {
+      "id": "session-environments.default-for-new-chats",
+      "label": "Default for new chats",
+      "tab": "session-environments",
+      "route": "/settings/session-environments?highlight=session-environments.default-for-new-chats",
+      "description": "New chats you start in the dashboard run here unless you pick another environment in the composer before the first message. Existing chats, scheduled jobs and channel conversations keep running where they do now."
+    },
+    {
+      "id": "session-environments.start-new-chats-in-a-session-environment",
+      "label": "Start new chats in a session environment",
+      "tab": "session-environments",
+      "route": "/settings/session-environments?highlight=key%3Asession_environments.default_profile",
+      "configKey": "session_environments.default_profile"
+    },
+    {
+      "id": "session-environments.stop-session-environments-when-the-gateway-shuts-down",
+      "label": "Stop session environments when the gateway shuts down",
+      "tab": "session-environments",
+      "route": "/settings/session-environments?highlight=key%3Asession_environments.stop_on_shutdown",
+      "description": "On: Kiro Crew stops each session environment when the gateway shuts down, except one whose files do not survive a workspace stop. Off: they keep running across a restart, which reconnects faster. Coder's own auto-stop still applies.",
+      "configKey": "session_environments.stop_on_shutdown"
     },
     {
       "id": "shortcuts.enable-shortcuts",

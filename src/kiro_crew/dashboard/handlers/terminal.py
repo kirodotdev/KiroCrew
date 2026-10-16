@@ -1463,6 +1463,27 @@ async def _kill_session(sess: _TerminalSession) -> None:
                 pass
 
 
+async def _remote_terminal_argv(
+    request: web.Request, slot_name: str
+) -> tuple[list[str] | None, str]:
+    """``(argv, "")`` for a shell in ``slot_name``'s remote workspace, else ``(None, why)``."""
+    from kiro_crew.coder.session_browse import NotRemote, remote_terminal_argv
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.session_environment import SessionEnvironmentUnavailable
+
+    state = request.app.get("state")
+    slots = getattr(state, "_slots", None) or {}
+    slot = slots.get(slot_name) if isinstance(slots, dict) else None
+    if slot is None:
+        return None, "Unknown chat for this terminal"
+    try:
+        return await remote_terminal_argv(effective_session_key(slot)), ""
+    except NotRemote:
+        return None, "This chat runs on this machine, not a remote environment"
+    except SessionEnvironmentUnavailable as exc:
+        return None, f"The remote workspace is not available: {exc}"
+
+
 async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.Response:
     """WebSocket PTY for the built-in CLI panel.
 
@@ -1538,6 +1559,25 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
     shell, rejected_shell, fence_shells = await asyncio.get_running_loop().run_in_executor(
         discovery_executor(), _resolve_shell_with_fence_shells, cfg,
     )
+
+    # A terminal opened for a chat on a REMOTE session environment is a shell in
+    # that session's workspace, not on this machine. Resolved before the
+    # reservation below (it awaits). Never falls back to a local shell: a
+    # terminal the user opened "in the remote workspace" that silently ran here
+    # would send their commands to the wrong machine.
+    remote_argv: list[str] | None = None
+    remote_slot = request.query.get("remote_slot")
+    if isinstance(remote_slot, str) and remote_slot:
+        remote_argv, remote_error = await _remote_terminal_argv(request, remote_slot)
+        if remote_argv is None:
+            _sel().log_api_access(
+                caller=caller,
+                operation="terminal.ws.open",
+                outcome="denied",
+                source="dashboard",
+                resources=f"session={session_id},remote_unavailable=1",
+            )
+            return web.Response(status=409, text=remote_error)
 
     # A None entry reserves this session id and capacity throughout opening,
     # including asynchronous setup and any refusal response. Reject duplicate
@@ -1685,6 +1725,8 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 cwd = os.path.expanduser("~")
             env = _pty_child_env({"KIROCREW_TERMINAL": "1"})
             argv = [shell, "-NoLogo"] if "powershell" in shell.lower() else [shell]
+            if remote_argv is not None:
+                argv, cwd = remote_argv, os.path.expanduser("~")
             try:
                 wp = WindowsPty(argv, cwd=cwd, env=env, cols=80, rows=24)
             except Exception as exc:
@@ -1775,7 +1817,12 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                     # the same ioctl single-threaded in the exec'd child, where none of
                     # that applies -- see the module docstring of _spawn_exec_shim.py.
                     argv = [shell, "-l"]
-                    if _is_bash_shell(shell):
+                    if remote_argv is not None:
+                        # The provider CLI opens the remote login shell; the local cwd
+                        # and the local bash ready-marker do not apply to it.
+                        argv, cwd = remote_argv, os.path.expanduser("~")
+                        env.pop("SHELL", None)
+                    elif _is_bash_shell(shell):
                         token = uuid.uuid4().hex
                         ready_marker = (
                             f"\x1b]697;KiroCrewReady;{token}\x07".encode("ascii")

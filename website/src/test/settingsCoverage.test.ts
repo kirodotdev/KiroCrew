@@ -349,6 +349,10 @@ const EXPECTED_DYNAMIC_SKIPS: Record<string, { count: number; reason: string }> 
       'set of apps is whatever is installed, so there is no fixed label to index. The ' +
       'rows sit on the Model page every chat.* model entry already deep-links to',
   },
+  'SessionEnvironmentsCard.tsx': {
+    count: 2,
+    reason: 'Coder per-profile CRUD fields and the per-profile stop switch depend on configured rows and cannot be global deep links; the Session Environments page owns them',
+  },
   'BotChannelPanel.tsx': {
     count: 16,
     reason:

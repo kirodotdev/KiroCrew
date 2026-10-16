@@ -105,6 +105,14 @@ that stays in the default directory. A different recorded directory remains an
 explicit override and must pass current directory policy, including after the
 pool default changes.
 
+A run whose parent session is bound to a remote session environment inherits it
+before its session starts (`coder.session_launch.inherit_environment_for_subagent`):
+the child works in the parent's remote workspace behind the same tool fence, and
+always takes the dedicated-process arm, because neither a shared runtime nor the
+companion runtime can host a fenced remote session for it. When the inherited
+choice cannot be read or written the run fails; it never falls back to the
+gateway machine. Contract detail: [providers](providers.md).
+
 ## Composition
 
 `kiro_crew/subagent.py` is the facade and the one namespace of the subagent family:
@@ -406,6 +414,17 @@ so every later admission charges a row at the price it was admitted at:
   the same plan, so the price cannot follow a copy of the rule. Only a real
   `True` prices a start shared; an unknown answer is priced dedicated. Native
   subtasks (kiro-cli `use_subagent` and similar) never reach this gate.
+- **Remote child.** A child of a session running in a remote session
+  environment (`_parent_runs_remotely`, the in-memory
+  `session_environment.remote_workspace_for` record set at each runtime start)
+  inherits that workspace, so its builds, tests and shells run there and only
+  its engine runs on this machine. Its spawn owes the startup reserve without the
+  `spawn_min_memory_gb` floor, which keeps headroom for work done on the gateway,
+  it is priced from and records its samples to its own `<bucket>@remote` cost
+  bucket (`_cost_bucket(..., remote=True)`, `SubagentInfo._remote_workspace`),
+  and it is never priced or run shared, because the parent's runtime carries the
+  parent's workspace server. A floor of 0 still disables the whole check, and the
+  posture gate still applies, because the engine is local.
 
 At defaults with nothing warming or learned: a shared start needs 2.65 GiB
 free, the first dedicated start 3.0 GiB, a second while the first warms

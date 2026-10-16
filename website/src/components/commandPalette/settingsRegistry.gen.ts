@@ -1839,6 +1839,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "developer.session-environments",
+    "label": "Session Environments",
+    "labelKey": "sessionEnvironments.title",
+    "description": "Preview Coder configuration for development sessions. This switch only shows settings on this device.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "developer.webhooks",
     "label": "Webhooks",
     "labelKey": "pages.developer.featurePreviewsTab.webhooks",
@@ -2446,6 +2455,54 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     },
     "label": "Your custom denies",
     "description": "Add your own deny patterns (Python-compatible regex). These are enforced at {{productName}}'s PreToolUse gate alongside the built-in rules."
+  },
+  {
+    "id": "session-environments.coder-url",
+    "label": "Coder URL",
+    "labelKey": "sessionEnvironments.url",
+    "description": "Use the deployment URL without credentials, query parameters, or fragments.",
+    "tab": "session-environments",
+    "type": "input",
+    "occurrence": 1,
+    "configKey": "session_environments.coder_url"
+  },
+  {
+    "id": "session-environments.days-to-keep-archived-session-environments",
+    "label": "Days to keep archived session environments",
+    "labelKey": "sessionEnvironments.archivedRetention",
+    "description": "When you archive a session, its session environment is stopped and kept this many days, then deleted with its files. Reopening the session before then keeps the same session environment. 0 deletes it right away. At most 7.",
+    "tab": "session-environments",
+    "type": "stepper",
+    "occurrence": 1,
+    "configKey": "session_environments.archived_retention_days"
+  },
+  {
+    "id": "session-environments.default-for-new-chats",
+    "label": "Default for new chats",
+    "labelKey": "sessionEnvironments.defaultProfile",
+    "description": "New chats you start in the dashboard run here unless you pick another environment in the composer before the first message. Existing chats, scheduled jobs and channel conversations keep running where they do now.",
+    "tab": "session-environments",
+    "type": "select",
+    "occurrence": 1
+  },
+  {
+    "id": "session-environments.start-new-chats-in-a-session-environment",
+    "label": "Start new chats in a session environment",
+    "labelKey": "sessionEnvironments.defaultEnabled",
+    "tab": "session-environments",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "session_environments.default_profile"
+  },
+  {
+    "id": "session-environments.stop-session-environments-when-the-gateway-shuts-down",
+    "label": "Stop session environments when the gateway shuts down",
+    "labelKey": "sessionEnvironments.stopOnShutdown",
+    "description": "On: Kiro Crew stops each session environment when the gateway shuts down, except one whose files do not survive a workspace stop. Off: they keep running across a restart, which reconnects faster. Coder's own auto-stop still applies.",
+    "tab": "session-environments",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "session_environments.stop_on_shutdown"
   },
   {
     "id": "shortcuts.enable-shortcuts",

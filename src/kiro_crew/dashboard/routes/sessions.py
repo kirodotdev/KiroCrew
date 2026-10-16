@@ -13,6 +13,7 @@ from aiohttp import web
 
 from kiro_crew.dashboard import chat, chat_voice, handlers, openai_compat
 from kiro_crew.dashboard.handlers import debug as debug_handlers
+from kiro_crew.dashboard.handlers import session_environments as session_environment_handlers
 
 
 def register(app: web.Application) -> None:
@@ -99,6 +100,30 @@ def register(app: web.Application) -> None:
     app.router.add_patch("/api/chat/slots/{slot}/muted", chat.api_chat_slot_muted)
     app.router.add_patch("/api/chat/slots/{slot}/todo", chat.api_chat_slot_todo)
     app.router.add_patch("/api/chat/slots/{slot}/mode", chat.api_chat_slot_mode)
+    app.router.add_get(
+        "/api/chat/slots/{slot}/environment",
+        session_environment_handlers.api_chat_slot_environment_get,
+    )
+    app.router.add_put(
+        "/api/chat/slots/{slot}/environment",
+        session_environment_handlers.api_chat_slot_environment_put,
+    )
+    app.router.add_get(
+        "/api/chat/slots/{slot}/environment/browse",
+        session_environment_handlers.api_chat_slot_environment_browse,
+    )
+    app.router.add_put(
+        "/api/chat/slots/{slot}/environment/file",
+        session_environment_handlers.api_chat_slot_environment_file_put,
+    )
+    app.router.add_post(
+        "/api/session-environments/check",
+        session_environment_handlers.api_session_environments_check,
+    )
+    app.router.add_get(
+        "/api/session-environments/workspaces",
+        session_environment_handlers.api_session_environments_workspaces_get,
+    )
     # Message pins
     app.router.add_get("/api/chat/pins", chat.api_chat_pins_list)
     app.router.add_post("/api/chat/pins", chat.api_chat_pins_create)

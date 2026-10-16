@@ -4,7 +4,7 @@ import { ArrowRight } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import { FeaturePreviewIntroButton, type FeaturePreviewIntro } from '../../components/FeaturePreviewIntroDialog'
 import { usePreviewFlag, useRemoteCrewChat } from '../../hooks/usePreviewFlag'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import { DecisionsCard } from './DecisionsCard'
 import { i18nT } from '../../i18n/t'
 
@@ -134,6 +134,7 @@ export function FeaturePreviewsSection() {
   const remoteCrewChat = useRemoteCrewChat()
   const layoutHarness = usePreviewFlag(PREVIEW_LAYOUT_HARNESS)
   const folderConductor = usePreviewFlag(PREVIEW_FOLDER_CONDUCTOR)
+  const sessionEnvironments = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
 
   return (
     // The wrapper exists for the legacy redirect: `?highlight=key:<anchor>`
@@ -319,6 +320,14 @@ export function FeaturePreviewsSection() {
           DOM for it and gives up after 100 ms, so a card behind a chunk boundary was a
           deep link that rang nothing. The card's own per-point detail panel is the part
           that is lazy -- see `DecisionsCard.tsx`. */}
+      <SettingsCard>
+        <SettingsToggle
+          label={i18nT('sessionEnvironments.title')}
+          description={i18nT('sessionEnvironments.description')}
+          checked={sessionEnvironments}
+          onChange={value => setPreviewFlag(PREVIEW_SESSION_ENVIRONMENTS, value)}
+        />
+      </SettingsCard>
       <DecisionsCard />
     </SettingsSection>
     </div>

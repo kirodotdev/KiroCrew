@@ -916,6 +916,65 @@ function sendResponseAuthRecovery(r: Response): Response {
   return r
 }
 
+export interface SessionEnvironmentProfile {
+  id: string
+  name: string
+  provider: string
+  workdir: string
+}
+
+export interface RemoteDirListing {
+  root: string
+  path: string
+  entries: { name: string; dir: boolean }[]
+  truncated: boolean
+}
+
+export interface RemoteFileContent {
+  root: string
+  path: string
+  content: string
+  binary: boolean
+  truncated: boolean
+}
+
+export interface SessionEnvironmentsCheck {
+  coder: { ok: boolean; owner?: string; error?: string }
+  profiles: { id: string; ok: boolean; error?: string }[]
+}
+
+export interface SessionEnvironmentWorkspace {
+  workspace: string
+  slot: string
+  state: string
+  template: string
+  created_at: string
+  /** Set once the owning session is archived: when the workspace is deleted. */
+  deletion_due_at: string
+}
+
+/** Provider-neutral stages of a remote session's start, in order. */
+export type SessionEnvironmentStartStage = 'checking' | 'provisioning' | 'connecting' | 'starting_agent'
+
+export interface SlotEnvironment {
+  profile: string | null
+  profiles: SessionEnvironmentProfile[]
+  /** True once the session has a message: its environment can no longer change. */
+  locked?: boolean
+  /** A runtime in this gateway is attached to the remote workspace. */
+  attached?: boolean
+  /** Set while this session's environment is starting in THIS gateway. */
+  starting?: {
+    stage: SessionEnvironmentStartStage
+    stage_elapsed_s: number
+    elapsed_s: number
+    /** Every stage this start has entered, in order. Older gateways omit it. */
+    entered?: SessionEnvironmentStartStage[]
+    /** The gateway already had this session attached: an engine restart. */
+    reconnect?: boolean
+  } | null
+}
+
 /**
  * A non-2xx this endpoint's caller handles itself, identified by the denial it
  * IS rather than by the status it arrives with.

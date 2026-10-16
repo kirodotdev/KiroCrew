@@ -7,6 +7,7 @@ import SketchDialog from './SketchDialog'
 import QuoteCard from '../pages/chat/QuoteCard'
 import CopyBranchButton from './CopyBranchButton'
 import ProjectAwsProfileStatus from './ProjectAwsProfile'
+import { useSlotRemoteEnvironment } from './sessionEnvironmentHooks'
 import RejectDropdown from './RejectDropdown'
 import { createPortal } from 'react-dom'
 import { useQueryClient } from '@tanstack/react-query'
@@ -81,6 +82,9 @@ import { ComposerAttach } from '../chat-core/composer/Attach'
    skeleton, and the constructs other gates read in this file by path. */
 
 const SessionAutomationPopover = lazy(() => import('./SessionAutomationPopover'))
+// Only gateways with Session Environments profiles render it (it returns null
+// otherwise), so it stays out of the chat bundle.
+const SessionEnvironmentChip = lazy(() => import('./SessionEnvironmentChip'))
 
 // Upload picker accept hints. Client-side ONLY (UX) — the server validates type
 // (magic bytes), size, and runs malware scanning per input-validation guidance.
@@ -211,6 +215,7 @@ function ChatInput({
   onAgentClick,
   onModelClick,
   onProjectClick,
+  environmentSlot,
   sessionControls,
   onSessionControlClick,
   contextPct,
@@ -401,6 +406,10 @@ function ChatInput({
   // `chat-input/pickerFocus.ts` for the contract (why it reports where focus
   // LANDED, and why touch and a disabled box return false).
   const focusComposerAfterPick = useCallback(() => pickerFocusAfterPick(composerControl()), [composerControl])
+  // A remote session works in its guest directory, so the gateway project and
+  // branch this chip names are not its working tree; the environment chip says
+  // where it runs instead.
+  const remoteEnvironment = useSlotRemoteEnvironment(environmentSlot)
   // Attribute the Lexical editor's own growth to the composer (see
   // composerResize.ts). The textarea path attributes inside `applyHeight`, which
   // the contenteditable never runs — its box grows through CSS min/max-height as
@@ -1611,8 +1620,17 @@ function ChatInput({
           // An app-contributed chip is reason enough to draw the shelf. Without
           // this the chip is silently invisible whenever no other pill happens
           // to be present — the control is declared, mounted and unreachable.
-          !!sessionControls?.length) && (
+          !!sessionControls?.length ||
+          !!environmentSlot) && (
         <div ref={shelfRef} data-testid="composer-context-shelf" className="glass-shelf pt-1 flex items-center gap-2 min-w-0" style={{ ['--glass-shelf-h' as string]: `${shelfHeight}px` }}>
+          {/* Where the session's files and commands live. Its own separated
+              group, like the app session controls below, so neither crowds the
+              agent/project chip group past `max-two-buttons-per-row`. */}
+          {environmentSlot && (
+            <Suspense fallback={null}>
+              <SessionEnvironmentChip slot={environmentSlot} disabled={isRunning} compact={shelfCompact} />
+            </Suspense>
+          )}
           {/* App-contributed session controls live in their OWN group, not
               beside the agent/project chips. `max-two-buttons-per-row`
               (AUTOSDE.yaml, blocking) caps a horizontal group at 2 action
@@ -1638,7 +1656,7 @@ function ChatInput({
               <span className={shelfCompact ? 'sr-only' : 'truncate max-w-[160px]'}>{projectProp.split('/').filter(Boolean).pop() || projectProp}</span>
             </span>
           )}
-          {onProjectClick && (
+          {onProjectClick && !remoteEnvironment && (
           /* Two sibling buttons inside one visual pill, NOT a nested button:
              the folder segment opens the project picker and the branch segment
              copies. A <button> inside a <button> is invalid HTML and browsers

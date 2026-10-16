@@ -502,7 +502,9 @@ from kiro_crew.slack.gateway_runtime.process_entry import (
     _live_session_agents,
     _live_session_work_dirs,
     _run_signing_key_preflight_bounded,
+    _start_coder_retention,
     _start_kas_cli_floor,
+    _stop_session_environments,
     _sweep_predecessor_session_work_dirs,
     run_gateway,
     signing_key_preflight,
@@ -1017,6 +1019,7 @@ class GatewayOrchestrator:
         self._channel_transports_started = False
         self._channel_restart_tasks: set[asyncio.Task[None]] = set()
         self._channel_restart_gen: dict[str, int] = {}
+        self._session_environments_ready = False
         self._config_subs: list[Subscription] = []
         self._register_config_appliers()
 
@@ -3759,6 +3762,10 @@ class GatewayOrchestrator:
     #: transport switch under ``messaging``.
     _SLACK_APPLIER_PREFIXES: tuple[str, ...] = ("slack", "messaging")
 
+    def _on_session_environment_config_change(self, change: ConfigChange) -> None:
+        if self._session_environments_ready and not self._test_mode:
+            _start_coder_retention(change.new)
+
     def _register_config_appliers(self) -> None:
         """Subscribe this orchestrator's config appliers on the process watcher.
 
@@ -3771,6 +3778,11 @@ class GatewayOrchestrator:
             d.channel_type for d in registry.bootable(builtin_channel_descriptors())
         )
         self._config_subs = [
+            live.subscribe(
+                "session_environments.coder_url",
+                callback=self._on_session_environment_config_change,
+                name="GatewayOrchestrator.session_environments",
+            ),
             live.subscribe(
                 *channel_prefixes,
                 callback=self._on_channel_config_change,
@@ -4033,3 +4045,5 @@ _AGENTS_JANITOR_TASK: "asyncio.Task[None] | None" = None
 _AGENT_SCRATCH_SWEEP_TASK: "asyncio.Task[None] | None" = None
 #: Strong ref for the kiro-cli log cap loop.
 _KIRO_CLI_LOG_CAP_TASK: "asyncio.Task[None] | None" = None
+#: Strong ref for the archived-session workspace retention sweeper.
+_CODER_RETENTION_TASK: "asyncio.Task[None] | None" = None

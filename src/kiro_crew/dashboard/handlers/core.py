@@ -24,6 +24,7 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 
 import kiro_crew
 import kiro_crew.config.resolution as _resolution
+import kiro_crew.config.session_environments as _session_environments
 from kiro_crew import aws_consent, beacon, platform_compat, stt
 from kiro_crew.acp_backends import selectable_backend_values, selectable_stored_backend_values
 from kiro_crew.apps.manifest import KEBAB_RE
@@ -3340,6 +3341,38 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "min": DECISION_BUCKET_MIN,
         "max": DECISION_BUCKET_MAX,
     },
+    # Session Environments (Settings, behind the per-device preview flag).
+    # CONFIGURATION ONLY: a write stores workspace profiles and nothing else --
+    # no provider registration, no connection check, no provisioning. The section holds no credential, so everything it stores is
+    # safe to return through the masked GET. ``normalize`` is the SAME validator
+    # the loader applies (config/session_environments.py), so a value this gate
+    # accepts is one a load keeps, and anything it would drop is refused here
+    # instead. The whole-section path is the atomic save; leaf paths update one
+    # provider's configuration without resending the other.
+    "session_environments": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_session_environments,
+    },
+    "session_environments.coder_url": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_coder_url,
+    },
+    "session_environments.profiles": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_profiles,
+    },
+    "session_environments.default_profile": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_default_profile,
+    },
+    "session_environments.stop_on_shutdown": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_stop_on_shutdown,
+    },
+    "session_environments.archived_retention_days": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_archived_retention_days,
+    },
 }
 
 # The tier-to-model map `model.route` routes a turn with. Registered from the tier
@@ -3665,6 +3698,15 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 return _deny("unsupported config type", f"{path_key}={value}", 500)
             validated[sub_key] = sub_val
         value = validated
+    elif spec["type"] == "normalized":
+        # A structured value validated by a shared normalizer that RAISES on bad
+        # input (``ValueError`` naming the field) and returns the value to store.
+        # Keeps list/record shapes out of this handler's scalar branches, and
+        # keeps the write gate and the loader on one validator.
+        try:
+            value = spec["normalize"](value)
+        except ValueError as exc:
+            return _deny(str(exc), path_key)
     else:
         return _deny("unsupported config type", f"{path_key}={value}", 500)
 
@@ -3803,7 +3845,20 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 if not isinstance(nxt, dict):
                     raise ValueError(f"config section '{part}' is not an object")
                 section = nxt
-            section[parts[-1]] = value
+            if path_key == "session_environments" and isinstance(value, dict):
+                current = section.get(parts[-1], {})
+                current = current if isinstance(current, dict) else {}
+                # An older client cannot delete what it never sent: a newer
+                # setting. Preserve under the same lock as the write, not from
+                # the GET. A key that was never saved stays absent, so it keeps
+                # its default.
+                merged = dict(value)
+                for optional in _session_environments.SECTION_OPTIONAL_KEYS:
+                    if optional not in merged and optional in current:
+                        merged[optional] = current[optional]
+                section[parts[-1]] = merged
+            else:
+                section[parts[-1]] = value
             # Saving the old default of an auto-adopting superseded-default row
             # (a 7200 turn limit) is an explicit choice. Ack it here, under the
             # config lock and before the write, so the reload this write triggers
@@ -3833,7 +3888,9 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             _log_sel("error", f"{path_key}=write_failed")
             return web.json_response({"error": "failed to write config file"}, status=500)
 
-    _log_sel("success", f"{path_key}={value}")
+    # A structured value (a profile list) is logged by path only: the SEL line is
+    # an audit of WHAT was written, and a whole record would bloat every entry.
+    _log_sel("success", path_key if spec["type"] == "normalized" else f"{path_key}={value}")
 
     # Everything a running gateway does in response to this write lives behind
     # ``config.live.subscribe`` (the provider switch and role-model rebuild are

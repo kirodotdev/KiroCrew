@@ -217,6 +217,11 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "session.pool_ttl_secs",
         "session.timeout_secs",
         "session_summary.enabled",
+        # Retention and shutdown only decide how long the operator's own
+        # workspaces live; the default picks among profiles already saved.
+        "session_environments.archived_retention_days",
+        "session_environments.default_profile",
+        "session_environments.stop_on_shutdown",
         # Generated skills still wait for approval unless
         # ``skills.approval_required`` (ordered above) is turned off.
         "skills.auto_create_from_sessions",
@@ -248,6 +253,11 @@ _CODE_EXEC_SETTINGS: frozenset[str] = frozenset(
         "agent.kas_bundle",
         "dashboard.terminal.shell",
         "session.pool_agent",
+        # The Coder deployment and the template a session's workspace is built
+        # from decide which machine runs that session's commands.
+        "session_environments",
+        "session_environments.coder_url",
+        "session_environments.profiles",
     }
 )
 

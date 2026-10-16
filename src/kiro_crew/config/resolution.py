@@ -84,6 +84,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "monitoring",
         "skills",
         "session_summary",
+        "session_environments",
         "telemetry",
         "snapshot_dir",
         "timezone",

@@ -165,7 +165,10 @@ The test floor clears live session and run execution records between tests so a
 reused temporary home cannot inherit another test's routing or retention mode.
 Dispatch doubles provide a concrete `get_agent_selection()` tuple, including
 `("template", "")` for the default template. An unconstrained mock is not a
-valid member or template identity. Session context doubles implement the async
+valid member or template identity. Runtime fixtures that bypass the constructor
+with `__new__` explicitly set `_remote_workspace = None` for a local session,
+so activation exercises its real local path rather than an incomplete object.
+Session context doubles implement the async
 `memory_mode_for_session()` accessor and return a concrete retention mode.
 Session-start collector tests declare their
 MCP roster explicitly rather than inheriting the installed agent's tools.

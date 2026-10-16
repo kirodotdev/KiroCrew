@@ -72,6 +72,445 @@ standalone provider and no multi-provider dispatch factory, because a second
 The Claude Code harness has its own page: [claude-code-provider.md](claude-code-provider.md).
 
 
+## Session Environments contract
+
+Session Environments is a developer feature for choosing where a session's
+runtime and development tools execute. Its shared helpers live in
+`session_environment.py` (the start-stage record, the remote-workspace record,
+the local-only tool fence and `SessionEnvironmentUnavailable`), separately from
+the LLM provider and harness selector, so execution placement does not add an
+`agent.provider` value or select a model. Gateway hosting, whole-Crew
+deployment, and application deployment are outside this contract. Coder is the
+workspace provider.
+
+Coder configuration lives in Settings > Session Environments, revealed by the
+per-device toggle under Settings > Developer > Feature Previews. The Settings
+navigation updates immediately when the flag changes, and the configuration deep
+link and search results are unavailable while it is off. The panel contains a
+Coder URL and named profiles persisted through the existing config API. Setup
+instructions explain deployment prerequisites, CLI sign-in on the gateway
+machine, and provider-owned storage behavior. Credentials are never collected in
+this form. Save
+writes the complete section atomically, while Discard restores the latest loaded
+settings. Edits stay local until Save, survive background refetches, and remain
+editable after a rejected write. Leaving the Settings
+panel discards unsaved edits. Adding, editing or removing a saved profile is
+configuration management only. Removal never stops or deletes an external resource.
+An older gateway without this config section
+shows an unsupported notice rather than a form that cannot save. Saving starts
+no compute. Sessions pick a
+profile in the composer, and the card's readiness check and workspace list are
+read-only. Turning the preview off hides configuration without deleting
+profiles or changing existing sessions.
+
+A session environment is a disposable worker, never a second crew. The gateway
+keeps every stateful surface: the conversation and transcript, memory, lessons
+and skills, approvals, the tool gate and the audit log. The agent's engine also stays
+on the gateway; the remote side holds only the workspace (files, build tools,
+processes) and a tool server that operates on it, so every Crew tool, memory
+write, hook and approval runs exactly as for a local session and what a session
+learns lands in the gateway's one memory store. Losing a worker loses at most uncommitted workspace changes. This is
+why the whole-Crew Fargate lane (`cloud/fargate_engine.py`, Deploy my crew) is
+not a session host even though it already runs ECS tasks: that task runs a full
+headless backend with its own data home, model credential and approvals, and
+exposes only a turn API, so memory written there never reaches the gateway.
+
+No model credential ever reaches a session environment. The engine runs on
+the gateway under its normal sign-in, and the guest runs
+`remote_session/workspace_tools.py`, a stdlib-only MCP server whose tools
+(`read_file`, `write_file`, `edit_file`, `list_directory`, `glob`, `grep`,
+`run_command`) act on the profile working directory. The worker starts it as its
+child, so the guest needs Python 3 and nothing else, and the gateway reaches it
+through the `wire` stream. Every path is resolved with symlinks and refused when
+it leaves the root, results are capped (256 KB per read, 64 KB per command
+output, keeping the tail), and `run_command` is an unrestricted `/bin/sh` in the
+root with a timeout of at most 30 minutes and credential variables withheld. That
+is deliberate: the workspace is disposable, and every call is an MCP tool call
+that goes through Crew's normal permission flow. The fence that matters is on
+the gateway: the engine's built-in file and shell tools would act on the gateway
+machine, so a remote session's agent definitions have every built-in UNMOUNTED
+(`AcpRuntime._remote_workspace_agents` keeps only `@server` grants, expands `*` to
+the servers actually sent, and adds `@workspace`), which requires a host whose
+agent tool allowlist travels over the wire. KAS is that host, so a remote
+session on any other backend is refused before any workspace is created or
+started (`check_remote_workspace_supported`, a positive identity check). The
+agent prompt also states the remote working directory. Some Crew tools act on
+the gateway machine too, so they are held to the same rule. The
+`kirocrew-core` tools in `session_environment.LOCAL_ONLY_CORE_TOOLS`
+(`set_project`, `file_send`, `browser`, `pod_up`, `pod_down`) are left out of a
+remote session's grants, with a whole-server `@kirocrew-core` grant narrowed to
+one grant per remaining tool (`_without_local_only_grants`, which reads the
+declared titles table so a new core tool is granted without an edit), and the
+servers in `LOCAL_ONLY_SERVERS` (`kirocrew-computer`) are not sent at all. Both
+servers also refuse those tools in band when the session's choice record says it
+is remote (`refuse_local_only_tool`, from `mcp_core._call_tool_inner` and
+`computer_use.tools._dispatch`), and an unreadable record refuses, because
+refusing a local tool by mistake is recoverable and acting on the wrong machine
+is not. The computer-use refusal is a statement about which machine the session
+lives on, not a governance scope, so computer use stays ungoverned. Engine-in-guest was
+rejected because it needs a credential on remote compute and a compatible
+kiro-cli in every image, and it moves Crew tools, hooks and memory out of reach
+of the session.
+
+A remote transport must deliver ACP byte for byte, and a vendor tunnel is not
+assumed to: an SSM port forward was measured rewriting the final LF of some
+writes into CR, which joins two ACP messages and desynchronizes the stream for
+the life of the bridged process, and ECS Exec does not forward piped stdin. A
+tunnel-based adapter therefore carries ACP in an integrity-checked framing
+(sequence number, CRC and base64 payload per line in pieces of at most 32 KB,
+CR accepted as a terminator, cumulative acknowledgement, resend on a bad
+checksum or gap, backoff on retransmission) with a keepalive at least every five
+minutes. Throughput over such a tunnel is tens of KB/s, so an adapter must not
+apply fixed per-message timeouts.
+
+`kiro_crew.remote_session` implements this transport. `wire` is a sans-IO,
+stdlib-only protocol: a per-connection handshake in which both sides prove the
+per-session secret with HMAC-SHA256 over fresh nonces and the resume position,
+then data in base64 pieces of at most 32 KB and control lines (ack, resend,
+ping, retire, close), each carrying a truncated HMAC under a key derived for
+that connection and labelled by direction, so a frame cannot be forged,
+reflected or replayed onto another connection. Sequence numbers and
+unacknowledged data persist across connections, so a reconnect resumes with
+every byte delivered exactly once, and unacknowledged data is bounded so a
+stalled peer applies backpressure instead of growing memory. Retire and close
+are remembered and repeated until the connection ends, so neither is lost with
+a line. `worker` runs in the guest beside the agent process: it reads its
+secret from a private file and unlinks it, listens on loopback only, attaches
+only an authenticated gateway (a newly authenticated connection replaces the
+old one), keeps the child across connections, withholds credential variables
+from the child, stops the child after an orphan timeout with no gateway, and
+retires on SIGTERM. `link` is the gateway side: it presents the remote process
+as a stdout reader and a stdin writer, sends keepalives, drops a connection
+with no inbound traffic for the stall interval, redials with jittered backoff,
+renews the lease only on authenticated inbound traffic, and reports LOST when
+the lease expires, REFUSED when the worker fails authentication, RETIRING when
+the worker announces retirement, and FINISHED when the worker's output has
+ended. The worker should run as a different OS user from agent tools, because
+the secret is in its memory for the life of the session.
+
+`AcpRuntime.set_remote_workspace` attaches a prepared workspace to a runtime
+before it spawns: the workspace server joins every session's `mcpServers`
+array (new and resumed) and the agent definitions are unmounted as above. The
+server element's command is the local bridge
+`python -P -m kiro_crew.remote_session.client`, through the shared Python
+launcher (preserving its user-site policy), launched by the engine like any
+stdio MCP server; it pipes MCP through a `RemoteLink` and exits 0 finished, 75
+lost, 76 retiring or 77 refused. `coder.remote_worker` prepares the guest: the
+three guest files and the per-session secret travel on the remote command's
+stdin under `umask 077`, the worker starts (a transient systemd user service
+when one exists, otherwise `setsid`/`nohup`) on an ephemeral loopback port it
+reports through a port file, the dial command is
+`coder ssh --disable-autostart <workspace> -- python3 ~/.kirocrew-worker/worker.py
+attach --port <port>`, and the gateway's copy of the secret is a 0600 file
+created with `O_EXCL` in a 0700 directory and unlinked by the bridge. A fresh
+worker is started for each runtime, because the bridge consumes its secret, and
+each gets its own worker id (`<binding>-<8 hex>`): a parent, its respawn and its
+subagents share one binding, and a shared id let one runtime's start overwrite
+another's port and key files and its stop kill the other's worker.
+
+The workspace server's bridge never dials or authenticates itself. It is an MCP
+child of the engine, inside the engine's sandbox (kiro-cli's own sandbox on a
+macOS host that delegates to it), which cannot use the gateway's `coder login`
+(the CLI keeps it in the login keychain), and the engine launches a stdio
+server more than once per runtime (a tools probe, a reload), which a one-use
+secret cannot serve. `remote_session.relay.WorkspaceRelay` therefore runs in the gateway and does the remote side per connection: for each
+bridge that presents the runtime's relay token, it starts a fresh guest worker
+with a fresh one-use secret, runs the integrity-checked `RemoteLink` to it over
+the gateway's `coder ssh`, and pipes plain bytes to the bridge
+(`client --pipe 127.0.0.1:<port> --token-file <f>`). The token is a 0600 file in
+the 0700 secrets directory, read without unlinking so every launch can use it,
+and removed when the relay closes. The relay binds loopback only, compares the
+token in constant time before starting anything, serves at most four
+connections, stops each connection's worker when it ends, logs a link that ends
+other than finished, and closes when the runtime it serves ends (or a restart
+replaces it), and otherwise after 15 idle minutes. It keeps one guest
+worker pre-started (its own fresh secret, handed to exactly one connection and
+replaced after it is taken), so a launch pays only the tunnel handshake; a spare
+older than 15 minutes is stopped and replaced rather than dialled, and closing
+the relay waits for the spare's stop instead of cancelling a start in flight,
+which would leave a setsid'd guest worker running. Guest images can ship an
+older Python than the gateway (the MicroVM image ships 3.9), so the stdlib-only
+guest files must run on it, and a test runs the worker under Python 3.9.
+
+### Spawn audit boundary
+
+The Coder lifecycle and transport children execute on the gateway with fixed
+local CLI argv built from saved operator configuration and validated registry
+workspace names. Guest commands are quoted remote arguments, not local shell
+programs; file requests and worker payloads travel on stdin. Their host login
+must remain accessible, so these functions have individually justified entries
+in `test/test_spawn_audit.py` rather than the agent sandbox wrapper. A provider
+must route any gateway-side agent-influenced command, argv or cwd through the
+sandbox chokepoint instead of borrowing that classification.
+
+The reusable guest-script rule is per-function enumeration in that same audit:
+only execution that runs in the remote guest qualifies. `worker.run` starts the
+guest tool process, while `workspace_tools.run_command` and `_git_status` operate
+inside the disposable guest, which supplies the isolation boundary. Those
+stdlib-only files cannot import the gateway sandbox. A provider CLI running on
+the gateway does not qualify merely because it reaches a guest. The two `main`
+entries are separately justified as in-process `asyncio.run`, not subprocesses.
+No directory-wide exemption suppresses future spawn sites.
+
+Guest file writers share a persistent empty lock sidecar. The Windows branch
+polls the non-blocking byte-range lock until acquired or the bounded ceiling
+expires, and refuses the write on expiry; it never writes a byte through a lock
+file that another writer can hold. Its poll and ceiling mirror
+`platform_lock_compat` while preserving the guest's stdlib-only deployment.
+
+A session runs remotely only when the owner bound it to a profile through
+`PUT /api/chat/slots/{slot}/environment` (owner-only; `{"profile": id}` binds,
+`null` clears). The choice is stored per session key in a session-choices file under the data
+home's Coder directory, owner-only, and takes effect at the session's next
+runtime start; a running runtime is never moved. `providers/acp.py` asks
+`coder.session_launch.prepare_for_session` before spawning, only when Session
+Environments has a Coder URL or a saved profile (otherwise no session can be
+bound and the choices file is not read; a subagent resolves to its parent's
+workspace, below), and the warm pool is bypassed for a bound session because a pooled child is a
+local engine. Preparing reserves the session's workspace in the Coder ownership
+registry before any compute exists, then finds, creates (with an auto-stop) or
+starts it using the gateway machine's own `coder login`, and adopts it only
+while its owner is the signed-in user, its template is the profile's, and its
+uuid matches the registry row. A workspace deleted outside Kiro Crew is never
+silently recreated. Every failure raises `SessionEnvironmentUnavailable`, and
+an unreadable choice record fails closed, so a bound session never falls back to
+running on the gateway machine. The engine keeps its local working directory;
+the guest working directory is where the workspace tools operate.
+
+The card's "Verify readiness" step calls `POST /api/session-environments/check`
+(owner-only), offered only with no unsaved draft because it reads the SAVED
+configuration. It is read-only: `coder whoami`, then `CoderClient.probe` (the
+template list) per profile. No workspace is created, started or touched. The "Manage" step lists
+`GET /api/session-environments/workspaces` (owner-only, registry-only, no Coder
+command): each session's workspace with an archived session's deletion date,
+polled every 15 seconds, beside a link to the Coder
+deployment when one is saved (`safeHttpUrl`, new tab, `noopener noreferrer`).
+
+`session_environments.default_profile` (a saved profile id; "" is this
+machine) is the environment a NEW owner dashboard chat starts on.
+`api_chat_slot_create` calls `apply_default_environment` for a freshly created,
+non-peer slot, which writes the choice only when the chat has no choice and no
+messages, so an existing session never moves and the composer can still change
+it before the first message. A default that no longer names a saved profile,
+or any failure, leaves the chat on this machine without failing the create. A
+chat bound this way is not prewarmed, because a local spawn would run where the
+session no longer lives. Scheduled jobs, channels and peer-bound chats are
+untouched, and subagents follow their parent. The section validator refuses a
+default that the same save drops, and the Settings card resets the default to
+this machine when its profile is removed.
+
+The composer's environment chip (`SessionEnvironmentChip`) is the user-facing
+picker for that endpoint. It renders only once a profile exists, is disabled
+while a turn runs, and a changed choice arms the slot's deferred reset so an
+idle runtime cannot keep running where the session no longer lives. The choice
+is fixed for the session's life once it has a message: `GET` reports
+`locked`, `PUT` answers 409 `environment_locked` to any change (re-asserting the
+current choice is not a change), and the chip becomes a non-interactive status in
+the same place, because the session's files, shell state and history live in
+that environment.
+
+Archiving a session (the tab close, session control's close, or the idle
+cleanup sweep) hands its keys to `coder/retention.schedule_archived` from inside
+the close path's identity check, as a background task that never delays or
+fails the close. That stops the workspace (not on a stop-destroys-compute
+template, see Template contract) and stamps its registry row
+`deletion_due_at` = now + `session_environments.archived_retention_days`
+(0-7, default 7). At 0 there is no stop: the retention sweeper is woken and
+deletes it on its next pass. `prepare` runs `retention.resume_check` first, so reopening the
+session before the deadline clears the stamp and restarts the same workspace,
+files intact. `retention.run_sweeper`, a gateway background task (every minute,
+first pass 30 s after boot), runs `retention.sweep_due`: a due
+row is flipped to `deleting` under the registry lock (`begin_deletion`, the
+same critical section `cancel_deletion` takes, so a reopen and the sweep cannot
+both win), its owner, template and uuid are proven before anything is touched, the
+workspace is deleted, and only then is the row dropped. A row whose name now
+names another workspace is forgotten without touching that workspace, a failed
+delete stays `deleting` and retries next pass, and a reopen while `deleting` is
+refused with "try again in a minute". Once the row is gone the session's choice
+record still names the profile, so a later reopen provisions a fresh workspace.
+Rows with no stamp are left to Coder's auto-stop.
+
+Archiving checks for work that would be lost before it stops anything:
+`retention.warn_unsaved_work` reads `git status` in each RUNNING remote
+workspace (`coder ssh --disable-autostart`, so stopped compute is never woken), bounded by
+`UNSAVED_CHECK_SECS`, and publishes one `system.agent` notice naming the
+uncommitted files, unpushed commits or never-pushed branch
+(`session_browse.summarize_unsaved`). It never blocks or fails the archive.
+
+When a session that already has a conversation is given a NEW resource
+(`PreparedRemoteSession.created`: the old one was deleted) the provider start calls
+`session_environment.mark_workspace_recreated`, and the next `[PROJECT]` rail
+says once that the workspace was recreated empty, so the model does not reason
+about files from earlier turns. Every worker id carries the gateway process's
+`_GATEWAY_EPOCH`; the first workspace start for a binding in a new process
+(`RemoteWorkerLaunch.reap_stale_workers`) stops that binding's workers another
+process started, so a worker a crashed gateway left running does not keep
+working beside the resumed session's.
+
+Remote environments stop with the gateway that drives them, unless
+`session_environments.stop_on_shutdown` (default true, a Global defaults
+toggle) is off, which keeps compute running while the gateway is down in
+exchange for a warm restart. Kiro Crew itself stops a Coder workspace only on
+archive and, with this toggle on, at a graceful shutdown; any other stop is
+Coder's own auto-stop. On a graceful shutdown `_shutdown_and_exit` runs
+`retention.stop_for_shutdown` beside its own graceful shutdown, under its own
+`SHUTDOWN_STOP_SECS` (20 s) ceiling, never raising. It stops every running
+Coder workspace the registry owns (uuid-proven, none `deleting`), leaving a
+stop-destroys-compute one running (counted `skipped`). Nothing is
+stamped for deletion, so a session reopened after the next start resumes the
+same workspace. A gateway that dies without a graceful shutdown cannot do this,
+so each guest also stops on its own: the worker stops the engine and exits after
+`wire.ORPHAN_TIMEOUT_SECONDS` (600 s, above the link's 300 s lease so a gateway
+restart reconnects first) with no authenticated gateway, the one value the
+gateway's launch default and the worker's own defaults read, and the relay
+retires a never-attached spare at `wire.SPARE_MAX_AGE_SECONDS` (four fifths of
+it) so it never dials an exited worker; a Coder workspace stops at its deadline,
+which only the gateway extends. Deletion of an archived session's workspace
+after its retention needs the gateway: a stopped Coder workspace keeps billing
+for storage while no gateway runs.
+
+Dashboard views that read the gateway's project describe the wrong machine for a
+remote session, so they switch on `useSlotRemoteEnvironment`: the composer drops
+the project/branch chip, the Git view gets no project folder, and the Files tab
+renders `RemoteFilesPanel` in place of the local browser. That panel reads the
+guest through `GET /api/chat/slots/{slot}/environment/browse?op=list|read&path=`
+(owner-only), which `coder.session_browse` answers by running
+`workspace_tools.py --browse` over the gateway's `coder ssh --disable-autostart`.
+The browse mode accepts only `list` and `read`, uses the agent tools' root
+confinement and caps, and takes its request on stdin so a path never reaches a
+shell. A stopped workspace answers 409 `workspace_stopped`, and a guest whose
+files predate the browse mode gets them reinstalled once before a retry.
+
+The same panel edits: a file opens in the shared code editor (`PierreEditor`)
+with per-file unsaved drafts, and Save sends
+`PUT /api/chat/slots/{slot}/environment/file` `{path, content, expected}`
+(owner-only, SEL-audited), which runs the separate `workspace_tools.py --write`
+mode so the browse mode stays unable to write. The guest refuses a save whose
+`expected` text no longer matches the file (409 `file_changed`), so a stale
+buffer never overwrites a newer edit by the agent, and a truncated or binary
+read is never offered for saving. Remote files are edited in this panel rather
+than in the panel's file tabs, because those tabs read, watch and diff through
+the gateway's local-disk endpoints. A terminal opened from a remote chat (the `+` menu or the Files
+header) carries `remote_slot` instead of `cwd`; the terminal handler resolves
+that slot's session to `coder ssh --disable-autostart <workspace>` on the
+gateway and refuses with a 409 rather than opening a local shell when the
+session is not remote or its workspace is unavailable.
+
+Once a remote session is fixed, its composer chip is a status, not a control.
+Only a choice back to this machine prewarms, since prewarming a remote one would start
+billed compute on a menu pick. Coder lifecycle calls (`coder list`, `create`,
+`start`) run under the Coder client's output and timeout bounds, never the
+64 KB guest-command bound, because their JSON grows with the deployment.
+
+A first remote start can take minutes, so it reports provider-neutral stages
+through `session_environment.report_start_stage`: `checking` (sign-in and
+lookup), `provisioning` (only when compute must be created or started),
+`connecting` (worker install and tunnel) and `starting_agent`. The progress
+record also carries `entered`, every stage this start has been in, in order.
+The setup steps show every stage before the current one as done, whether or
+not it ran: a stage never entered still has its outcome (a workspace that is
+already running satisfies "Starting workspace"), so a dash there would read as
+a failure. The setup
+card is for a session's first connection: once the transcript holds a reply, or
+the progress record says `reconnect` (decided when the start begins: this
+gateway already had the session attached, `_remote_workspaces`), a later engine
+restart that reconnects to a running workspace shows the turn as usual. The
+composer chip reads the same hook with no transcript, so `reconnect` is what
+keeps it from saying "Starting agent" while the transcript says "Thinking…", and only a restart that enters `provisioning` (a stopped workspace being
+started again) brings the card back. Every `coder`
+call on this path is a round trip of a second or more, so the path keeps them
+few and overlapped. The worker files go up in one `coder ssh`, as a JSON header
+of `[name, length]` pairs followed by the bytes, written by a short `python3`
+program in the guest (`remote_worker._install_command`), through per-process
+temp names so two starts installing into one workspace cannot clobber each
+other. The stage record is
+in-memory, bounded, and cleared in the `finally` of
+`AcpProvider._start_kiro_runtime`, so ready, failed and cancelled starts all end
+the stage. `GET /api/chat/slots/{slot}/environment` returns it as `starting`,
+and the chip polls once a second only while a turn runs on a remote profile,
+showing the stage and elapsed time in place of the profile name and announcing
+each stage once through a separate live region.
+
+A subagent of a remote session inherits its environment rather than running on
+the gateway machine. Before the spawn, `inherit_environment_for_subagent` writes
+the child's choice with a `parent` owner key (resolved to the root session, so a
+grandchild lands in the same workspace), and `prepare_for_session` prepares the
+OWNER's registry row, which reuses that workspace instead of allocating a second
+one. The child takes the dedicated-process arm and gets its own guest worker and
+fence: a shared runtime's workspace server was launched for the parent with a
+spent one-use secret, and the companion runtime is a local engine. A choice that
+cannot be read or written refuses the run, and a malformed `parent` value fails
+closed. Because the child's heavy work runs in the workspace, its spawn is not
+held to the gateway's `spawn_min_memory_gb` floor, only to the reserve for its
+local engine ([subagent](subagent.md)). The per-message context names the guest directory for a remote session
+(`session_environment.remember_remote_workspace`, set and cleared at every
+runtime start) in place of the gateway's `[PROJECT]` path, and rewrites the
+`[RESOURCES]` line (`ResourceStatus.context_line(remote=True)`) to scope the
+reading to the gateway. A tight gateway, which runs the engine and its
+subagents, is named as the gateway machine and only flags sub-agent waves; the
+line says the workspace is a separate machine it does not measure, so builds,
+tests and shells there are not narrowed for it. The line stays silent when the
+gateway is clear.
+
+A reversed transport, in which the worker dials out to the gateway with a
+single-use enrolment token, would remove the provider tunnel from the data path
+but needs a gateway endpoint the worker can reach; it is not part of this
+contract.
+
+Every session environment provider meets these lifecycle requirements before a
+session can be offered on it. A worker serves one owner: the first session binds
+it to the owning operator, and it never runs another owner's session or reuses
+another owner's workspace. The gateway holds a lease on each remote session and
+renews it with a heartbeat on the session connection, so a worker that misses
+its lease is treated as lost rather than slow. A lost or released worker never
+loses the conversation, because the gateway restores the session on a fresh
+worker with `session/load` from its own transcript at the next prompt, and only
+uncommitted workspace changes are at risk, which the UI states. A worker that
+knows its compute will be reclaimed retires cleanly: it accepts no new turns,
+finishes or cancels the turn in flight, reports release to the gateway, and
+exits. Teardown is owned by the provider adapter and is idempotent, it deletes
+only resources whose ownership record the gateway wrote, and it never stops a
+shared parent resource while another session still uses it.
+
+The Coder ownership registry requires a non-empty `deployment_id` at
+allocation and writes it before workspace creation; reusing a row requires the
+same deployment, lifecycle updates cannot retarget it, and retention leaves rows
+of another deployment untouched.
+
+CLI failures report the exit code and fixed operation timing, without copying
+stderr into logs or exceptions. Stderr is drained without retention, since remote
+commands can emit credential values without recognizable labels. This trades
+raw failure detail for a diagnostic boundary that does not depend on recognizing
+every credential spelling. Timeout and cancellation terminate the process tree,
+while successful structured stdout remains bounded and validated by operation.
+
+### Template contract
+
+A Coder template for remote sessions provides:
+
+- a pinned image and architecture;
+- an unprivileged user with a writable home and workspace root;
+- the same workspace across starts;
+- the Coder agent, Python 3 and a POSIX shell;
+- no gateway, model, Git or storage credential in the image;
+- outbound access for development work, and no public ingress to the guest.
+
+Its storage must survive a workspace stop unless the profile sets
+`compute_survives_stop: false` (a template whose stop destroys the compute and
+its files, such as MicroVM). For such a profile neither archive nor
+`stop_for_shutdown` stops the workspace; the deletion stamp and sweep are
+unchanged, and the unsaved-work notice says the files go when the compute stops
+(the template's own deadline or the retention deletion).
+`retention.compute_survives_stop` reads the flag at the time of the stop from
+the session's bound profile when it still names the binding's template, else
+from every profile on that template; no match reads `false`, so the workspace is
+never stopped. Recovering a session on such a template after a stop needs the
+S3 Files checkpoint integration, which is not part of this contract.
+
+The worker launcher prefers a transient `systemd --user` service and falls back
+to `setsid`/`nohup`, which may not survive Coder's SSH session cleanup on an
+image without systemd.
+
 ## Essential-context delivery contract
 
 Application code imports `ContextPromptProvider`, `ContextStreamEvent` and

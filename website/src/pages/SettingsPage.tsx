@@ -41,10 +41,12 @@ const AgentBackendTab = lazy(() =>
 const AgentRunSettings = lazy(() =>
   import('./overview/KiroCrewCfgTab').then(m => ({ default: m.AgentRunSettings })),
 )
+import { SessionEnvironmentsCard } from './settings/SessionEnvironmentsCard'
+import { SettingsCard } from '../components/settings'
 
 import { i18nT } from '../i18n/t'
 import { usePreviewFlag } from '../hooks/usePreviewFlag'
-import { PREVIEW_WEBHOOKS } from '../utils/previewFlags'
+import { PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
 import { GuideTrustRootRegion } from '../guide/trustRoot'
 // Group headers double as the grouping KEY (SidePanelLayout starts a new header
 // whenever this string changes), so they are resolved inside `buildTabs()` —
@@ -89,6 +91,7 @@ function buildTabs() {
     { key: 'security', tile: 'var(--tile-red)', label: i18nT('settings.tabs.security.label'), icon: <ShieldCheck size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.security.description'), hostsSubNav: true },
     { key: 'connections', tile: 'var(--tile-green)', label: i18nT('settings.tabs.connections.label'), icon: <Plug size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.connections.description') },
     { key: 'secrets', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.secrets.label'), icon: <KeyRound size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.secrets.description') },
+    { key: 'session-environments', tile: 'var(--tile-blue)', label: i18nT('sessionEnvironments.title'), icon: <Server size={16} />, group: GROUP_SYSTEM },
     { key: 'developer', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.developer.label'), icon: <Code size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.developer.description') },
     // The trailing divider fences off the entries that are not settings at all.
     // About was its only occupant; the release archive is the same kind of thing
@@ -226,7 +229,11 @@ export default function SettingsPage() {
   // bare `readPreviewFlag`, so toggling it in Settings > Developer > Feature Previews updates this
   // rail without a reload.
   const webhooksPreview = usePreviewFlag(PREVIEW_WEBHOOKS)
-  const allTabs = buildTabs().filter(t => t.key !== 'webhooks' || webhooksPreview)
+  const sessionEnvironmentsPreview = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
+  const allTabs = buildTabs().filter(t =>
+    (t.key !== 'webhooks' || webhooksPreview)
+    && (t.key !== 'session-environments' || sessionEnvironmentsPreview),
+  )
   const tabs = updateAvailable ? allTabs.map(t => (t.key === 'about' ? { ...t, dot: true } : t)) : allTabs
 
   const memorySelection = new URLSearchParams(search)
@@ -281,6 +288,9 @@ export default function SettingsPage() {
         {tab === 'security' && <GuideTrustRootRegion><SecurityPanel basePath={SETTINGS_BASE_PATH} /></GuideTrustRootRegion>}
         {tab === 'connections' && <ConnectionsPanel />}
         {tab === 'secrets' && <GuideTrustRootRegion><SecretsPanel /></GuideTrustRootRegion>}
+        {tab === 'session-environments' && sessionEnvironmentsPreview && (
+          <SettingsCard><SessionEnvironmentsCard enabled={sessionEnvironmentsPreview} /></SettingsCard>
+        )}
         {tab === 'developer' && <DeveloperPanel />}
         {tab === 'releases' && <ReleasesPanel />}
         {tab === 'about' && <AboutPanel />}

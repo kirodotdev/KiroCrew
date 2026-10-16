@@ -379,6 +379,7 @@ from kiro_crew.subagent_parts.start_pricing import (  # noqa: F401
     _SHARED_START_MIN_GB,
     _SHARED_START_SAVING_GB,
     _UNLEARNED_DEDICATED_START_GB,
+    REMOTE_COST_BUCKET_SUFFIX,
     _cost_bucket,
     _dedicated_start_price_gb,
     _holds_dedicated_runtime,
@@ -386,6 +387,7 @@ from kiro_crew.subagent_parts.start_pricing import (  # noqa: F401
     _host_memory_reading_off_loop,
     _host_read_in_flight,
     _owns_dedicated_runtime,
+    _parent_runs_remotely,
     _parked_at_spawn_approval,
     _row_settled,
     _selection_kind,
@@ -1000,6 +1002,9 @@ class SubagentInfo:
     # on the _shared_provider directly.
     _session_sharing: bool = False
     _shared_provider: Any = None  # AcpSessionProvider when _session_sharing=True
+    # True when the run inherited its parent's remote session environment, so
+    # its cost samples go to the ``@remote`` bucket (see _cost_bucket).
+    _remote_workspace: bool = False
     # ── Turn-resilience state (subagent parity with the main-agent guards) ──
     # True when the user explicitly stopped this agent (DELETE /api/spawn/{id}).
     # Renders as a neutral "stopped" terminal state (not an error) and

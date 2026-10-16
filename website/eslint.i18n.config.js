@@ -1180,6 +1180,12 @@ export default [
               // `config.json`, not copy. Already exempt as an object property below; a
               // JSX attribute of the same name carries the same machine value.
               'path',
+              // The same dotted config path on the Settings* primitives
+              // (`configKey="session_environments.coder_url"`): the settings
+              // extractor reads it to deep-link the control, so it is a machine
+              // key. A section with an underscore escapes the dotted-token word
+              // shape, which is why the attribute itself is named here.
+              'configKey',
               'data-\\w+', 'aria-(hidden|live|orientation|current|haspopup)',
               'autoComplete', 'inputMode', 'enterKeyHint', 'spellCheck',
               'viewBox', 'xmlns', 'fill', 'stroke', 'd', 'points', 'transform',

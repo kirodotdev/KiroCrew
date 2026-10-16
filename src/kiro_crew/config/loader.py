@@ -4075,6 +4075,14 @@ class KiroCrewConfig:
             "Intent-level session summaries for the chat right panel. Off by default.",
         ),
     )
+    session_environments: _sections.SessionEnvironmentsConfig = field(
+        default_factory=_sections.SessionEnvironmentsConfig,
+        metadata=_meta(
+            "Session Environments",
+            "Coder deployment URL and workspace profiles for remote session "
+            "environments. Configuration only: saving provisions nothing.",
+        ),
+    )
     telemetry: TelemetryConfig = field(
         default_factory=TelemetryConfig,
         metadata=_meta(
@@ -4582,6 +4590,7 @@ class KiroCrewConfig:
             "decisions": asdict(self.decisions),
             "skills": asdict(self.skills),
             "session_summary": asdict(self.session_summary),
+            "session_environments": asdict(self.session_environments),
             "telemetry": asdict(self.telemetry),
             "snapshot_dir": self.snapshot_dir,
             "timezone": self.timezone,
@@ -5945,6 +5954,7 @@ def build_config(
     tunnel_data = _coerced_section(data, "tunnel", _degraded)
     skills_data = _coerced_section(data, "skills", _degraded)
     session_summary_data = _coerced_section(data, "session_summary", _degraded)
+    session_environments_data = _coerced_section(data, "session_environments", _degraded)
     messaging_data = _coerced_section(data, "messaging", _degraded)
     telemetry_data = _coerced_section(data, "telemetry", _degraded)
     watchdog_data = _coerced_section(data, "watchdog", _degraded)
@@ -6234,6 +6244,9 @@ def build_config(
         decisions=DecisionsConfig.from_raw(decisions_data),
         skills=_build_skills_config(skills_data),
         session_summary=_build_session_summary_config(session_summary_data),
+        session_environments=_sections.SessionEnvironmentsConfig.from_raw(
+            session_environments_data
+        ),
         slack_channels={
             ch_id: ChannelConfig.from_dict(ch_data)
             for ch_id, ch_data in (

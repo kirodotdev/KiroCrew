@@ -257,6 +257,31 @@ PREEXEC_EXEMPT: frozenset[str] = frozenset(
 # category breakdown and follow-up hardening candidates.
 BENIGN_SPAWNS: frozenset[str] = frozenset(
     {
+        # Coder lifecycle: resolved operator CLI, fixed verbs, saved template /
+        # preset and gateway-generated validated workspace names; cwd is the
+        # gateway data home, stdin DEVNULL, no shell. The CLI needs its host login.
+        "coder/client.py::_run",
+        # Gateway transport: CoderShell builds the argv from the resolved CLI,
+        # saved deployment and validated workspace. Shell text is a quoted GUEST
+        # command; file requests and bootstrap bytes travel on stdin, never into
+        # a local shell. Host credential isolation would prevent coder login.
+        "coder/remote_worker.py::run_collect",
+        # Gateway dial argv is RemoteWorkerLaunch.dial_argv's fixed coder ssh
+        # attach command plus the worker's numeric port. stdin carries framed
+        # protocol bytes; no local shell or agent-selected cwd is involved.
+        "remote_session/relay.py::_handle",
+        "remote_session/client.py::dial",
+        # asyncio.run drives the CLI loop in-process; it is not a child spawn.
+        "remote_session/client.py::main",
+        "remote_session/worker.py::main",
+        # Guest-script rule: list each execution function, not an entire module.
+        # These stdlib-only files are copied into the remote workspace and run
+        # THERE, never as gateway executors. The guest is the isolation boundary;
+        # the gateway sandbox is unavailable. Worker.run starts the guest tool
+        # server; its shell and git (including project filters) run in that guest.
+        "remote_session/worker.py::run",
+        "remote_session/workspace_tools.py::run_command",
+        "remote_session/workspace_tools.py::_git_status",
         "acp/runtime_process_tree.py::_get_rss_mb",
         # The spawn primitive for three fixed-argv kiro-cli one-shots
         # (`chat --list-models`, `whoami`, the `/usage` scrape). Every caller has

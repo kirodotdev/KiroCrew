@@ -236,6 +236,7 @@ interface Conn {
   term: Terminal
   fit: FitAddon
   cwd?: string | null
+  remoteSlot?: string
   ws: WebSocket | null
   disposed: boolean
   retries: number
@@ -481,7 +482,11 @@ function connect(sessionId: string, c: Conn) {
   }
   setConnStatus(sessionId, c, 'reconnecting')
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const qs = c.cwd ? `?cwd=${encodeURIComponent(c.cwd)}` : ''
+  // A remote shell is resolved by the gateway from the chat slot; the local cwd
+  // does not apply, and the gateway refuses rather than falling back to local.
+  const qs = c.remoteSlot
+    ? `?remote_slot=${encodeURIComponent(c.remoteSlot)}`
+    : c.cwd ? `?cwd=${encodeURIComponent(c.cwd)}` : ''
   const ws = new WebSocket(`${proto}//${location.host}/api/ws/terminal/${sessionId}${qs}`)
   ws.binaryType = 'arraybuffer'
   c.ws = ws
@@ -602,9 +607,11 @@ function handleShellExit(sessionId: string, c: Conn, exit: TerminalExit): void {
  */
 export function ensureTerminalConnection(
   sessionId: string, term: Terminal, fit: FitAddon, cwd?: string | null,
+  /** A chat slot whose REMOTE workspace this shell opens in (gateway-side `coder ssh`). */
+  remoteSlot?: string,
 ): void {
   if (conns.has(sessionId)) return
-  const c: Conn = { term, fit, cwd, ws: null, disposed: false, retries: 0, status: 'reconnecting', invalidCwd: false, manualRetry: false, displaced: false }
+  const c: Conn = { term, fit, cwd, remoteSlot, ws: null, disposed: false, retries: 0, status: 'reconnecting', invalidCwd: false, manualRetry: false, displaced: false }
   conns.set(sessionId, c)
   // Wire terminal I/O once (the term is cached for the session's lifetime;
   // its listeners are cleaned up by term.dispose() in destroyTerm).

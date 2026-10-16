@@ -947,6 +947,15 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> "str | DeferredTool":
     chan_err = _deny_channel_agent_dispatch(name, args)
     if chan_err:
         return chan_err
+    # A remote session's local-only tools are unmounted from its agent; this is
+    # the second fence, for a caller that reaches the server anyway. Only those
+    # few names pay the choice-record read.
+    from kiro_crew.session_environment import LOCAL_ONLY_CORE_TOOLS, refuse_local_only_tool
+
+    if name in LOCAL_ONLY_CORE_TOOLS:
+        remote_err = refuse_local_only_tool(_resolve_session_key(), CORE_MCP_SERVER, name)
+        if remote_err:
+            return remote_err
     return dispatch(name, args)
 
 

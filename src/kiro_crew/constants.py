@@ -70,6 +70,17 @@ ENV_TRUTHY = frozenset({"1", "true", "yes", "on"})
 # ``crew_log_enabled``.
 ENV_FALSY = frozenset({"0", "false", "no", "off"})
 
+# Longest prefix a GENERATED Coder workspace name may carry. A Coder workspace
+# name is at most 32 characters, and ``coder.registry`` spends the rest of that
+# budget on the parts it cannot shorten: two separators plus an 8-character
+# opaque binding id. 21 is therefore the largest prefix that still leaves one
+# character for the owner fragment, so every minted name stays inside Coder's own
+# name grammar instead of being truncated into a collision with another row's.
+# Homed here, in a leaf that imports only ``os`` and ``re``, so the registry that
+# mints the name and any boundary that accepts an operator-supplied prefix refuse
+# at the same number rather than each restating it.
+CODER_WORKSPACE_PREFIX_MAX_CHARS = 21
+
 
 # Minimum supported Node.js version (major, minor, patch), shared by the startup
 # probe in ``cli.py`` and ``kirocrew doctor``. Below it, doctor fails and the

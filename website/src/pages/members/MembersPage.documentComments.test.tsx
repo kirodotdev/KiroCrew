@@ -32,6 +32,8 @@ vi.mock('../../api/client', () => ({
     autonudgeList: vi.fn(() => Promise.resolve({ enabled: true, loops: [] })),
     fileDiff: vi.fn(() => Promise.resolve({ diff: '', original: '', status: 'clean' })),
     artifacts: vi.fn(() => Promise.resolve({ artifacts: [] })),
+    // The side panel reads the slot's session environment; this file is about comments.
+    chatSlotEnvironment: vi.fn(() => Promise.resolve({ profile: null, profiles: [] })),
     // The dashboard wire under `sendTurn`: every send from the page lands here.
     sendChat: vi.fn(),
   },

@@ -560,6 +560,7 @@ export default function ComposerDockView({
               contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}
               showContextPct={chatConfig.showContextPct}
               showContextTokens={chatConfig.showContextTokens}
+              environmentSlot={activeSlot}
               isRunning={composerBusy}
               projectLocked={projectLocked}
               /* Composed with `interrupted`, matching the ErrorCard gate above.

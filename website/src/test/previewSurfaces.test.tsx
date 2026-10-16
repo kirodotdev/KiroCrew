@@ -540,7 +540,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // Awaited: the Decisions card is not drawn until the governance read
     // (`decisions_enabled`) lands, so the last switch arrives a tick late.
     await waitFor(() => {
-      expect(screen.getAllByRole('switch')).toHaveLength(6)
+      expect(screen.getAllByRole('switch')).toHaveLength(8)
     })
     const anchors = container.querySelectorAll(`[data-setting-key="${FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR}"]`)
     expect(anchors).toHaveLength(1)
@@ -556,7 +556,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // The Dynamic Dashboard is on for every reader, so it has no preview card.
     // Automatic cards is a server setting with its own card on the Developer tab.
     renderTab()
-    await waitFor(() => { expect(screen.getAllByRole('switch')).toHaveLength(6) })
+    await waitFor(() => { expect(screen.getAllByRole('switch')).toHaveLength(8) })
     expect(screen.queryByRole('switch', { name: /^dynamic dashboard$/i })).toBeNull()
     expect(screen.queryByRole('switch', { name: /automatic cards for all sessions/i })).toBeNull()
   })

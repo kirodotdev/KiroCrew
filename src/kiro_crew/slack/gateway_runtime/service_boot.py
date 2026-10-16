@@ -11,8 +11,8 @@ Orchestrator fields read: ``_background_tasks``, ``_bot_token``, ``_cfg``,
 Orchestrator fields written: ``_configured_host``, ``_dashboard_port``,
 ``_dashboard_runner``, ``_feature_video_task``, ``_local_only``, ``_marker_write_task``,
 ``_member_reconcile_task``, ``_memory_startup``, ``_persistence_watchdog_task``,
-``_profile_watch_task``, ``_sign_in_refresher_task``, ``_update_check_task``,
-``channel_history``, ``consolidator``, ``conv_log``, ``ctx_builder``,
+``_profile_watch_task``, ``_session_environments_ready``, ``_sign_in_refresher_task``,
+``_update_check_task``, ``channel_history``, ``consolidator``, ``conv_log``, ``ctx_builder``,
 ``dashboard_state``, ``sessions``, ``slack``, ``task_runner``, ``vector_memory``.
 
 Composed by :mod:`kiro_crew.slack.gateway`, whose globals its functions run on;
@@ -54,6 +54,7 @@ if TYPE_CHECKING:
         _live_session_work_dirs,
         _run_signing_key_preflight_bounded,
         _session_work_dir,
+        _start_coder_retention,
         _sweep_predecessor_session_work_dirs,
         build_dashboard_url,
         build_provider_factory,
@@ -68,6 +69,7 @@ if TYPE_CHECKING:
         hooks_config_from_config_dict,
         is_local_only,
         kiro_agents_dir,
+        live,
         log_probe_failure,
         logger,
         parse_dashboard_url,
@@ -929,6 +931,10 @@ async def run(self: GatewayOrchestrator) -> None:
             "home": str(data_home()),
         }
         print(f"KIROCREW_READY:{json.dumps(ready_payload)}", flush=True)
+
+    self._session_environments_ready = True
+    if not self._test_mode:
+        _start_coder_retention(live.snapshot() or self._cfg)
 
     # The HTTP socket is bound, and the optional machine-readable marker
     # has been emitted. Background approval-state writes may start now.

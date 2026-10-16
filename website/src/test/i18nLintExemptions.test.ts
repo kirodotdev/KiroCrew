@@ -437,3 +437,10 @@ describe('capability retention protocol sentinel', () => {
     expect(await lint("export const label = 'Keep [REDACTED] value'" )).not.toEqual([])
   })
 })
+
+describe('config-path attributes', () => {
+  it('exempts a configKey naming an underscored section, but not the label beside it', async () => {
+    expect(await lint('export const A = () => <X configKey="session_environments.coder_url" />')).toEqual([])
+    expect(await lint('export const B = () => <X configKey="session_environments.coder_url" label="Coder URL" />')).toHaveLength(1)
+  })
+})
