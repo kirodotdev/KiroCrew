@@ -1496,6 +1496,18 @@ def _reset_session_switch_locks(_floor_monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _reset_checkout_guard_tracking(_floor_monkeypatch):
+    """A failed workflow step's session teardown retries in the background until
+    it succeeds (repo_checkout_guard), and a session-manager double that cannot
+    end its session keeps that record forever. Each test gets a fresh registry
+    so one test's record never reads as running work in the next."""
+    from kiro_crew.dashboard import repo_checkout_guard
+
+    _floor_monkeypatch.setattr(repo_checkout_guard, "_tracked", {})
+    _floor_monkeypatch.setattr(repo_checkout_guard, "_ending", set())
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _knowledge_store_cross_thread_close():
     """Let ``KnowledgeStore._close_all_for_tests()`` close other threads' handles.

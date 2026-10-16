@@ -845,6 +845,17 @@ class AcpProvider(LLMProvider):
         return self._client.is_process_alive()
 
     @property
+    def process_tree_confirmed_dead(self) -> bool:
+        """Whether this provider's shutdown confirmed its process tree exited.
+
+        The runtime's own teardown evidence (the root and every descendant it
+        tracked gone), read by the branch switch before it stops counting a
+        failed workflow step's session as running work. False until a shutdown
+        proves it, including while a survivor waits for the orphan sweep.
+        """
+        return getattr(self._client, "process_tree_confirmed_dead", None) is True
+
+    @property
     def process_instance(self) -> str:
         """Per-spawn identity of the client's current runtime process (see base).
 

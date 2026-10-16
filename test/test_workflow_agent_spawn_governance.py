@@ -27,6 +27,7 @@ from types import SimpleNamespace
 
 import pytest
 from overload_fakes import settle_store_writes
+from stream_fakes import report_finished_turn
 
 import kiro_crew.platform.governance_profiles as governance_profiles
 import kiro_crew.workflows.agent_exec as agent_exec
@@ -99,6 +100,7 @@ def _no_model_call(monkeypatch):
     """Replace the model call on both step paths; the spawn decision is the subject."""
 
     async def _echo(provider, message, **kw):
+        report_finished_turn(kw)
         return f"reply[{provider.key}]"
 
     monkeypatch.setattr(agent_exec, "stream_and_collect", _echo)

@@ -129,7 +129,7 @@ from kiro_crew.context_blocks import (
 )
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard import chat_turn as _chat_turn
-from kiro_crew.dashboard import directive_queue
+from kiro_crew.dashboard import directive_queue, repo_checkout_guard
 from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
     COMMANDS_OFF_META_KEY,
     STEER_STATE_CONSUMED,
@@ -6620,6 +6620,21 @@ async def _run_chat(
 
     _session_stop_gen_at_entry = _session_stop_generation()
 
+    # Chokepoint for the branch switch's ordering: a turn must not read project
+    # files on one branch and write them back on another. This is the first
+    # await of the body, before any prompt expansion reads a file, and the slot
+    # already publishes this turn, so a switch either refuses on seeing it or
+    # holds a reservation this waits out (see repo_checkout_guard). It sits
+    # after both Stop-generation snapshots and the replay-row freeze: a Stop
+    # pressed during the wait must still read as pressed at dispatch, and a
+    # row appended during it must not become this turn's trigger.
+    # The project is recorded first, so a switch's busy check keeps seeing this
+    # turn in it even if another project is picked while the turn runs.
+    turn_project = getattr(slot, "project", None)
+    slot._checkout_turn_projects = (str(turn_project or ""),)
+    slot._checkout_turn_unplaced = False
+    await repo_checkout_guard.wait_for_checkout(turn_project, waiter=f"session {slot.key}")
+
     def _stop_pressed() -> bool:
         """The user's Stop signal for this turn, read LIVE at the call site.
 
@@ -8009,8 +8024,12 @@ async def _run_chat(
         if sub == "get" and len(args) > 2:
             # /prompts get <name> — invoke the prompt in this chat
             name = args[2]
-            # Off the loop for the same reason as the @mention path below.
-            expanded, status = await _expand_prompt_mention_off_loop(f"@{name}", state, slot)
+            # Off the loop for the same reason as the @mention path below. Read
+            # against the project recorded at entry, which the checkout wait
+            # covered: a pick made since may name a repository mid-switch.
+            expanded, status = await _expand_prompt_mention_off_loop(
+                f"@{name}", state, slot, project=str(turn_project or "")
+            )
             if status == "ok":
                 sel().log_tool_invocation(
                     session_key="",
@@ -8087,8 +8106,10 @@ async def _run_chat(
             # prompt_source_roots() with rglob + file reads; keep it off the
             # event loop so a slow/network-backed root can't stall the gateway.
             # Pass THIS slot's project so its local prompts are listed per-slot
-            # (fail-closed to global-only when the slot has no project).
-            project_dir = Path(slot.project) if slot.project else None
+            # (fail-closed to global-only when the slot has no project). The
+            # project recorded at entry, which the checkout wait covered, not
+            # the live field a mid-turn pick may have moved.
+            project_dir = Path(turn_project) if turn_project else None
             prompts = await asyncio.to_thread(_list_aim_prompts, project_dir)
         except Exception:
             prompts = []
@@ -8366,6 +8387,16 @@ async def _run_chat(
                 slot.agent_kind,
             )
 
+        # The branch switch's second ordering point. Between here and the claim
+        # below, where this turn's session will run is the allocator's choice:
+        # the project may be repicked before the binding is captured, and a
+        # resumed conversation's stored folder or a prepared member project can
+        # stand in for it. So the turn is marked unplaced first -- a switch's
+        # busy check then refuses in every repository -- and waits out any
+        # checkout already in flight, wherever it is. The claim records the
+        # folder the session reports and clears the mark.
+        slot._checkout_turn_unplaced = True
+        await repo_checkout_guard.wait_for_any_checkout(waiter=f"session {slot.key}")
         # Serialize this turn's binding capture and session registration
         # against the slot-switch transaction of every alias on this session
         # (the same ``slot_switch_session_lock`` the switch handlers hold
@@ -8962,6 +8993,23 @@ async def _run_chat(
                 state.sessions.allocation_requested_model(session_key) or _requested_model
             )
         _acquired = True
+        # The folder this session actually runs in, for the branch switch's busy
+        # check (see the unplaced mark above). Recorded and the mark cleared with
+        # no await between them; a provider that reports no folder leaves the
+        # turn unplaced, so switches stay refused while it runs. The wait sits
+        # after ``_acquired`` so a turn stopped during it still releases the
+        # session it holds.
+        _session_folder = str(getattr(client, "cwd", "") or "")
+        slot._checkout_turn_projects = (
+            *slot._checkout_turn_projects,
+            str(selected_binding[1] or ""),
+            _session_folder,
+        )
+        if _session_folder:
+            slot._checkout_turn_unplaced = False
+            await repo_checkout_guard.wait_for_checkout(
+                _session_folder, waiter=f"session {slot.key}"
+            )
         # The acquired provider is the final authority for harness-specific slash
         # gates. A dead live row can be replaced during the get_or_create call
         # above. The positive capability fails closed for unknown adapters and

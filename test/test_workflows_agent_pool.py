@@ -14,6 +14,7 @@ import asyncio
 
 import pytest
 from overload_fakes import settle_dependency_park, settle_store_writes
+from stream_fakes import report_finished_turn
 
 from kiro_crew.workflows.agent_pool import _WorkflowSessionWorker, build_pooled_agent_fn
 
@@ -95,6 +96,7 @@ class _FakeSessions:
 async def _fake_stream(provider, prompt, **kwargs):
     # Return the worker tag so tests can see WHICH session served the call.
     await asyncio.sleep(0)  # yield, so concurrent tasks actually interleave
+    report_finished_turn(kwargs)
     return f"[{provider.tag}] {prompt}"
 
 
@@ -376,6 +378,7 @@ async def test_pooled_is_faster_than_cold_start_per_call():
     pooled = _ClockSessions()
 
     async def _stream(provider, prompt, **kwargs):
+        report_finished_turn(kwargs)
         return f"[{provider.tag}] {prompt}"
 
     import kiro_crew.workflows.agent_pool as ap
@@ -442,6 +445,7 @@ async def test_end_to_end_service_pooled_cold_starts_fewer_sessions(monkeypatch)
     Proves the shipped _runner→pool wiring — not just agent_pool in isolation."""
 
     async def _stream(provider, prompt, **kwargs):
+        report_finished_turn(kwargs)
         return f"[{provider.tag}] {prompt}"
 
     # Both the pooled path (agent_pool) and the un-pooled path (agent_exec, used

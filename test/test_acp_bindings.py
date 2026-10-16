@@ -127,6 +127,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "native_steering": ("property", False, "a6632a57e602", "acp"),
     "new_conversation": ("function", True, "b60c5fea256e", "acp"),
     "process_instance": ("property", False, "bb418bb7ece8", "acp"),
+    "process_tree_confirmed_dead": ("property", False, "a6632a57e602", "acp"),
     "prompt_timeout_for_deadline": ("function", False, "b97d05f9c710", "acp"),
     "reapply_live_effort": ("function", True, "581451d2b011", "acp_model_effort"),
     "reject_tool": ("function", True, "84bed4474307", "acp"),

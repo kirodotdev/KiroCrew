@@ -959,6 +959,19 @@ class RunEventCoordinator(ManagerComponent):
             # config reload between the two attempts cannot move it.
             if info.timeout_secs == 0:
                 info.timeout_secs = self._manager._default_timeout
+            # Inside the ``try`` so a Stop or shutdown during the wait ends the
+            # run through the same cancellation arms as one during execution.
+            pre_run_gate = getattr(self._manager, "pre_run_gate", None)
+            # A continuation still carries the folder its previous execution's
+            # session started in. Cleared before the gate (``_run_inner_impl``
+            # clears it again on entry) so the checkout guard reads this run as
+            # not placed yet until its new session records where it started.
+            setattr(info, "_session_cwd", "")
+            # Imported here: an ``_impl`` body runs with the facade module's globals.
+            import inspect
+
+            if inspect.iscoroutinefunction(pre_run_gate):
+                await pre_run_gate(info)
             await asyncio.wait_for(
                 self._manager._run_inner(info, session_key), timeout=info.timeout_secs
             )

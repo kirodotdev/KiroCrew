@@ -2908,6 +2908,8 @@ class _ChatSlot:
         "memory_store",
         "_memory_assignment_from_history",
         "project",
+        "_checkout_turn_projects",
+        "_checkout_turn_unplaced",
         "created_at",
         "_messages",
         "_lazy_window",
@@ -3272,6 +3274,16 @@ class _ChatSlot:
         # that admission boundary; this marker is not persisted in the transcript.
         self._memory_assignment_from_history = False
         self.project: str = ""
+        # Where the running turn works, for the branch switch's busy check
+        # (``repo_checkout_guard.slot_folders``). ``project`` does not track it:
+        # a project picked mid-turn, ``set_project`` and a member rebinding all
+        # write ``project`` while the turn's session keeps its folder. The turn
+        # records the project at entry, the project its session was allocated
+        # for and the folder that session reports; ``_checkout_turn_unplaced``
+        # is True from the start of session allocation until that report.
+        # Reset at ``_run_chat``'s entry; read only while ``running``.
+        self._checkout_turn_projects: tuple[str, ...] = ()
+        self._checkout_turn_unplaced: bool = False
         # Relay-archive binding, read off disk. ``executor`` is "local" for every
         # ordinary slot; "remote" marks a chat an older build ran on the peer
         # ``instance_id`` (its slot ``remote_slot``). Such a slot is read-only:
@@ -6267,6 +6279,15 @@ class DashboardState:
         # entry path is protected, including task/workflow continuations.
         self.kiro_prerequisite_service: Any = None
         self.subagents = subagents
+        if subagents is not None:
+            # Sub-agent runs wait out a branch switch on their repository the
+            # same way turns do at ``_run_chat``'s entry.
+            from kiro_crew.dashboard import repo_checkout_guard
+
+            async def _checkout_gate(info: Any) -> None:
+                await repo_checkout_guard.wait_for_subagent_checkout(self, info)
+
+            subagents.pre_run_gate = _checkout_gate
         self.channel_manager: Any = None  # lazy-init in server.py
         # A gateway launch defers legacy channel-agent relaunch until memory
         # preparation settles. Standalone dashboard callers keep the immediate

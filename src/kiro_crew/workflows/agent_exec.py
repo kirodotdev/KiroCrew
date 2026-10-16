@@ -154,8 +154,16 @@ def build_agent_fn(
     # Per-run, 0-based ephemeral session index (not a module-global, so each run
     # restarts at :0 as the ``wf:{run_id}:{call_index}`` contract documents).
     counter = itertools.count()
+    from kiro_crew.dashboard.repo_checkout_guard import end_managed_session, tracked_work
 
     async def agent_fn(prompt: str, opts: dict) -> Any:
+        # A workflow step opens its own session, outside chat slots and the
+        # sub-agent manager, so it registers with the branch switch's busy check
+        # itself for the whole step (see repo_checkout_guard.tracked_work).
+        async with tracked_work(waiter=f"workflow {run_id}") as work:
+            return await _tracked_agent_fn(prompt, opts, work)
+
+    async def _tracked_agent_fn(prompt: str, opts: dict, work: Any) -> Any:
         # Spawn gates FIRST: a refused step must allocate no session, touch no
         # memory scope and consume no session index.
         step_cwd = await vet_step_spawn(
@@ -186,6 +194,15 @@ def build_agent_fn(
         # setup is not charged to the turn.
         _turn_t0 = time.monotonic()
         try:
+            # Where the step's session actually runs, and the project its prompt
+            # is built against (a reused named session can differ), before any of
+            # its work. A step that fails or is cancelled ends this session before
+            # the busy check stops seeing it: its native turn can outlive the task.
+            await work.place(
+                provider,
+                step_cwd or cwd,
+                stop=lambda retry: end_managed_session(sessions, key, provider, escalate=retry),
+            )
             from kiro_crew.messaging.identity import publish_turn_identity
 
             await publish_turn_identity(sessions, key)
@@ -205,6 +222,8 @@ def build_agent_fn(
                 prompt,
                 approval_policy=ToolApprovalPolicy.AUTO_APPROVE,
                 max_turns=_MAX_TURNS_PER_STEP,
+                # Only a turn the backend reported finished keeps its session.
+                on_complete=work.turn_ended,
             )
             # ── Per-turn usage row: attribute workflow spend. ──
             # Best-effort analytics that must never break the workflow run — but

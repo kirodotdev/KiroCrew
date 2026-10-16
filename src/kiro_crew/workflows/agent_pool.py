@@ -75,7 +75,13 @@ def _log_unpooled_teardown_failure(action: str, exc: BaseException) -> None:
     )
 
 
-async def _run_step(provider: Any, prompt: str, *, timeout: Optional[float] = None) -> str:
+async def _run_step(
+    provider: Any,
+    prompt: str,
+    *,
+    timeout: Optional[float] = None,
+    on_complete: Optional[Callable[[Any], None]] = None,
+) -> str:
     """Stream one workflow agent step through ``provider`` and redact its output.
 
     Single source of truth for the per-step contract shared by the pooled worker
@@ -85,13 +91,15 @@ async def _run_step(provider: Any, prompt: str, *, timeout: Optional[float] = No
     wedged turn is terminated instead of holding a permit until the run ceiling),
     and canonical output redaction (parity with ``agent_exec`` — prevents
     credential or exfiltration-URL leakage into workflow results stored in
-    history / injected into parent chat).
+    history / injected into parent chat). ``on_complete`` hears the turn's
+    completion event, which a turn cut off at the ceiling never sends.
     """
     coro = stream_and_collect(
         provider,
         prompt,
         approval_policy=ToolApprovalPolicy.AUTO_APPROVE,
         max_turns=_MAX_TURNS_PER_STEP,
+        on_complete=on_complete,
     )
     text = await (asyncio.wait_for(coro, timeout) if timeout is not None else coro)
     return redact(text)
@@ -131,6 +139,15 @@ class _WorkflowSessionWorker:
 
     async def start(self) -> None:
         """Cold-start THIS worker's session once (the only cold start it pays)."""
+        # The pool warms workers ahead of any step, so the cold start registers
+        # with the branch switch's busy check on its own, as a step does.
+        from kiro_crew.dashboard.repo_checkout_guard import tracked_work
+
+        async with tracked_work(waiter=f"workflow worker {self._key}") as work:
+            await self._start_tracked()
+            await work.place(self._provider, self._cwd)
+
+    async def _start_tracked(self) -> None:
         if self._memory_scope is not None:
             await self._memory_scope.prepare(self._context_builder, self._key)
         provider, self._is_new, self._resumed = await self._sessions.get_or_create(
@@ -143,6 +160,51 @@ class _WorkflowSessionWorker:
         self._provider = provider
 
     async def send_message(self, prompt: str, timeout: float = 1800.0) -> str:
+        # A workflow step's session runs outside chat slots and the sub-agent
+        # manager, so the step registers with the branch switch's busy check
+        # itself: unplaced until its session exists, then on the folder that
+        # session reports (see repo_checkout_guard.tracked_work).
+        from kiro_crew.dashboard.repo_checkout_guard import tracked_work
+
+        async with tracked_work(waiter=f"workflow worker {self._key}") as work:
+            if self._provider is None:
+                await self.start()
+            # A turn the backend did not report finished (failed, cancelled,
+            # ended by the session layer, or cut off at the tool-call ceiling)
+            # ends this worker's session before the
+            # busy check stops seeing it, since its native turn can outlive the
+            # task; the pool then retires the worker as unhealthy.
+            provider = self._provider
+            await work.place(
+                provider,
+                self._cwd,
+                stop=lambda retry: self._end_session_for_checkout(provider, retry),
+            )
+            return await self._send_placed(prompt, timeout, on_complete=work.turn_ended)
+
+    async def _end_session_for_checkout(self, provider: Any, retry: bool) -> bool:
+        """End this worker's session after a turn that did not finish.
+
+        Unlike :meth:`shutdown`, which is best-effort, this reports whether the
+        session's process tree is confirmed gone (see
+        ``repo_checkout_guard.end_managed_session``), so the branch switch keeps
+        refusing until it is. The worker holds its key's turn lease between
+        turns, so the first attempt returns it before the destroy.
+        """
+        from kiro_crew.dashboard.repo_checkout_guard import end_managed_session
+
+        if not retry:
+            try:
+                self._sessions.release(self._key)
+            except Exception:
+                logger.debug("workflow pool: release failed for %s", self._key, exc_info=True)
+        if self._provider is provider:
+            self._provider = None
+        return await end_managed_session(self._sessions, self._key, provider, escalate=retry)
+
+    async def _send_placed(
+        self, prompt: str, timeout: float, *, on_complete: Optional[Callable[[Any], None]] = None
+    ) -> str:
         if self._provider is None:
             await self.start()
         # Publish this turn's session identity so managed MCP tools resolve
@@ -167,7 +229,7 @@ class _WorkflowSessionWorker:
                 agent=self._agent,
                 cwd=self._cwd,
             )
-        result = await _run_step(self._provider, prompt, timeout=timeout)
+        result = await _run_step(self._provider, prompt, timeout=timeout, on_complete=on_complete)
         if self._memory_scope is not None:
             await self._memory_scope.validate()
         self._is_new = False
@@ -181,7 +243,20 @@ class _WorkflowSessionWorker:
         claude ACP both do), which skips the expensive spawn+initialize. If it is
         unavailable or fails, fall back to a hard ``SessionManager.reset`` so a
         reused worker can NEVER carry prior-task context into the next task
-        (correctness over speed on the fallback path)."""
+        (correctness over speed on the fallback path).
+
+        Registered with the branch switch's busy check for the whole reset, as
+        ``start`` and ``send_message`` are: even the cheap path opens a new
+        conversation, which reads the project's agent specs.
+        """
+        from kiro_crew.dashboard.repo_checkout_guard import tracked_work
+
+        async with tracked_work(waiter=f"workflow worker {self._key}") as work:
+            await self._reset_tracked()
+            if self._provider is not None:
+                await work.place(self._provider, self._cwd)
+
+    async def _reset_tracked(self) -> None:
         if self._memory_scope is not None:
             await self._memory_scope.prepare(self._context_builder, self._key)
         # Lifecycle only; EssentialDelivery owns successful delivery evidence.
@@ -359,6 +434,16 @@ def build_pooled_agent_fn(
     _unpooled = itertools.count()
 
     async def _run_unpooled(prompt: str, opts: dict) -> Any:
+        # Registered with the branch switch's busy check for the whole step,
+        # as the pooled worker's turn is (see _WorkflowSessionWorker.send_message).
+        from kiro_crew.dashboard.repo_checkout_guard import tracked_work
+
+        async with tracked_work(waiter=f"workflow {run_id}") as work:
+            return await _run_unpooled_tracked(prompt, opts, work)
+
+    async def _run_unpooled_tracked(prompt: str, opts: dict, work: Any) -> Any:
+        from kiro_crew.dashboard.repo_checkout_guard import end_managed_session
+
         named = opts.get("session")
         key = named if named is not None else f"wf-unpooled:{run_id}:{next(_unpooled)}"
         if memory_scope is not None:
@@ -373,6 +458,13 @@ def build_pooled_agent_fn(
             extra_env=extra_env,
         )
         try:
+            # As the pooled worker's turn: a failed or cancelled step ends this
+            # session (a named one loses its conversation) before it is untracked.
+            await work.place(
+                provider,
+                opts.get("cwd") or cwd,
+                stop=lambda retry: end_managed_session(sessions, key, provider, escalate=retry),
+            )
             # Same identity publication as the pooled worker (see
             # _WorkflowSessionWorker.send_message): a named ``session=`` chain
             # and the identity-cap overflow session both run on their own
@@ -389,7 +481,7 @@ def build_pooled_agent_fn(
                     agent=opts.get("agent") or default_agent,
                     cwd=opts.get("cwd") or cwd,
                 )
-            result = await _run_step(provider, prompt)
+            result = await _run_step(provider, prompt, on_complete=work.turn_ended)
             if memory_scope is not None:
                 await memory_scope.validate()
             return result
