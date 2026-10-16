@@ -232,6 +232,13 @@ _SCANNED_MODULES = [
     "src/kiro_crew/knowledge/agent_fetch.py",
     "src/kiro_crew/slack/gateway.py",
     "src/kiro_crew/telegram/renderer.py",
+    # The owners the Telegram renderer is composed from, beside its facade.
+    "src/kiro_crew/telegram/renderer_approval.py",
+    "src/kiro_crew/telegram/renderer_display.py",
+    "src/kiro_crew/telegram/renderer_live.py",
+    "src/kiro_crew/telegram/renderer_status.py",
+    "src/kiro_crew/telegram/renderer_tables.py",
+    "src/kiro_crew/telegram/renderer_uploads.py",
     "src/kiro_crew/subagent_manager/continuation.py",
     *(rel for package in _SCANNED_PACKAGES for rel in _package_modules(package)),
 ]

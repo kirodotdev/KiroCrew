@@ -338,9 +338,9 @@ class TestTheSeamOwnsTheReading:
         # The hook's branch compares against this constant, and the decider sets
         # exactly it on an elapsed wait. Pin the pairing so a rename of either side
         # cannot silently turn the branch off and restore the bug.
-        from kiro_crew.telegram import renderer as renderer_mod
+        from kiro_crew.telegram import renderer_approval as renderer_mod
 
-        src = renderer_mod.__loader__.get_source("kiro_crew.telegram.renderer")
+        src = renderer_mod.__loader__.get_source("kiro_crew.telegram.renderer_approval")
         assert "self.last_deny_cause = DENY_CAUSE_APPROVAL_TIMEOUT" in src
         assert DENY_CAUSE_APPROVAL_TIMEOUT == "approval_timeout"
 
