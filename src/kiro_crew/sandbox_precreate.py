@@ -402,6 +402,11 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # First created by the first member-born session's vouch, so a sandbox spawned
     # before then would otherwise see the directory appear unmasked.
     "vouched-executions",
+    # The chats the owner trusted (``dashboard.session_trust_store``), created by the
+    # first durable grant. Left to lazy creation, a sandbox spawned before that grant
+    # finds it absent and the mask loop binds nothing over it.
+    "session-trust",
+    "session-trust-stop",
     # md-notebook's write-staging directory, for the same reason and by the same rule: a
     # direct child of the data home, so the plain ``mkdir`` above is sound. Left to lazy
     # creation, a sandbox spawned before the first state write finds it absent, the

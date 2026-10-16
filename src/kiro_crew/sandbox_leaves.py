@@ -226,6 +226,16 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # ``security.paths`` so the file tools refuse it too. All three, because each
     # one alone leaves a different path open.
     "work",
+    # The chats the owner trusted, restored after a gateway crash
+    # (``dashboard.session_trust_store``). Only the gateway reads or writes it, so
+    # HIDDEN rather than READONLY: no in-sandbox reader needs it, a writable record
+    # would let a prompt-injected agent trust its own chat past every future
+    # approval prompt, and a masked record resolves to "no chat trusted" -- the
+    # re-consent direction. Precreated so the mask always has a name to bind over.
+    "session-trust",
+    # Its owner-stop marker: present means "restore nothing", so a deletable one
+    # would let an agent bring back trust an owner stop withdrew.
+    "session-trust-stop",
     # The Notes state files below are OWNED by the md-notebook backend, which is itself
     # a sandboxed spawn (`apps/backend.py`), so the mask alone would break the app: the
     # registry write's final rename gets EPERM and attach/clone always fails.

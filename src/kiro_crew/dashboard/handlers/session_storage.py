@@ -26,6 +26,8 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.config.paths import config_dir
+from kiro_crew.dashboard import chat_trust_persistence
+from kiro_crew.dashboard.chat_utils import session_key_for
 from kiro_crew.dashboard.handlers._shared import (
     _is_restricted_session,
     _read_session_key,
@@ -327,6 +329,21 @@ async def api_session_storage(request: web.Request) -> web.Response:
     return web.json_response(data)
 
 
+def _trust_keys_for_stems(stems: Any) -> list[str]:
+    """The session keys whose transcript is one of *stems*, for removing saved trust.
+
+    A stacked duplicate (``dashboard_dashboard_<n>``) normalizes onto its sibling's
+    key, whose transcript is a different file the cleanup keeps, so a key counts
+    only when it names the selected file itself.
+    """
+    keys = []
+    for stem in stems:
+        key = session_key_for(stem)
+        if stem in transcript_stems(key):
+            keys.append(key)
+    return keys
+
+
 async def api_session_storage_cleanup(request: web.Request) -> web.Response:
     """POST /api/system/session-storage/cleanup — stage old sessions for deletion.
 
@@ -386,22 +403,41 @@ async def api_session_storage_cleanup(request: web.Request) -> web.Response:
             {"sessions": 0, "bytes": 0, "batch_id": "", "remaining": remaining}
         )
 
-    try:
-        batch = await asyncio.to_thread(
-            move_to_trash,
-            [unit.uid for unit in selected],
-            reason=REASON_POLICY,
-            index=index,
-            # Re-read the map inside the lock: the scan above can take long enough
-            # for a session to be resumed and mapped in the meantime, and so can
-            # the move loop, which calls this once per session. One instance per
-            # request — a shared one would serve a later request an index built
-            # before it started.
-            refresh=_MapBackedRefresh(),
-            activation=_activation(state),
+    # Moving a transcript out frees its name for a new chat, so its saved trust goes
+    # first, as on a single delete: otherwise that new chat would inherit it after a
+    # crash. A removal that fails stages nothing. A move that then fails is not
+    # undone here -- it may have moved some transcripts before it stopped -- so the
+    # removed trust stays removed and a kept chat asks again, the re-consent
+    # direction. A restore from the trash brings a chat back untrusted too.
+    async with chat_trust_persistence.delete_fence() as fence:
+        trust_taken = await chat_trust_persistence.forget_deleted_session(
+            state, _trust_keys_for_stems(stem for unit in selected for stem in unit.stems), fence
         )
-    except SessionStorageError as exc:
-        return _refused(exc, "cleanup_refused")
+        if not trust_taken.ok:
+            return web.json_response(
+                {
+                    "error": "Saved chat trust for these sessions could not be removed, "
+                    "so nothing was moved.",
+                    "code": "trust_revoke_not_durable",
+                },
+                status=409,
+            )
+        try:
+            batch = await asyncio.to_thread(
+                move_to_trash,
+                [unit.uid for unit in selected],
+                reason=REASON_POLICY,
+                index=index,
+                # Re-read the map inside the lock: the scan above can take long enough
+                # for a session to be resumed and mapped in the meantime, and so can
+                # the move loop, which calls this once per session. One instance per
+                # request — a shared one would serve a later request an index built
+                # before it started.
+                refresh=_MapBackedRefresh(),
+                activation=_activation(state),
+            )
+        except SessionStorageError as exc:
+            return _refused(exc, "cleanup_refused")
 
     _sel().log_api_access(
         caller=_read_session_key(request),

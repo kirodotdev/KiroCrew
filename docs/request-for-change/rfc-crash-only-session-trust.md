@@ -201,8 +201,7 @@ rewrites the record without the withdrawn grants, and a permanently deleted chat
 removes its saved grant before its transcript is unlinked -- a removal that fails
 refuses the delete, and a delete that is then refused or fails puts it back (never during
 an owner stop, after a later revoke, or for a grant a revoke withdrew); a grant
-made while the delete runs is not saved; a channel row also revokes every saved key whose transcript
-it is, found from the signed store rather than the agent-writable transcript -- so a chat recreated under the same key never
+made while the delete runs is not saved -- so a chat recreated under the same key never
 inherits it. A revoke is withheld in memory before its removal is written, and a
 grant settles any owner-stop marker a previous run left first, so a late boot restore
 cannot clear it; a marker written since this run started is a stop in progress (the
@@ -246,12 +245,12 @@ same way after a restore: the deny list, the sensitive-path keystone,
 `human_only` cards, the governance ceiling. There is no approval-mode ceiling to
 re-check: `trust` is a non-deniable approval mode, so the grant itself consults
 none either.
-A chat's session key normally comes from its own name; a chat linked to another
-session (a channel-born chat) takes it from a link stored in its transcript, which
-agents can rewrite. A link is honoured only when it names the very transcript the chat
-is stored in, as a channel-born chat's does; any other link (a resumed or cron-bound
-chat) restores nothing and the chat asks again, so a rewritten link cannot hand one
-chat another chat's trust.
+Only dashboard chats are saved: a chat's `dashboard:<name>` key comes from its own
+name, so a delete knows the exact key from the row's file name. A channel chat
+(Slack, Discord) or a chat linked to another session keeps live-only trust, as
+every chat had before this change: its key's `:` are written as `_` in the file
+name and cannot always be recovered from it, and its link lives in a transcript
+agents can rewrite. Saving channel chats too is left to a later change.
 The record is read off the event loop, and the verdict is applied only if no
 revoke landed during that read; a revoke always wins over a stale verdict. The
 boot restore runs in the background, so nothing on the boot path waits on it.

@@ -61,6 +61,7 @@ from kiro_crew.dashboard import (  # noqa: F401
     cautious_boot,
     channel_slots,
     chat,
+    chat_trust_persistence,
     handlers,
     slot_retention,
     tailnet,

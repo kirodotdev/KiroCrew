@@ -40,6 +40,10 @@ def seams(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     monkeypatch.setattr(session_mod, "cleanup_orphaned_sessions", found.cleanup)
     monkeypatch.setattr(eventlog_hooks, "drain_for_shutdown", found.drain)
     monkeypatch.setattr(cli_mod, "_stop_log_queue_listener", found.stop_log)
+    # Saved chat trust: the stop is already recorded, so the second signal is not held.
+    found.trust = MagicMock(name="chat_trust_persistence")
+    found.trust.owner_stop_recorded.return_value = True
+    monkeypatch.setattr(gw, "chat_trust_persistence", found.trust)
     return found
 
 
