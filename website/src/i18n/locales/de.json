@@ -9260,7 +9260,7 @@
       "row_unreadable_marker_dismissed": "Nicht lesbar — Hinweis geschlossen",
       "root_unreadable": "Keine Berechtigung zum Lesen des Arbeitsbereichsordners",
       "root_hidden_only": "Dieser Arbeitsbereich enthält nur versteckte Elemente (übersprungene Tool- und Cache-Ordner, geschützte Einträge)",
-      "root_truncated": "Arbeitsbereich zu groß zum Auflisten: Limit von 10.000 Elementen erreicht",
+      "root_truncated": "Alles in Ordnung. Dieses Projekt hat zu viele Dateien und Ordner, um sie hier aufzulisten (das Limit liegt bei 10.000).",
       "root_truncated_search_hint": "Gib einen Dateinamen in das Feld oben ein, um die Datei zu finden.",
       "unreadable_folders": "Ordner nicht lesbar: {{paths}}",
       "dismiss_unreadable": "Schließen: diesen Hinweis ausblenden, bis sich die nicht lesbaren Ordner ändern",

@@ -3746,7 +3746,7 @@
       "row_unreadable_marker_dismissed": "Not readable — notice dismissed",
       "root_unreadable": "No permission to read the workspace folder",
       "root_hidden_only": "This workspace contains only hidden items (skipped tool and cache folders, protected entries)",
-      "root_truncated": "Workspace too large to list: limit of 10,000 items reached",
+      "root_truncated": "Nothing is wrong. This project has too many files and folders to list here (the limit is 10,000).",
       "root_truncated_search_hint": "Type a file name in the box above to find it.",
       "unreadable_folders": "Folders not readable: {{paths}}",
       "dismiss_unreadable": "Dismiss: hide this notice until the unreadable folders change",
