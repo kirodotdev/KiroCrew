@@ -152,11 +152,11 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
     folderFilterRows, folderOfflineNotice, folderReorderHint, folderReorderHintRef, folderRowsDrawn, folderSortMode,
     folderSortMut, folderSortRead, folders, foldersError, foldersFailed, foldersShelved,
     hasRemoteExecutedRow, hiddenFilters, hiddenFolderCount, instanceSessions, isMobile, lane,
-    laneSwitchLabel, listNarrowed, modelFilterInverted, modelFilterRows, newChatError, nextLane,
+    laneSwitchLabel, listNarrowed, modelFilterInverted, modelFilterRows, newChatError, nextLane, pinnedOrderError,
     recentAmountDraft, recentUnitDraft, recentWindowMs, refetchColumns, refetchFolders, remoteSessionsError,
     renameError, seedError, seedStateLanesMutation, selectRecentPreset, setAllFiltersPaused,
     setAutoTitleError, setFilterSortOpen, setFolderActionError, setFolderOfflineNotice, setModelFilterExcluded, setNewChatError,
-    setRecentAmountDraft, setRenameError, setSeedError, setSlotFilter, setSortKey, setStaleCollapseMs,
+    setPinnedOrderError, setRecentAmountDraft, setRenameError, setSeedError, setSlotFilter, setSortKey, setStaleCollapseMs,
     setToggleSaveFailed, showAllFolders, slotFilter, sortError, sortKey, staleCollapseMs, tagFilterRows, toggleFilter,
     toggleFolderFilter, toggleFoldersShelved, toggleHideFilter, toggleModelFilter, toggleSaveFailed,
     toggleTagFilter } = shell
@@ -1154,6 +1154,19 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
           </Btn>
         </div>
       )}
+      <ErrorNotice
+        title={i18nT('pages.chatSidebar.pinned_order_save_failed')}
+        message={pinnedOrderError}
+        // The message (what happened to the order) sits under the title and
+        // the action under both, as on folder-order-unavailable: side by side
+        // in this ~300px panel they wrapped to one or two words a line.
+        messagePlacement="below"
+        askAgent
+        actionPlacement="below"
+        onDismiss={() => setPinnedOrderError('')}
+        className="mx-2 mt-2 shrink-0"
+        testId="pinned-order-error"
+      />
       <ErrorNotice
         message={newChatError}
         askAgent

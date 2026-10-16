@@ -303,7 +303,8 @@ function ChatSidebar({
   const bulkModel = useBulkModelSwitch({ localSlots })
 
   const {
-    pinned, pinnedOrder, pinnedRank, reorderPinned, orderState: pinnedOrderState,
+    pinned, pinnedOrder, pinnedRank, reorderPinned, pinnedOrderError, setPinnedOrderError,
+    orderState: pinnedOrderState,
   } = usePinnedSessionOrder({ localSlots, sortKey })
 
   const {
@@ -360,7 +361,7 @@ function ChatSidebar({
   // content, so the column count re-measures it.
   const [attachStripEdges, stripEdges, remeasureStripEdges] = useScrollEdges<HTMLDivElement>()
   useEffect(() => { remeasureStripEdges() }, [orderedColumns.length, remeasureStripEdges])
-  usePinnedOrderAuthority({ orderState: pinnedOrderState, slotsLoaded, tagColumnsSettled, orderedColumns })
+  usePinnedOrderAuthority({ orderState: pinnedOrderState, slotsLoaded, tagColumnsSettled, boardProjection: orderedColumns.length > 0 })
   const {
     columnEditId, setColumnEditId, popoverPos, columnPopoverRef, columnPopoverImeLatch, closeColumnPopover,
   } = useColumnPopover()
@@ -779,7 +780,7 @@ function ChatSidebar({
     laneSwitchLabel, lineage, listNarrowed, localSlots, missingLanes, modelFilterInverted, modelFilterRows,
     moveByDrag, moveFolderTo, nativeSessionDrag, navigate, newChatError, newChatMenuOpen, nextLane,
     onDropSessionRef, onMenuCloseAutoFocus, onOpenSlotInNewTab, onSelectSlot, openCrewMembers,
-    openHistoryPane, orderedColumns, paintedSidebarWidth, pinned, popoverPos, queryClient, rawColumns,
+    openHistoryPane, orderedColumns, paintedSidebarWidth, pinned, pinnedOrderError, popoverPos, queryClient, rawColumns,
     recentAmountDraft, recentUnitDraft, recentWindowMs, refetchColumns, refetchFolders, refetchTags,
     remoteCrewChatPreview, remoteCrewError, remoteCrewErrorId, remoteSessionsError, renameCommit,
     renameError, reorderColumnsMutation, reportDndActive, restorePreBoardWidth, revealedContainers,
@@ -789,7 +790,7 @@ function ChatSidebar({
     setDerivedHintCol, setEditingId, setEditName, setEditScope, setFilterSortOpen, setFlatView,
     setFolderActionError, setFolderCleanupOpen, setFolderOfflineNotice, refuseCreateOffline, setFolderCreateError, setFolderModal, setFoldersShelved,
     setHistoryFilter, setHistoryOpen, setLaneScrollEl, setBroadcastOpen, setManageTagsOpen, setModelFilterExcluded,
-    setNewChatError, setNewChatMenuOpen, setRecentAmountDraft, setRemoteCrewError, setRenameError,
+    setNewChatError, setNewChatMenuOpen, setPinnedOrderError, setRecentAmountDraft, setRemoteCrewError, setRenameError,
     setSeedError, setSlotFilter, setSortKey, setStaleCollapseMs, setStaleExpanded, setToggleSaveFailed,
     showAllFolders, shownCrewGroups, shownCrewRowCount, shownCrewRows, sidebarRows, slotFilter, slotFolders,
     sortError, sortKey, staleCollapseMs, staleExpanded, startsAutomaticSection, staticRows, stripEdges,

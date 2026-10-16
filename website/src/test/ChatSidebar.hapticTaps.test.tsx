@@ -111,6 +111,7 @@ const mocks = vi.hoisted(() => ({
   setSlotFolder: vi.fn(),
   sessions: vi.fn(),
   sessionsSearch: vi.fn(),
+  setPinnedOrder: vi.fn(),
 }))
 vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
@@ -267,6 +268,7 @@ beforeEach(() => {
   mocks.setSlotFolder.mockResolvedValue({ ok: true })
   mocks.sessions.mockResolvedValue({ sessions: [], has_more: false })
   mocks.sessionsSearch.mockResolvedValue({ sessions: [] })
+  mocks.setPinnedOrder.mockImplementation((keys: string[]) => Promise.resolve({ ok: true, order: keys }))
 })
 afterEach(() => {
   vi.useRealTimers()
@@ -302,11 +304,18 @@ describe('haptic — pinned reorder', () => {
     document.querySelector<HTMLElement>(`[data-session-row="${key}"][data-session-scope="list"]`)!
 
   it('plays a light tap when Alt+Arrow moves a pinned row, and nothing at the end of the ring', async () => {
+    // The rows here are props, so the gateway's ranks never reach them; hold
+    // the write open so the moved order stays painted for the second press.
+    // The first-load seed (onlyIfUnset) still answers, as the gateway would.
+    mocks.setPinnedOrder.mockImplementation((keys: string[], onlyIfUnset?: boolean) => (
+      onlyIfUnset ? Promise.resolve({ ok: true, order: keys }) : new Promise(() => {})
+    ))
     renderSidebar()
     await ready()
     fireEvent.keyDown(pinnedRow(PIN_A), { key: 'ArrowDown', altKey: true })
     expect(taps()).toEqual(['light'])
-    expect(JSON.parse(localStorage.getItem('mc-pinned-session-order')!)).toEqual([PIN_B, PIN_A])
+    // The order is the gateway's: the move is written there, not to localStorage.
+    await waitFor(() => expect(mocks.setPinnedOrder).toHaveBeenCalledWith([PIN_B, PIN_A], false))
 
     hapticMock.mockClear()
     // PIN_A is now last: there is no pinned row below it to trade places with.
