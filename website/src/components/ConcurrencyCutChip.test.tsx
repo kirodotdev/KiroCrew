@@ -24,7 +24,11 @@ import ConcurrencyCutChip, {
 import { api } from '../api/client'
 import { sseSubagentQueued } from '../store/chatSlice'
 import { sseSlots } from '../store/dashboardSlice'
+// `/all` registers every catalog, so a test can switch to bn; `../i18n` alone
+// registers English, and an unregistered language renders Latin digits.
+import { i18next } from '../i18n/all'
 import { i18nT } from '../i18n/t'
+import { CATALOGS } from '../i18n/catalogs'
 import type { SpawnAdaptiveResponse, ThrottleView } from '../api/tasks'
 import type { ChatSlot, SessionLink } from '../types'
 
@@ -78,7 +82,7 @@ describe('throttleChipKey', () => {
 
   it('names the reduced execution cap and its queue', () => {
     expect(throttleChipKey(execCut)).toEqual({
-      key: 'components.concurrencyCutChip.exec_reduced_queued', values: { ...EXEC, queued: 5 },
+      key: 'components.concurrencyCutChip.exec_reduced_queued', values: { cap: '2', configured: '8', queued: '5' },
     })
     expect(throttleChipKey({ ...execCut, queued: 0 })?.key).toBe('components.concurrencyCutChip.exec_reduced')
     expect(throttleChipKey(execCut, { withQueue: false })?.key).toBe('components.concurrencyCutChip.exec_reduced')
@@ -86,9 +90,9 @@ describe('throttleChipKey', () => {
     expect(throttleShortCap(execCut)).toBe('2/8')
   })
 
-  it('names agent starts when only the spawn gate is cut', () => {
+  it('names new agents starting when only the spawn gate is cut', () => {
     expect(throttleChipKey(gateOnly)).toEqual({
-      key: 'components.concurrencyCutChip.gate_reduced', values: { cap: 1, configured: 4 },
+      key: 'components.concurrencyCutChip.gate_reduced', values: { cap: '1', configured: '4' },
     })
     expect(throttleShortCap(gateOnly)).toBe('1/4')
     const paused = { ...gateOnly, gate: { ...gateOnly.gate!, paused: true } }
@@ -105,6 +109,53 @@ describe('throttleChipKey', () => {
     for (const key of ['exec_reduced', 'exec_reduced_queued', 'gate_reduced', 'gate_paused']) {
       expect(part(key, 'lead', { ...EXEC, queued: 1 })).toBe(part('exec_reduced', 'lead', EXEC))
     }
+  })
+
+  it('says the failed read in terms of queued agents and the gate cut as a limit on new agents', () => {
+    expect(i18nT('components.concurrencyCutChip.load_failed')).toBe('Could not check for queued agents')
+    expect(part('gate_reduced', 'detail', { cap: 1, configured: 4 })).toBe('new agents start 1 at a time, down from 4')
+  })
+
+  it('keeps the visible reassurance line word for word inside the hover hint, in every catalog', () => {
+    for (const [lang, { translation }] of Object.entries(CATALOGS)) {
+      if (lang === 'en-XA') continue
+      const block = (translation.components as Record<string, Record<string, string>>).concurrencyCutChip
+      expect(block.queue_kept, lang).toBeTruthy()
+      expect(block.hint, lang).toContain(block.queue_kept)
+    }
+  })
+
+  describe('locale numerals', () => {
+    afterEach(async () => { await i18next.changeLanguage('en') })
+    const LATIN = /[0-9]/
+    const BENGALI = /[\u09e6-\u09ef]/
+
+    it('formats every sentence number in the locale numerals the narrow form uses', async () => {
+      await i18next.changeLanguage('bn')
+      const big = { ...execCut, exec: { cap: 2, configured: 18, cut: true }, queued: 15 }
+      for (const label of [throttleChipLabel(big), throttleChipLabel(big, { withQueue: false }), throttleChipLabel(gateOnly)]) {
+        expect(label).toMatch(BENGALI)
+        expect(label).not.toMatch(LATIN)
+      }
+      expect(throttleShortCap(big)).toMatch(BENGALI)
+      expect(throttleShortCap(big)).not.toMatch(LATIN)
+    })
+
+    it('renders the wide chip and the session marker in one numeral system', async () => {
+      await i18next.changeLanguage('bn')
+      answer(execCut)
+      const store = createTestStore()
+      store.dispatch(sseSubagentQueued({ slot: 's1', queued: 3 }))
+      renderWithProviders(<><ConcurrencyCutChip /><SessionQueuedMarker slotKey="s1" /></>, { store })
+      const link = await findChip()
+      const detail = link.querySelector('[data-chip-part="detail"]')!.textContent!
+      const short = link.querySelector('[data-chip-part="short-cap"]')!.textContent!
+      const marker = (await screen.findByTestId('session-queued-marker')).textContent!
+      for (const text of [detail, short, marker]) {
+        expect(text).toMatch(BENGALI)
+        expect(text).not.toMatch(LATIN)
+      }
+    })
   })
 })
 
@@ -337,9 +388,20 @@ describe('phone top bar', () => {
     answer(execCut)
     renderWithProviders(<><ConcurrencyCutMenuItem Item={Item} /><Where /></>, { route: '/chat' })
     const row = await screen.findByTestId('concurrency-cut-menu-item')
-    expect(row.textContent).toContain(plain('exec_reduced_queued', { ...EXEC, queued: 5 }))
+    expect(screen.getByTestId('concurrency-cut-menu-label').textContent).toBe(plain('exec_reduced_queued', { ...EXEC, queued: 5 }))
     fireEvent.click(row.closest('button')!)
     expect(screen.getByTestId('where').textContent).toBe(CAPACITY_CARD_PATH)
+  })
+
+  it('shows the reassurance a touch screen never sees as a hover title as the row\'s visible second line', async () => {
+    answer(execCut)
+    renderWithProviders(<ConcurrencyCutMenuItem Item={Item} />)
+    const hint = await screen.findByTestId('concurrency-cut-menu-hint')
+    expect(hint.textContent).toBe(i18nT('components.concurrencyCutChip.queue_kept'))
+    expect(i18nT('components.concurrencyCutChip.hint')).toContain(hint.textContent!)
+    // Drawn for the eye, not tucked away for screen readers only.
+    expect(hint.closest('.sr-only')).toBeNull()
+    expect(hint.closest('[aria-hidden]')).toBeNull()
   })
 
   it('adds no row while no cut is in force', async () => {
@@ -368,6 +430,7 @@ describe('phone top bar', () => {
       answer(execCut)
       renderWithProviders(<><ConcurrencyCutMenuItem Item={Item} /><ConcurrencyCutDot /></>, { store: createConnectedTestStore() })
       await screen.findByTestId('concurrency-cut-menu-item')
+      expect(screen.getByTestId('concurrency-cut-dot').getAttribute('data-tone')).toBe('cut')
       spawnAdaptive.mockRejectedValue(new Error('adaptive read failed'))
       await act(() => vi.advanceTimersByTimeAsync(THROTTLE_REFETCH_MS))
       await waitFor(() => expect(spawnAdaptive).toHaveBeenCalledTimes(2))
@@ -375,7 +438,11 @@ describe('phone top bar', () => {
       expect(await screen.findByText(i18nT('components.concurrencyCutChip.load_failed'))).toBeTruthy()
       expect(spawnAdaptive).toHaveBeenCalledTimes(3)
       expect(screen.queryByTestId('concurrency-cut-menu-item')).toBeNull()
-      expect(screen.queryByTestId('concurrency-cut-dot')).toBeNull()
+      // The trigger's dot turns from the cut's warning tone to the error tone.
+      const dot = screen.getByTestId('concurrency-cut-dot')
+      expect(dot.getAttribute('data-tone')).toBe('error')
+      expect(dot.className).toContain('bg-danger')
+      expect(dot.className).not.toContain('bg-warn')
       // The hand-off stays a sibling menu item, so it joins the menu's focus.
       expect(document.querySelector('[aria-describedby="concurrency-cut-menu-error"]')).toBeTruthy()
     } finally {
@@ -383,10 +450,44 @@ describe('phone top bar', () => {
     }
   })
 
-  it('marks the menu trigger with a dot only while a cut is in force', async () => {
+  it('marks the menu trigger with an error-toned dot when every read fails', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      spawnAdaptive.mockRejectedValue(new Error('adaptive read failed'))
+      renderWithProviders(<ConcurrencyCutDot />, { store: createConnectedTestStore() })
+      await waitFor(() => expect(spawnAdaptive).toHaveBeenCalledTimes(1))
+      // One miss is not reported, so it marks nothing yet.
+      expect(screen.queryByTestId('concurrency-cut-dot')).toBeNull()
+      await act(() => vi.advanceTimersByTimeAsync(THROTTLE_RETRY_MS))
+      const dot = await screen.findByTestId('concurrency-cut-dot')
+      expect(dot.getAttribute('data-tone')).toBe('error')
+      expect(dot.className).toContain('bg-danger')
+      expect(dot.getAttribute('aria-hidden')).not.toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('leaves the trigger unmarked for a failed read while disconnected', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      spawnAdaptive.mockRejectedValue(new Error('adaptive read failed'))
+      renderWithProviders(<ConcurrencyCutDot />, { store: createTestStore() })
+      await act(() => vi.advanceTimersByTimeAsync(THROTTLE_RETRY_MS))
+      await waitFor(() => expect(spawnAdaptive).toHaveBeenCalledTimes(2))
+      expect(screen.queryByTestId('concurrency-cut-dot')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('marks the menu trigger with a warning-toned dot only while a cut is in force', async () => {
     answer(execCut)
     const { unmount } = renderWithProviders(<ConcurrencyCutDot />)
-    expect((await screen.findByTestId('concurrency-cut-dot')).getAttribute('aria-hidden')).not.toBeNull()
+    const dot = await screen.findByTestId('concurrency-cut-dot')
+    expect(dot.getAttribute('aria-hidden')).not.toBeNull()
+    expect(dot.getAttribute('data-tone')).toBe('cut')
+    expect(dot.className).toContain('bg-warn')
     unmount()
     answer({ cut: false })
     renderWithProviders(<ConcurrencyCutDot />)

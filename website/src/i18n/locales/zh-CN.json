@@ -9942,12 +9942,13 @@
     "concurrencyCutChip": {
       "exec_reduced": "<0>负载较高：</0><1>同时运行 {{cap}}/{{configured}} 个代理</1>",
       "exec_reduced_queued": "<0>负载较高：</0><1>同时运行 {{cap}}/{{configured}} 个代理 · {{queued}} 个已排队</1>",
-      "gate_reduced": "<0>负载较高：</0><1>同时启动 {{cap}}/{{configured}} 个代理</1>",
+      "gate_reduced": "<0>负载较高：</0><1>新代理每次启动 {{cap}} 个（原为 {{configured}} 个）</1>",
       "gate_paused": "<0>负载较高：</0><1>新代理正在等待启动</1>",
-      "hint": "系统负载较高期间，同时运行的代理会减少。等待中的工作会保留位置，一有空位就会开始。打开“任务与容量”查看详情。",
+      "hint": "系统负载较高期间，同时运行的代理会减少。已排队的代理会保留位置，一有空位就会开始。打开“任务与容量”查看详情。",
+      "queue_kept": "已排队的代理会保留位置，一有空位就会开始。",
       "session_queued": "此会话：{{queued}} 个已排队",
       "session_queued_hint": "同时运行的代理减少期间，此会话启动的代理正在等待空位。",
-      "load_failed": "无法读取并发状态"
+      "load_failed": "无法检查已排队的代理"
     }
   },
   "hooks": {

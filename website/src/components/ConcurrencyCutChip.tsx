@@ -84,25 +84,30 @@ export function useThrottleView(): { view: ThrottleView | undefined; error: unkn
  * is none to show. Each sentence is one catalog key whose `<0>` part names the
  * outcome ("Under load:") and whose `<1>` part names the reduced cap, so a
  * translation can reorder them. The execution cap comes first because it is
- * the one queued work waits on; a gate-only cut names agent starts, waiting or
- * reduced. `withQueue: false` leaves the queued count out.
+ * the one queued work waits on; a gate-only cut names new agents starting,
+ * waiting or reduced. `withQueue: false` leaves the queued count out.
+ *
+ * The values are already formatted in the active locale's numerals, the same
+ * way {@link throttleShortCap} formats the narrow "2/8", so the sentence and
+ * the narrow form never show two numeral systems side by side.
  */
 export function throttleChipKey(
   view: ThrottleView | undefined,
   { withQueue = true } = {},
-): { key: string; values: Record<string, number> } | null {
+): { key: string; values: Record<string, string> } | null {
   if (!view?.cut) return null
   const queued = withQueue ? Math.max(0, Math.floor(Number(view.queued) || 0)) : 0
   const exec = view.exec
   if (exec?.cut && exec.cap != null && exec.configured != null) {
+    const pair = { cap: fmtNumber(exec.cap), configured: fmtNumber(exec.configured) }
     return queued > 0
-      ? { key: 'components.concurrencyCutChip.exec_reduced_queued', values: { cap: exec.cap, configured: exec.configured, queued } }
-      : { key: 'components.concurrencyCutChip.exec_reduced', values: { cap: exec.cap, configured: exec.configured } }
+      ? { key: 'components.concurrencyCutChip.exec_reduced_queued', values: { ...pair, queued: fmtNumber(queued) } }
+      : { key: 'components.concurrencyCutChip.exec_reduced', values: pair }
   }
   const gate = view.gate
   if (gate?.paused) return { key: 'components.concurrencyCutChip.gate_paused', values: {} }
   if (gate?.cut && gate.cap != null && gate.configured != null) {
-    return { key: 'components.concurrencyCutChip.gate_reduced', values: { cap: gate.cap, configured: gate.configured } }
+    return { key: 'components.concurrencyCutChip.gate_reduced', values: { cap: fmtNumber(gate.cap), configured: fmtNumber(gate.configured) } }
   }
   return null
 }
@@ -238,22 +243,27 @@ export function SessionQueuedMarker({ slotKey, crowded = false }: { slotKey?: st
       data-testid="session-queued-marker"
     >
       <Hourglass size={11} className="shrink-0" aria-hidden />
-      <span className="whitespace-nowrap">{i18nT('components.concurrencyCutChip.session_queued', { queued })}</span>
+      <span className="whitespace-nowrap">{i18nT('components.concurrencyCutChip.session_queued', { queued: fmtNumber(queued) })}</span>
       <span className="sr-only">{hint}</span>
     </span>
   )
 }
 
-/** A dot on the phone overflow menu's trigger while a cut is in force, so the
- *  cut is seen without opening the menu. Decorative: the live region names it. */
+/** A dot on the phone overflow menu's trigger, so the menu's cut or failed-read
+ *  row is seen without opening the menu: warning-toned while a cut is in force,
+ *  error-toned once a read is reported failed (the hook withholds the cut then,
+ *  so the two never show together). Decorative: the live region names a cut,
+ *  and the menu row names the failure. */
 export function ConcurrencyCutDot() {
-  const { view } = useThrottleView()
-  if (!throttleChipKey(view)) return null
+  const { view, error } = useThrottleView()
+  const tone = error != null ? 'error' : throttleChipKey(view) ? 'cut' : null
+  if (!tone) return null
   return (
     <span
       aria-hidden
       data-testid="concurrency-cut-dot"
-      className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-warn ring-1 ring-bg"
+      data-tone={tone}
+      className={`absolute top-1 right-1 h-1.5 w-1.5 rounded-full ring-1 ring-bg ${tone === 'error' ? 'bg-danger' : 'bg-warn'}`}
     />
   )
 }
@@ -284,10 +294,17 @@ export function ConcurrencyCutMenuItem({ Item }: { Item: CutMenuItemComponent })
     <>
       {label && (
         <Item className="[@media(hover:none)]:min-h-10" onSelect={() => navigate(CAPACITY_CARD_PATH)}>
-          <span className="flex min-w-0 items-center gap-2" data-testid="concurrency-cut-menu-item">
-            <Gauge size={14} className="shrink-0 text-warn" aria-hidden />
-            {/* Wraps rather than widening the menu past a 320 px screen. */}
-            <span className="max-w-[14rem] whitespace-normal leading-snug">{label}</span>
+          <span className="flex min-w-0 items-start gap-2" data-testid="concurrency-cut-menu-item">
+            <Gauge size={14} className="mt-0.5 shrink-0 text-warn" aria-hidden />
+            {/* Wraps rather than widening the menu past a 320 px screen. The
+                second line is the chip's hover reassurance, shown here because
+                a touch screen never shows a hover title. */}
+            <span className="flex max-w-[14rem] flex-col gap-0.5 whitespace-normal leading-snug">
+              <span data-testid="concurrency-cut-menu-label">{label}</span>
+              <span className="text-[11px] text-muted" data-testid="concurrency-cut-menu-hint">
+                {i18nT('components.concurrencyCutChip.queue_kept')}
+              </span>
+            </span>
           </span>
         </Item>
       )}

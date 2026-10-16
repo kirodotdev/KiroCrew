@@ -10228,12 +10228,13 @@
     "concurrencyCutChip": {
       "exec_reduced": "<0>Sous charge :</0> <1>{{cap}} agents sur {{configured}} à la fois</1>",
       "exec_reduced_queued": "<0>Sous charge :</0> <1>{{cap}} agents sur {{configured}} à la fois · {{queued}} en file d’attente</1>",
-      "gate_reduced": "<0>Sous charge :</0> <1>{{cap}} démarrages d’agent sur {{configured}} à la fois</1>",
+      "gate_reduced": "<0>Sous charge :</0> <1>{{cap}} nouveaux agents démarrent à la fois, au lieu de {{configured}}</1>",
       "gate_paused": "<0>Sous charge :</0> <1>les nouveaux agents attendent de démarrer</1>",
-      "hint": "Moins d’agents s’exécutent à la fois tant que le système est sous charge. Le travail en attente garde sa place et démarre dès qu’il y a de la place. Ouvre Tâches et capacité pour les détails.",
+      "hint": "Moins d’agents s’exécutent à la fois tant que le système est sous charge. Les agents en file d’attente gardent leur place et démarrent dès qu’il y a de la place. Ouvre Tâches et capacité pour les détails.",
+      "queue_kept": "Les agents en file d’attente gardent leur place et démarrent dès qu’il y a de la place.",
       "session_queued": "Cette session : {{queued}} en file d’attente",
       "session_queued_hint": "Les agents lancés par cette session attendent un emplacement libre tant que moins d’agents s’exécutent à la fois.",
-      "load_failed": "Impossible de lire l’état de la concurrence"
+      "load_failed": "Impossible de vérifier les agents en file d’attente"
     }
   },
   "hooks": {

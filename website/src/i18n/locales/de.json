@@ -10085,12 +10085,13 @@
     "concurrencyCutChip": {
       "exec_reduced": "<0>Unter Last:</0> <1>{{cap}} von {{configured}} Agenten gleichzeitig</1>",
       "exec_reduced_queued": "<0>Unter Last:</0> <1>{{cap}} von {{configured}} Agenten gleichzeitig · {{queued}} in der Warteschlange</1>",
-      "gate_reduced": "<0>Unter Last:</0> <1>{{cap}} von {{configured}} Agent-Starts gleichzeitig</1>",
+      "gate_reduced": "<0>Unter Last:</0> <1>neue Agenten starten zu {{cap}} gleichzeitig, reduziert von {{configured}}</1>",
       "gate_paused": "<0>Unter Last:</0> <1>neue Agenten warten auf den Start</1>",
-      "hint": "Solange das System unter Last steht, laufen weniger Agenten gleichzeitig. Wartende Arbeit behält ihren Platz und startet, sobald Platz frei wird. Details unter „Aufgaben & Kapazität“.",
+      "hint": "Solange das System unter Last steht, laufen weniger Agenten gleichzeitig. Agenten in der Warteschlange behalten ihren Platz und starten, sobald Platz frei wird. Details unter „Aufgaben & Kapazität“.",
+      "queue_kept": "Agenten in der Warteschlange behalten ihren Platz und starten, sobald Platz frei wird.",
       "session_queued": "Diese Sitzung: {{queued}} in der Warteschlange",
       "session_queued_hint": "Von dieser Sitzung gestartete Agenten warten auf einen freien Platz, solange weniger gleichzeitig laufen.",
-      "load_failed": "Der Parallelitätsstatus konnte nicht gelesen werden"
+      "load_failed": "Agenten in der Warteschlange konnten nicht geprüft werden"
     }
   },
   "hooks": {
