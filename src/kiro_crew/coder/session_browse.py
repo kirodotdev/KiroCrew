@@ -1,4 +1,4 @@
-"""Dashboard access to a remote session's workspace: files and terminal.
+"""Dashboard access to a remote session's workspace: files, terminal, health.
 
 A remote session's files live in its guest workspace, so the dashboard's file
 and terminal views cannot use the gateway's disk or shell. These ask the
@@ -41,7 +41,7 @@ _BROWSE_TIMEOUT = 45.0
 _MAX_PATH = 4096
 #: Largest file body the dashboard editor may save (the guest allows more).
 MAX_WRITE_BYTES = 1024 * 1024
-READ_OPS = ("list", "read", "git_status")
+READ_OPS = ("list", "read", "git_status", "stats")
 
 
 class NotRemote(LookupError):
@@ -181,6 +181,36 @@ async def write_session_file(
     return await _ask(await _resolve(session_key), "write", request)
 
 
+async def session_health(session_key: str) -> dict[str, Any]:
+    """Workspace identity, state and machine metrics for the environment card.
+
+    Never starts compute: a stopped workspace reports ``state: stopped`` and no
+    metrics, rather than being woken to be measured.
+    """
+    target = await _resolve(session_key)
+    base: dict[str, Any] = {"workspace": target.shell.workspace, "workdir": target.workdir}
+    try:
+        stats = await _ask(target, "browse", {"op": "stats", "path": "."})
+    except WorkspaceNotRunning:
+        return {**base, "state": "stopped"}
+    except SessionEnvironmentUnavailable as exc:
+        return {**base, "state": "unavailable", "error": str(exc)[:300]}
+    if "error" in stats:
+        return {**base, "state": "unavailable", "error": str(stats["error"])[:300]}
+    memory = stats.get("memory") if isinstance(stats, dict) else None
+    if isinstance(memory, dict):
+        # Feeds the [RESOURCES] line's workspace clause for this session.
+        from kiro_crew.session_environment import remember_remote_memory
+
+        try:
+            remember_remote_memory(
+                session_key, int(memory["available_bytes"]), int(memory["total_bytes"])
+            )
+        except (KeyError, TypeError, ValueError):
+            pass
+    return {**base, "state": "running", "stats": stats}
+
+
 _AHEAD_RE = re.compile(r"\[(?:[^\]]*\b)?ahead (\d+)")
 
 
@@ -209,15 +239,13 @@ def summarize_unsaved(status_output: str) -> str | None:
 async def unsaved_work(session_key: str) -> str | None:
     """Uncommitted or unpushed work in a RUNNING session workspace, or None.
 
-    The read never wakes stopped compute (``coder ssh --disable-autostart``): a
-    stopped or unreachable workspace is not measured, and None (nothing known)
-    is the answer.
+    Reads health first, which never wakes stopped compute: a stopped workspace
+    is not measured, and None (nothing known) is the answer.
     """
-    target = await _resolve(session_key)
-    try:
-        result = await _ask(target, "browse", {"op": "git_status", "path": "."})
-    except (WorkspaceNotRunning, SessionEnvironmentUnavailable):
+    health = await session_health(session_key)
+    if health.get("state") != "running":
         return None
+    result = await _ask(await _resolve(session_key), "browse", {"op": "git_status", "path": "."})
     if not isinstance(result, dict) or not result.get("git"):
         return None
     return summarize_unsaved(str(result.get("output") or ""))

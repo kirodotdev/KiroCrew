@@ -895,44 +895,144 @@ async def test_terminal_remote_slot_never_falls_back_to_a_local_shell(tmp_path, 
     assert argv == ["coder", "ssh", "--disable-autostart", "crewenv-x"] and why == ""
 
 
-def test_the_browse_mode_has_no_metrics_op(tmp_path):
+def test_stats_reports_numbers_only(tmp_path):
     from kiro_crew.remote_session import workspace_tools as wt
 
-    assert wt.browse(wt.Workspace(str(tmp_path)), {"op": "stats"}) == {
-        "error": "op must be list, read or git_status"
+    stats = wt.browse(wt.Workspace(str(tmp_path)), {"op": "stats"})
+    assert stats["cpus"] >= 1 and stats["disk"]["total_bytes"] > 0
+    assert set(stats) <= {
+        "root",
+        "os",
+        "arch",
+        "python",
+        "cpus",
+        "load",
+        "memory",
+        "disk",
+        "uptime_s",
     }
 
 
+@pytest.mark.parametrize("sample_kind", ["normal", "at_cap", "oversized", "invalid_encoding"])
+def test_guest_meminfo_reads_one_bounded_complete_sample(monkeypatch, sample_kind):
+    import io
+
+    from kiro_crew.remote_session import workspace_tools as wt
+
+    sample = b"MemTotal: 8192 kB\nMemAvailable: 2048 kB\n"
+    expected = {"MemTotal": 8192 * 1024, "MemAvailable": 2048 * 1024}
+    if sample_kind in {"at_cap", "oversized"}:
+        size = wt.MAX_READ_BYTES + (sample_kind == "oversized")
+        sample += b"#" * (size - len(sample))
+    if sample_kind == "oversized":
+        expected = {}
+    elif sample_kind == "invalid_encoding":
+        sample += b"\xff"
+        expected = {}
+    reads = []
+
+    class Sample(io.BytesIO):
+        def read(self, size=-1):
+            reads.append(size)
+            return super().read(size)
+
+    def fake_open(path, mode):
+        assert (path, mode) == ("/proc/meminfo", "rb")
+        return Sample(sample)
+
+    monkeypatch.setattr(wt, "open", fake_open, raising=False)
+    assert wt._meminfo() == expected
+    assert reads == [wt.MAX_READ_BYTES + 1]
+
+
 @sync
-async def test_unsaved_work_on_a_stopped_workspace_is_unknown_and_never_starts_it(
-    tmp_path, monkeypatch
-):
+async def test_health_reports_stopped_without_starting(tmp_path, monkeypatch):
     from kiro_crew.coder import session_browse
-    from kiro_crew.session_environment import SessionEnvironmentUnavailable
 
     async def fake_resolve(key):
         return session_browse._Target(SimpleNamespace(workspace="crewenv-x"), "/w", "b", tmp_path)
 
-    requests = []
-
     async def stopped(target, mode, request):
-        requests.append((mode, request))
         raise session_browse.WorkspaceNotRunning("stopped")
 
     monkeypatch.setattr(session_browse, "_resolve", fake_resolve)
     monkeypatch.setattr(session_browse, "_ask", stopped)
-    assert await session_browse.unsaved_work("k") is None
-    # One read-only git view, nothing that could start compute.
-    assert requests == [("browse", {"op": "git_status", "path": "."})]
-
-    async def unreachable(target, mode, request):
-        raise SessionEnvironmentUnavailable("the remote workspace did not answer")
-
-    monkeypatch.setattr(session_browse, "_ask", unreachable)
-    assert await session_browse.unsaved_work("k") is None
+    assert await session_browse.session_health("k") == {
+        "workspace": "crewenv-x",
+        "workdir": "/w",
+        "state": "stopped",
+    }
 
     async def running(target, mode, request):
-        return {"git": True, "output": "## main...origin/main [ahead 2]\n M a.py\n"}
+        assert request == {"op": "stats", "path": "."}
+        return {"cpus": 2}
 
     monkeypatch.setattr(session_browse, "_ask", running)
-    assert await session_browse.unsaved_work("k") == "1 uncommitted file, 2 unpushed commits"
+    health = await session_browse.session_health("k")
+    assert health["state"] == "running" and health["stats"] == {"cpus": 2}
+
+
+@sync
+async def test_health_caches_the_workspace_memory_for_the_resources_line(tmp_path, monkeypatch):
+    from kiro_crew import session_environment as se
+    from kiro_crew.coder import session_browse
+
+    async def fake_resolve(key):
+        return session_browse._Target(SimpleNamespace(workspace="crewenv-x"), "/w", "b", tmp_path)
+
+    async def running(target, mode, request):
+        return {"memory": {"available_bytes": 3 * 1024**3, "total_bytes": 8 * 1024**3}}
+
+    monkeypatch.setattr(session_browse, "_resolve", fake_resolve)
+    monkeypatch.setattr(session_browse, "_ask", running)
+    se.forget_remote_workspace("k-mem")
+    try:
+        await session_browse.session_health("k-mem")
+        cached = se.remote_memory_for("k-mem")
+        assert cached is not None and cached[:2] == (3 * 1024**3, 8 * 1024**3)
+        # Fresh: a context build does not start another read.
+        called = []
+        monkeypatch.setattr(session_browse, "session_health", lambda key: called.append(key))
+        se.refresh_remote_memory_soon("k-mem")
+        assert called == [] and "k-mem" not in se._remote_memory_refreshing
+        # Switching back to local drops the reading.
+        se.forget_remote_workspace("k-mem")
+        assert se.remote_memory_for("k-mem") is None
+    finally:
+        se.forget_remote_workspace("k-mem")
+
+
+@sync
+async def test_a_stale_workspace_memory_reading_refreshes_in_the_background(monkeypatch):
+    import asyncio
+
+    from kiro_crew import session_environment as se
+    from kiro_crew.coder import session_browse
+
+    calls = []
+
+    async def fake_health(key):
+        calls.append(key)
+        se.remember_remote_memory(key, 5 * 1024**3, 8 * 1024**3)
+        return {}
+
+    monkeypatch.setattr(session_browse, "session_health", fake_health)
+    se.forget_remote_workspace("k-stale")
+    try:
+        se.refresh_remote_memory_soon("k-stale")
+        se.refresh_remote_memory_soon("k-stale")  # one read in flight at a time
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert calls == ["k-stale"]
+        cached = se.remote_memory_for("k-stale")
+        assert cached is not None and cached[0] == 5 * 1024**3
+        assert "k-stale" not in se._remote_memory_refreshing
+    finally:
+        se.forget_remote_workspace("k-stale")
+
+
+def test_workspace_memory_refresh_is_a_no_op_without_an_event_loop():
+    from kiro_crew import session_environment as se
+
+    se.refresh_remote_memory_soon("k-noloop")
+    assert "k-noloop" not in se._remote_memory_refreshing

@@ -19026,6 +19026,23 @@
       "conflict": "打开后该文件已在会话环境中被修改。请先刷新以加载当前版本，再保存。",
       "openTerminal": "在此会话环境中打开终端"
     },
+    "health": {
+      "running": "运行中",
+      "stopped": "已停止",
+      "notCreated": "尚未创建",
+      "unavailable": "不可用",
+      "error": "无法读取环境指标。",
+      "workspace": "环境",
+      "directory": "目录",
+      "cpu": "CPU 核心",
+      "cpuValue": "{{cpus}} · {{arch}}",
+      "load": "负载（1、5、15 分钟）",
+      "memory": "内存",
+      "disk": "磁盘",
+      "free": "可用 {{free}}，共 {{total}}",
+      "uptime": "运行时长",
+      "stoppedHint": "发送下一条消息时会话环境会启动。空闲一小时后会自动停止。"
+    },
     "verifyHint": "检查网关是否已登录 Coder，以及每个配置文件的模板是否存在。不会启动任何资源，也不会读取任何凭据。",
     "checkSaveFirst": "保存更改后即可检查。",
     "checkRunning": "正在检查…",

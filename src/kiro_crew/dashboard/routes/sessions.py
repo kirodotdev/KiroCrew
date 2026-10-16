@@ -112,6 +112,10 @@ def register(app: web.Application) -> None:
         "/api/chat/slots/{slot}/environment/browse",
         session_environment_handlers.api_chat_slot_environment_browse,
     )
+    app.router.add_get(
+        "/api/chat/slots/{slot}/environment/health",
+        session_environment_handlers.api_chat_slot_environment_health,
+    )
     app.router.add_put(
         "/api/chat/slots/{slot}/environment/file",
         session_environment_handlers.api_chat_slot_environment_file_put,

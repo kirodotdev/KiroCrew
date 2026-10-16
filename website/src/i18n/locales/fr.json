@@ -19586,6 +19586,23 @@
       "conflict": "Le fichier a changé dans l’environnement de session depuis son ouverture. Actualise pour charger la version actuelle avant d’enregistrer.",
       "openTerminal": "Ouvrir un terminal dans cet environnement de session"
     },
+    "health": {
+      "running": "En cours",
+      "stopped": "Arrêté",
+      "notCreated": "Pas encore créé",
+      "unavailable": "Indisponible",
+      "error": "Impossible de lire les métriques de l’environnement.",
+      "workspace": "Environnement",
+      "directory": "Répertoire",
+      "cpu": "Cœurs CPU",
+      "cpuValue": "{{cpus}} · {{arch}}",
+      "load": "Charge (1, 5, 15 min)",
+      "memory": "Mémoire",
+      "disk": "Disque",
+      "free": "{{free}} libres sur {{total}}",
+      "uptime": "Disponibilité",
+      "stoppedHint": "L’environnement de session démarre avec ton prochain message. Il s’arrête seul après une heure d’inactivité."
+    },
     "verifyHint": "Vérifie que la passerelle est connectée à Coder et que le modèle de chaque profil existe. Rien n’est démarré et aucun identifiant n’est lu.",
     "checkSaveFirst": "Enregistre tes modifications pour les vérifier.",
     "checkRunning": "Vérification…",

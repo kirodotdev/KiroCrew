@@ -19586,6 +19586,23 @@
       "conflict": "O arquivo mudou no ambiente de sessão desde que você o abriu. Atualize para carregar a versão atual antes de salvar.",
       "openTerminal": "Abrir um terminal neste ambiente de sessão"
     },
+    "health": {
+      "running": "Em execução",
+      "stopped": "Parado",
+      "notCreated": "Ainda não criado",
+      "unavailable": "Indisponível",
+      "error": "Não foi possível ler as métricas do ambiente.",
+      "workspace": "Ambiente",
+      "directory": "Diretório",
+      "cpu": "Núcleos de CPU",
+      "cpuValue": "{{cpus}} · {{arch}}",
+      "load": "Carga (1, 5, 15 min)",
+      "memory": "Memória",
+      "disk": "Disco",
+      "free": "{{free}} livres de {{total}}",
+      "uptime": "Tempo ativo",
+      "stoppedHint": "O ambiente de sessão inicia com sua próxima mensagem. Ele para sozinho após uma hora ocioso."
+    },
     "verifyHint": "Verifica se o gateway está conectado ao Coder e se o modelo de cada perfil existe. Nada é iniciado e nenhuma credencial é lida.",
     "checkSaveFirst": "Salve suas alterações para verificá-las.",
     "checkRunning": "Verificando…",

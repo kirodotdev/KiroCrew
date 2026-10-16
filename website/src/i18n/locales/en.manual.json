@@ -9516,6 +9516,23 @@
       "conflict": "The file changed in the session environment since you opened it. Refresh to load the current version before saving.",
       "openTerminal": "Open a terminal in this session environment"
     },
+    "health": {
+      "running": "Running",
+      "stopped": "Stopped",
+      "notCreated": "Not created yet",
+      "unavailable": "Unavailable",
+      "error": "Could not read the environment's metrics.",
+      "workspace": "Environment",
+      "directory": "Directory",
+      "cpu": "CPU cores",
+      "cpuValue": "{{cpus}} · {{arch}}",
+      "load": "Load (1, 5, 15 min)",
+      "memory": "Memory",
+      "disk": "Disk",
+      "free": "{{free}} free of {{total}}",
+      "uptime": "Uptime",
+      "stoppedHint": "The session environment starts with your next message. It stops on its own after an idle hour."
+    },
     "verifyHint": "Checks that the gateway is signed in to Coder and that each profile's template exists. Nothing is started and no credential is read.",
     "checkSaveFirst": "Save your changes to check them.",
     "checkRunning": "Checking…",

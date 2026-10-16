@@ -6,7 +6,7 @@ import { fmtElapsed } from '../i18n/format'
 
 /* The slot-environment query and the hooks other surfaces read it through.
  * Kept apart from SessionEnvironmentChip so the chat bundle can import these
- * without pulling the chip (and its menu) in eagerly: the
+ * without pulling the chip (and its popover/health card) in eagerly: the
  * chip itself is lazy-loaded at its render site. */
 
 /** Start-stage poll cadence; also what ticks the elapsed time on the chip. */

@@ -3,8 +3,8 @@
 The first turn reserves a registry row on profile A's template, then the create
 fails, so no workspace exists. The owner may still switch the session to profile
 B on another template, and the next turn creates the workspace from B. The row
-must then name B's template, because browse and the retention sweep verify
-the live workspace against the row.
+must then name B's template, because browse, health and the retention sweep
+verify the live workspace against the row.
 """
 
 from __future__ import annotations

@@ -299,7 +299,7 @@ class CoderSessionEnvironments:
         # Reopening an archived session keeps its workspace: clear the pending
         # deletion before anything else, or refuse while the sweep deletes it.
         # Registry calls run on a worker thread: its file lock is single-shot on
-        # the event loop, so a sweeper or browse read holding it would refuse
+        # the event loop, so a sweeper or health poll holding it would refuse
         # the start instead of waiting.
         from kiro_crew.coder.retention import resume_check
 
@@ -354,8 +354,8 @@ class CoderSessionEnvironments:
                 if binding.template != profile.template:
                     # No workspace was ever created for this row, so the session
                     # may have moved to a profile on another template. Record the
-                    # template the create uses: browse and the retention sweep
-                    # verify the live workspace against the row's template.
+                    # template the create uses: browse, health and the retention
+                    # sweep verify the live workspace against the row's template.
                     binding = await asyncio.to_thread(
                         self.registry.replace, replace(binding, template=profile.template)
                     )

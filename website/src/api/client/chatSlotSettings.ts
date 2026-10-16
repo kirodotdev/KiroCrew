@@ -8,6 +8,7 @@ import { withDeadline } from '../../lib/withDeadline'
 import type { ClientTransport } from './transport'
 import type {
   RemoteDirListing,
+  RemoteEnvironmentHealth,
   RemoteFileContent,
   SessionEnvironmentsCheck,
   SessionEnvironmentWorkspace,
@@ -89,6 +90,9 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
       get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment/browse?op=list&path=' + encodeURIComponent(path)).then(j) as Promise<RemoteDirListing>,
     chatSlotEnvironmentRead: (slot: string, path: string) =>
       get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment/browse?op=read&path=' + encodeURIComponent(path)).then(j) as Promise<RemoteFileContent>,
+    /** State and machine metrics of a remote session's workspace (never starts it). */
+    chatSlotEnvironmentHealth: (slot: string) =>
+      get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment/health').then(j) as Promise<RemoteEnvironmentHealth>,
     /** Read-only readiness check: Coder sign-in and each profile's template. */
     sessionEnvironmentsCheck: () =>
       post('/api/session-environments/check').then(j) as Promise<SessionEnvironmentsCheck>,

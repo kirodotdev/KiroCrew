@@ -332,7 +332,7 @@ Rows with no stamp are left to Coder's auto-stop.
 
 Archiving checks for work that would be lost before it stops anything:
 `retention.warn_unsaved_work` reads `git status` in each RUNNING remote
-workspace (`coder ssh --disable-autostart`, so stopped compute is never woken), bounded by
+workspace (health first, so stopped compute is never woken), bounded by
 `UNSAVED_CHECK_SECS`, and publishes one `system.agent` notice naming the
 uncommitted files, unpushed commits or never-pushed branch
 (`session_browse.summarize_unsaved`). It never blocks or fails the archive.
@@ -396,8 +396,17 @@ that slot's session to `coder ssh --disable-autostart <workspace>` on the
 gateway and refuses with a 409 rather than opening a local shell when the
 session is not remote or its workspace is unavailable.
 
-Once a remote session is fixed, its composer chip is a status, not a control.
-Only a choice back to this machine prewarms, since prewarming a remote one would start
+Once a remote session is fixed, its composer chip opens `EnvironmentHealthCard`
+on hover (or focus and click): the workspace name, guest directory, state, CPU
+cores and architecture, load averages, memory and disk meters, and uptime. It
+reads `GET /api/chat/slots/{slot}/environment/health` (owner-only), which runs the
+browse mode's read-only `stats` op (numbers and the platform only, no
+environment or process list) and polls every 15 seconds only while the card is
+open. The guest's memory sample uses the workspace read-byte ceiling; oversized
+or undecodable samples omit memory rather than publish a partial reading.
+A stopped workspace reports `state: stopped` and is never started to be
+measured. Only a
+choice back to this machine prewarms, since prewarming a remote one would start
 billed compute on a menu pick. Coder lifecycle calls (`coder list`, `create`,
 `start`) run under the Coder client's output and timeout bounds, never the
 64 KB guest-command bound, because their JSON grows with the deployment.
@@ -445,12 +454,19 @@ held to the gateway's `spawn_min_memory_gb` floor, only to the reserve for its
 local engine ([subagent](subagent.md)). The per-message context names the guest directory for a remote session
 (`session_environment.remember_remote_workspace`, set and cleared at every
 runtime start) in place of the gateway's `[PROJECT]` path, and rewrites the
-`[RESOURCES]` line (`ResourceStatus.context_line(remote=True)`) to scope the
-reading to the gateway. A tight gateway, which runs the engine and its
-subagents, is named as the gateway machine and only flags sub-agent waves; the
-line says the workspace is a separate machine it does not measure, so builds,
-tests and shells there are not narrowed for it. The line stays silent when the
-gateway is clear.
+`[RESOURCES]` line (`ResourceStatus.context_line(remote=True, workspace_memory=...)`)
+to judge each machine on its own reading. A tight gateway, which runs the engine
+and its subagents, is named as the gateway machine and only flags sub-agent
+waves. The workspace machine's memory comes from the last `session_health`
+reading (`session_environment.remember_remote_memory`), which context
+assembly reads from cache and refreshes in the background at most once a
+minute (`refresh_remote_memory_soon`), so a turn never waits on the remote
+machine and a stopped one is never woken to be measured. A reading older than
+five minutes is ignored. When the workspace is tight the line gives the
+"targeted tests, serialize builds" advice for that machine, when it is healthy
+the line reports its free memory so a tight gateway is not misread as the
+workspace, and without a reading it says the workspace is not measured. The
+line stays silent when both machines are clear.
 
 A reversed transport, in which the worker dials out to the gateway with a
 single-use enrolment token, would remove the provider tunnel from the data path
@@ -470,7 +486,10 @@ knows its compute will be reclaimed retires cleanly: it accepts no new turns,
 finishes or cancels the turn in flight, reports release to the gateway, and
 exits. Teardown is owned by the provider adapter and is idempotent, it deletes
 only resources whose ownership record the gateway wrote, and it never stops a
-shared parent resource while another session still uses it.
+shared parent resource while another session still uses it. Each provider
+exposes its workspace's health (the slot environment `health` endpoint above),
+and the dashboard shows it rather than inferring readiness from saved
+configuration.
 
 The Coder ownership registry requires a non-empty `deployment_id` at
 allocation and writes it before workspace creation; reusing a row requires the

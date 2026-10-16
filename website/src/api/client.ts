@@ -938,6 +938,23 @@ export interface RemoteFileContent {
   truncated: boolean
 }
 
+export interface RemoteEnvironmentHealth {
+  state: 'running' | 'stopped' | 'unavailable' | 'not_created'
+  workspace?: string
+  workdir?: string
+  error?: string
+  stats?: {
+    os: string
+    arch: string
+    python: string
+    cpus: number
+    load?: number[]
+    memory?: { total_bytes: number; available_bytes: number }
+    disk?: { total_bytes: number; free_bytes: number }
+    uptime_s?: number
+  }
+}
+
 export interface SessionEnvironmentsCheck {
   coder: { ok: boolean; owner?: string; error?: string }
   profiles: { id: string; ok: boolean; error?: string }[]

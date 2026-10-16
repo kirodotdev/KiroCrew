@@ -807,15 +807,49 @@ def test_a_remote_session_line_scopes_the_reading_to_the_gateway(free_gb):
     assert f"~{free_gb:.1f} GB free" in remote
 
 
-def test_a_clear_gateway_keeps_a_remote_session_silent():
+_GIB = 1024**3
+
+
+def _status(free_gb):
     from kiro_crew import resource_status as rs
 
-    status = rs.ResourceStatus(
-        available_gb=20.0,
+    if free_gb <= 1.0:
+        posture = rs.POSTURE_CRITICAL
+    elif free_gb <= 4.0:
+        posture = rs.POSTURE_TIGHT
+    else:
+        posture = rs.POSTURE_AMPLE
+    return rs.ResourceStatus(
+        available_gb=free_gb,
         cpu_count=8,
         load_per_cpu=None,
-        posture=rs.POSTURE_AMPLE,
+        posture=posture,
         pressure_gb=4.0,
         critical_gb=1.0,
     )
-    assert status.context_line(remote=True) == ""
+
+
+def test_a_healthy_workspace_reading_is_reported_beside_a_tight_gateway():
+    line = _status(3.0).context_line(remote=True, workspace_memory=(12 * _GIB, 16 * _GIB))
+    assert "The gateway machine" in line and "~3.0 GB free" in line
+    assert "~12.0 of 16 GB free" in line
+    assert "not limited by the gateway" in line
+    assert "targeted tests" not in line and "does not measure" not in line
+
+
+def test_a_tight_workspace_raises_the_line_even_with_a_healthy_gateway():
+    line = _status(20.0).context_line(remote=True, workspace_memory=(2 * _GIB, 8 * _GIB))
+    assert line.startswith("[RESOURCES] Your remote workspace machine is tight")
+    assert "~2.0 of 8 GB free" in line and "targeted tests" in line
+    assert "gateway machine" not in line
+
+
+def test_both_tight_reports_each_machine_with_its_own_advice():
+    line = _status(3.0).context_line(remote=True, workspace_memory=(1 * _GIB, 8 * _GIB))
+    assert "The gateway machine" in line and "sub-agent waves small" in line
+    assert "workspace machine is tight" in line and "targeted tests" in line
+
+
+def test_both_healthy_stays_silent():
+    assert _status(20.0).context_line(remote=True, workspace_memory=(12 * _GIB, 16 * _GIB)) == ""
+    assert _status(20.0).context_line(remote=True) == ""

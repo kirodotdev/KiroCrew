@@ -456,11 +456,67 @@ def browse(ws: Workspace, request: Any) -> Dict[str, Any]:
             }
         if op == "git_status":
             return _git_status(ws)
+        if op == "stats":
+            return _stats(ws)
     except ToolError as exc:
         return {"error": str(exc)}
     except OSError as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}
-    return {"error": "op must be list, read or git_status"}
+    return {"error": "op must be list, read, git_status or stats"}
+
+
+def _meminfo() -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    try:
+        with open("/proc/meminfo", "rb") as handle:
+            sample = handle.read(MAX_READ_BYTES + 1)
+        # Omit an oversized sample rather than report a partially read metric.
+        if len(sample) > MAX_READ_BYTES:
+            return out
+        for line in sample.decode("ascii").splitlines():
+            key, _, rest = line.partition(":")
+            fields = rest.split()
+            if key in ("MemTotal", "MemAvailable") and fields and fields[0].isdigit():
+                out[key] = int(fields[0]) * 1024
+    except (OSError, UnicodeDecodeError):
+        pass
+    return out
+
+
+def _stats(ws: Workspace) -> Dict[str, Any]:
+    """Read-only machine metrics for the dashboard's environment card.
+
+    Only numbers and the platform: no environment, no process list, no paths
+    beyond the workspace root the caller already knows.
+    """
+    import platform
+    import shutil
+
+    result: Dict[str, Any] = {
+        "root": ws.root,
+        "os": platform.system(),
+        "arch": platform.machine(),
+        "python": platform.python_version(),
+        "cpus": os.cpu_count() or 0,
+    }
+    try:
+        result["load"] = [round(v, 2) for v in os.getloadavg()]
+    except (OSError, AttributeError):
+        pass
+    mem = _meminfo()
+    if "MemTotal" in mem and "MemAvailable" in mem:
+        result["memory"] = {"total_bytes": mem["MemTotal"], "available_bytes": mem["MemAvailable"]}
+    try:
+        disk = shutil.disk_usage(ws.root)
+        result["disk"] = {"total_bytes": disk.total, "free_bytes": disk.free}
+    except OSError:
+        pass
+    try:
+        with open("/proc/uptime", "r") as handle:
+            result["uptime_s"] = int(float(handle.read().split()[0]))
+    except (OSError, ValueError, IndexError):
+        pass
+    return result
 
 
 def _git_status(ws: Workspace) -> Dict[str, Any]:

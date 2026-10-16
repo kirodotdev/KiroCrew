@@ -75,6 +75,71 @@ def remember_remote_workspace(session_key: str | None, name: str, workdir: str) 
 def forget_remote_workspace(session_key: str | None) -> None:
     if session_key:
         _remote_workspaces.pop(session_key, None)
+        _remote_memory.pop(session_key, None)
+
+
+# -- the remote workspace's own memory ------------------------------------------------
+#
+# The [RESOURCES] line measures the gateway. For a remote session the machine
+# that runs its builds is the workspace, so the line also reports that machine's
+# memory, from the last health reading (``session_browse.session_health``).
+# In-memory, bounded, and refreshed in the background at most once a minute per
+# session, so building a turn's context never waits on a remote round trip.
+REMOTE_MEMORY_MAX_AGE_SECS = 60.0
+_REMOTE_MEMORY_MAX = 512
+#: session key -> (available bytes, total bytes, monotonic time read)
+_remote_memory: dict[str, tuple[int, int, float]] = {}
+_remote_memory_refreshing: set[str] = set()
+
+
+def remember_remote_memory(session_key: str | None, available: int, total: int) -> None:
+    """Cache one reading of ``session_key``'s remote workspace memory, in bytes."""
+    if not session_key or available < 0 or total <= 0:
+        return
+    if session_key not in _remote_memory and len(_remote_memory) >= _REMOTE_MEMORY_MAX:
+        _remote_memory.pop(next(iter(_remote_memory)))
+    _remote_memory[session_key] = (int(available), int(total), time.monotonic())
+
+
+def remote_memory_for(session_key: str | None) -> tuple[int, int, float] | None:
+    """``(available bytes, total bytes, age seconds)`` of the last reading, or None."""
+    entry = _remote_memory.get(session_key or "")
+    if entry is None:
+        return None
+    return entry[0], entry[1], time.monotonic() - entry[2]
+
+
+def refresh_remote_memory_soon(session_key: str | None) -> None:
+    """Start a background health read when the cached reading is missing or stale.
+
+    No-op without a running event loop, or while one is already in flight for
+    this session. Never wakes stopped compute: ``session_health`` reports a
+    stopped workspace without measuring it, and then nothing is cached.
+    """
+    import asyncio
+
+    if not session_key or session_key in _remote_memory_refreshing:
+        return
+    cached = remote_memory_for(session_key)
+    if cached is not None and cached[2] < REMOTE_MEMORY_MAX_AGE_SECS:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    _remote_memory_refreshing.add(session_key)
+
+    async def refresh() -> None:
+        try:
+            from kiro_crew.coder.session_browse import session_health
+
+            await asyncio.wait_for(session_health(session_key), 30)
+        except Exception:  # noqa: BLE001 -- a missing reading just omits the clause
+            pass
+        finally:
+            _remote_memory_refreshing.discard(session_key)
+
+    loop.create_task(refresh())
 
 
 #: Sessions whose conversation outlived its workspace: the runtime that just

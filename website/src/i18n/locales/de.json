@@ -19306,6 +19306,23 @@
       "conflict": "Die Datei hat sich in der Sitzungsumgebung geändert, seit du sie geöffnet hast. Aktualisiere, um die aktuelle Version zu laden, bevor du speicherst.",
       "openTerminal": "Terminal in dieser Sitzungsumgebung öffnen"
     },
+    "health": {
+      "running": "Läuft",
+      "stopped": "Gestoppt",
+      "notCreated": "Noch nicht erstellt",
+      "unavailable": "Nicht verfügbar",
+      "error": "Die Metriken der Umgebung konnten nicht gelesen werden.",
+      "workspace": "Umgebung",
+      "directory": "Verzeichnis",
+      "cpu": "CPU-Kerne",
+      "cpuValue": "{{cpus}} · {{arch}}",
+      "load": "Last (1, 5, 15 Min.)",
+      "memory": "Arbeitsspeicher",
+      "disk": "Datenträger",
+      "free": "{{free}} von {{total}} frei",
+      "uptime": "Laufzeit",
+      "stoppedHint": "Die Sitzungsumgebung startet mit deiner nächsten Nachricht. Nach einer Stunde Leerlauf stoppt sie von selbst."
+    },
     "verifyHint": "Prüft, ob das Gateway bei Coder angemeldet ist und ob die Vorlage jedes Profils existiert. Es wird nichts gestartet und keine Anmeldedaten werden gelesen.",
     "checkSaveFirst": "Speichere deine Änderungen, um sie zu prüfen.",
     "checkRunning": "Wird geprüft…",

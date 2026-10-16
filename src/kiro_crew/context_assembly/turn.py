@@ -387,7 +387,22 @@ def rail_parts(
             from kiro_crew.resource_status import probe as _probe_resources
 
             _rstatus = _probe_resources()
-            _rline = _rstatus.context_line(remote=remote is not None)
+            _wsmem = None
+            if remote is not None:
+                from kiro_crew.session_environment import (
+                    REMOTE_MEMORY_MAX_AGE_SECS,
+                    refresh_remote_memory_soon,
+                    remote_memory_for,
+                )
+
+                # Cached only: the read never waits on the remote machine.
+                # A stale reading is still used (it ages out at 5 minutes)
+                # while a background refresh replaces it for the next turn.
+                _cached = remote_memory_for(session_key)
+                if _cached is not None and _cached[2] < 5 * REMOTE_MEMORY_MAX_AGE_SECS:
+                    _wsmem = (_cached[0], _cached[1])
+                refresh_remote_memory_soon(session_key)
+            _rline = _rstatus.context_line(remote=remote is not None, workspace_memory=_wsmem)
             if _rline:
                 parts.append(_rline + "\n\n")
                 logger.info(

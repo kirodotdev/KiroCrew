@@ -460,12 +460,16 @@ class ResourceStatus:
     def _load_suffix(self) -> str:
         return f", load {self.load_per_cpu}/core" if self.load_per_cpu is not None else ""
 
-    def context_line(self, *, remote: bool = False) -> str:
+    def context_line(
+        self, *, remote: bool = False, workspace_memory: "tuple[int, int] | None" = None
+    ) -> str:
         """The compact ``[RESOURCES]`` advisory injected on a pressured turn.
 
         ``remote`` is set for a session whose workspace is a remote session
         environment: the line then scopes the reading to the gateway machine and
         says the workspace is not measured, instead of advising lighter builds.
+        ``workspace_memory`` (available, total bytes), when a recent reading of
+        that remote machine exists, is reported too and judged on its own.
 
         Returns ``""`` when the line is disabled (``pressure_gb <= 0`` — the
         documented off switch), or when neither ceiling is near: memory is ample
@@ -483,7 +487,7 @@ class ResourceStatus:
         if self.pressure_gb <= 0:
             return ""  # off switch: disables the line regardless of critical tier
         if remote:
-            return self._remote_line()
+            return self._remote_line(workspace_memory)
         if not self.under_pressure:
             if self.memory_pressure_held:
                 return self._kernel_pressure_line()
@@ -525,36 +529,57 @@ class ResourceStatus:
             "the resource_status tool to re-check."
         ) + self._tasks_clause()
 
-    def _remote_line(self) -> str:
+    def _remote_line(self, workspace_memory: "tuple[int, int] | None") -> str:
         """The line for a session whose workspace is a remote machine.
 
-        Only the gateway (engine and subagents) is measured, so the advice is
-        about sub-agent waves, never builds or tests; silent when it is clear.
+        Two machines, each judged on its own reading: the gateway (engine and
+        subagents) and the workspace (builds, tests, shells). Build advice is
+        given only when the WORKSPACE is tight, and sub-agent advice only when
+        the gateway is; silent when both are clear.
         """
+        ws_text, ws_tight = "", False
+        if workspace_memory is not None:
+            available, total = workspace_memory
+            ws_gb = available / 1024**3
+            ws_tight = ws_gb <= self.pressure_gb
+            ws_text = f"~{ws_gb:.1f} of {total / 1024**3:.0f} GB free"
         # The macOS kernel pressure level describes the gateway, like the figure.
-        if not (self.under_pressure or self.memory_pressure_held):
+        gateway_pressed = self.under_pressure or self.memory_pressure_held
+        if not gateway_pressed and not ws_tight:
             if self.slice_tasks_tight:
                 tasks_line = self._tasks_only_line().removeprefix("[RESOURCES] ")
                 return "[RESOURCES] (gateway machine) " + tasks_line
             return ""
+        parts = []
         if self.under_pressure:
             level = "CRITICALLY low" if self.posture == POSTURE_CRITICAL else "tight"
-            gateway = (
+            parts.append(
                 f"The gateway machine (where this session's engine and subagents run) "
                 f"is {level} on memory (~{self.available_gb:.1f} GB free"
                 f"{self._load_suffix()}), so keep sub-agent waves small." + self._pressure_clause()
             )
-        else:
-            gateway = (
+        elif gateway_pressed:
+            parts.append(
                 "The gateway machine (where this session's engine and subagents run) "
                 "is under kernel memory pressure, so keep sub-agent waves small."
                 + self._pressure_clause()
             )
-        workspace = (
-            "Your workspace is a separate remote machine this does not measure, so "
-            "do not narrow builds, tests or shells there for it."
-        )
-        return "[RESOURCES] " + gateway + " " + workspace + self._tasks_clause()
+        if ws_tight:
+            parts.append(
+                f"Your remote workspace machine is tight on memory ({ws_text}): before "
+                "heavy work there, prefer targeted tests and serialize memory-heavy builds."
+            )
+        elif ws_text:
+            parts.append(
+                f"Your remote workspace machine is a separate machine with {ws_text}, "
+                "so builds, tests and shells there are not limited by the gateway."
+            )
+        else:
+            parts.append(
+                "Your workspace is a separate remote machine this does not measure, so "
+                "do not narrow builds, tests or shells there for it."
+            )
+        return "[RESOURCES] " + " ".join(parts) + self._tasks_clause()
 
     def _tasks_clause(self) -> str:
         """Sentence appended to a memory advisory when tasks are ALSO near the cap."""

@@ -19586,6 +19586,23 @@
       "conflict": "El archivo cambió en el entorno de sesión desde que lo abrió. Actualice para cargar la versión actual antes de guardar.",
       "openTerminal": "Abrir una terminal en este entorno de sesión"
     },
+    "health": {
+      "running": "En ejecución",
+      "stopped": "Detenido",
+      "notCreated": "Aún no creado",
+      "unavailable": "No disponible",
+      "error": "No se pudieron leer las métricas del entorno.",
+      "workspace": "Entorno",
+      "directory": "Directorio",
+      "cpu": "Núcleos de CPU",
+      "cpuValue": "{{cpus}} · {{arch}}",
+      "load": "Carga (1, 5, 15 min)",
+      "memory": "Memoria",
+      "disk": "Disco",
+      "free": "{{free}} libres de {{total}}",
+      "uptime": "Tiempo activo",
+      "stoppedHint": "El entorno de sesión se inicia con su próximo mensaje. Se detiene solo tras una hora inactivo."
+    },
     "verifyHint": "Comprueba que el gateway haya iniciado sesión en Coder y que exista la plantilla de cada perfil. No se inicia nada ni se lee ninguna credencial.",
     "checkSaveFirst": "Guarda los cambios para comprobarlos.",
     "checkRunning": "Comprobando…",

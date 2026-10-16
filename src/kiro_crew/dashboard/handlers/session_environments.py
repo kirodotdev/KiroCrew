@@ -244,6 +244,35 @@ async def api_chat_slot_environment_browse(request: web.Request) -> web.Response
     return web.json_response(result)
 
 
+async def api_chat_slot_environment_health(request: web.Request) -> web.Response:
+    """``GET .../environment/health`` -- the remote workspace's state and metrics.
+
+    Owner-only. A stopped workspace reports ``state: stopped`` and is never
+    started to be measured.
+    """
+    if (
+        refusal := await require_owner_dashboard_request(request, "chat.slot_environment_health")
+    ) is not None:
+        return refusal
+    key = _slot_session_key(request)
+    if key is None:
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    from kiro_crew.coder.session_browse import NotRemote, WorkspaceNotRunning, session_health
+    from kiro_crew.session_environment import SessionEnvironmentUnavailable
+
+    try:
+        return web.json_response(await session_health(key))
+    except NotRemote:
+        return web.json_response(
+            {"error": "this session runs on this machine", "code": "not_remote"}, status=409
+        )
+    except WorkspaceNotRunning as exc:
+        # Not created yet: report it as a state, the card's normal case.
+        return web.json_response({"state": "not_created", "error": str(exc)})
+    except SessionEnvironmentUnavailable as exc:
+        return web.json_response({"error": str(exc), "code": "unavailable"}, status=502)
+
+
 async def api_chat_slot_environment_file_put(request: web.Request) -> web.Response:
     """``PUT .../environment/file`` body ``{path, content, expected?}`` -- save a remote file.
 

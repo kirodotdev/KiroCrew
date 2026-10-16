@@ -19026,6 +19026,23 @@
       "conflict": "연 뒤에 세션 환경에서 파일이 바뀌었습니다. 저장하기 전에 새로고침해서 현재 버전을 불러오세요.",
       "openTerminal": "이 세션 환경에서 터미널 열기"
     },
+    "health": {
+      "running": "실행 중",
+      "stopped": "중지됨",
+      "notCreated": "아직 생성되지 않음",
+      "unavailable": "사용할 수 없음",
+      "error": "환경 지표를 읽을 수 없습니다.",
+      "workspace": "환경",
+      "directory": "디렉터리",
+      "cpu": "CPU 코어",
+      "cpuValue": "{{cpus}} · {{arch}}",
+      "load": "부하(1, 5, 15분)",
+      "memory": "메모리",
+      "disk": "디스크",
+      "free": "{{total}} 중 {{free}} 남음",
+      "uptime": "가동 시간",
+      "stoppedHint": "다음 메시지를 보내면 세션 환경이 시작됩니다. 한 시간 동안 유휴 상태면 자동으로 중지됩니다."
+    },
     "verifyHint": "게이트웨이가 Coder에 로그인되어 있는지, 각 프로필의 템플릿이 있는지 확인합니다. 아무것도 시작하지 않으며 자격 증명도 읽지 않습니다.",
     "checkSaveFirst": "확인하려면 변경 사항을 저장하세요.",
     "checkRunning": "확인 중…",
