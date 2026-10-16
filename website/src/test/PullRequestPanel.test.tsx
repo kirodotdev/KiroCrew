@@ -215,6 +215,37 @@ describe('PullRequestPanel', () => {
     expect(within(githubTab).queryByLabelText('Checks running')).not.toBeInTheDocument()
   })
 
+  it('clears a stale cached status on the selected tab when its own read fails outright', async () => {
+    // The selected pull request has no loaded payload AT ALL (a revoked
+    // token, say): the full "Could not load" card renders over it. The
+    // cached status from an earlier successful load must not survive that --
+    // a lingering green tick would contradict the error card sitting right
+    // next to it.
+    mockApi.pullRequestSource.mockImplementation((url: string) => Promise.resolve(
+      new URL(url).hostname === 'gitlab.com' ? gitlab : Promise.reject(apiError({ error: 'gh: HTTP 401 Bad credentials' })),
+    ).catch(err => { throw err }))
+    mockApi.pullRequestStatuses.mockResolvedValue({
+      statuses: {
+        [github.url]: { state: 'open', ci: 'passed' },
+        [gitlab.url]: { state: 'merged', ci: 'passed' },
+      },
+    })
+
+    renderPanel()
+    await screen.findByRole('alert')
+
+    // An unrelated tab's own cached status is untouched. Await it explicitly:
+    // pullRequestStatuses resolves on its own independent query, not the one
+    // behind the alert, so asserting on it without awaiting first would be
+    // racing an unresolved promise.
+    const gitlabTab = screen.getByRole('tab', { name: /MR !7/i })
+    expect(await within(gitlabTab).findByLabelText('Merged')).toBeInTheDocument()
+
+    const githubTab = screen.getByRole('tab', { name: /PR #12/i })
+    expect(within(githubTab).queryByLabelText('Checks passed')).not.toBeInTheDocument()
+    expect(within(githubTab).queryByLabelText('Open')).not.toBeInTheDocument()
+  })
+
   it('shows merge conflicts on selected and background source tabs instead of passing CI', async () => {
     mockApi.pullRequestSource.mockImplementation((url: string) => Promise.resolve(
       new URL(url).hostname === 'gitlab.com'
@@ -540,6 +571,44 @@ describe('PullRequestPanel', () => {
     expect(screen.getByRole('status')).toHaveTextContent(/showing the last loaded version/i)
     // ...and the full-height "could not load" card never appears over it.
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('keeps the cached tab glyph on a background revalidation failure, unlike an outright read failure', async () => {
+    // Deliberate contrast with 'clears a stale cached status...' above: here
+    // `source` is still available (the retained payload), so the glyph must
+    // survive -- only an outright read failure with no payload should clear it.
+    mockApi.pullRequestSource.mockImplementation((url: string) => (
+      new URL(url).hostname === 'gitlab.com' ? Promise.resolve(gitlab) : Promise.reject(apiError({ error: 'gh: HTTP 401 Bad credentials' }))
+    ))
+    mockApi.pullRequestStatuses.mockResolvedValue({
+      statuses: {
+        [github.url]: { state: 'open', ci: 'passed' },
+        [gitlab.url]: { state: 'open', ci: 'passed' },
+      },
+    })
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    client.setQueryData<PullRequestSource>(['pull-request-source', github.url], github, {
+      updatedAt: Date.now() - SOURCE_REMOUNT_REVALIDATE_MS - 1_000,
+    })
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel
+          sources={[
+            { url: github.url, provider: 'github', number: 12, repo: 'widgets' },
+            { url: gitlab.url, provider: 'gitlab', number: 7, repo: 'service' },
+          ]}
+          selectedUrl={github.url}
+          onSelect={() => {}}
+          onAddToChat={() => {}}
+        />
+      </QueryClientProvider>,
+    )
+    await screen.findByRole('status')
+
+    const githubTab = screen.getByRole('tab', { name: /PR #12/i })
+    expect(await within(githubTab).findByLabelText('Open')).toBeInTheDocument()
+    expect(within(githubTab).getByLabelText('Checks passed')).toBeInTheDocument()
   })
 
   it('caps rendered source tabs at the per-slot limit', () => {

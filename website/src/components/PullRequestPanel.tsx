@@ -1076,9 +1076,19 @@ export default function PullRequestPanel({
     // header badge it sits above. Field by field: see `selectedSourceStatus`.
     if (source) {
       merged[source.url] = selectedSourceStatus(source, cached[source.url])
+    } else if (query.error && selected) {
+      // The selected pull request's read failed outright (no payload loaded
+      // at all), which is what the error card above already tells the user.
+      // Falling through to `cached` here would keep a stale glyph — a green
+      // tick from the LAST successful load — contradicting that card, so the
+      // tab clears to neutral instead. A background revalidation failure on
+      // already-loaded data takes the `if (source)` branch above and keeps
+      // its last-known glyph, which is the separate, deliberate behavior the
+      // compact notice at `query.error && source` below exists for.
+      delete merged[selected.url]
     }
     return merged
-  }, [statusQuery.data, source])
+  }, [statusQuery.data, source, query.error, selected])
 
   const allTabs: Array<{ id: SourceTab; label: string; count?: number; tone?: string }> = source ? [
     { id: 'changes', label: i18nT('components.pullRequestPanel.changes'), count: source.files.length },
