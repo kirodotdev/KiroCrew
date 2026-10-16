@@ -10,16 +10,118 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import (
+    atomic_write,
+    discard_replacement,
+    fsync_dir,
+    publish_replacement,
+    stage_replacement,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
 
 
 _HISTORY_LOGGER = logging.getLogger("kiro_crew.history")
+
+
+def rewrite_transcript(path: Path, content: str | bytes) -> None:
+    """Replace a whole transcript file with *content*, synced before the rename.
+
+    The history store's writers that rename a new copy over a transcript go
+    through here, whether they drop rows or only edit the metadata line (the
+    dashboard save in ``chat_persistence`` keeps its own ``fsync=True`` call). The replacement holds
+    every row the file keeps, and on a filesystem without ext4's
+    ``auto_da_alloc`` an unsynced file renamed over the old one can come back
+    empty or partial after a power loss, taking the whole conversation with it.
+    There is deliberately no ``fsync`` switch, so a new caller cannot pick wrong.
+    """
+    atomic_write(path, content, fsync=True)
+
+
+#: Marks a snapshot the unlocked pass could not take, so it never matches.
+_UNREAD = object()
+
+#: ``build(path, text)`` for :func:`rewrite_metadata_line`: *text* is the file as
+#: ``Path.read_text`` returns it (``None`` when the file is absent), and the result
+#: is the whole replacement, or ``None`` to write nothing.
+MetadataLineBuild = Callable[[Path, "str | None"], "str | bytes | None"]
+
+
+def _snapshot(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+def _as_text(data: bytes | None) -> str | None:
+    # What Path.read_text() returns: UTF-8 with universal newlines.
+    if data is None:
+        return None
+    return data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def rewrite_metadata_line(log: ConversationLog, key: str, build: MetadataLineBuild) -> None:
+    """Replace a transcript whose metadata line changed, syncing outside the session lock.
+
+    The replacement carries every row, so it is synced before the rename. That
+    flush grows with the transcript, and every writer of the session waits on the
+    lock, so it is not paid there. ``build`` runs on an unlocked read, the result is
+    staged and synced, and the lock is taken only to check that the file still holds
+    exactly the bytes ``build`` read, then rename. Any difference (an append, another
+    rewrite, a rotation, a different path for *key*) discards the staged file and
+    runs ``build`` again under the lock, writing synced there, so no row or edit
+    that landed in between is lost. The directory is synced after the lock is
+    released, best effort: the rename has happened, and either complete file
+    surviving a power loss keeps every row.
+    """
+    path = log._path(key)
+    seen: object = _UNREAD
+    staged: str | None = None
+    # Resolved before staging, so no call runs between the staging pass and the
+    # try whose finally discards an unpublished staged file.
+    facade = _history_facade()
+    published = False
+    try:
+        data = _snapshot(path)
+        seen = data
+        content = build(path, _as_text(data))
+        if content is not None:
+            staged = stage_replacement(path, content)
+    except Exception:
+        # The unlocked pass is an optimisation. Whatever stopped it (a read racing
+        # a rename, a torn line, a full disk) is judged again under the lock.
+        # stage_replacement is its last step and removes its own temp file when
+        # it raises, so nothing is staged here.
+        seen = _UNREAD
+    try:
+        with log._locked(key):
+            current_path = log._path(key)
+            current = _snapshot(current_path)
+            if staged is not None and current_path == path and current == seen:
+                prev_mtime = facade._safe_mtime(path)
+                published = True  # publish_replacement owns the file from here
+                publish_replacement(staged, path)
+            else:
+                path = current_path
+                content = build(path, _as_text(current))
+                if content is None:
+                    return
+                prev_mtime = facade._safe_mtime(path)
+                rewrite_transcript(path, content)
+            facade._restore_mtime(path, prev_mtime)
+            # Inside the lock, so no reader publishes the old line under the new
+            # generation.
+            log._invalidate_cache(key)
+    finally:
+        if staged is not None and not published:
+            discard_replacement(staged)
+    fsync_dir(path.parent, best_effort=True)
 
 
 def _history_facade() -> Any:
@@ -132,7 +234,10 @@ class HistoryRewriteCoordinator:
         # default ensure_ascii behavior, one LF per row, and a trailing LF.
         lines = [json.dumps(metadata) + "\n"]
         lines.extend(json.dumps(message) + "\n" for message in messages)
-        atomic_write(path, "".join(lines))
+        # Synced before the rename (rewrite_transcript): the dropped rows are only
+        # in the archive now, and an unsynced replacement can come back empty after
+        # a power loss, taking the kept rows with it.
+        rewrite_transcript(path, "".join(lines))
         _history_facade()._restore_mtime(path, prev_mtime)
         self._log._invalidate_cache(key)
 
@@ -218,7 +323,9 @@ class HistoryRewriteCoordinator:
             except json.JSONDecodeError:
                 pass
 
-        atomic_write(path, metadata_line + "".join(kept))
+        # Synced before the rename, as compaction is: an unsynced replacement can
+        # come back empty after a power loss, and the kept rows are in no archive.
+        rewrite_transcript(path, metadata_line + "".join(kept))
         _history_facade()._restore_mtime(path, prev_mtime)
         self._log._invalidate_cache(key)
         _HISTORY_LOGGER.info(

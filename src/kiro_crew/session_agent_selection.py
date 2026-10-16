@@ -287,8 +287,8 @@ def record_agent_selection(
 def restore_agent_selection(session_key: str, change: SelectionChange | None) -> None:
     if change is None:
         return
-    from kiro_crew.atomic_write import atomic_write
     from kiro_crew.history import ConversationLog
+    from kiro_crew.history_rewrite import rewrite_transcript
 
     prior, published, legacy = change
     from kiro_crew.execution_context import restore_live_session_execution
@@ -325,4 +325,5 @@ def restore_agent_selection(session_key: str, change: SelectionChange | None) ->
             else:
                 metadata.pop(field, None)
         rows[0] = json.dumps(metadata, ensure_ascii=False) + "\n"
-        atomic_write(path, "".join(rows))
+        # Synced: the replacement carries every row of the conversation.
+        rewrite_transcript(path, "".join(rows))

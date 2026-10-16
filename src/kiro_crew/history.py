@@ -87,7 +87,7 @@ from kiro_crew.history_projection import (  # noqa: F401 - facade re-exports
     TranscriptPage,
     TranscriptReadProjection,
 )
-from kiro_crew.history_rewrite import HistoryRewriteCoordinator
+from kiro_crew.history_rewrite import HistoryRewriteCoordinator, rewrite_metadata_line
 from kiro_crew.history_search import (  # noqa: F401 - facade re-exports
     _CJK_CHAR_WEIGHT,
     _FORGE_CHAIN_ONLY_WORDS,
@@ -1091,6 +1091,8 @@ def _archive_lines(
     survives. The parent is synced on every call, not only when this call made
     the directory: a directory that exists was not necessarily synced into its
     parent (an earlier call may have created it and then failed that sync).
+    A write or sync that fails removes the file this call created before it
+    raises, so a lasting fault does not leave a copy behind on every retry.
     """
     if not lines:
         return None
@@ -1120,15 +1122,28 @@ def _archive_lines(
         suffix = f"-{n}" if n else ""
         candidate = adir / f"{safekey}{ARCHIVE_SEGMENT_DELIMITER}{stamp}{suffix}.jsonl"
         try:
-            with open(candidate, "x", encoding="utf-8", opener=owner_only_opener) as f:
-                f.write(payload)
-                f.flush()
-                os.fsync(f.fileno())
-            break
+            handle = open(candidate, "x", encoding="utf-8", opener=owner_only_opener)
         except FileExistsError:
             continue
-    fsync_dir(adir)
-    fsync_dir(adir.parent)
+        break
+    try:
+        with handle as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        fsync_dir(adir)
+        fsync_dir(adir.parent)
+    except BaseException:
+        # A failed archive is reported to the caller, which keeps the rows in the
+        # transcript and retries, so this file is not their only copy. Removing it
+        # keeps a fault that lasts many retries from leaving one copy per retry.
+        try:
+            os.unlink(candidate)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.warning("Could not remove the unsynced archive %s", candidate, exc_info=True)
+        raise
     logger.info(
         "Archived %d lines from session %s to %s (reason=%s)",
         len(lines),
@@ -3221,17 +3236,17 @@ class ConversationLog:
         them from memory/history extraction). When neither trips, the offset is
         applied as-is.
         """
-        # Serialize behind the cross-process lock and resolve/re-read under it so
-        # a concurrent append or restore cannot redirect this key after its path
-        # was chosen.
-        with self._locked(key):
-            path = self._path(key)
-            if not path.exists():
-                return
-            prev_mtime = _safe_mtime(path)
-            lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+
+        # rewrite_metadata_line runs this on an unlocked read, then renames under
+        # the cross-process lock only if the file (and the path for this key) is
+        # still exactly what it read; otherwise it runs it again under the lock, so
+        # a concurrent append or restore cannot be lost or redirect the write.
+        def build(path: Path, text: str | None) -> str | None:
+            if text is None:
+                return None
+            lines = text.splitlines(keepends=True)
             if not lines:
-                return
+                return None
             meta = json.loads(lines[0])
             # Reconcile the caller's absolute *offset* against the messages
             # actually present now. Line 0 is the metadata line; every other
@@ -3316,24 +3331,17 @@ class ConversationLog:
             for _sub_key in _CONSOLIDATION_SUBOFFSET_META_KEYS:
                 meta.pop(_sub_key, None)
             lines[0] = json.dumps(meta) + "\n"
-            # Reduce lock hold for this one-line metadata rewrite: skip the
-            # fsync (fsync=False). ``last_consolidated`` is recoverable
-            # bookkeeping — if a crash loses it we simply re-consolidate a few
-            # messages — so paying a disk flush while holding the cross-process
-            # lock (blocking every other writer of this session) isn't worth it.
-            atomic_write(path, "".join(lines), fsync=False)
-            # Housekeeping bookkeeping — must not advance the session's mtime
-            # (see _restore_mtime). Otherwise consolidation floats stale sessions
-            # to the top of list_sessions on every gateway restart.
-            _restore_mtime(path, prev_mtime)
-            # Invalidate while still holding the lock. Outside it there is a
-            # window where the file is already rewritten but the generation has
-            # not moved, so a concurrent fold / snippet / metadata read could
-            # publish before the local invalidation. Every other preserved-mtime
-            # writer already invalidates inside its locked section;
-            # _invalidate_cache is pure in-memory work, so this adds no I/O
-            # under the cross-process flock.
-            self._invalidate_cache(key)
+            # Synced, although only line 0 changed: the replacement carries every
+            # row of the conversation, and an unsynced file renamed over the old
+            # one can come back empty after a power loss. The helper syncs it
+            # before taking the lock, keeps the session's mtime (consolidation is
+            # housekeeping and must not float stale sessions to the top of
+            # list_sessions), and invalidates the cache while still holding the
+            # lock, so no concurrent read publishes the old line under the new
+            # generation.
+            return "".join(lines)
+
+        rewrite_metadata_line(self, key, build)
 
     def advance_consolidation_sub_offset(
         self, key: str, offset: int, sub_offset: int, generation: int
@@ -3348,8 +3356,9 @@ class ConversationLog:
         past the whole message only once its last slice succeeds, through
         :meth:`mark_consolidated`.
 
-        Three guards, all under the one lock, keep the sub-offset from ever
-        resuming into content it does not describe:
+        Three guards, each judged on the exact bytes the locked rename replaces
+        (see :func:`~kiro_crew.history_rewrite.rewrite_metadata_line`), keep the
+        sub-offset from ever resuming into content it does not describe:
 
         * The session must still exist (``_update_metadata_locked`` upserts, so
           writing a deleted session would resurrect it as metadata-only).
@@ -3366,14 +3375,13 @@ class ConversationLog:
         slice reached; it is stamped with *generation* so a later rotation
         invalidates it the same way the attempt stamps are invalidated.
         """
-        with self._locked(key):
-            path = self._path(key)
-            if not path.exists():
-                return
-            prev_mtime = _safe_mtime(path)
-            lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+
+        def build(path: Path, text: str | None) -> str | None:
+            if text is None:
+                return None
+            lines = text.splitlines(keepends=True)
             if not lines:
-                return
+                return None
             meta = json.loads(lines[0])
             current_generation = int(meta.get("rotation_generation", 0) or 0)
             if current_generation != generation:
@@ -3385,7 +3393,7 @@ class ConversationLog:
                     current_generation,
                     key,
                 )
-                return
+                return None
             try:
                 current_offset = int(meta.get("last_consolidated", 0) or 0)
             except (TypeError, ValueError, OverflowError):
@@ -3399,7 +3407,7 @@ class ConversationLog:
                     current_offset,
                     key,
                 )
-                return
+                return None
             meta["consolidation_sub_offset"] = max(0, int(sub_offset))
             meta["consolidation_sub_offset_generation"] = generation
             # A slice that reached its durable sub-offset is a span that ended —
@@ -3415,12 +3423,12 @@ class ConversationLog:
                 meta.pop(_acct_key, None)
             meta["updated_at"] = metadata_now_iso()
             lines[0] = json.dumps(meta) + "\n"
-            # Same cheap, mtime-preserving, no-fsync write as mark_consolidated:
-            # a lost sub-offset only re-slices the head from its start, which is
-            # correct behaviour, so it is not worth a disk flush under the lock.
-            atomic_write(path, "".join(lines), fsync=False)
-            _restore_mtime(path, prev_mtime)
-            self._invalidate_cache(key)
+            # Same mtime-preserving, synced whole-file write as mark_consolidated,
+            # synced before the lock is taken: a lost sub-offset would only
+            # re-slice the head, but the replacement carries every row.
+            return "".join(lines)
+
+        rewrite_metadata_line(self, key, build)
 
     def unconsolidated_count(self, key: str) -> int:
         """Count messages not yet processed by the consolidator.

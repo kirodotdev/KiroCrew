@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import IO, TYPE_CHECKING, AbstractSet, Any, Literal, overload
 
 from kiro_crew import platform_compat
-from kiro_crew.atomic_write import atomic_write, replace_with_retry
 from kiro_crew.chat_attachments import (
     purge_staged_attachments,
     restore_staged_attachments,
@@ -31,6 +30,7 @@ from kiro_crew.chat_attachments import (
 )
 from kiro_crew.execution_context import STRICTEST_MEMORY_MODE
 from kiro_crew.history_cache import FileStamp, _FileChangeCacheEntry, _TranscriptRowIndexEntry
+from kiro_crew.history_rewrite import rewrite_metadata_line, rewrite_transcript
 from kiro_crew.jsonl_util import (
     bounded_raw_records,
     raise_if_splitlines_boundary,
@@ -1926,9 +1926,16 @@ class SessionMetadataProjection:
         self._log.update_metadata(key, {"title": title})
 
     def update_metadata(self, key: str, fields: dict) -> None:
-        """Merge fields under the same lock used by transcript writers."""
-        with self._log._locked(key):
-            self._log._update_metadata_locked(key, fields)
+        """Merge fields into the metadata line, renaming under the transcript writers' lock.
+
+        The replacement is built and synced before the lock is taken
+        (:func:`~kiro_crew.history_rewrite.rewrite_metadata_line`), so appenders do
+        not wait on the flush; a write that landed in between is merged again under
+        the lock.
+        """
+        rewrite_metadata_line(
+            self._log, key, lambda _path, text: self._metadata_replacement(key, text, fields)
+        )
         if "tab_id" in fields:
             self._log.invalidate_tab_id_cache()
 
@@ -2014,7 +2021,27 @@ class SessionMetadataProjection:
         """
         path = self._log._path(key)
         previous_mtime = _history_facade()._safe_mtime(path)
-        lines = path.read_text(encoding="utf-8").splitlines(keepends=True) if path.exists() else []
+        content = self._metadata_replacement(
+            key, path.read_text(encoding="utf-8") if path.exists() else None, fields
+        )
+        if content is None:
+            return
+        # Synced before the rename: only line 0 changed, but the file renamed into
+        # place carries every row of the conversation. The helper's rename is the
+        # shared retrying one, which Windows needs while a concurrent reader holds
+        # the destination open, and it removes its temporary on any failure.
+        rewrite_transcript(path, content)
+        _history_facade()._restore_mtime(path, previous_mtime)
+        self._log._invalidate_cache(key)
+
+    def _metadata_replacement(self, key: str, text: str | None, fields: dict) -> bytes | None:
+        """The transcript *text* with *fields* merged into line 0, or ``None`` to leave it.
+
+        Shared by :meth:`_update_metadata_locked` and :meth:`update_metadata`, so both
+        apply the same upsert, corrupt-line and legacy-file rules. The result is
+        bytes, so no newline translation happens on Windows.
+        """
+        lines = text.splitlines(keepends=True) if text is not None else []
         healing_corrupt_line = False
         if lines:
             try:
@@ -2033,9 +2060,9 @@ class SessionMetadataProjection:
                     "memory_mode": STRICTEST_MEMORY_MODE,
                 }
             if not isinstance(metadata, dict):
-                return
+                return None
             if metadata.get("_type") != "metadata":
-                return
+                return None
         else:
             self._log._dir.mkdir(parents=True, exist_ok=True)
             metadata = {
@@ -2050,33 +2077,7 @@ class SessionMetadataProjection:
             metadata["memory_mode"] = STRICTEST_MEMORY_MODE
             metadata.pop("memory_store", None)
         lines[0] = json.dumps(metadata) + "\n"
-
-        # This hot one-line edit remains crash-atomic without paying for an
-        # fsync while every other writer of the session is excluded.
-        import tempfile
-
-        data = "".join(lines).encode("utf-8")
-        descriptor, temporary = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-        try:
-            try:
-                os.write(descriptor, data)
-            finally:
-                os.close(descriptor)
-            # The shared retrying rename, not a bare ``os.replace``: on Windows the
-            # rename fails with ``PermissionError`` while any other handle -- a
-            # concurrent transcript READER -- is open on the destination, and this
-            # path is hit right after a session writes, when readers are busiest.
-            # Three unrelated test files flaked on exactly this line in five full
-            # runs; the retry is what every other tmp-plus-rename writer here has.
-            replace_with_retry(temporary, path)
-        except Exception:
-            try:
-                os.unlink(temporary)
-            except OSError:
-                pass
-            raise
-        _history_facade()._restore_mtime(path, previous_mtime)
-        self._log._invalidate_cache(key)
+        return "".join(lines).encode("utf-8")
 
     def mtime_of(self, key: str) -> float | None:
         """Return a session file mtime without reading its contents."""
@@ -2121,7 +2122,8 @@ class SessionMetadataProjection:
             metadata.pop("closed", None)
             metadata.pop("closed_at", None)
             lines[0] = json.dumps(metadata) + "\n"
-            atomic_write(path, "".join(lines), fsync=False)
+            # Synced: the replacement carries every row, not just the cleared flag.
+            rewrite_transcript(path, "".join(lines))
             _history_facade()._restore_mtime(path, previous_mtime)
             # Invalidate before releasing the lock so no preserved-mtime fill
             # can publish the pre-clear metadata under the current generation.
