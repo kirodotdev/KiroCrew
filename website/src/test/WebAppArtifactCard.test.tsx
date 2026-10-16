@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import type { ReactElement } from 'react'
@@ -130,13 +130,13 @@ describe('WebAppArtifactCard', () => {
 
   it('calls teardown API on confirm and reflects expired state', async () => {
     const onTornDown = vi.fn()
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     ;(api.artifactTeardown as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true })
 
     renderWithClient(<WebAppArtifactCard artifact={makeArtifact()} onTornDown={onTornDown} />)
 
     const btn = screen.getByRole('button', { name: /Cancel \/ Tear down/i })
     fireEvent.click(btn)
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: /Cancel \/ Tear down/i }))
 
     await waitFor(() => {
       expect(api.artifactTeardown).toHaveBeenCalledWith('kanban-demo')

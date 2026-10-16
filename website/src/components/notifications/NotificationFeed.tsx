@@ -8,6 +8,7 @@ import { deleteNotification, clearNotifications, ackAllNotifications } from '../
 import { api } from '../../api/client'
 import { EmptyState, SearchInput } from '../ui'
 import Clickable from '../Clickable'
+import { useConfirm } from '../ConfirmDialog'
 import Glass from '../Glass'
 import MarkdownRenderer from '../MarkdownRenderer'
 import MessageErrorBoundary from '../MessageErrorBoundary'
@@ -58,6 +59,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
    *  distinct value is revealed once; selection/ack stay the host's job. */
   revealTs?: string | null
 }) {
+  const { confirm, confirmDialog } = useConfirm()
   const dispatch = useAppDispatch()
   const items = useAppSelector(s => s.notifications.items)
   const [filter, setFilter] = useState('')
@@ -268,11 +270,18 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
       </button>
     </div>
   ) : null
+  const clearAll = useCallback(async () => {
+    if (await confirm({
+      title: i18nT('components.notifications.notificationFeed.clear_all_notifications'),
+      confirmLabel: i18nT('components.notifications.notificationFeed.clear'),
+    })) dispatch(clearNotifications())
+  }, [confirm, dispatch])
+
   const searchRow = (
     <div className="flex gap-2 mb-2 items-center shrink-0">
       <div className="flex-1"><SearchInput className="[&>input]:!bg-bg-elevated/40 [&>input]:!border-border/60" placeholder={i18nT('components.notifications.notificationFeed.search')} value={filter} onChange={e => setFilter(e.target.value)} /></div>
       {!mac && unread > 0 && <button {...uiLocation('notifications.page-mark-all-read')} className="px-2 py-1 rounded-md border border-ok/40 bg-ok/10 text-ok-text text-[12px] font-semibold cursor-pointer hover:bg-ok/20 transition-all font-body whitespace-nowrap" onClick={() => dispatch(ackAllNotifications())}><Check className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.all')}</button>}
-      {!mac && items.length > 0 && <button {...uiLocation('notifications.page-clear-all')} className="px-2 py-1 rounded-md border border-danger/40 bg-transparent text-danger hover:text-danger-text text-[12px] font-medium cursor-pointer hover:bg-danger/10 transition-all font-body whitespace-nowrap" onClick={() => { if (confirm(i18nT('components.notifications.notificationFeed.clear_all_notifications'))) dispatch(clearNotifications()) }}><X className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.clear')}</button>}
+      {!mac && items.length > 0 && <button {...uiLocation('notifications.page-clear-all')} className="px-2 py-1 rounded-md border border-danger/40 bg-transparent text-danger hover:text-danger-text text-[12px] font-medium cursor-pointer hover:bg-danger/10 transition-all font-body whitespace-nowrap" onClick={() => { void clearAll() }}><X className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.clear')}</button>}
     </div>
   )
 
@@ -298,6 +307,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
+      {confirmDialog}
       {/* Controls: mac mode groups header + search + muted disclosure in ONE
           floating card (search above the disclosure); panel mode puts the
           disclosure first, directly on the popover surface. */}
@@ -320,7 +330,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                 aria-label={i18nT('components.notifications.notificationFeed.clear_all_notifications')}
                 {...uiLocation('notifications.clear-all')}
                 className="w-6 h-6 rounded-md flex items-center justify-center text-muted bg-transparent border-none cursor-pointer hover:bg-danger/10 hover:text-danger-text transition-colors shrink-0"
-                onClick={() => { if (confirm(i18nT('components.notifications.notificationFeed.clear_all_notifications'))) dispatch(clearNotifications()) }}
+                onClick={() => { void clearAll() }}
               ><Trash2 className="lucide-inline" /></button>
             )}
           </div>

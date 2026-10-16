@@ -5,6 +5,7 @@ import { api } from '../api/client'
 
 import { i18nT } from '../i18n/t'
 import ErrorNotice from './ErrorNotice'
+import { useConfirm } from './ConfirmDialog'
 /* ── CSS variable groups for the color picker ── */
 
 /**
@@ -122,6 +123,7 @@ export type CreatorMode = 'picker' | 'json'
 
 /** Shared theme editor state and actions */
 export function useThemeEditor() {
+  const { confirm, confirmDialog } = useConfirm()
   const { addCustomTheme, deleteCustomTheme, loadCustomThemes } = useTheme()
 
   const [editorOpen, setEditorOpen] = useState(false)
@@ -225,10 +227,12 @@ export function useThemeEditor() {
   const handleDelete = async (slug?: string) => {
     const target = slug || editingSlug
     if (!target) return
-    if (confirm(i18nT('components.themeEditor.delete_this_custom_theme'))) {
-      try { await deleteCustomTheme(target); closeEditor() }
-      catch (e: unknown) { setError(e instanceof Error ? e.message : i18nT('components.themeEditor.failed_to_delete_theme')) }
-    }
+    if (!(await confirm({
+      title: i18nT('components.themeEditor.delete_this_custom_theme'),
+      confirmLabel: i18nT('components.themeEditor.delete_theme'),
+    }))) return
+    try { await deleteCustomTheme(target); closeEditor() }
+    catch (e: unknown) { setError(e instanceof Error ? e.message : i18nT('components.themeEditor.failed_to_delete_theme')) }
   }
 
   const syncJsonToPicker = (text: string) => {
@@ -255,6 +259,7 @@ export function useThemeEditor() {
     darkVars, lightVars, updateDarkVar, updateLightVar,
     jsonText, setJsonText, saving, error,
     openNewTheme, openEditTheme, closeEditor, saveTheme, handleDelete,
+    confirmDialog,
     syncJsonToPicker, pickerToJson,
   }
 }
@@ -323,11 +328,12 @@ export function ThemeEditorPanel({ editor }: { editor: ReturnType<typeof useThem
     themeName, setThemeName, themeEmoji, setThemeEmoji,
     darkVars, lightVars, updateDarkVar, updateLightVar,
     jsonText, setJsonText, pickerToJson, syncJsonToPicker,
-    error, saving, saveTheme, closeEditor, handleDelete,
+    error, saving, saveTheme, closeEditor, handleDelete, confirmDialog,
   } = editor
 
   return (
     <div className="animate-rise">
+      {confirmDialog}
       <div className="flex items-center gap-2 mb-3">
         <button
           className={`px-3 py-1 rounded-md text-[13px] transition-colors cursor-pointer border-none ${creatorMode === 'picker' ? 'bg-accent-subtle text-accent' : 'text-muted hover:text-text bg-transparent'}`}

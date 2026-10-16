@@ -33,6 +33,7 @@ import {
   X,
 } from 'lucide-react'
 import { resolveActivePackId } from '../../builtinPacks'
+import { useConfirm } from '../../../../components/ConfirmDialog'
 import { PackEditor } from './PackEditor'
 import { PetdexImporter } from './PetdexImporter'
 import { SpriteImporter, type SpritePackDraft, type SpritePrefillInput } from './SpriteImporter'
@@ -599,6 +600,7 @@ function DetailPanel({ detail, isActive, onClose, onApply, onExport, onEdit, onD
 // ── Main Gallery Panel ─────────────────────────────────────────────────────
 
 export const GalleryPanel: React.FC = () => {
+  const { confirm, confirmDialog } = useConfirm()
   const [packs, setPacks] = useState<PackMeta[]>([])
   const [activePackId, setActivePackId] = useState<string>('')
   const [selectedPackId, setSelectedPackId] = useState<string | null>(null)
@@ -785,7 +787,10 @@ export const GalleryPanel: React.FC = () => {
 
   const handleDelete = useCallback(async () => {
     if (!detail) return
-    if (!confirm(i18nT('apps.mochi.gallery.delete_confirm', { name: detail.meta.name }))) return
+    if (!(await confirm({
+      title: i18nT('apps.mochi.gallery.delete_confirm', { name: detail.meta.name }),
+      confirmLabel: i18nT('apps.mochi.gallery.delete'),
+    }))) return
     try {
       const result = await api.galleryDelete(detail.meta.id)
       if (result && !result.ok) {
@@ -798,7 +803,7 @@ export const GalleryPanel: React.FC = () => {
     } catch (err: unknown) {
       setError((err as Error)?.message || i18nT('apps.mochi.errors.delete'))
     }
-  }, [detail, fetchPacks])
+  }, [detail, fetchPacks, confirm])
 
   const handleImportBundle = useCallback(async () => {
     try {
@@ -886,6 +891,7 @@ export const GalleryPanel: React.FC = () => {
 
   return (
     <div style={S.root}>
+      {confirmDialog}
       {/* Header with title + action buttons */}
       <div style={S.header}>
         <span style={S.title}><WithIcon icon={Palette} size={15}>{i18nT('apps.mochi.gallery.title')}</WithIcon></span>

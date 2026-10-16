@@ -127,28 +127,25 @@ describe('TagManagerList — shared CRUD (both modes)', () => {
   })
 
   it('deletes a tag only after confirm', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm')
     renderList({ mode: 'manage' })
     const del = await screen.findByTestId('tag-delete-t1')
 
-    confirmSpy.mockReturnValueOnce(false)
     fireEvent.click(del)
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: /cancel/i }))
     expect(api.deleteChatTag).not.toHaveBeenCalled()
 
-    confirmSpy.mockReturnValueOnce(true)
     fireEvent.click(del)
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete tag Alpha' }))
     await waitFor(() => expect(api.deleteChatTag).toHaveBeenCalledWith('t1'))
-    confirmSpy.mockRestore()
   })
 
   it('surfaces delete failures through ErrorNotice', async () => {
     vi.mocked(api.deleteChatTag).mockRejectedValueOnce(new Error('Tag could not be deleted.'))
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderList({ mode: 'manage' })
     fireEvent.click(await screen.findByTestId('tag-delete-t1'))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete tag Alpha' }))
     expect(await screen.findByText('Tag could not be deleted.')).toBeInTheDocument()
     expect(screen.getByTestId('tag-crud-mutation-error')).toBeInTheDocument()
-    confirmSpy.mockRestore()
   })
 
   it('creates a tag on Enter and clears the exact submitted draft after success', async () => {

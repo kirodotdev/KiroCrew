@@ -493,7 +493,9 @@ function RailProbe() {
     <>
       <button type="button" data-testid="rail-members" onClick={() => {
         if (current) { navigate('/members'); return }
-        if (mayLeave()) navigate('/members', { state: { leaveGranted: true } })
+        void mayLeave().then((allowed) => {
+          if (allowed) navigate('/members', { state: { leaveGranted: true } })
+        })
       }}>Crewmates</button>
       <button type="button" data-testid="rail-members-raw" onClick={() => navigate('/members')}>Crewmates (unguarded)</button>
     </>
@@ -508,14 +510,33 @@ function LeaveProbe() {
   const mayLeave = useMayLeaveForNavigation()
   const [answer, setAnswer] = useState('')
   return (
-    <button type="button" data-testid="leave-probe" onClick={() => setAnswer(String(mayLeave()))}>
+    <button type="button" data-testid="leave-probe" onClick={() => {
+      setAnswer('')
+      void mayLeave().then((allowed) => setAnswer(String(allowed)))
+    }}>
       {answer}
     </button>
   )
 }
-const askToLeave = () => {
-  fireEvent.click(screen.getByTestId('leave-probe'))
+const requestLeave = () => fireEvent.click(screen.getByTestId('leave-probe'))
+const leaveAnswer = async () => {
+  await waitFor(() => expect(screen.getByTestId('leave-probe').textContent).not.toBe(''))
   return screen.getByTestId('leave-probe').textContent
+}
+const askToLeave = async () => {
+  requestLeave()
+  return leaveAnswer()
+}
+const settleLeaveConfirm = async (confirmed: boolean) => {
+  const dialog = await screen.findByRole('dialog', {
+    name: /Leave this page\?|Leave while the crewmate is being created\?|Discard unsaved changes\?|Leave the page and lose/i,
+  })
+  fireEvent.click(within(dialog).getByRole('button', { name: confirmed ? 'Discard changes' : 'Cancel' }))
+  await waitFor(() => {
+    expect(screen.queryAllByRole('dialog', {
+      name: /Leave this page\?|Leave while the crewmate is being created\?|Discard unsaved changes\?|Leave the page and lose/i,
+    })).toHaveLength(0)
+  })
 }
 
 /* The open member's name also renders in the thread header (and the panel's identity row),
@@ -3173,109 +3194,86 @@ describe('New crewmate dialog', () => {
     await waitFor(() => expect(api.memberThread).toHaveBeenCalledWith('radar'), PANE_READY)
   })
 
-  it('a typed draft vetoes an in-app navigation until the user confirms; an empty or closed dialog lets it through', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    try {
-      await renderPage([row()])
-      expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
-      // Nothing open: leaving is free.
-      expect(askToLeave()).toBe('true')
-      expect(confirmSpy).not.toHaveBeenCalled()
-      await openDialog()
-      // Open but untouched: still free, no prompt.
-      expect(askToLeave()).toBe('true')
-      expect(confirmSpy).not.toHaveBeenCalled()
-      // A typed name is a draft: the shell must ask, and a refusal keeps the page.
-      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
-      expect(askToLeave()).toBe('false')
-      // The modal's own leave-draft wording (the dialog closes; the page is left).
-      expect(confirmSpy).toHaveBeenCalledWith('Leave this page? The New crewmate dialog closes and what you typed is lost.')
-      expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
-      // Accepting the prompt lets the navigation through.
-      confirmSpy.mockReturnValue(true)
-      expect(askToLeave()).toBe('true')
-    } finally {
-      confirmSpy.mockRestore()
-    }
+  it('a typed draft vetoes an in-app navigation until the user responds to the themed confirmation; an empty or closed dialog lets it through', async () => {
+    await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    // Nothing open: leaving is free.
+    expect(await askToLeave()).toBe('true')
+    await openDialog()
+    // Open but untouched: still free, no prompt.
+    expect(await askToLeave()).toBe('true')
+    // A typed name is a draft: the shell must ask, and a refusal keeps the page.
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
+    requestLeave()
+    const dialog = await screen.findByRole('dialog', { name: 'Leave this page? The New crewmate dialog closes and what you typed is lost.' })
+    expect(dialog).toBeInTheDocument()
+    await settleLeaveConfirm(false)
+    expect(await leaveAnswer()).toBe('false')
+    expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
+    // Confirming the dialog lets the navigation through.
+    requestLeave()
+    await settleLeaveConfirm(true)
+    expect(await leaveAnswer()).toBe('true')
   })
 
-  it('the rail\'s Crewmates row over a typed card: Stay keeps the card and its text, Leave closes it; an untouched card closes unasked', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    try {
-      await renderPage([row()])
-      expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
-      await openDialog()
-      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
-      // Stay: the row asked, the user kept the draft, nothing moved.
-      clickRailMembers()
-      expect(confirmSpy).toHaveBeenCalledWith('Leave this page? The New crewmate dialog closes and what you typed is lost.')
-      expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
-      expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('radar')
-      expect(currentUrl()).toBe('/members?member=oncall')
-      // Leave: the row navigates to this same page, which stays mounted -- the
-      // card the user agreed to leave must close rather than sit there as if
-      // the click did nothing. The chat is back.
-      confirmSpy.mockReturnValue(true)
-      clickRailMembers()
-      await waitFor(() => expect(screen.queryByTestId('crewmate-create-form')).toBeNull())
-      expect(screen.getByTestId('chat-pane-stub').closest('[style*="display: none"]')).toBeNull()
-      // An untouched card: nothing to lose, so no question, and the click still
-      // means "show me the page".
-      confirmSpy.mockClear()
-      await openDialog()
-      clickRailMembers()
-      await waitFor(() => expect(screen.queryByTestId('crewmate-create-form')).toBeNull())
-      expect(confirmSpy).not.toHaveBeenCalled()
-    } finally {
-      confirmSpy.mockRestore()
-    }
+  it('the rail’s Crewmates row over a typed card: Cancel keeps the card and its text, Discard closes it; an untouched card closes unasked', async () => {
+    await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    await openDialog()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
+    // Cancel: the row asked, the user kept the draft, nothing moved.
+    clickRailMembers()
+    await settleLeaveConfirm(false)
+    expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('radar')
+    expect(currentUrl()).toBe('/members?member=oncall')
+    // Discard: the row navigates to this same page, which stays mounted. The
+    // card the user agreed to leave must close rather than sit there as if the click did nothing.
+    clickRailMembers()
+    await settleLeaveConfirm(true)
+    await waitFor(() => expect(screen.queryByTestId('crewmate-create-form')).toBeNull())
+    expect(screen.getByTestId('chat-pane-stub').closest('[style*="display: none"]')).toBeNull()
+    // An untouched card: nothing to lose, so no question, and the click still
+    // means "show me the page".
+    await openDialog()
+    clickRailMembers()
+    await waitFor(() => expect(screen.queryByTestId('crewmate-create-form')).toBeNull())
+    expect(screen.queryByRole('dialog', { name: /Leave this page\?/ })).toBeNull()
   })
 
-  it('a push to /members that nobody guarded still asks before a typed card closes: Stay keeps it, Leave closes it', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    try {
-      await renderPage([row()])
-      expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
-      await openDialog()
-      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
-      // No `leaveGranted` on the entry: the landing is not proof anyone asked,
-      // so the page asks the card's own guard before it would drop the text.
-      clickRawMembers()
-      await waitFor(() => expect(confirmSpy).toHaveBeenCalledTimes(1))
-      expect(confirmSpy).toHaveBeenCalledWith('Leave this page? The New crewmate dialog closes and what you typed is lost.')
-      expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
-      expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('radar')
-      confirmSpy.mockReturnValue(true)
-      clickRawMembers()
-      await waitFor(() => expect(screen.queryByTestId('crewmate-create-form')).toBeNull())
-      expect(confirmSpy).toHaveBeenCalledTimes(2)
-    } finally {
-      confirmSpy.mockRestore()
-    }
+  it('a push to /members that nobody guarded still asks before a typed card closes: Cancel keeps it, Discard closes it', async () => {
+    await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    await openDialog()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
+    // No `leaveGranted` on the entry: the landing is not proof anyone asked,
+    // so the page asks the card's own guard before it would drop the text.
+    clickRawMembers()
+    await settleLeaveConfirm(false)
+    expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('radar')
+    clickRawMembers()
+    await settleLeaveConfirm(true)
+    await waitFor(() => expect(screen.queryByTestId('crewmate-create-form')).toBeNull())
   })
 
   it('the rail row clicked while the address is already a bare /members (empty roster, card from the hero) asks before closing a typed card', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    try {
-      await renderPage([])
-      const [cta] = await screen.findAllByTestId('crewmate-empty-cta', undefined, PANE_READY)
-      expect(currentUrl()).toBe('/members')
-      fireEvent.click(cta)
-      await screen.findByTestId('crewmate-create-form')
-      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
-      // Same address: the rail asks nothing and navigates anyway (no mark), so
-      // the page asks for itself; Stay keeps the card and its text.
-      clickRailMembers()
-      await waitFor(() => expect(confirmSpy).toHaveBeenCalledTimes(1))
-      expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('radar')
-      // Leave: the card closes; the hero is the page again.
-      confirmSpy.mockReturnValue(true)
-      clickRailMembers()
-      await waitFor(() => expect(screen.queryByTestId('crewmate-create-form')).toBeNull())
-      expect(screen.getAllByTestId('crewmate-empty-cta').length).toBeGreaterThan(0)
-    } finally {
-      confirmSpy.mockRestore()
-    }
+    await renderPage([])
+    const [cta] = await screen.findAllByTestId('crewmate-empty-cta', undefined, PANE_READY)
+    expect(currentUrl()).toBe('/members')
+    fireEvent.click(cta)
+    await screen.findByTestId('crewmate-create-form')
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
+    // Same address: the rail asks nothing and navigates anyway (no mark), so
+    // the page asks for itself; Cancel keeps the card and its text.
+    clickRailMembers()
+    await settleLeaveConfirm(false)
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('radar')
+    // Discard: the card closes; the hero is the page again.
+    clickRailMembers()
+    await settleLeaveConfirm(true)
+    await waitFor(() => expect(screen.queryByTestId('crewmate-create-form')).toBeNull())
+    expect(screen.getAllByTestId('crewmate-empty-cta').length).toBeGreaterThan(0)
   })
 
   it('a create link to /members?create=1 opens the card and its own URL cleanup to a bare /members does not close it', async () => {
@@ -3292,50 +3290,40 @@ describe('New crewmate dialog', () => {
   })
 
   it('a draft in the nested New workspace form counts toward the leave guard, and stops counting once that form is closed', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    try {
-      await renderPage([row()])
-      expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
-      await openDialog()
-      unfoldAdvanced()
-      const workspace = await screen.findByRole('combobox', { name: 'Workspace' })
-      fireEvent.keyDown(workspace, { key: 'ArrowDown' })
-      fireEvent.click(await screen.findByRole('option', { name: '+ New workspace…' }))
-      const wsName = await screen.findByPlaceholderText('e.g. oncall')
-      // Crewmate fields untouched, workspace form empty: free to leave.
-      expect(askToLeave()).toBe('true')
-      // A typed workspace name is a draft the route change would destroy.
-      fireEvent.change(wsName, { target: { value: 'staging' } })
-      expect(askToLeave()).toBe('false')
-      expect(confirmSpy).toHaveBeenCalledTimes(1)
-      // Closing the workspace form (its Cancel) takes its draft out of the stake.
-      const cancels = screen.getAllByRole('button', { name: 'Cancel' })
-      fireEvent.click(cancels[cancels.length - 1])
-      await waitFor(() => expect(screen.queryByPlaceholderText('e.g. oncall')).toBeNull())
-      expect(askToLeave()).toBe('true')
-      expect(confirmSpy).toHaveBeenCalledTimes(1)
-    } finally {
-      confirmSpy.mockRestore()
-    }
+    await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    await openDialog()
+    unfoldAdvanced()
+    const workspace = await screen.findByRole('combobox', { name: 'Workspace' })
+    fireEvent.keyDown(workspace, { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('option', { name: '+ New workspace…' }))
+    const wsName = await screen.findByPlaceholderText('e.g. oncall')
+    // Crewmate fields untouched, workspace form empty: free to leave.
+    expect(await askToLeave()).toBe('true')
+    // A typed workspace name is a draft the route change would destroy.
+    fireEvent.change(wsName, { target: { value: 'staging' } })
+    requestLeave()
+    await settleLeaveConfirm(false)
+    expect(await leaveAnswer()).toBe('false')
+    // Closing the workspace form (its Cancel) takes its draft out of the stake.
+    const cancels = screen.getAllByRole('button', { name: 'Cancel' })
+    fireEvent.click(cancels[cancels.length - 1])
+    await waitFor(() => expect(screen.queryByPlaceholderText('e.g. oncall')).toBeNull())
+    expect(await askToLeave()).toBe('true')
   })
 
-  it('a create in flight asks with its own words before an in-app navigation', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    try {
-      let finish: (v: unknown) => void = () => {}
-      ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockReturnValueOnce(new Promise((resolve) => { finish = resolve }))
-      await renderPage([row()])
-      expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
-      await openDialog()
-      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
-      fireEvent.click(screen.getByTestId('crewmate-create-submit'))
-      await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
-      expect(askToLeave()).toBe('false')
-      expect(confirmSpy).toHaveBeenLastCalledWith(expect.stringMatching(/^Leave while the crewmate is being created\?/))
-      finish({ ok: true })
-    } finally {
-      confirmSpy.mockRestore()
-    }
+  it('a create in flight hard-refuses an in-app navigation', async () => {
+    let finish: (v: unknown) => void = () => {}
+    ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockReturnValueOnce(new Promise((resolve) => { finish = resolve }))
+    await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    await openDialog()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
+    expect(await askToLeave()).toBe('false')
+    expect(screen.queryByRole('dialog', { name: /Leave while the crewmate is being created\?/ })).toBeNull()
+    finish({ ok: true })
   })
 
   it('a blank name never leaves the browser: a hint under the field, no create call', async () => {
@@ -4817,7 +4805,6 @@ describe('MembersPage create links open the New crewmate card', () => {
   it('a new proposal replaces an untouched card at once; an edited card is replaced only once the user agrees to leave it', async () => {
     await openAssistant()
     const through = passedThrough()
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     try {
       fireEvent.click(screen.getByTestId('chat-link-proposal'))
       await waitFor(() => expect(cardOpen()).toBe(true))
@@ -4825,21 +4812,18 @@ describe('MembersPage create links open the New crewmate card', () => {
       fireEvent.click(screen.getByTestId('chat-link-proposal-2'))
       await waitFor(() => expect(goalField()?.value).toBe('Second idea'))
       expect(nameField().value).toBe('')
-      expect(confirm).not.toHaveBeenCalled()
       // Edited: the next proposal asks, and a refusal keeps the user's words.
       fireEvent.change(goalField()!, { target: { value: 'My own words' } })
       fireEvent.click(screen.getByTestId('chat-link-proposal'))
-      await waitFor(() => expect(confirm).toHaveBeenCalledTimes(1))
+      await settleLeaveConfirm(false)
       expect(goalField()?.value).toBe('My own words')
       // Agreed: the proposal is shown.
-      confirm.mockReturnValue(true)
       fireEvent.click(screen.getByTestId('chat-link-proposal'))
+      await settleLeaveConfirm(true)
       await waitFor(() => expect(goalField()?.value).toBe('Watch the release train'))
       expect(nameField().value).toBe('scout')
-      expect(confirm).toHaveBeenCalledTimes(2)
       expect(api.createKirocrewAgent).not.toHaveBeenCalled()
     } finally {
-      confirm.mockRestore()
       through.stop()
     }
   })
@@ -4849,20 +4833,15 @@ describe('MembersPage create links open the New crewmate card', () => {
     await clickAddAdvanced()
     await screen.findByRole('dialog')
     fireEvent.change(nameField(), { target: { value: 'half-typed' } })
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    try {
-      // Unasked: the page asks once, and a refusal keeps the card.
-      fireEvent.click(screen.getByTestId('guide-nav-plain'))
-      await waitFor(() => expect(confirm).toHaveBeenCalledTimes(1))
-      expect(nameField().value).toBe('half-typed')
-      // Asked already by the guide: no second question, the proposal fills the card.
-      fireEvent.click(screen.getByTestId('guide-nav-granted'))
-      await waitFor(() => expect(nameField().value).not.toBe('half-typed'))
-      expect(confirm).toHaveBeenCalledTimes(1)
-      noGuidedFlow()
-    } finally {
-      confirm.mockRestore()
-    }
+    // Unasked: the page asks once, and a refusal keeps the card.
+    fireEvent.click(screen.getByTestId('guide-nav-plain'))
+    await settleLeaveConfirm(false)
+    expect(nameField().value).toBe('half-typed')
+    // Asked already by the guide: no second question, the proposal fills the card.
+    fireEvent.click(screen.getByTestId('guide-nav-granted'))
+    await waitFor(() => expect(nameField().value).not.toBe('half-typed'))
+    expect(screen.queryByRole('dialog', { name: /Leave this page\?/ })).toBeNull()
+    noGuidedFlow()
   })
 
   it('a chat behind a creation surface is not the viewed thread, and is again once the chat returns', async () => {
@@ -4911,150 +4890,101 @@ describe('MembersPage create links open the New crewmate card', () => {
   })
 
   it('choosing a roster chat while an untouched card is up shows that chat without asking', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    try {
-      await openAssistant()
-      fireEvent.click(screen.getByTestId('chat-link-proposal'))
-      await waitFor(() => expect(cardOpen()).toBe(true))
-      fireEvent.click(await rosterRow('alpha'))
-      await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha'), PANE_READY)
-      // The modal closes through its exit motion as the chat opens.
-      await waitFor(() => expect(cardOpen()).toBe(false))
-      expect(confirm).not.toHaveBeenCalled()
-      expect(hiddenByStyle(screen.getByTestId('chat-pane-stub'))).toBe(false)
-    } finally {
-      confirm.mockRestore()
-    }
+    await openAssistant()
+    fireEvent.click(screen.getByTestId('chat-link-proposal'))
+    await waitFor(() => expect(cardOpen()).toBe(true))
+    fireEvent.click(await rosterRow('alpha'))
+    await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha'), PANE_READY)
+    // The modal closes through its exit motion as the chat opens.
+    await waitFor(() => expect(cardOpen()).toBe(false))
+    expect(screen.queryByRole('dialog', { name: /Leave this page\?/ })).toBeNull()
+    expect(hiddenByStyle(screen.getByTestId('chat-pane-stub'))).toBe(false)
   })
 
-  it('choosing another chat while a create runs keeps that chat when the create lands', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    try {
-      let finish: (v: unknown) => void = () => {}
-      ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockReturnValueOnce(new Promise((resolve) => { finish = resolve }))
-      await openAssistant()
-      await clickAddCrewmate()
-      await screen.findByRole('dialog')
-      fireEvent.change(nameField(), { target: { value: 'radar' } })
-      fireEvent.click(screen.getByTestId('crewmate-create-submit'))
-      await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
-      // The user picks alpha mid-create and agrees to leave the card.
-      fireEvent.click(await rosterRow('alpha'))
-      await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha'), PANE_READY)
-      expect(confirm).toHaveBeenLastCalledWith(expect.stringMatching(/^Leave while the crewmate is being created\?/))
-      const membersMock = api.members as ReturnType<typeof vi.fn>
-      membersMock.mockResolvedValue({
-        members: [...assistantAndAlpha(), row({ name: 'radar', slug: 'radar', dashboard_created: true })],
-        default_agent: 'kirocrew',
-      })
-      const readsBefore = membersMock.mock.calls.length
-      await act(async () => { finish({ ok: true }) })
-      // The roster is re-read so the new crewmate is listed...
-      await waitFor(() => expect(membersMock.mock.calls.length).toBeGreaterThan(readsBefore))
-      expect(await rosterRow('radar')).toBeInTheDocument()
-      // ...but the chat the user picked stays.
-      expect(api.memberThread).not.toHaveBeenCalledWith('radar')
-      expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha')
-      expect(currentUrl()).not.toContain('member=radar')
-    } finally {
-      confirm.mockRestore()
-    }
+  it('a create in flight hard-refuses a member switch, then opens its created crewmate when the POST lands', async () => {
+    let finish: (v: unknown) => void = () => {}
+    ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockReturnValueOnce(new Promise((resolve) => { finish = resolve }))
+    await openAssistant()
+    await clickAddCrewmate()
+    await screen.findByRole('dialog')
+    fireEvent.change(nameField(), { target: { value: 'radar' } })
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
+    // An in-flight POST is never abandoned by a member switch.
+    fireEvent.click(await rosterRow('alpha'))
+    expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-mate')
+    expect(screen.queryByRole('dialog', { name: /Leave while the crewmate is being created\?/ })).toBeNull()
+    const membersMock = api.members as ReturnType<typeof vi.fn>
+    membersMock.mockResolvedValue({
+      members: [...assistantAndAlpha(), row({ name: 'radar', slug: 'radar', dashboard_created: true })],
+      default_agent: 'kirocrew',
+    })
+    await act(async () => { finish({ ok: true }) })
+    await waitFor(() => expect(membersMock).toHaveBeenCalled())
+    expect(await rosterRow('radar')).toBeInTheDocument()
+    expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-radar')
   })
 
-  it('New crewmate pressed again while a left create still runs does not reopen a card that create would then close', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    try {
-      let finish: (v: unknown) => void = () => {}
-      ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockReturnValueOnce(new Promise((resolve) => { finish = resolve }))
-      await openAssistant()
-      await clickAddCrewmate()
-      await screen.findByRole('dialog')
-      fireEvent.change(nameField(), { target: { value: 'radar' } })
-      fireEvent.click(screen.getByTestId('crewmate-create-submit'))
-      await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
-      fireEvent.click(await rosterRow('alpha'))
-      await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha'), PANE_READY)
-      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
-      await clickAddCrewmate()
-      expect(screen.queryByRole('dialog')).toBeNull()
-      expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha')
-      await act(async () => { finish({ ok: true }) })
-      expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha')
-    } finally {
-      confirm.mockRestore()
-    }
+  it('New crewmate keeps its active create card open until the POST settles', async () => {
+    let finish: (v: unknown) => void = () => {}
+    ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockReturnValueOnce(new Promise((resolve) => { finish = resolve }))
+    await openAssistant()
+    await clickAddCrewmate()
+    await screen.findByRole('dialog')
+    fireEvent.change(nameField(), { target: { value: 'radar' } })
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
+    expect(screen.getByTestId('crewmate-create-submit')).toBeDisabled()
+    expect(screen.getByRole('dialog', { name: 'New crewmate' })).toBeInTheDocument()
+    await act(async () => { finish({ ok: true }) })
   })
 
-  it('a create that fails after the user left it says so on the page, keeps the chosen chat, and the notice dismisses', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    try {
-      let fail: (e: unknown) => void = () => {}
-      ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockReturnValueOnce(new Promise((_, reject) => { fail = reject }))
-      await openAssistant()
-      await clickAddCrewmate()
-      await screen.findByRole('dialog')
-      fireEvent.change(nameField(), { target: { value: 'radar' } })
-      fireEvent.click(screen.getByTestId('crewmate-create-submit'))
-      await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
-      fireEvent.click(await rosterRow('alpha'))
-      await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha'), PANE_READY)
-      await act(async () => { fail(new ApiError(500, 'boom')) })
-      const notice = await screen.findByTestId('member-left-create-failed', undefined, PANE_READY)
-      expect(notice).toHaveTextContent("Couldn't create the crewmate.")
-      expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha')
-      fireEvent.click(within(notice).getByRole('button'))
-      await waitFor(() => expect(screen.queryByTestId('member-left-create-failed')).toBeNull())
-    } finally {
-      confirm.mockRestore()
-    }
+  it('a create that fails while its POST is active keeps its error in the dialog', async () => {
+    let fail: (e: unknown) => void = () => {}
+    ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockReturnValueOnce(new Promise((_, reject) => { fail = reject }))
+    await openAssistant()
+    await clickAddCrewmate()
+    await screen.findByRole('dialog')
+    fireEvent.change(nameField(), { target: { value: 'radar' } })
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
+    fireEvent.click(await rosterRow('alpha'))
+    expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-mate')
+    await act(async () => { fail(new ApiError(500, 'boom')) })
+    expect(await screen.findByTestId('crewmate-create-error', undefined, PANE_READY)).toHaveTextContent("Couldn't create the crewmate.")
+    expect(screen.queryByTestId('member-left-create-failed')).toBeNull()
   })
 
-  it('a failed roster re-read after leaving a create says so, keeps the chosen chat, and its retry only re-reads', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    try {
-      let finish: (v: unknown) => void = () => {}
-      ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockReturnValueOnce(new Promise((resolve) => { finish = resolve }))
-      await openAssistant()
-      await clickAddCrewmate()
-      await screen.findByRole('dialog')
-      fireEvent.change(nameField(), { target: { value: 'radar' } })
-      fireEvent.click(screen.getByTestId('crewmate-create-submit'))
-      await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
-      fireEvent.click(await rosterRow('alpha'))
-      await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha'), PANE_READY)
-      const membersMock = api.members as ReturnType<typeof vi.fn>
-      membersMock.mockRejectedValue(new Error('roster down'))
-      await act(async () => { finish({ ok: true }) })
-      expect(await screen.findByTestId('member-post-create-error', undefined, PANE_READY)).toBeInTheDocument()
-      expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha')
-      membersMock.mockResolvedValue({
-        members: [...assistantAndAlpha(), row({ name: 'radar', slug: 'radar', dashboard_created: true })],
-        default_agent: 'kirocrew',
-      })
-      fireEvent.click(screen.getByTestId('member-post-create-retry'))
-      expect(await rosterRow('radar')).toBeInTheDocument()
-      await waitFor(() => expect(screen.queryByTestId('member-post-create-error')).toBeNull(), PANE_READY)
-      // The retry listed it; the chat the user picked is still the one open.
-      expect(api.memberThread).not.toHaveBeenCalledWith('radar')
-      expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha')
-    } finally {
-      confirm.mockRestore()
-    }
+  it('a failed roster re-read after a create offers a retry that re-reads the roster', async () => {
+    let finish: (v: unknown) => void = () => {}
+    ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockReturnValueOnce(new Promise((resolve) => { finish = resolve }))
+    await openAssistant()
+    await clickAddCrewmate()
+    await screen.findByRole('dialog')
+    fireEvent.change(nameField(), { target: { value: 'radar' } })
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
+    const membersMock = api.members as ReturnType<typeof vi.fn>
+    membersMock.mockRejectedValue(new Error('roster down'))
+    await act(async () => { finish({ ok: true }) })
+    expect(await screen.findByTestId('member-post-create-error', undefined, PANE_READY)).toBeInTheDocument()
+    membersMock.mockResolvedValue({
+      members: [...assistantAndAlpha(), row({ name: 'radar', slug: 'radar', dashboard_created: true })],
+      default_agent: 'kirocrew',
+    })
+    fireEvent.click(screen.getByTestId('member-post-create-retry'))
+    expect(await rosterRow('radar')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByTestId('member-post-create-error')).toBeNull(), PANE_READY)
   })
 
-  it('New crewmate again over a typed blank card, once the user agrees to leave, starts empty', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    try {
-      await openAssistant()
-      await clickAddCrewmate()
-      await screen.findByRole('dialog')
-      fireEvent.change(nameField(), { target: { value: 'half-typed' } })
-      await clickAddCrewmate()
-      await waitFor(() => expect(confirm).toHaveBeenCalledTimes(1))
-      await waitFor(() => expect(nameField().value).toBe(''))
-    } finally {
-      confirm.mockRestore()
-    }
+  it('New crewmate again over a typed blank card starts empty once the user discards the draft', async () => {
+    await openAssistant()
+    await clickAddCrewmate()
+    await screen.findByRole('dialog')
+    fireEvent.change(nameField(), { target: { value: 'half-typed' } })
+    await clickAddCrewmate()
+    await settleLeaveConfirm(true)
+    await waitFor(() => expect(nameField().value).toBe(''))
   })
 })
 

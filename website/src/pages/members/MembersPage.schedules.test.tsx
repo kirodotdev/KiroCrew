@@ -226,7 +226,10 @@ function LeaveProbe() {
   const mayLeave = useMayLeaveForNavigation()
   const [answer, setAnswer] = useState('')
   return (
-    <button type="button" data-testid="leave-probe" onClick={() => setAnswer(String(mayLeave()))}>
+    <button type="button" data-testid="leave-probe" onClick={() => {
+      setAnswer('')
+      void mayLeave().then((allowed) => setAnswer(String(allowed)))
+    }}>
       {answer}
     </button>
   )
@@ -236,9 +239,14 @@ function LeaveProbe() {
  *  half a test can see: a cancelled unload event means the flag is up. */
 const holdsDocument = () =>
   !window.dispatchEvent(new Event('beforeunload', { cancelable: true }))
-const askToLeave = () => {
-  fireEvent.click(screen.getByTestId('leave-probe'))
+const requestLeave = () => fireEvent.click(screen.getByTestId('leave-probe'))
+const leaveAnswer = async () => {
+  await waitFor(() => expect(screen.getByTestId('leave-probe').textContent).not.toBe(''))
   return screen.getByTestId('leave-probe').textContent
+}
+const askToLeave = async () => {
+  requestLeave()
+  return leaveAnswer()
 }
 
 beforeEach(() => {
@@ -636,22 +644,16 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
   })
 
   it('vetoes leaving the route while a draft is open, and lets a clean card through', async () => {
-    // The navigation-leave registry is synchronous, so this exit uses `window.confirm`.
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    try {
-      await openCrewmate()
-      await openSchedulesTab()
-      await openCreateForm()
-      // Clean: the shell is allowed to leave without a prompt at all.
-      expect(askToLeave()).toBe('true')
-      expect(confirmSpy).not.toHaveBeenCalled()
+    await openCrewmate()
+    await openSchedulesTab()
+    await openCreateForm()
+    // Clean: the shell is allowed to leave without a prompt at all.
+    expect(await askToLeave()).toBe('true')
 
-      await typeDraft()
-      expect(askToLeave()).toBe('false')
-      expect(confirmSpy).toHaveBeenCalledWith(expect.stringMatching(/lose the schedule/i))
-    } finally {
-      confirmSpy.mockRestore()
-    }
+    await typeDraft()
+    requestLeave()
+    await answer('Cancel')
+    expect(await leaveAnswer()).toBe('false')
   })
 
   it('panel-only actions keep a dirty Profile draft mounted without asking to discard it', async () => {
@@ -870,12 +872,10 @@ describe('MembersPage Profile card — Goals retention and delivery', () => {
       expect(input).toHaveValue(draftText)
       expect(screen.getByTestId('crew-profile-panel')).toHaveAttribute('data-tab', 'goals')
     }
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    try {
-      expect(askToLeave()).toBe('false')
-      expect(confirm).toHaveBeenCalledWith('Discard unsaved changes?')
-      expect(input).toHaveValue(draftText)
-    } finally { confirm.mockRestore() }
+    requestLeave()
+    await answer('Cancel')
+    expect(await leaveAnswer()).toBe('false')
+    expect(input).toHaveValue(draftText)
     fireEvent.click(screen.getByTestId('crew-profile-back'))
     await answer('Discard')
     await waitFor(() => expect(holdsDocument()).toBe(false))
@@ -934,7 +934,7 @@ describe('MembersPage Profile card — Goals retention and delivery', () => {
     fireEvent.click(screen.getByTestId('crew-profile-close'))
     fireEvent.click(screen.getByTestId('crew-profile-back'))
     fireEvent.click(screen.getByRole('tab', { name: 'Sessions', hidden: true }))
-    expect(askToLeave()).toBe('false')
+    expect(await askToLeave()).toBe('false')
     expect(screen.getByTestId('crew-profile-panel')).toHaveAttribute('data-tab', 'goals')
     expect(screen.queryByRole('dialog')).toBeNull()
     await act(async () => { finish((kind === 'tracking' ? { ok: true, json: async () => ({ ok: true }) } : goals) as never) })

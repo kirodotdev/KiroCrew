@@ -17,6 +17,7 @@ import {
   MessageSquare, Archive, Trash2, MoreHorizontal,
 } from 'lucide-react'
 import Clickable from '../../components/Clickable'
+import { useConfirm } from '../../components/ConfirmDialog'
 import ErrorNotice from '../../components/ErrorNotice'
 import { SEND_REFUSED } from '../../chat-core/transport/sendTurn'
 import { FolderBody } from '../../components/FolderBody'
@@ -467,6 +468,7 @@ function RequestGroup({
 
 
 export default function DesignTweak() {
+  const { confirm, confirmDialog } = useConfirm()
   // One instance covers both inputs; the binding's focus/blur reset makes sharing safe.
   const ime = useImeGuard()
   const navigate = useNavigate()
@@ -1379,10 +1381,13 @@ export default function DesignTweak() {
   // `confirm()` guard the Sessions sidebar uses for its destructive deletes.
   // Archive stays un-confirmed on purpose: the request is still in History.
   const deleteReq = useCallback(async (req: Request) => {
-    if (!confirm(i18nT('apps.designTweak.requests.delete_confirm', { number: req.number }))) return
+    if (!(await confirm({
+      title: i18nT('apps.designTweak.requests.delete_confirm', { number: req.number }),
+      confirmLabel: i18nT('apps.designTweak.requests.delete_request'),
+    }))) return
     try { await deleteRequest(req.id); refresh() }
     catch (err) { setStatus(i18nT('apps.designTweak.status.delete_failed', { error: errMsg(err) })) }
-  }, [refresh])
+  }, [confirm, refresh])
 
   // Remove one comment from a draft (backend refuses once the request is sent).
   const deleteComment = useCallback(async (req: Request, c: Comment) => {
@@ -1530,6 +1535,7 @@ export default function DesignTweak() {
   // ---------- render ----------
   return (
     <div className="flex h-full min-h-0" style={{ padding: '8px 12px' }}>
+      {confirmDialog}
 
       {/* ================= LEFT RAIL (resizable, bordered container) ================= */}
       <div

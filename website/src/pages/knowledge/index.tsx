@@ -33,6 +33,7 @@ const STATUS_LABEL_KEY = {
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { editableEventTarget } from '../../utils/editableTarget'
+import { useConfirm } from '../../components/ConfirmDialog'
 const KnowledgeGraph = lazy(() => import('./KnowledgeGraph'))
 
 const TABS = ['list', 'graph', 'sources', 'settings'] as const
@@ -98,6 +99,7 @@ function EntityAutocomplete({ query, onSelect }: { query: string; onSelect: (nam
 
 function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>; items: KnowledgeItem[]; onDone: () => void }) {
   const queryClient = useQueryClient()
+  const { confirm, confirmDialog, confirmOpen } = useConfirm()
 
   const bulkArchiveMutation = useMutation({
     mutationFn: async (status: string) => {
@@ -163,15 +165,26 @@ function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>;
   }
 
   const pending = bulkArchiveMutation.isPending || bulkDeleteMutation.isPending
+  const handleBulkDelete = async () => {
+    if (pending || selectedIds.size === 0 || confirmOpen) return
+    const ok = await confirm({
+      title: i18nT('pages.knowledge.detailView.permanently_delete_this_item'),
+      confirmLabel: i18nT('pages.knowledge.index.delete'),
+    })
+    if (ok) bulkDeleteMutation.mutate()
+  }
 
   return (
+    <>
+      {confirmDialog}
     <div className="flex items-center gap-2 px-3 py-2 bg-accent/5 border border-accent/20 rounded-lg mb-3">
       <span className="text-[13px] text-text-strong font-medium">{selectedIds.size} {i18nT('pages.knowledge.index.selected')}</span>
       <Btn disabled={pending} onClick={() => bulkArchiveMutation.mutate('archived')}>{i18nT('pages.knowledge.index.archive')}</Btn>
-      <Btn disabled={pending} onClick={() => { if (confirm(`Delete ${selectedIds.size} items permanently?`)) bulkDeleteMutation.mutate() }}>{i18nT('pages.knowledge.index.delete')}</Btn>
+      <Btn disabled={pending} onClick={() => { void handleBulkDelete() }}>{i18nT('pages.knowledge.index.delete')}</Btn>
       <Btn onClick={copySelected}><Copy size={12} /> {copied ? i18nT('pages.knowledge.index.copied') : i18nT('pages.knowledge.index.copy_content')}</Btn>
       <button onClick={onDone} className="ml-auto text-[12px] text-muted hover:text-text bg-transparent border-none cursor-pointer">{i18nT('pages.knowledge.index.clear')}</button>
     </div>
+    </>
   )
 }
 

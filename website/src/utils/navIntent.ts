@@ -55,13 +55,15 @@ export function chatDeepLinkSlot(path: string): string {
  * and a veto drops the whole intent: no prefill is staged and no slot switches
  * for a navigation the user refused.
  */
-export function applyNavIntentInMain(
+export async function applyNavIntentInMain(
   intent: NavIntent,
   deps: {
     navigate: (path: string) => void
     switchSlot: (slotKey: string) => void
     // Required, so every caller decides whether its exit asks the page first.
-    mayLeave: () => boolean
+    mayLeave: () => Promise<boolean>
+    /** Claims the provider's one visible exit confirmation, if one exists. */
+    claimExitAttempt?: () => { isSourceCurrent: () => boolean; end: () => void } | null
     /**
      * Append `text` to the chat composer this window already shows for
      * `slotKey`, returning false when no such composer is on screen. A hand-off
@@ -72,7 +74,7 @@ export function applyNavIntentInMain(
      */
     appendToOpenComposer?: (slotKey: string, text: string) => boolean
   },
-): void {
+): Promise<void> {
   // Best-effort raise — a channel-delivered intent has no user activation, so
   // browsers may veto this; the opener-focus on the popout side is the
   // reliable path and this is just the assist for the claimed-but-not-opener
@@ -84,8 +86,16 @@ export function applyNavIntentInMain(
     && intent.slotKey === prefill.slotKey && deps.appendToOpenComposer?.(prefill.slotKey, prefill.append)) {
     return
   }
-  if (!deps.mayLeave()) return
-  if (prefill) writePrefill(prefill.slotKey, prefill.prompt)
-  if (intent.slotKey) deps.switchSlot(intent.slotKey)
-  deps.navigate(intent.path)
+  const attempt = deps.claimExitAttempt
+    ? deps.claimExitAttempt()
+    : { isSourceCurrent: () => true, end: () => {} }
+  if (!attempt) return
+  try {
+    if (!(await deps.mayLeave()) || !attempt.isSourceCurrent()) return
+    if (prefill) writePrefill(prefill.slotKey, prefill.prompt)
+    if (intent.slotKey) deps.switchSlot(intent.slotKey)
+    deps.navigate(intent.path)
+  } finally {
+    attempt.end()
+  }
 }
