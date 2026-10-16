@@ -36,12 +36,23 @@ from kiro_crew.apps.builtins.auto_research.session_keys import (
     AUTO_RESEARCH_APP,
     research_slot_key,
 )
-from kiro_crew.autonudge import AUTONUDGE_STOP_REASON
+from kiro_crew.autonudge import (
+    AUTONUDGE_STOP_REASON,
+    CONSECUTIVE_FAILURE_REASON,
+    SESSION_START_FAILURE_REASON,
+)
 from kiro_crew.autonudge import get_instance as _autonudge_instance
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.platform_compat import is_link_or_junction, unlink_link_or_junction
 
 logger = logging.getLogger(LOGGER_NAME)
+
+# AutoNudge's own failure stand-downs: the loop stopped itself after too many
+# failed cycles or session starts in a row. Reviving one resets both streaks
+# (``AutoNudgeService.update`` treats any inactive->active flip as a fresh run),
+# so the watchdog settles the campaign on them instead of re-arming the loop,
+# and a resumed run must not inherit one.
+FAILURE_STANDDOWN_REASONS = frozenset({CONSECUTIVE_FAILURE_REASON, SESSION_START_FAILURE_REASON})
 
 # Per-cycle trigger injected by the autonudge loop. The full methodology lives in
 # the kirocrew-research agent's system prompt, so this only needs to name the cycle.
@@ -199,7 +210,8 @@ async def _prepare_loop_launch(cid: str) -> None:
         if (
             previous is not None
             and not previous.active
-            and str(getattr(previous, "stopped_reason", "") or "") == AUTONUDGE_STOP_REASON
+            and str(getattr(previous, "stopped_reason", "") or "")
+            in (AUTONUDGE_STOP_REASON, *FAILURE_STANDDOWN_REASONS)
         ):
             await svc.remove(previous.id)
     await asyncio.to_thread(_clear_worker_done_marker, cid)
