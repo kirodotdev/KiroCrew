@@ -364,20 +364,20 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "handlers/mcp.py::_do_mcp_apply": ("_MCP_APPLY_MAX_BODY_BYTES", _BOUNDED_EXPLICIT),
     "handlers/mcp.py::api_mcp_gateway_enable": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/mcp.py::api_mcp_gateway_set_stub": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    # handlers/cron.py: create/update carry the job's full agent message,
+    # handlers/cron.py's owners: create/update carry the job's full agent message,
     # whose MAX_CRON_MESSAGE character bound can exceed the shared 64 KB
     # default in multibyte UTF-8 -- so they take a per-route ceiling sized to
     # the field bound; everything else is ids and flags.
-    "handlers/cron.py::api_crons_create": ("_MAX_CRON_BODY_BYTES", _BOUNDED_EXPLICIT),
-    "handlers/cron.py::api_cron_tools": ("_MAX_CRON_BODY_BYTES", _BOUNDED_EXPLICIT),
-    "handlers/cron.py::api_cron_batch_delete": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "handlers/cron.py::api_cron_update": ("_MAX_CRON_BODY_BYTES", _BOUNDED_EXPLICIT),
-    "handlers/cron.py::api_cron_enable": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "handlers/cron.py::api_cron_ack": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "handlers/cron.py::api_lessons_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "handlers/cron.py::api_lessons_delete": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "handlers/cron.py::api_cron_folders_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "handlers/cron.py::api_cron_folders_update": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/cron_jobs.py::api_crons_create": ("_MAX_CRON_BODY_BYTES", _BOUNDED_EXPLICIT),
+    "handlers/cron_jobs.py::api_cron_tools": ("_MAX_CRON_BODY_BYTES", _BOUNDED_EXPLICIT),
+    "handlers/cron_jobs.py::api_cron_batch_delete": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/cron_jobs.py::api_cron_update": ("_MAX_CRON_BODY_BYTES", _BOUNDED_EXPLICIT),
+    "handlers/cron_jobs.py::api_cron_enable": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/cron_runs.py::api_cron_ack": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/cron_lessons.py::api_lessons_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/cron_lessons.py::api_lessons_delete": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/cron_board.py::api_cron_folders_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/cron_board.py::api_cron_folders_update": ("<default>", _BOUNDED_CONTROL_FIELDS),
     # handlers/workflows.py: workflow bodies carry a script source or a
     # free-form intent/input, so only promote (fixed metadata) takes the cap.
     "handlers/workflows.py::api_workflow_definitions_create": (

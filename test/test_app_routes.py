@@ -259,7 +259,7 @@ async def test_uninstall_aborts_non_retryable_when_cron_store_unreadable(tmp_pat
     while its still-ENABLED jobs remain on disk to resume once the store parses.
 
     Two things differ from `CronStoreBusy` and both come from the code, not from
-    symmetry. `handlers/cron.py` documents unreadable as `retryable: False` --
+    symmetry. `handlers/cron_shared.py` documents unreadable as `retryable: False` --
     "an unreadable file does not heal on its own, so a client that retries on busy
     must NOT retry on this" -- so the abort must not tell the caller to retry. And
     `_deregister_crons_with_retry` catches busy IN ORDER TO retry, so unreadable
@@ -288,7 +288,7 @@ async def test_uninstall_aborts_non_retryable_when_cron_store_unreadable(tmp_pat
         resp = await client.post("/api/apps/api-test-app/uninstall")
         assert resp.status == 409
         body = await resp.json()
-        # The distinction handlers/cron.py keeps deliberately.
+        # The distinction handlers/cron_shared.py keeps deliberately.
         assert body["retryable"] is False, body
         assert "Move the unreadable file aside" in body["error"], body
 

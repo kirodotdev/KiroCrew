@@ -136,7 +136,7 @@ def test_the_idiom_lives_in_exactly_one_file():
 SHARED_DATABASE_OPENERS = (
     "memory_stores.py",
     "metrics/inventory_gauges.py",
-    "dashboard/handlers/cron.py",
+    "dashboard/handlers/cron_lessons.py",
     "kiro_cli.py",
     "kiro_prerequisite_identity.py",
     "kiro_prerequisite_identity_store.py",

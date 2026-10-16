@@ -720,7 +720,7 @@ when done. See [acp-client.md](acp-client.md) for `AcpRuntime` /
 **Cheapest-model bg tasks**: the categorical/classification background tasks
 (folder-icon `chat_folders.py`, link-summary `chat_nav.py`, session title
 `chat_title.py`, session-summary `handlers/sessions_parts/summaries.py`, STT endpointing
-`stt_stream.py`, and the lesson-contradiction check `dashboard/handlers/cron.py`,
+`stt_stream.py`, and the lesson-contradiction check `dashboard/handlers/cron_lesson_supersede.py`,
 plus tips generation) express a `"auto"` model preference and pass it to a
 best-effort per-session `set_model`. The wire chokepoint
 (`AcpSessionHandle.set_model` → `resolve_usable_model`) mirrors the interactive

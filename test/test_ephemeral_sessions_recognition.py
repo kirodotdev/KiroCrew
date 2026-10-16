@@ -960,7 +960,7 @@ class TestLessonsDeleteGate:
     def _deletable_state(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-        # Route reads the vector store through cron.py's own binding.
+        # Route reads the vector store through cron_lessons.py's own binding.
         monkeypatch.setattr(
             "kiro_crew.dashboard.handlers.cron._get_memory",
             MagicMock(return_value=MagicMock(vector_store=None)),

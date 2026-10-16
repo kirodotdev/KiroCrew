@@ -2046,7 +2046,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/job_sdk_records.py",
         # Same shape: hosts _redact_memory_field, the shared recursive scrubber
         # for memory fields. It owns no output of its own — the handler modules
-        # that call it (memory.py, cron.py) are the covered surfaces.
+        # that call it (memory.py and the cron.py owners) are the covered surfaces.
         "dashboard/handlers/_shared.py",
         # Applies the memory scrubber as a COMPARISON on the write path, never on
         # the way out: `_require_editable_record` refuses a whole-value edit whose
@@ -2402,7 +2402,13 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/handlers/artifacts_parts/route_plumbing.py",
         "dashboard/handlers/artifacts_parts/session_documents.py",
         "dashboard/handlers/core.py",
-        "dashboard/handlers/cron.py",
+        "dashboard/handlers/cron_board.py",
+        "dashboard/handlers/cron_jobs.py",
+        "dashboard/handlers/cron_lessons.py",
+        "dashboard/handlers/cron_runs.py",
+        "dashboard/handlers/cron_script_source.py",
+        "dashboard/handlers/cron_secret_grants.py",
+        "dashboard/handlers/cron_shared.py",
         # Same class as the dashboard handlers around it: the five debug reads
         # redact every string they return -- a gateway description, a classified
         # refusal, a process roster -- but the egress boundary is the loopback

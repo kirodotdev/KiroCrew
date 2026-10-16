@@ -170,9 +170,16 @@
       "dynamic_status": 3,
       "missing_code": 13
     },
-    "dashboard/handlers/cron.py": {
-      "dynamic_status": 5,
-      "missing_code": 28
+    "dashboard/handlers/cron_jobs.py": {
+      "dynamic_status": 4,
+      "missing_code": 17
+    },
+    "dashboard/handlers/cron_lessons.py": {
+      "missing_code": 5
+    },
+    "dashboard/handlers/cron_runs.py": {
+      "dynamic_status": 1,
+      "missing_code": 6
     },
     "dashboard/handlers/discover.py": {
       "missing_code": 15

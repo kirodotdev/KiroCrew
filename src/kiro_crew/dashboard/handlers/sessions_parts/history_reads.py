@@ -96,8 +96,8 @@ def _open_slot_transcript_keys(state: DashboardState) -> set[str]:
 #:
 #: * ``handlers/_shared.py`` — colon-only, wf-family only, to dispatch a memory-mode
 #:   lookup. Includes ``wf-scope``.
-#: * ``handlers/cron.py`` — colon-only, wf-family plus ``subagent``, to answer whether a
-#:   session is live and shared. Omits ``wf-scope`` on purpose: that prefix names a
+#: * ``handlers/cron_caller_session.py`` — colon-only, wf-family plus ``subagent``, to answer
+#:   whether a session is live and shared. Omits ``wf-scope`` on purpose: that prefix names a
 #:   workflow run's memory anchor, and no session is created under it.
 #: * this one — matches PERSISTED folded keys via ``_in_namespace``, adds ``secretary``
 #:   and ``channel``, and deliberately excludes ``cron``, ``side`` and ``taskrunner``

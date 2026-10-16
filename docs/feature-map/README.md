@@ -58,6 +58,8 @@ A Handler cell that names a facade (`chat_handlers.py`, `handlers/agents.py`, `h
 
 `handlers/prompts.py` is such a facade too: the prompt and skill routes it names live in the `handlers/prompts_<role>.py` owners beside it.
 
+`handlers/cron.py` is such a facade too: the cron job, run, lesson and cron-folder routes it names live in the `handlers/cron_<role>.py` owners beside it.
+
 ---
 
 ## Chat and sessions
