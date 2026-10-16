@@ -464,6 +464,9 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
         "test_dev_fleet_app_teardown.py",
         "test_dev_fleet_app_foreground.py",
         "test_dev_fleet_app_pull_build.py",
+        "test_dev_fleet_app_worktrees.py",
+        "test_dev_fleet_app_sync.py",
+        "test_dev_fleet_app_guards.py",
         "test_pod_windows_boot.py",
     }
 

@@ -216,7 +216,6 @@
 2478 test/test_dashboard_updates_coverage.py
 11203 test/test_denied_commands_security.py
 2194 test/test_deploy_web_handlers.py
-11284 test/test_dev_fleet_app.py
 4648 test/test_dev_fleet_server_coverage.py
 2020 test/test_discord_resumed_busy.py
 2065 test/test_dynamic_dashboard_cards.py

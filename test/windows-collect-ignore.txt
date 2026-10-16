@@ -83,6 +83,9 @@ test_dev_fleet_app_fleet_cache.py  # POSIX app-runner assumptions
 test_dev_fleet_app_teardown.py     # POSIX app-runner assumptions
 test_dev_fleet_app_foreground.py   # POSIX app-runner assumptions
 test_dev_fleet_app_pull_build.py   # POSIX app-runner assumptions
+test_dev_fleet_app_worktrees.py    # POSIX app-runner assumptions
+test_dev_fleet_app_sync.py         # POSIX app-runner assumptions
+test_dev_fleet_app_guards.py       # POSIX app-runner assumptions
 test_file_office_preview.py        # FILE_READ_SCHEMA rejects C:\ paths (POSIX-only pattern)
 
 # Runs ONLY as the dedicated pod-boot canary in ci.yml, never in a shard: it
