@@ -187,6 +187,7 @@ from kiro_crew.hook_runtime.tool_identity import (  # noqa: F401
     _builtin_app_for_agent,
     _context_matches,
     _has_global_inline_flags,
+    _host_builtin_alias,
     _is_declared_builtin_mcp_server,
     _is_first_party_app,
     _is_harness_read_only_builtin,
@@ -230,6 +231,7 @@ from kiro_crew.platform.governance import (
 # / ``hooks.target_paths`` (and the work caps) stay importable at their historic
 # names; hooks keeps its HARD-DENY reading of ``TargetPaths.truncated``.
 from kiro_crew.platform.tool_names import (  # noqa: F401  (read by hook_runtime owners)
+    KIRO_TOOL_ALIASES,
     policy_alias_split,
     policy_aliases,
 )
@@ -833,20 +835,6 @@ _READ_ONLY_TOOL_KINDS: frozenset[str] = frozenset({"read", "fetch"})
 _HOST_READ_ONLY_BUILTIN_TOOLS: frozenset[str] = frozenset(
     {"fs_read", "glob", "grep", "web_fetch", "web_search"}
 )
-
-# kiro-cli's own spellings of the names above. It stamps its file-read built-in
-# ``read``; ``fs_read`` is the alias a spec may still use, and the spelling the
-# allowlist and ``BUILTIN_TOOL_SCOPES`` carry. ``_is_host_read_only_builtin``
-# resolves the stamped name through this table before the membership test, so
-# a value here must be an allowlist name (never a new proof of its own). Only
-# the read-only aliases are spelled here, because the table that owns the
-# mapping (``acp.kas_permissions.KIRO_TOOL_ALIASES``) lives under ``acp`` and
-# the agent-SDK boundary keeps application code off that layer;
-# ``test_host_read_only_aliases_agree_with_kiro_tool_aliases``
-# (``test/test_hooks.py``) joins the two, so a ``write`` or ``shell`` alias
-# cannot join by mistake and a renamed one breaks there rather than silently
-# refusing every file read on a surface with no approver.
-_HOST_READ_ONLY_BUILTIN_ALIASES: Mapping[str, str] = {"read": "fs_read"}
 
 
 # Semantic kinds known to mutate/execute. DOCUMENTATION ONLY — the gate does not

@@ -51,7 +51,7 @@ import logging
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from kiro_crew.platform.tool_names import KIRO_CLI_NAME_BY_KAS_TOOL
+from kiro_crew.platform.tool_names import KIRO_CLI_NAME_BY_KAS_TOOL, KIRO_TOOL_ALIASES
 
 logger = logging.getLogger(__name__)
 
@@ -174,15 +174,6 @@ def _rows_from_policy_table() -> dict[str, tuple[str, ...]]:
 
 
 KAS_TOOL_IDS_BY_KIRO_TOOL: dict[str, tuple[str, ...]] = _rows_from_policy_table()
-
-#: Other spellings of a kiro-cli tool that a spec may use, onto the name in
-#: :data:`KAS_TOOL_IDS_BY_KIRO_TOOL`: kiro-cli's legacy ``shell`` key, and the
-#: short ``read``/``write`` names KAS's own tool table classifies the same way.
-KIRO_TOOL_ALIASES: dict[str, str] = {
-    "shell": "execute_bash",
-    "read": "fs_read",
-    "write": "fs_write",
-}
 
 #: Every name a tool matcher can mean on KAS: the kiro-cli names and their
 #: aliases, and the KAS ids they reach.

@@ -23,7 +23,6 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from kiro_crew.hooks import (
         _GATE_TIER_KINDS,
-        _HOST_READ_ONLY_BUILTIN_ALIASES,
         _READ_ONLY_TOOL_KINDS,
         GateRule,
         GateTier,
@@ -35,6 +34,7 @@ if TYPE_CHECKING:
         _builtin_app_for_agent,
         _cu_read_only_auto_approve,
         _governance_denial,
+        _host_builtin_alias,
         _is_declared_builtin_mcp_server,
         _is_first_party_app,
         _is_harness_read_only_builtin,
@@ -334,13 +334,7 @@ class GateFacts:
                 targets.append(self.canonical_mcp_name)
             if call.mcp_tool and call.mcp_tool not in targets:
                 targets.append(call.mcp_tool)
-            # kiro-cli stamps ``read`` where a rule is written ``fs_read``; the
-            # read-only proof resolves that alias, so a rule must reach it too.
-            # Built-ins only: a server's own tool called ``read`` is not the
-            # host's file reader, and the proof excludes it the same way.
-            alias = (
-                "" if call.mcp_server else _HOST_READ_ONLY_BUILTIN_ALIASES.get(call.mcp_tool, "")
-            )
+            alias = _host_builtin_alias(call.mcp_tool, call.mcp_server)
             if alias and alias not in targets:
                 targets.append(alias)
             # claude states no _meta.kiro identity, so this is the only form in
@@ -827,29 +821,34 @@ def _tier_governance(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
     # That id is asked on its own name (``extra_titles``) and ``fs_write`` only for
     # an explicit deny (``deny_aliases``).
     #
-    # Otherwise the trusted name and, where kiro-cli stamped an alias (``read``)
-    # on a built-in, the spelling a rule is written in (``fs_read``) -- the same
-    # spelling the read-only proof resolves it to. A server's own ``read`` is
-    # not the host's file reader and gets no alias. Both in the one query;
-    # neither repeats the title.
+    # A built-in kiro-cli stamped under a short name (``write``) is the same ONE
+    # identity in two spellings, so it is asked the same way: the stamp beside the
+    # spec spelling a rule is written in (``_host_builtin_alias``, the call the
+    # read-only proof resolves it through). Only a provenance-verified stamp may
+    # ADMIT under its alias; an unverified one is asked on its own name and the
+    # alias may only deny. Otherwise just the trusted name; nothing repeats the title.
     identity: tuple[str, ...] = ()
     alias_groups: tuple[tuple[str, ...], ...] = ()
     deny_aliases: tuple[str, ...] = ()
+    alias = _host_builtin_alias(call.mcp_tool, call.mcp_server)
     if facts.policy_alias_names:
         admitting, deny_aliases = policy_alias_split(call.mcp_tool)
         if admitting:
             alias_groups = ((call.mcp_tool, *admitting),)
         elif call.mcp_tool != call.title:
             identity = (call.mcp_tool,)
+    elif alias and call.identity_trusted:
+        alias_groups = ((call.mcp_tool, alias),)
     else:
-        alias = "" if call.mcp_server else _HOST_READ_ONLY_BUILTIN_ALIASES.get(call.mcp_tool, "")
         # claude states no _meta.kiro identity: its read built-in is named by
         # harness_builtin_tool, so a ceiling's deny on web_search binds it too.
         identity = tuple(
             name
-            for name in dict.fromkeys((call.mcp_tool, alias, call.harness_builtin_tool))
+            for name in dict.fromkeys((call.mcp_tool, call.harness_builtin_tool))
             if name and name != call.title
         )
+        if alias:
+            deny_aliases = (alias,)
     gov_reason = _governance_denial(
         facts.ctx,
         call.title,
