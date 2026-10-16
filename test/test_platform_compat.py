@@ -36,6 +36,7 @@ import pytest
 from kiro_crew import platform_compat as pc
 from kiro_crew import windows_acl
 from kiro_crew.testing.ids import UNALLOCATABLE_PID
+from kiro_crew.testing.wait import wait_until
 
 # This file replaces ctypes.CDLL, find_library or a cached libc handle for a test,
 # so the shared macOS handle caches are put back after each one (see conftest.py).
@@ -2162,6 +2163,61 @@ class TestProcessArgvMatchesExact:
             f"last command line {pc.process_command_line(pid)!r}"
         )
 
+    @staticmethod
+    def _argv_read_diagnosis(pid):
+        """Say which branch of ``process_argv_fingerprint`` answered None for *pid*."""
+        if sys.platform == "linux":
+            try:
+                raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+            except Exception as exc:  # noqa: BLE001 - the diagnosis names it
+                return f"/proc/{pid}/cmdline read raised {type(exc).__name__}: {exc}"
+            return f"/proc/{pid}/cmdline read {len(raw)} byte(s)"
+        if sys.platform == "darwin":
+            return f"darwin_process_argv({pid}) answered {pc.darwin_process_argv(pid)!r}"
+        return f"no argv reader on {sys.platform}"
+
+    @classmethod
+    def _fingerprint_once_readable(cls, pid):
+        """Poll the argv fingerprint until it reads; fail by name at the ceiling.
+
+        ``Popen`` returns once the child's close-on-exec pipe shuts, which Linux
+        does before it publishes the new image's argv, so a read right after it
+        can find ``/proc/<pid>/cmdline`` still empty and answer None.
+        """
+        return wait_until(
+            lambda: pc.process_argv_fingerprint(pid),
+            timeout=_ARGV_READ_CEILING_SECS,
+            interval=0.05,
+            describe=lambda: f"pid {pid}: {cls._argv_read_diagnosis(pid)}",
+        )
+
+    def test_the_fingerprint_read_retries_an_argv_that_is_not_published_yet(self, monkeypatch):
+        # The first reads after Popen can see an empty cmdline, which answers None.
+        reads = iter([None, None, "f" * 64])
+        seen: list[int] = []
+
+        def read(pid):
+            seen.append(pid)
+            return next(reads)
+
+        monkeypatch.setattr(pc, "process_argv_fingerprint", read)
+
+        assert self._fingerprint_once_readable(4242) == "f" * 64
+        assert seen == [4242, 4242, 4242]
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="names the Linux /proc branch")
+    def test_a_fingerprint_that_never_reads_fails_naming_the_branch(self, monkeypatch):
+        monkeypatch.setattr(pc, "process_argv_fingerprint", lambda pid: None)
+        monkeypatch.setitem(globals(), "_ARGV_READ_CEILING_SECS", 0.0)
+
+        with pytest.raises(AssertionError) as failed:
+            self._fingerprint_once_readable(UNALLOCATABLE_PID)
+
+        message = str(failed.value)
+        assert "1 polls" in message
+        assert f"pid {UNALLOCATABLE_PID}: /proc/{UNALLOCATABLE_PID}/cmdline read raised" in message
+        assert "FileNotFoundError" in message
+
     def test_exact_argv_matches_and_near_misses_do_not(self):
         if pc.IS_POSIX:
             # A plain binary that does NOT re-exec, so its kernel-visible argv
@@ -2343,16 +2399,16 @@ class TestProcessArgvMatchesExact:
         try:
             second = spawn(1)
             try:
-                # Popen returns only after exec succeeded, so the argv is in place.
-                a = pc.process_argv_fingerprint(first.pid)
-                b = pc.process_argv_fingerprint(second.pid)
                 if pc.IS_POSIX:
-                    assert a is not None and len(a) == 64
+                    a = self._fingerprint_once_readable(first.pid)
+                    b = self._fingerprint_once_readable(second.pid)
+                    assert len(a) == 64
                     assert pc.process_argv_fingerprint(first.pid) == a
-                    assert b is not None and b != a
+                    assert b != a
                 else:
                     # Windows records no fingerprint: reclaim keeps the exact check.
-                    assert a is None and b is None
+                    assert pc.process_argv_fingerprint(first.pid) is None
+                    assert pc.process_argv_fingerprint(second.pid) is None
             finally:
                 self._reap(second)
         finally:
