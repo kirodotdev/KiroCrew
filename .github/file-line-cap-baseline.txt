@@ -297,7 +297,6 @@
 2045 test/test_stop_clears_only_its_own_sender.py
 2211 test/test_stt_engine.py
 3093 test/test_subagent.py
-4522 test/test_subagent_continuable.py
 3616 test/test_subagent_panel_durable_replay.py
 2561 test/test_subagent_persistence.py
 3177 test/test_subagent_scale.py

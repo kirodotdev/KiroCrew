@@ -378,7 +378,7 @@ the sync entry and 91 through `continue_conversation_async`. Neither write can b
 posted instead (`_post_store_write`): the accept's error is what REFUSES the
 spawn, so its value has to be awaited, which is what `spawn_async` does. Pinned
 by
-`test_subagent_continuable.py::test_the_continuation_path_takes_no_store_call_on_the_loop`
+`test_subagent_continuable_runs.py::test_the_continuation_path_takes_no_store_call_on_the_loop`
 (dispatch, the run's mode publication and the terminal settle, under
 `loop_thread_calls` with the guard armed) and, for the manager's own continuation
 caller, by `::test_the_followup_watcher_dispatches_no_store_call_on_the_loop`.

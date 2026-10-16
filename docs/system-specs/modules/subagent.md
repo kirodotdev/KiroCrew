@@ -3874,7 +3874,7 @@ the hint the parent re-spawns from scratch and pays for the same tool calls twic
   done (and `spawn_steer` then answers `not_running`, a dead end), refused
   `release_conversation`, and made the TTL sweep refresh `last_used` on a
   conversation nothing holds, so its session files were never deleted. Pinned by
-  `test_subagent_continuable.py::test_a_stale_resume_entry_does_not_hold_a_conversation`,
+  `test_subagent_continuable_runs.py::test_a_stale_resume_entry_does_not_hold_a_conversation`,
   which also pins that an UNSTARTED entry on the same conversation still holds it.
   Off-loop promotion lets `update_state` acquire that non-reentrant writer lock
   normally, avoiding self-deadlock while preserving serialization.
