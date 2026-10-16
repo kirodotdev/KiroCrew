@@ -16,6 +16,7 @@ import { useImeGuard } from '../hooks/useImeGuard'
 import { useMenuKeyboard, menuItemsOf } from '../hooks/useMenuKeyboard'
 import { AnimatePresence } from 'framer-motion'
 import DetailPanel from '../components/DetailPanel'
+import { useConfirm } from '../components/ConfirmDialog'
 
 import { i18nT } from '../i18n/t'
 import { useListDetailView } from '../hooks/useListDetailView'
@@ -595,6 +596,7 @@ const apiError = (err: unknown, fallback: string) => {
 }
 
 export default function ChannelPage() {
+  const { confirm, confirmDialog } = useConfirm()
   const [channels, setChannels] = useState<Channel[]>([])
   const [presets, setPresets] = useState<Preset[]>(FALLBACK_PRESETS)
   const [activeId, setActiveId] = useState<string | null>(null)
@@ -801,6 +803,7 @@ export default function ChannelPage() {
 
   return (
     <>
+      {confirmDialog}
       <PageHeader title={i18nT('pages.channelPage.channels')} subtitle={i18nT('pages.channelPage.multi_agent_collaboration_spaces')} />
       <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
     {/* Failed create / add-agent / clear-context / load requests. Every input
@@ -852,7 +855,11 @@ export default function ChannelPage() {
                 {channel.agents.some(a => a.state === 'working' || a.state === 'tool_running') && <Badge variant="ok">●</Badge>}
               </Btn>
               <Btn onClick={async () => {
-                if (!confirm(i18nT('pages.channelPage.this_will_reset_conversation_history_for_all_age'))) return
+                const ok = await confirm({
+                  title: i18nT('pages.channelPage.this_will_reset_conversation_history_for_all_age'),
+                  confirmLabel: i18nT('pages.channelPage.clear_context_2'),
+                })
+                if (!ok) return
                 try {
                   await api.channelClearContext(channel.id, 'all')
                   const res = await api.channelGet(channel.id)
@@ -862,7 +869,11 @@ export default function ChannelPage() {
                 <RotateCcw className="lucide-inline" /> {i18nT('pages.channelPage.clear_context_2')}
               </Btn>
               <Btn onClick={async () => {
-                if (!confirm(i18nT('pages.channelPage.close_this_channel_all_agents_will_be_dismissed'))) return
+                const ok = await confirm({
+                  title: i18nT('pages.channelPage.close_this_channel_all_agents_will_be_dismissed'),
+                  confirmLabel: i18nT('pages.channelPage.close'),
+                })
+                if (!ok) return
                 // A refused close keeps the channel in the list: removing it
                 // would show the action as done under a notice saying it failed.
                 try { await api.channelClose(channel.id) } catch (e) { fail('pages.channelPage.failed_to_close_channel', e); return }
@@ -949,7 +960,11 @@ export default function ChannelPage() {
                       onDismiss={() => handleDismiss(agent.id)}
                       onListenChange={m => handleListenChange(agent.id, m)}
                       onClearContext={async () => {
-                        if (!confirm(i18nT('pages.channelPage.reset_role_s_llm_session_the_channel_s_shared_me', { role: agent.role }))) return
+                        const ok = await confirm({
+                          title: i18nT('pages.channelPage.reset_role_s_llm_session_the_channel_s_shared_me', { role: agent.role }),
+                          confirmLabel: i18nT('pages.channelPage.clear_context'),
+                        })
+                        if (!ok) return
                         try {
                           await api.channelClearContext(channel.id, 'agent', agent.id)
                           const res = await api.channelGet(channel.id)

@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useState, type ReactNode } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../api/client'
 import { apiErrorCode, isSlotCapError } from '../api/apiError'
@@ -6,9 +6,11 @@ import { store, useAppDispatch } from '../store'
 import type { MuteFlag } from '../store/dashboardSlice'
 import { deleteSlot, switchSlot } from '../store/chatSlice'
 import { updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, markSlotRead, markSlotUnread, slotWriteStampOf } from '../store/dashboardSlice'
+import { appNotice } from '../lib/appNotice'
 import { emitSlotRead } from '../lib/slotReadRelay'
 import { copySessionLink } from '../utils/shareUrl'
 import { useMoveSlotToFolder } from './useMoveSlotToFolder'
+import { useConfirm } from '../components/ConfirmDialog'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
 import { sessionIsBusyForClose } from '../lib/closeBusyGate'
 import { commitPinnedSessionOperations, commitPinnedSessionSnapshot, readPinnedSessionOrder, reconcilePinnedSessionOrder } from '../utils/pinnedSessionOrder'
@@ -108,13 +110,16 @@ export interface SessionActions {
   /** Relaunch the slot's agent process in place (fresh MCP servers/env, conversation preserved). */
   reload: (slotKey: string) => void
   /** Close (delete) a session, honouring the confirm-close preference. */
-  close: (slotKey: string) => void
+  close: (slotKey: string) => Promise<void>
+  /** Mounted at the menu/sidebar owner that invoked this hook. */
+  confirmDialog: ReactNode
 }
 
 export function useSessionActions(mode?: string): SessionActions {
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
   const moveSlotToFolder = useMoveSlotToFolder()
+  const { confirm, confirmDialog } = useConfirm()
 
   const finishPinMutation = useCallback(async (
     batch: PinMutationBatch, entry: PinMutationEntry, succeeded: boolean,
@@ -270,7 +275,7 @@ export function useSessionActions(mode?: string): SessionActions {
     },
     // Duplicate goes through this mutation with no per-call handler, so this is
     // the only place its failure becomes visible -- surfaced the same way
-    // reloadMutation does (alert(); the dashboard has no global toast). Every
+    // reloadMutation does (the Redux notification feed). Every
     // message shares one shape: "Couldn't duplicate this session. <cause>.
     // <next step>." A non-ApiError means fetch itself rejected (nothing was
     // reached). An ApiError carries the human reason on err.message (apiFailure
@@ -306,14 +311,14 @@ export function useSessionActions(mode?: string): SessionActions {
         return
       }
       if (!(err instanceof ApiError)) {
-        alert(i18nT('hooks.useSessionActions.duplicate_unreachable'))
+        appNotice(i18nT('hooks.useSessionActions.duplicate_unreachable'), 'error')
       } else if (err.authRequired || isSlotCapError(err.status, err.body)) {
-        alert(i18nT('hooks.useSessionActions.duplicate_guided_reason', { reason: err.message }))
+        appNotice(i18nT('hooks.useSessionActions.duplicate_guided_reason', { reason: err.message }), 'error')
       } else if (err.status === 404 && apiErrorCode(err) === 'slot_not_found') {
-        alert(i18nT('hooks.useSessionActions.duplicate_not_found'))
+        appNotice(i18nT('hooks.useSessionActions.duplicate_not_found'), 'error')
       } else {
         const reason = err.message.trim().replace(/[.。!！।]+$/u, '')
-        alert(i18nT('hooks.useSessionActions.duplicate_failed_reason', { reason }))
+        appNotice(i18nT('hooks.useSessionActions.duplicate_failed_reason', { reason }), 'error')
       }
     },
   })
@@ -416,17 +421,16 @@ export function useSessionActions(mode?: string): SessionActions {
   // over the websocket (and lighting the row's unread indicator for a
   // non-active slot). Failure must NOT be silent -- the user would proceed
   // believing their stale MCP config was refreshed, the exact confusion the
-  // feature exists to fix. alert() is the always-available surface (the
-  // dashboard has no global toast); the copy branches on the backend's
+  // feature exists to fix. Failures use the app-wide Redux notification feed; the copy branches on the backend's
   // machine-readable code, because "try again when the session is idle" is a
   // dead end for a slot that LOOKS idle but has sub-agents still working.
   const reloadMutation = useMutation({
     mutationFn: (slot: string) => api.chatSlotReload(slot),
     onError: (err) => {
       const body = err instanceof ApiError ? err.body : ''
-      alert(i18nT(body.includes('slot_subagents_running')
+      appNotice(i18nT(body.includes('slot_subagents_running')
         ? 'hooks.useSessionActions.reload_failed_subagents'
-        : 'hooks.useSessionActions.reload_failed'))
+        : 'hooks.useSessionActions.reload_failed'), 'error')
     },
   })
 
@@ -478,10 +482,13 @@ export function useSessionActions(mode?: string): SessionActions {
   // The sidebar row ✕ and every session menu close land here. A busy session
   // always asks, on the same rule as Cmd+W (`sessionIsBusyForClose`); an idle
   // one keeps the user's `confirmCloseSession` setting.
-  const close = useCallback((slotKey: string) => {
+  const close = useCallback(async (slotKey: string) => {
     const mustConfirm = loadChatConfig().confirmCloseSession || sessionIsBusyForClose(store.getState(), slotKey)
-    if (!mustConfirm || confirm(i18nT('hooks.useSessionActions.close_this_session'))) dispatch(deleteSlot(slotKey))
-  }, [dispatch])
+    if (!mustConfirm || await confirm({
+      title: i18nT('hooks.useSessionActions.close_this_session'),
+      confirmLabel: i18nT('components.sessionActionsMenu.close_session'),
+    })) dispatch(deleteSlot(slotKey))
+  }, [confirm, dispatch])
 
-  return { duplicate, forkError, clearForkError, toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close }
+  return { duplicate, forkError, clearForkError, toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close, confirmDialog }
 }

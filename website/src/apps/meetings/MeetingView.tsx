@@ -1,7 +1,7 @@
 // One meeting, live: the agent panels, the transcription controls, the task
 // sidebar, and (once it has ended) the task-review gate.
 
-import { useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
   AlertTriangle,
@@ -17,6 +17,7 @@ import {
 
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
+import { useTextPrompt } from '../../components/TextPromptDialog'
 import { Badge, Btn, SendBtn, Skeleton } from '../../components/ui'
 import {
   DropdownMenu,
@@ -46,6 +47,46 @@ interface Props {
   notify: (message: string, opts?: { type?: 'info' | 'success' | 'error' }) => void
 }
 
+interface AttachLinkPromptProps {
+  promptRef: MutableRefObject<(() => Promise<void>) | null>
+  onAddAttachment: (url: string, label: string) => void
+  onCloseMenu: () => void
+}
+
+/**
+ * This stays below the review-state gate. When review begins, unmounting this
+ * host runs useTextPrompt's cleanup and settles any pending request with null.
+ */
+function AttachLinkPrompt({ promptRef, onAddAttachment, onCloseMenu }: AttachLinkPromptProps) {
+  const { textPrompt, textPromptDialog } = useTextPrompt()
+  const promptForLink = useCallback(async () => {
+    const url = await textPrompt({
+      title: i18nT('apps.meetings.meeting.attachPrompt'),
+      label: i18nT('apps.meetings.meeting.attachPrompt'),
+      confirmLabel: i18nT('apps.meetings.pillBar.addLink'),
+    })
+    if (url === null) return
+    const trimmed = url.trim()
+    let label = trimmed
+    try {
+      label = new URL(trimmed).hostname || trimmed
+    } catch {
+      /* keep the raw string as the label */
+    }
+    onAddAttachment(trimmed, label)
+    onCloseMenu()
+  }, [onAddAttachment, onCloseMenu, textPrompt])
+
+  useEffect(() => {
+    promptRef.current = promptForLink
+    return () => {
+      if (promptRef.current === promptForLink) promptRef.current = null
+    }
+  }, [promptForLink, promptRef])
+
+  return <>{textPromptDialog}</>
+}
+
 export default function MeetingView({
   eventId,
   fallbackTitle,
@@ -55,6 +96,7 @@ export default function MeetingView({
   notify,
 }: Props) {
   const session = useMeetingSession({ eventId, fallbackTitle, config, notify })
+  const promptForLinkRef = useRef<(() => Promise<void>) | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [attachMenuOpen, setAttachMenuOpen] = useState(false)
 
@@ -120,28 +162,12 @@ export default function MeetingView({
     )
   }
 
-  const promptForLink = () => {
-    // A URL attachment is the one context source that needs no file dialog and
-    // no upload endpoint, so it is what this app offers.
-    const url = window.prompt(i18nT('apps.meetings.meeting.attachPrompt')) ?? ''
-    const trimmed = url.trim()
-    if (!trimmed) return
-    let label = trimmed
-    try {
-      label = new URL(trimmed).hostname || trimmed
-    } catch {
-      /* keep the raw string as the label */
-    }
-    actions.addAttachment(trimmed, label)
-    setAttachMenuOpen(false)
-  }
-
+  // Stacks below `lg`, the same shape MeetingWorkspace and TaskReviewView
+  // already use in this app: a 340px task sidebar beside the meeting left the
+  // content 49px at 390px. `min-w-0`/`min-h-0` on the content column is what
+  // lets it actually shrink -- without it the row overflowed sideways instead,
+  // pushing the meeting off-screen rather than narrowing it.
   return (
-    // Stacks below `lg`, the same shape MeetingWorkspace and TaskReviewView
-    // already use in this app: a 340px task sidebar beside the meeting left the
-    // content 49px at 390px. `min-w-0`/`min-h-0` on the content column is what
-    // lets it actually shrink -- without it the row overflowed sideways instead,
-    // pushing the meeting off-screen rather than narrowing it.
     <div className="flex flex-col lg:flex-row h-full overflow-hidden">
       <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
         <div className="flex-none px-4 md:px-6 py-4 border-b border-border flex items-center justify-between gap-3">
@@ -315,7 +341,7 @@ export default function MeetingView({
           onToggleAgent={actions.toggleAgent}
           onOpenSettings={onOpenSettings}
           onToggleAttachMenu={() => setAttachMenuOpen(open => !open)}
-          onAddAttachment={promptForLink}
+          onAddAttachment={() => promptForLinkRef.current?.()}
           onRemoveAttachment={actions.removeAttachment}
         />
 
@@ -426,6 +452,11 @@ export default function MeetingView({
           onDelete={actions.deleteTask}
         />
       )}
+      <AttachLinkPrompt
+        promptRef={promptForLinkRef}
+        onAddAttachment={actions.addAttachment}
+        onCloseMenu={() => setAttachMenuOpen(false)}
+      />
     </div>
   )
 }

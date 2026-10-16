@@ -74,6 +74,7 @@ import { Btn, Input } from '../../components/ui'
 import { api } from '../../api/client'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
 import { useSidePanelLeaveGuard } from '../../components/SidePanelLayout'
+import { useConfirm } from '../../components/ConfirmDialog'
 // From the side-effect-free module, not `api/client`: test doubles of the
 // client mock only `api`, and an `instanceof` against an undefined import
 // throws instead of falling through to the generic message.
@@ -321,6 +322,7 @@ export default function NewCrewmateDialog({
   existingNames: readonly string[]
 }) {
   const { t } = useTranslation()
+  const { confirm, confirmDialog } = useConfirm()
   const reduceMotion = useReducedMotion()
 
   const [name, setName] = useState('')
@@ -733,9 +735,8 @@ export default function NewCrewmateDialog({
   // Escape, the backdrop and the X. A client-side route change — the sidebar,
   // the command palette, the browser's Back — unmounts the whole page and this
   // dialog with it, and none of those see the modal. So the same stake is
-  // published to the app shell: a typed draft asks before leaving, and a POST
-  // in flight asks too, since leaving loses the answer (the crewmate may be
-  // created, but its chat will not open here).
+  // published to the app shell: a typed draft asks before leaving, while a POST
+  // in flight refuses outright because the crewmate may be created after the page is gone.
   //
   // ONE registration for both of this dialog's doors, through the side-panel
   // channel. Opened from a pane inside a SidePanelLayout (the crew manager's
@@ -750,9 +751,14 @@ export default function NewCrewmateDialog({
   // The shell keeps a SET of guards and stakes, so this form and the page's
   // other guards (an open Profile's drafts) each register their own.
   const atStake = open && (dirty || busy || (wsModalOpen && wsDirty))
-  const mayLeave = () => {
+  const mayLeave = async (): Promise<boolean> => {
+    if (busy) return false
     if (!atStake) return true
-    return window.confirm(busy ? t('pages.membersPage.create_leave_busy') : t('pages.membersPage.create_leave_draft'))
+    return confirm({
+      title: t('pages.membersPage.create_leave_draft'),
+      confirmLabel: t('components.markdownPanel.discard_changes_button'),
+      layer: 'top',
+    })
   }
   useSidePanelLeaveGuard(mayLeave, atStake, true)
   // A reload or tab close loses the draft too.
@@ -1026,6 +1032,7 @@ export default function NewCrewmateDialog({
         onCancel={() => setLookOpen(false)}
         onSave={(next) => { setLook(next); setLookOpen(false) }}
       />
+      {confirmDialog}
       <WorkspaceModal
         open={wsModalOpen}
         onDirtyChange={setWsDirty}

@@ -159,6 +159,12 @@ describe('the incremental poll', () => {
 })
 
 describe('MeetingView wiring', () => {
+  it('uses the shared text prompt for link attachments', () => {
+    expect(ViewSource).toContain("useTextPrompt")
+    expect(ViewSource).toContain('{textPromptDialog}')
+    expect(ViewSource).not.toContain('window.prompt')
+  })
+
   it('offers the toggle only when a language is configured', () => {
     // With translation off the item would open a panel that can never fill.
     expect(ViewSource).toMatch(/\{translation\.language && \(\s*<DropdownMenuItem/)

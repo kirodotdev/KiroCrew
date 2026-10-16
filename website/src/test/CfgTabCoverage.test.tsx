@@ -19,6 +19,13 @@ vi.mock('../api/client')
 // the tab bare, so capture the registration instead.
 const leaveGuard = vi.hoisted(() => vi.fn())
 vi.mock('../components/SidePanelLayout', () => ({ useSidePanelLeaveGuard: leaveGuard }))
+vi.mock('../components/ConfirmDialog', () => ({
+  useConfirm: () => ({
+    confirm: (opts: { title: string }) => Promise.resolve(window.confirm(opts.title)),
+    confirmDialog: null,
+    confirmOpen: false,
+  }),
+}))
 
 /* SimpleSelect is stubbed for the same reason as CrewEditorSelect.test.tsx and
    WorkspaceModal.test.tsx: it wraps a Radix Select, which commits its selection
@@ -644,13 +651,13 @@ describe('KiroCrewCfgTab — subagent settings', () => {
     // Clean: the guard lets every navigation through and stakes nothing.
     let [guard, atStake] = leaveGuard.mock.calls.at(-1) as [() => boolean, boolean]
     expect(atStake).toBe(false)
-    expect(guard()).toBe(true)
+    await expect(guard()).resolves.toBe(true)
 
     fireEvent.change(num('Max Turns per Subagent'), { target: { value: '120' } })
     ;[guard, atStake] = leaveGuard.mock.calls.at(-1) as [() => boolean, boolean]
     expect(atStake).toBe(true)
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    expect(guard()).toBe(false)
+    await expect(guard()).resolves.toBe(false)
     expect(confirm).toHaveBeenCalledTimes(1)
     confirm.mockRestore()
   })
@@ -864,7 +871,7 @@ describe('KiroCrewCfgTab workspace actions', () => {
     fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'client-b' } })
     await waitFor(() => expect(staked()).toBe(true))
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    expect(leaveGuard.mock.calls.at(-1)?.[0]()).toBe(false)
+    await expect(leaveGuard.mock.calls.at(-1)?.[0]()).resolves.toBe(false)
     confirm.mockRestore()
   })
 

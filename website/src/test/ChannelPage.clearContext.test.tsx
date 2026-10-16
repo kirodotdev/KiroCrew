@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import ChannelPage from '../pages/ChannelPage'
 import { renderWithProviders } from './helpers'
@@ -35,38 +35,42 @@ describe('ChannelPage — Clear Context', () => {
     await waitFor(() => expect(screen.getByTitle('Clear all context')).toBeInTheDocument())
   })
 
-  it('calls channelClearContext with scope=all on confirm', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+  it('calls channelClearContext with scope=all after the dialog is confirmed', async () => {
     renderWithProviders(<ChannelPage />)
     await waitFor(() => expect(screen.getByTitle('Clear all context')).toBeInTheDocument())
     await userEvent.click(screen.getByTitle('Clear all context'))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Clear Context' }))
     await waitFor(() => expect(vi.mocked(api).channelClearContext).toHaveBeenCalledWith('ch1', 'all'))
   })
 
-  it('does not call API when confirm is cancelled', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
+  it('does not call API when the dialog is cancelled', async () => {
     renderWithProviders(<ChannelPage />)
     await waitFor(() => expect(screen.getByTitle('Clear all context')).toBeInTheDocument())
     await userEvent.click(screen.getByTitle('Clear all context'))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     expect(vi.mocked(api).channelClearContext).not.toHaveBeenCalled()
   })
 
   it('re-fetches channel data after successful clear', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderWithProviders(<ChannelPage />)
     await waitFor(() => screen.getByTitle('Clear all context'))
     vi.mocked(api).channelGet.mockClear()  // ignore the initial-render fetch
     await userEvent.click(screen.getByTitle('Clear all context'))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Clear Context' }))
     await waitFor(() => expect(vi.mocked(api).channelGet).toHaveBeenCalledWith('ch1'))
   })
 
   it('reports an API failure through the in-page ErrorNotice, not a native alert', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {})
     vi.mocked(api).channelClearContext = vi.fn().mockRejectedValue(new Error('server error'))
     renderWithProviders(<ChannelPage />)
     await waitFor(() => screen.getByTitle('Clear all context'))
     await userEvent.click(screen.getByTitle('Clear all context'))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Clear Context' }))
     const notice = await screen.findByTestId('channel-error')
     expect(notice.textContent).toContain('Failed to clear context')
     expect(notice.textContent).toContain('server error')
@@ -74,12 +78,13 @@ describe('ChannelPage — Clear Context', () => {
   })
 
   it('clears a single agent via the agents panel with scope=agent', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderWithProviders(<ChannelPage />)
     await waitFor(() => screen.getByRole('button', { name: '1 agent' }))
     await userEvent.click(screen.getByRole('button', { name: '1 agent' }))  // open agents sidebar
     await waitFor(() => screen.getByTitle('Clear context'))
     await userEvent.click(screen.getByTitle('Clear context'))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Clear context' }))
     await waitFor(() => expect(vi.mocked(api).channelClearContext).toHaveBeenCalledWith('ch1', 'agent', 'a1'))
   })
 })

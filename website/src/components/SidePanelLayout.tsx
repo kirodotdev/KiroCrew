@@ -2,7 +2,7 @@ import React from 'react'
 import { useSearchParams, useLocation, useNavigate } from 'react-router-dom'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { NavBackBar } from './NavBackBar'
-import { useRegisterNavigationLeaveGuard, usePublishNavigationStake } from './NavigationLeaveGuard'
+import { useRegisterNavigationLeaveGuard, usePublishNavigationStake, useClaimNavigationExitAttempt } from './NavigationLeaveGuard'
 import { hasSubSelection, deleteSubSelection, COARSE_TOUCH_TARGET, SUBNAV_PUSH_STATE, toPathSegment, parsePathSegments } from './subNavParams'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useScrollEdgesY } from '../hooks/useScrollEdges'
@@ -113,7 +113,7 @@ export const SidePanelDockContext = React.createContext<'header' | 'bottom-float
 
 /** A mounted pane's answer to "may I leave you?". `true` allows the switch,
  *  `false` keeps the pane exactly where it is. */
-export type SidePanelLeaveGuard = () => boolean
+export type SidePanelLeaveGuard = () => boolean | Promise<boolean>
 
 /** How a pane hands its guard to the shell. Null outside a SidePanelLayout, so
  *  the hook below is a no-op for a pane rendered standalone (tests, embedded
@@ -211,6 +211,8 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
   const [params, setParams] = useSearchParams()
   const location = useLocation()
   const navigate = useNavigate()
+  const claimExitAttempt = useClaimNavigationExitAttempt()
+  const tabRef = React.useRef('')
   const isMobile = useIsMobile()
   // "More below" cue under the desktop tab list. Settings has twenty rows, so
   // on a laptop-height window the last few (Developer, Releases, About) sit
@@ -298,6 +300,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
   )
 
   const tab = rawTab && tabs.some(t => t.key === rawTab) ? rawTab : (fallbackTab || first)
+  tabRef.current = tab
   // Mobile is a two-level iOS-style navigation: NO explicit ?tab= means the
   // ROOT LIST (all tabs, grouped, tap to drill), an explicit one means the
   // drilled-in detail. The remembered tab deliberately does NOT auto-drill on
@@ -320,7 +323,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
    *  nothing at stake registers no guard and this is a bare `true`. The guard
    *  may show a confirm, so this must only ever be called from an event
    *  handler — never during render. */
-  const mayLeavePane = () => leaveGuard.current?.() !== false
+  const mayLeavePane = async () => (await leaveGuard.current?.()) !== false
   // The pane's guard answers for exits this layout owns. An in-app route change
   // unmounts this whole layout and takes the pane's draft with it, and that click
   // belongs to the app shell. Forwarding the SAME guard keeps a pane registering
@@ -339,88 +342,104 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
     </SidePanelLeaveGuardContext.Provider>
   )
 
-  const setTab = (t: string) => {
+  const setTab = async (t: string) => {
     // Before anything else: switching tabs unmounts the pane, and the pane may
     // hold work the user has not saved. Gated on the tab actually CHANGING —
     // the desktop rail calls this for the tab already shown, which unmounts
     // nothing, so an unqualified ask would pop a discard-confirm over a click
     // that was never going to destroy anything. (PromptsTab's own row select
     // carries the same caveat for re-clicking the selected row.)
-    if (t !== tab && !mayLeavePane()) return
-    // Synchronously, in the same batched update as the param write: picking the
-    // FIRST tab deletes the param, so a fallback still holding the previous tab
-    // would render it for a frame AND get re-written into the URL by the sync
-    // effect below — silently undoing the click.
-    if (rememberKey) setFallbackTab(t)
-    if (basePath) {
-      // Path mode mirrors the query conventions exactly: switching tabs drops
-      // the second level (it is a path segment here, so writing only
-      // `${basePath}/<tab>` drops it by construction — stray legacy aliases
-      // are still scrubbed from the query string), desktop's first tab is the
-      // bare basePath, mobile always writes the segment (the segment-less
-      // path IS the root list there), and mobile drill-in is a PUSH carrying
-      // the SUBNAV_PUSH_STATE marker so the back control can pop it.
-      const next = new URLSearchParams(params)
-      deleteSubSelection(next)
-      const search = next.toString()
-      const seg = toPathSegment(t)
-      navigate(
-        {
-          pathname: (t === first && !isMobile) || seg == null ? basePath : `${basePath}/${seg}`,
-          search: search ? `?${search}` : '',
-        },
-        { replace: !isMobile, state: isMobile ? { [SUBNAV_PUSH_STATE]: true } : undefined },
-      )
+    const sourceTab = tab
+    const attempt = t === sourceTab ? null : claimExitAttempt()
+    if (t !== sourceTab && (!attempt || !(await mayLeavePane()) || !attempt.isSourceCurrent() || tabRef.current !== sourceTab)) {
+      attempt?.end()
       return
     }
-    setParams(prev => {
-      const next = new URLSearchParams(prev)
-      // A second-level selection is scoped to the tab that hosts it. One that
-      // rides across a tab change strands a phone view whose new tab hosts no
-      // SubNav: the chrome yields to a back bar that never renders.
-      deleteSubSelection(next)
-      // Mobile always writes the param explicitly — the param-less state IS the
-      // root list there, so the desktop convention (first tab = no param) would
-      // make the first tab unreachable.
-      if (t === first && !isMobile) next.delete('tab')
-      else next.set('tab', t)
-      return next
-      // Mobile drill-in is a PUSH (a real history entry), so the platform back
-      // gesture pops to the root list the way an iOS stack does; desktop tab
-      // switching stays replace — the rail is a selector, not a stack. The
-      // state marker is what lets the back control POP this entry instead of
-      // writing a duplicate on top of it.
-    }, { replace: !isMobile, state: isMobile ? { [SUBNAV_PUSH_STATE]: true } : undefined })
+    try {
+      // Synchronously, in the same batched update as the param write: picking the
+      // FIRST tab deletes the param, so a fallback still holding the previous tab
+      // would render it for a frame AND get re-written into the URL by the sync
+      // effect below — silently undoing the click.
+      if (rememberKey) setFallbackTab(t)
+      if (basePath) {
+        // Path mode mirrors the query conventions exactly: switching tabs drops
+        // the second level (it is a path segment here, so writing only
+        // `${basePath}/<tab>` drops it by construction — stray legacy aliases
+        // are still scrubbed from the query string), desktop's first tab is the
+        // bare basePath, mobile always writes the segment (the segment-less
+        // path IS the root list there), and mobile drill-in is a PUSH carrying
+        // the SUBNAV_PUSH_STATE marker so the back control can pop it.
+        const next = new URLSearchParams(params)
+        deleteSubSelection(next)
+        const search = next.toString()
+        const seg = toPathSegment(t)
+        navigate(
+          {
+            pathname: (t === first && !isMobile) || seg == null ? basePath : `${basePath}/${seg}`,
+            search: search ? `?${search}` : '',
+          },
+          { replace: !isMobile, state: isMobile ? { [SUBNAV_PUSH_STATE]: true } : undefined },
+        )
+        return
+      }
+      setParams(prev => {
+        const next = new URLSearchParams(prev)
+        // A second-level selection is scoped to the tab that hosts it. One that
+        // rides across a tab change strands a phone view whose new tab hosts no
+        // SubNav: the chrome yields to a back bar that never renders.
+        deleteSubSelection(next)
+        // Mobile always writes the param explicitly — the param-less state IS the
+        // root list there, so the desktop convention (first tab = no param) would
+        // make the first tab unreachable.
+        if (t === first && !isMobile) next.delete('tab')
+        else next.set('tab', t)
+        return next
+        // Mobile drill-in is a PUSH (a real history entry), so the platform back
+        // gesture pops to the root list the way an iOS stack does; desktop tab
+        // switching stays replace — the rail is a selector, not a stack. The
+        // state marker is what lets the back control POP this entry instead of
+        // writing a duplicate on top of it.
+      }, { replace: !isMobile, state: isMobile ? { [SUBNAV_PUSH_STATE]: true } : undefined })
+    } finally {
+      attempt?.end()
+    }
   }
   /** Mobile back: return to the root list. If THIS stack pushed the current
    *  entry, pop it — a replace-write here would leave [root, root] twins in
    *  history and the next platform back-swipe would visibly do nothing. The
    *  replace path remains for entries we did not mint (cold deep links),
    *  where `history.back()` would exit the app. */
-  const backToRoot = () => {
+  const backToRoot = async () => {
     // The mobile back bar is the other exit that unmounts the pane: the root
     // list replaces it entirely. Same ask as a tab switch — a phone user one
     // thumb-width from the back bar loses the same draft.
-    if (!mayLeavePane()) return
-    if ((location.state as Record<string, unknown> | null)?.[SUBNAV_PUSH_STATE]) {
-      navigate(-1)
-      return
+    const sourceTab = tab
+    const attempt = claimExitAttempt()
+    if (!attempt) return
+    try {
+      if (!(await mayLeavePane()) || !attempt.isSourceCurrent() || tabRef.current !== sourceTab) return
+      if ((location.state as Record<string, unknown> | null)?.[SUBNAV_PUSH_STATE]) {
+        navigate(-1)
+        return
+      }
+      if (basePath) {
+        // Cold deep link in path mode: replace to the segment-less basePath
+        // (the root list), same reasoning as the query branch below.
+        const next = new URLSearchParams(params)
+        deleteSubSelection(next)
+        const search = next.toString()
+        navigate({ pathname: basePath, search: search ? `?${search}` : '' }, { replace: true })
+        return
+      }
+      setParams(prev => {
+        const next = new URLSearchParams(prev)
+        deleteSubSelection(next)
+        next.delete('tab')
+        return next
+      }, { replace: true })
+    } finally {
+      attempt.end()
     }
-    if (basePath) {
-      // Cold deep link in path mode: replace to the segment-less basePath
-      // (the root list), same reasoning as the query branch below.
-      const next = new URLSearchParams(params)
-      deleteSubSelection(next)
-      const search = next.toString()
-      navigate({ pathname: basePath, search: search ? `?${search}` : '' }, { replace: true })
-      return
-    }
-    setParams(prev => {
-      const next = new URLSearchParams(prev)
-      deleteSubSelection(next)
-      next.delete('tab')
-      return next
-    }, { replace: true })
   }
   const meta = tabs.find(t => t.key === tab)
 

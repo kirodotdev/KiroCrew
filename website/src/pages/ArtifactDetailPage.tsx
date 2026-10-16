@@ -1042,9 +1042,10 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     if (!artifact || !selectedVersion || isCurrent) return
     const targetVersion = selectedVersion
     const newVersion = (detailQuery.data?.version ?? 1) + 1
-    const ok = window.confirm(
-      i18nT('pages.artifactDetailPage.revert_confirm', { version: targetVersion, newVersion }),
-    )
+    const ok = await confirm({
+      title: i18nT('pages.artifactDetailPage.revert_confirm', { version: targetVersion, newVersion }),
+      confirmLabel: i18nT('pages.artifactDetailPage.revert'),
+    })
     if (!ok) return
     setSaving(true)
     setSaveError(null)
@@ -1070,7 +1071,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     } finally {
       setSaving(false)
     }
-  }, [artifact, selectedVersion, isCurrent, detailQuery.data?.version, queryClient, slug])
+  }, [artifact, selectedVersion, isCurrent, detailQuery.data?.version, queryClient, slug, confirm])
 
   // Cmd+S / Ctrl+S to save; Esc to cancel edit.
   useEffect(() => {
@@ -1144,25 +1145,17 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
 
   // In-app exits the page does not own (the global sidebar, the command
   // palette, a popout's forwarded navigation, browser Back) swap the route
-  // without unloading the document, so `beforeunload` never sees them. They
-  // ask the shell's leave registry, which needs a synchronous answer, so a
-  // dirty buffer refuses the exit and opens the app's own discard dialog; after
-  // a discard the user repeats the navigation. The refused navigation cannot be
-  // resumed from here: the registry does not pass its target.
-  useRegisterNavigationLeaveGuard(() => {
+  // without unloading the document, so `beforeunload` never sees them. The
+  // awaitable leave registry now preserves the original navigation intent:
+  // accepting this dialog ends the current edit before the caller resumes it.
+  useRegisterNavigationLeaveGuard(async () => {
     if (!dirty) return true
-    // A second refusal while the dialog is up replaces it: `useConfirm`
-    // answers the pending ask "no" and shows one dialog.
-    void confirm({
+    const discard = await confirm({
       title: i18nT('pages.artifactDetailPage.discard_unsaved_changes'),
       confirmLabel: i18nT('pages.artifactDetailPage.discard_changes_button'),
-    }).then(ok => {
-      // endEditing, as Cancel does: it advances the edit generation, so a save
-      // still on the wire cannot re-arm a failure or conflict notice for the
-      // buffer the user just discarded.
-      if (ok) endEditing()
     })
-    return false
+    if (discard) endEditing()
+    return discard
   })
   usePublishNavigationStake(dirty)
 

@@ -4,11 +4,23 @@ import { arrivedByFreshNavigation, isTrapEntry, routerEntry, type TrapEntryState
 
 /** The mounted page's answer to "may I navigate away from you?". `true` allows
  *  the navigation, `false` keeps the user exactly where they are. */
-export type NavigationLeaveGuard = () => boolean
+export type NavigationLeaveGuard = () => boolean | Promise<boolean>
+
+export type NavigationExitAttempt = { readonly __navigationExitAttempt: unique symbol }
+
+export type ClaimedNavigationExitAttempt = {
+  isSourceCurrent: () => boolean
+  end: () => void
+}
 
 type Channel = {
   register: (guard: NavigationLeaveGuard) => () => void
-  ask: () => boolean
+  ask: () => Promise<boolean>
+  /** Claim the one visible leave confirmation. Later exit attempts are dropped
+   *  rather than replacing the question that is already awaiting an answer. */
+  beginExitAttempt: () => NavigationExitAttempt | null
+  ownsExitAttempt: (attempt: NavigationExitAttempt) => boolean
+  endExitAttempt: (attempt: NavigationExitAttempt) => void
   /** Publish whether the page on screen is holding work an exit would destroy.
    *  Separate from `ask` because it must answer WITHOUT prompting: the browser
    *  Back guard needs to know there is something at stake before the user
@@ -65,6 +77,10 @@ export function NavigationLeaveGuardProvider({ children }: { children: React.Rea
   // still protected. Each registration removes only its own entry on cleanup, so an
   // outgoing surface cannot clear an incoming one's guard.
   const guards = React.useRef(new Set<NavigationLeaveGuard>())
+  // The provider owns the currently visible exit question. This is intentionally
+  // separate from a caller's local pending flag: route rows, pane tabs, and
+  // browser Back have different component instances but must share one policy.
+  const exitAttempt = React.useRef<NavigationExitAttempt | null>(null)
   // Kept in refs and pushed to listeners rather than held in state: the answer
   // flips on the keystroke that first dirties a draft, and state here would
   // re-render the whole app under this provider to tell one listener.
@@ -87,11 +103,21 @@ export function NavigationLeaveGuardProvider({ children }: { children: React.Rea
     // has already said "stay" must not then be asked about a second draft for a
     // navigation that is no longer going to happen. Iterated over a copy, since a
     // guard's own confirm can unmount a surface and mutate the set.
-    ask: () => {
+    ask: async () => {
       for (const g of [...guards.current]) {
-        if (g() === false) return false
+        if ((await g()) === false) return false
       }
       return true
+    },
+    beginExitAttempt: () => {
+      if (exitAttempt.current) return null
+      const attempt = {} as NavigationExitAttempt
+      exitAttempt.current = attempt
+      return attempt
+    },
+    ownsExitAttempt: attempt => exitAttempt.current === attempt,
+    endExitAttempt: attempt => {
+      if (exitAttempt.current === attempt) exitAttempt.current = null
     },
     // Per PUBLISHER, for the same reason `register` keeps a set: one page can hold two
     // drafts, and with a single shared boolean whichever surface published `false` last
@@ -167,12 +193,44 @@ export function usePublishNavigationStake(atStake: boolean) {
   }, [channel])
 }
 
-const ALWAYS_MAY_LEAVE = () => true
+const ALWAYS_MAY_LEAVE = async () => true
 
 /** Ask the page on screen before an action that navigates away from it. */
-export function useMayLeaveForNavigation(): () => boolean {
+export function useMayLeaveForNavigation(): () => Promise<boolean> {
   const channel = React.useContext(NavigationLeaveGuardContext)
   return channel?.ask ?? ALWAYS_MAY_LEAVE
+}
+
+/**
+ * Claim the provider's one in-flight leave attempt and capture the page that
+ * owns it. An approval is valid only while this full address and router location
+ * key still identify the same source. Outside a provider the claim remains a
+ * local no-op, preserving the standalone behavior of embedded surfaces.
+ */
+export function useClaimNavigationExitAttempt(): () => ClaimedNavigationExitAttempt | null {
+  const channel = React.useContext(NavigationLeaveGuardContext)
+  const location = useLocation()
+  const latest = React.useRef({ address: addressOf(location), key: location.key })
+  latest.current = { address: addressOf(location), key: location.key }
+  return React.useCallback(() => {
+    const attempt = channel?.beginExitAttempt()
+    if (channel && !attempt) return null
+    const source = latest.current
+    const browserSource = browserRouteIdentity()
+    let ended = false
+    return {
+      isSourceCurrent: () =>
+        latest.current.address === source.address
+        && latest.current.key === source.key
+        && sameRouteIdentity(browserRouteIdentity(), browserSource)
+        && (!channel || channel.ownsExitAttempt(attempt!)),
+      end: () => {
+        if (ended) return
+        ended = true
+        if (channel) channel.endExitAttempt(attempt!)
+      },
+    }
+  }, [channel])
 }
 
 /**
@@ -216,13 +274,23 @@ export function useIsCurrentUrl(): (target: string) => boolean {
 export function useGuardedLeave(): (perform: () => void | Promise<void>, to?: string) => void {
   const mayLeave = useMayLeaveForNavigation()
   const isCurrentUrl = useIsCurrentUrl()
+  const claimExitAttempt = useClaimNavigationExitAttempt()
+  const pending = React.useRef(false)
   return React.useCallback((perform: () => void | Promise<void>, to?: string) => {
-    if (!(to !== undefined && isCurrentUrl(to)) && !mayLeave()) return
-    // A returned promise is deliberately not awaited: the gate answers "may this
-    // run", and the handler owns its own async failure path (each one already
-    // catches and logs).
-    void perform()
-  }, [mayLeave, isCurrentUrl])
+    if (pending.current || (to !== undefined && isCurrentUrl(to))) return
+    const attempt = claimExitAttempt()
+    if (!attempt) return
+    pending.current = true
+    void (async () => {
+      try {
+        if (!(await mayLeave()) || !attempt.isSourceCurrent()) return
+        await perform()
+      } finally {
+        attempt.end()
+        pending.current = false
+      }
+    })()
+  }, [mayLeave, isCurrentUrl, claimExitAttempt])
 }
 
 /* `TrapEntryState` / `isTrapEntry` live in `lib/routeHistoryPosition.ts`: the
@@ -238,6 +306,20 @@ export function useGuardedLeave(): (perform: () => void | Promise<void>, to?: st
 /** The whole address, the way this guard compares two entries. */
 const addressOf = (l: { pathname: string; search: string; hash: string }): string =>
   l.pathname + l.search + l.hash
+
+type BrowserRouteIdentity = { address: string; key: string }
+
+/** Snapshot the platform entry, including React Router's per-entry key. */
+const browserRouteIdentity = (): BrowserRouteIdentity => {
+  const raw = window.history.state as { key?: unknown } | null
+  return {
+    address: window.location.pathname + window.location.search + window.location.hash,
+    key: typeof raw?.key === 'string' ? raw.key : '',
+  }
+}
+
+const sameRouteIdentity = (a: BrowserRouteIdentity, b: BrowserRouteIdentity): boolean =>
+  a.address === b.address && a.key === b.key
 
 /* `arrivedByFreshNavigation` lives in `lib/routeHistoryPosition.ts` — the arrows'
  * position store needs the same arrival distinction to decide whether a
@@ -265,15 +347,28 @@ const addressOf = (l: { pathname: string; search: string; hash: string }): strin
 export function useGuardedHistoryStep(): (delta: -1 | 1, onStep?: () => void) => void {
   const navigate = useNavigate()
   const mayLeave = useMayLeaveForNavigation()
+  const claimExitAttempt = useClaimNavigationExitAttempt()
+  const pending = React.useRef(false)
   return React.useCallback((delta: -1 | 1, onStep?: () => void) => {
+    if (pending.current) return
+    const attempt = claimExitAttempt()
+    if (!attempt) return
+    pending.current = true
     // Read at click time, from the platform — the trap is pushed and consumed
     // outside React's render cycle, so a rendered value could be stale.
-    if (!isTrapEntry(routerEntry().state) && !mayLeave()) return
-    // Runs only once the step is allowed, so work tied to the step (a timed
-    // one-shot) neither starts during the confirm nor leaks from a veto.
-    onStep?.()
-    navigate(delta)
-  }, [navigate, mayLeave])
+    void (async () => {
+      try {
+        if ((!isTrapEntry(routerEntry().state) && !(await mayLeave())) || !attempt.isSourceCurrent()) return
+        // Runs only once the step is allowed, so work tied to the step (a timed
+        // one-shot) neither starts during the confirm nor leaks from a veto.
+        onStep?.()
+        navigate(delta)
+      } finally {
+        attempt.end()
+        pending.current = false
+      }
+    })()
+  }, [navigate, mayLeave, claimExitAttempt])
 }
 
 /**
@@ -338,8 +433,8 @@ export function NavigationBackGuard() {
   const here = addressOf(location)
   // Read through a ref: the listeners below are registered once, so closing over
   // a render's values would pin the first one forever.
-  const latest = React.useRef({ here, state: location.state as unknown })
-  latest.current = { here, state: location.state as unknown }
+  const latest = React.useRef({ here, key: location.key, state: location.state as unknown })
+  latest.current = { here, key: location.key, state: location.state as unknown }
   const armed = React.useRef(false)
   // The STACK POSITION of the duplicate this guard minted, held for as long as
   // that entry exists. Position rather than address, because the duplicate shares
@@ -358,6 +453,19 @@ export function NavigationBackGuard() {
   // `forward()` fires `popstate` exactly like a press, and reading it as one is
   // what would turn a single carry-through into a walk down the stack.
   const selfMove = React.useRef(false)
+  // A Back interception first restores the duplicate, then asks. The token
+  // keeps a later pop from completing an answer that belongs to an older
+  // attempt after the browser has moved again.
+  const attempt = React.useRef<{
+    token: number
+    trap: number
+    askStarted: boolean
+    providerAttempt: NavigationExitAttempt | null
+    source: BrowserRouteIdentity | null
+    target: BrowserRouteIdentity
+  } | null>(null)
+  const nextAttemptToken = React.useRef(0)
+  const stakeAt = React.useRef(false)
   // Set while a push this guard issued is in flight, so the recalibration effect
   // does not read its own new duplicate as a stranger's entry and disown it.
   const selfPush = React.useRef(false)
@@ -394,10 +502,9 @@ export function NavigationBackGuard() {
 
   /** Move the stack ourselves, marked so the resulting `popstate` is not read as
    *  a user press. */
-  const selfGo = React.useCallback((direction: -1 | 1) => {
+  const selfGo = React.useCallback((delta: number) => {
     selfMove.current = true
-    if (direction === -1) window.history.go(-1)
-    else window.history.forward()
+    window.history.go(delta)
   }, [])
 
   const pushTrap = React.useCallback(() => {
@@ -475,6 +582,7 @@ export function NavigationBackGuard() {
   React.useEffect(() => {
     if (!channel) return
     return channel.subscribeStake(atStake => {
+      stakeAt.current = atStake
       // Compared against `armed`, not against a previous value: the immediate
       // delivery on subscribe (and StrictMode's re-subscribe) would otherwise
       // act twice on one stake.
@@ -509,16 +617,78 @@ export function NavigationBackGuard() {
   React.useEffect(() => {
     if (!channel) return
     const onPop = () => {
-      const { idx } = routerEntry()
+      const { idx, state } = routerEntry()
       const from = lastIdx.current
       const trap = trapIdx.current
       // A move this guard issued, arriving back as a `popstate`. Not a press, so
       // it decides nothing — reading it as one is what would turn a single
       // carry-through into a walk down the stack.
-      if (selfMove.current) { selfMove.current = false; lastIdx.current = idx; return }
+      if (selfMove.current) {
+        selfMove.current = false
+        lastIdx.current = idx
+        const restoring = attempt.current
+        if (
+          restoring !== null &&
+          !restoring.askStarted &&
+          idx === restoring.trap &&
+          trapIdx.current === restoring.trap &&
+          isTrapEntry(state)
+        ) {
+          restoring.askStarted = true
+          restoring.providerAttempt = channel.beginExitAttempt()
+          if (!restoring.providerAttempt) {
+            // An in-app exit already owns the visible confirmation. Keep the
+            // restored trap armed so this Back cannot create a second question.
+            attempt.current = null
+            armed.current = true
+            return
+          }
+          restoring.source = browserRouteIdentity()
+          void channel.ask().then(allowed => {
+            if (attempt.current?.token !== restoring.token) return
+            const current = routerEntry()
+            const ownsRestoredTrap =
+              current.idx === restoring.trap
+              && trapIdx.current === restoring.trap
+              && isTrapEntry(current.state)
+            const sourceStillCurrent = restoring.source !== null
+              && sameRouteIdentity(restoring.source, browserRouteIdentity())
+              && channel.ownsExitAttempt(restoring.providerAttempt!)
+            attempt.current = null
+            try {
+              if (!ownsRestoredTrap || !stakeAt.current || !sourceStillCurrent) {
+                armed.current = false
+                return
+              }
+              if (!allowed) {
+                // The restored duplicate is still ours and still on top, so the
+                // next Back is caught without creating another duplicate.
+                armed.current = true
+                return
+              }
+              armed.current = false
+              // We are back on the duplicate, so skip both it and the identical
+              // page entry beneath it to complete the one Back the user approved.
+              selfGo(-2)
+            } finally {
+              channel.endExitAttempt(restoring.providerAttempt!)
+            }
+          })
+        }
+        return
+      }
       // No duplicate of ours in play (or no index to reason with): this pop is
       // somebody else's business.
       if (trap === null || idx === null) { armed.current = false; return }
+
+      const pending = attempt.current
+      if (pending !== null) {
+        // A later user or programmatic pop belongs to the pending attempt, not
+        // to a fresh leave. Restore the same duplicate and let only that
+        // attempt's token decide what happens after the confirmation returns.
+        if (idx !== pending.trap) selfGo(pending.trap - idx)
+        return
+      }
 
       if (idx === trap) {
         // Landed ON the duplicate. It renders the same address as the entry
@@ -549,20 +719,20 @@ export function NavigationBackGuard() {
         selfGo(-1)
         return
       }
-      // Disarmed FIRST, so the programmatic moves below are not mistaken for a
-      // second Back press.
-      armed.current = false
-      if (channel.ask()) {
-        // Allowed. The duplicate absorbed the pop the user made, so the real one
-        // is still owed. (A no-op when the page's own entry is the oldest in the
-        // session — there was nowhere to go back to in the first place.)
-        selfGo(-1)
-      } else if (mayPush(1)) {
-        // Vetoed: the user stays, and a fresh duplicate makes sure the NEXT Back
-        // is caught too. The one entry above is the duplicate this pop just left —
-        // this guard's own, so replacing it truncates nothing of the user's.
-        pushTrap()
+      // Restore the duplicate BEFORE beginning the asynchronous confirmation.
+      // Leaving the browser below it while awaiting lets another Back walk past
+      // the page and makes a late answer act on stale history.
+      attempt.current = {
+        token: ++nextAttemptToken.current,
+        trap,
+        askStarted: false,
+        providerAttempt: null,
+        source: null,
+        // The first POP is the user-selected target. Keep its complete identity
+        // with the attempt rather than letting a later pop retarget approval.
+        target: browserRouteIdentity(),
       }
+      selfGo(1)
     }
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)

@@ -43,7 +43,7 @@ import { useFirstRunChapters, FirstRunChapters } from './shell/boot/firstRun'
 import ErrorNotice from './components/ErrorNotice'
 import { PREVIEW_EXPAND_EVENT } from './components/WebPreviewPanel'
 import { useMobileConnect, MobileConnectDialog } from './shell/nav/mobileConnect'
-import { useMayLeaveForNavigation, useIsCurrentUrl } from './components/NavigationLeaveGuard'
+import { useMayLeaveForNavigation, useIsCurrentUrl, useClaimNavigationExitAttempt } from './components/NavigationLeaveGuard'
 import { motion, useMotionValue, useTransform } from 'framer-motion'
 import { useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft } from './hooks/useDrawerSwipe'
 
@@ -629,26 +629,32 @@ export const NavItem = forwardRef(function NavItem({ path, label, icon, active, 
   const shortcut = useNavShortcutHint(path)
   const mayLeave = useMayLeaveForNavigation()
   const isCurrentUrl = useIsCurrentUrl()
+  const claimExitAttempt = useClaimNavigationExitAttempt()
   const activate = () => {
-    // Navigating swaps the whole page, and the page leaving may hold a draft the
-    // user typed — `beforeunload` cannot defend it, because a client-side route
-    // change never unloads the document. Ask its guard first.
-    //
-    // Gated on this row actually going SOMEWHERE ELSE (see `useIsCurrentUrl` for
-    // why that test is the whole URL and not `active`). A row with an
-    // `onClickOverride` toggles a surface — the docked terminal, the phone
-    // dialog — and unmounts nothing, so it keeps its exemption; an unqualified
-    // ask would pop a discard-confirm over a click that was never going to
-    // destroy anything.
-    const asked = !onClickOverride && !isCurrentUrl(path)
-    if (asked && !mayLeave()) return
-    // `leaveGranted`: the page's guards were asked just now, in this same
-    // synchronous step (the guide's `enter` writes the same mark), so a landing
-    // page that stays mounted through this navigation and acts on it — the
-    // Crewmates page closing its open create card — must not ask the same
-    // question again. A same-address click asked nothing, so it carries no
-    // mark and that page asks for itself.
-    onClick?.(); (onClickOverride || (() => navigate(path, { replace, state: asked ? { leaveGranted: true } : undefined })))()
+    void (async () => {
+      // Navigating swaps the whole page, and the page leaving may hold a draft the
+      // user typed — `beforeunload` cannot defend it, because a client-side route
+      // change never unloads the document. Ask its guard first.
+      //
+      // Gated on this row actually going SOMEWHERE ELSE (see `useIsCurrentUrl` for
+      // why that test is the whole URL and not `active`). A row with an
+      // `onClickOverride` toggles a surface — the docked terminal, the phone
+      // dialog — and unmounts nothing, so it keeps its exemption; an unqualified
+      // ask would pop a discard-confirm over a click that was never going to
+      // destroy anything.
+      const asked = !onClickOverride && !isCurrentUrl(path)
+      const attempt = asked ? claimExitAttempt() : null
+      if (asked && !attempt) return
+      try {
+        if (asked && (!(await mayLeave()) || !attempt!.isSourceCurrent())) return
+        // `leaveGranted`: the page's guards were asked just now, so a landing page
+        // that stays mounted through this navigation must not ask twice.
+        onClick?.()
+        ;(onClickOverride || (() => navigate(path, { replace, state: asked ? { leaveGranted: true } : undefined })))()
+      } finally {
+        attempt?.end()
+      }
+    })()
   }
   return (
     <motion.div layout={isMobileRow ? undefined : 'position'}
@@ -917,6 +923,7 @@ export default function App() {
   const terminalPosition = useTerminalPosition()
   const navigate = useNavigate()
   const mayLeaveForNavigation = useMayLeaveForNavigation()
+  const claimExitAttempt = useClaimNavigationExitAttempt()
   const appStore = useAppStore()
   const pathnameRef = useRef(location.pathname)
   pathnameRef.current = location.pathname
@@ -940,6 +947,7 @@ export default function App() {
         navigate,
         switchSlot: (slotKey) => { dispatch(switchSlot({ key: slotKey, announceOnMissing: true })) },
         mayLeave: mayLeaveForNavigation,
+        claimExitAttempt,
         appendToOpenComposer: (slotKey, text) => {
           const path = pathnameRef.current
           const onChat = path === '/chat' || path.startsWith('/chat/')
@@ -949,7 +957,7 @@ export default function App() {
         },
       }),
     )
-  }, [isPopout, isEmbed, navigate, dispatch, mayLeaveForNavigation, appStore])
+  }, [isPopout, isEmbed, navigate, dispatch, mayLeaveForNavigation, claimExitAttempt, appStore])
 
   // Publish the router navigator and the current page's leave answer for the
   // error → agent hand-off. AskAgentButton is deliberately hook-free (its
@@ -964,9 +972,9 @@ export default function App() {
   // banners of its own). They fall through to the hard-nav path instead.
   useEffect(() => {
     if (isPopout || isEmbed) return
-    installSoftNavigate(navigate, mayLeaveForNavigation)
+    installSoftNavigate(navigate, mayLeaveForNavigation, claimExitAttempt)
     return () => installSoftNavigate(null)
-  }, [isPopout, isEmbed, navigate, mayLeaveForNavigation])
+  }, [isPopout, isEmbed, navigate, mayLeaveForNavigation, claimExitAttempt])
 
   const {
     colorTheme,
@@ -1338,7 +1346,7 @@ export default function App() {
 
   const { appBadges, discoverBadges, railAppBadges, railAppRunStates } = useRailBadges(approvalCount)
 
-  const { shortcutsOpen, setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice } = useShellKeyboard({
+  const { shortcutsOpen, setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, confirmDialog: keyboardConfirmDialog } = useShellKeyboard({
     toggleFocusMode, toggleNav: () => toggleNav(), terminalEnabled, isPopout, isEmbed, terminalPoppedOut, activeSlotProject,
   })
 
@@ -1384,16 +1392,25 @@ export default function App() {
             navigate,
             switchSlot: (key) => { dispatch(switchSlot({ key, announceOnMissing: true })) },
             mayLeave: mayLeaveForNavigation,
+            claimExitAttempt,
           },
         )
         return
       }
       // Same leave check as every other in-app exit: a native menu entry
       // replaces the page on screen just like a sidebar click does.
-      if (!mayLeaveForNavigation()) return
-      navigate(path)
+      void (async () => {
+        const attempt = claimExitAttempt()
+        if (!attempt) return
+        try {
+          if (!(await mayLeaveForNavigation()) || !attempt.isSourceCurrent()) return
+          navigate(path)
+        } finally {
+          attempt.end()
+        }
+      })()
     })
-  }, [navigate, dispatch, mayLeaveForNavigation])
+  }, [navigate, dispatch, mayLeaveForNavigation, claimExitAttempt])
 
   useEffect(() => {
     dispatch(fetchSlots()).then(action => {
@@ -1645,9 +1662,20 @@ export default function App() {
               // leave guard first, as every rail row does, so a draft held
               // there (a Profile schedule form) is not dropped silently.
               onClick={() => {
-                if (!isChat) { if (mayLeaveForNavigation()) navigate('/chat', { replace: true }); return }
-                onActivate()
-                if (!(activePath === '/chat' || activePath === '/')) navigate('/chat', { replace: true })
+                void (async () => {
+                  if (!isChat) {
+                    const attempt = claimExitAttempt()
+                    if (!attempt) return
+                    try {
+                      if (await mayLeaveForNavigation() && attempt.isSourceCurrent()) navigate('/chat', { replace: true })
+                    } finally {
+                      attempt.end()
+                    }
+                    return
+                  }
+                  onActivate()
+                  if (!(activePath === '/chat' || activePath === '/')) navigate('/chat', { replace: true })
+                })()
               }}
               className="w-11 h-11 mb-1 flex items-center justify-center shrink-0 rounded-xl bg-transparent border-none cursor-pointer"
               // Named for what it DOES (home = the chat root), not for the brand
@@ -1771,6 +1799,7 @@ export default function App() {
     {/* Above the layout branch, so every layout that can host the import row
         also hosts its outcome: the row's menu has closed by the time it lands. */}
     <ImportSessionOutcomeNotice />
+    {keyboardConfirmDialog}
     {isPopout ? (
       <Routes>
         <Route path="/popout/chat/:slug?" element={<ErrorBoundary><PopoutFrame /></ErrorBoundary>} />

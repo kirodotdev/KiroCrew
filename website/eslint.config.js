@@ -116,56 +116,6 @@ export default [
     },
   },
   {
-    // Allowlist for no-restricted-globals / no-restricted-properties: the
-    // renderer modules that still call a browser-native confirm/alert/prompt
-    // today (issue #15662). The gate above is 'error' for every OTHER renderer
-    // file, so a NEW native dialog anywhere else is refused; these 35 are the
-    // standing inventory, migrated to useConfirm() / in-app surfaces in later
-    // PRs. This list only SHRINKS: delete a path the moment its last native
-    // dialog is gone, never add one. Keep it sorted.
-    files: [
-      'src/apps/auto-improvement/AutoImprovementPage.tsx',
-      'src/apps/auto-research/ResearchLabPage.tsx',
-      'src/apps/crew-companion/GalleryPanel.tsx',
-      'src/apps/design-tweak/DesignTweakPage.tsx',
-      'src/apps/meetings/MeetingView.tsx',
-      'src/apps/meetings/MeetingsPage.tsx',
-      'src/apps/mochi/src/renderer/GalleryPanel.tsx',
-      'src/apps/papyrus/PapyrusPage.tsx',
-      'src/apps/papyrus/ProjectList.tsx',
-      'src/components/RestartButton.tsx',
-      'src/components/TagManagerList.tsx',
-      'src/components/WebAppArtifactCard.tsx',
-      'src/components/notifications/NotificationFeed.tsx',
-      'src/components/themeEditor.tsx',
-      'src/hooks/useKeyboardShortcuts.ts',
-      'src/hooks/useSessionActions.ts',
-      'src/pages/ArtifactDetailPage.tsx',
-      'src/pages/ArtifactsPage.tsx',
-      'src/pages/ChannelPage.tsx',
-      'src/pages/ChatSidebar.tsx',
-      'src/pages/ProjectsPage.tsx',
-      'src/pages/knowledge/DetailView.tsx',
-      'src/pages/knowledge/SourcesList.tsx',
-      'src/pages/knowledge/index.tsx',
-      'src/pages/members/MembersPage.tsx',
-      'src/pages/members/NewCrewmateDialog.tsx',
-      'src/pages/overview/AgentCfgTab.tsx',
-      'src/pages/overview/AgentTemplatesTab.tsx',
-      'src/pages/overview/KiroCrewCfgTab.tsx',
-      'src/pages/overview/MemoryTab.tsx',
-      'src/pages/overview/PortabilityTab.tsx',
-      'src/pages/overview/PromptsTab.tsx',
-      'src/pages/overview/SkillsTab.tsx',
-      'src/pages/overview/SteeringTab.tsx',
-      'src/utils/popoutController.ts',
-    ],
-    rules: {
-      'no-restricted-globals': 'off',
-      'no-restricted-properties': 'off',
-    },
-  },
-  {
     // The Mochi sub-windows (settings.html / avatar.html / panel.html) are
     // separate Electron entry points. Each ships its OWN inline <style> block
     // with hardcoded colors and the system font stack, and loads neither

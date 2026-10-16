@@ -87,6 +87,7 @@ import { renderFolderModal } from './chat-sidebar/folderModal'
 import { renderSessionCleanupPanel, useSessionCleanup } from './chat-sidebar/sessionCleanup'
 import { renderBulkModelPanel, useBulkModelSwitch } from './chat-sidebar/bulkModelSwitch'
 import BroadcastPanel from './chat-sidebar/BroadcastPanel'
+import { useConfirm } from '../components/ConfirmDialog'
 
 /** Stable empty group list for the board, which groups nothing. */
 const NO_CREW_GROUPS: CrewGroup[] = []
@@ -107,8 +108,7 @@ export { SIDEBAR_MIN, SIDEBAR_MAX } from './chat/sidebarWidth'
  * render owners, which call no hooks: the lane-row and folder-block factories (built once
  * per render, so the row stamps belong to that pass), the lanes, the header, the dock and
  * the Older Sessions pane. What stays here: every hook call, the row actions and row shell
- * the row memo compares, the native confirm() dialogs (eslint's native-dialog allowlist
- * names this file) and the root region. The owner table and the pin list are in
+ * the row memo compares, the shared confirmation dialogs and the root region. The owner table and the pin list are in
  * docs/system-specs/modules/history.md.
  */
 function ChatSidebar({
@@ -132,6 +132,7 @@ function ChatSidebar({
   // re-render; useStore().getState() reads the live value without subscribing.
   const store = useStore<RootState>()
   const ime = useImeGuard()
+  const { confirm, confirmDialog } = useConfirm()
   const isMobile = useIsMobile()
   const isTouchDevice = useIsTouchDevice()
 
@@ -730,12 +731,28 @@ function ChatSidebar({
   // The Older Sessions pane's guide scope (`open:chat.older-sessions`).
   useGuideDisclosureScope('chat.older-sessions', historyOpen)
 
-  // The native confirm() dialogs stay in this file, the one eslint's native-dialog
-  // allowlist names; the render owners call these.
-  const deleteFolderWithConfirm = (folder: ChatFolder) => { if (confirm(i18nT('pages.chatSidebar.delete_folder_confirm', { name: folder.name }))) deleteFolderMutation.mutate(folder.id) }
-  const deleteColumnWithConfirm = (columnId: string) => { if (confirm(i18nT('pages.chatSidebar.delete_this_column'))) deleteColumnMutation.mutate(columnId) }
-  const clearClosedSessionsWithConfirm = async () => { if (confirm(i18nT('pages.chatSidebar.clear_closed_sessions_active_tabs_and_pinned_ses'))) { await api.clearSessions(); dispatch(fetchHistory(false)) } }
-  const deleteHistorySessionWithConfirm = (key: string) => { if (confirm(i18nT('pages.chatSidebar.are_you_sure_you_want_to_delete_this_history_ses'))) dispatch(deleteHistorySession(key)) }
+  const deleteFolderWithConfirm = async (folder: ChatFolder) => {
+    const ok = await confirm({
+      title: i18nT('pages.chatSidebar.delete_folder_confirm', { name: folder.name }),
+      confirmLabel: i18nT('pages.chatSidebar.delete_folder_confirm', { name: folder.name }),
+    })
+    if (ok) deleteFolderMutation.mutate(folder.id)
+  }
+  const deleteColumnWithConfirm = async (columnId: string) => {
+    const title = i18nT('pages.chatSidebar.delete_this_column')
+    const ok = await confirm({ title, confirmLabel: title })
+    if (ok) deleteColumnMutation.mutate(columnId)
+  }
+  const clearClosedSessionsWithConfirm = async () => {
+    const title = i18nT('pages.chatSidebar.clear_closed_sessions_active_tabs_and_pinned_ses')
+    const ok = await confirm({ title, confirmLabel: title })
+    if (ok) { await api.clearSessions(); dispatch(fetchHistory(false)) }
+  }
+  const deleteHistorySessionWithConfirm = async (key: string) => {
+    const title = i18nT('pages.chatSidebar.are_you_sure_you_want_to_delete_this_history_ses')
+    const ok = await confirm({ title, confirmLabel: title })
+    if (ok) dispatch(deleteHistorySession(key))
+  }
 
   // Everything the render owners draw from, built after the last hook call. The
   // factories run once per render, so the row stamps belong to this pass.
@@ -789,9 +806,10 @@ function ChatSidebar({
   const board = createBoardLane({ ...scope, ...laneRows, ...folderBlocks })
 
   return (
-    // stable theming hook 'sidebar' — see website/docs/theming-contract.md
-    // The region is the session picker a guide's "choose the session" step
-    // points at (`sessions.list`): both layouts draw their rows inside it.
+    <>
+      {confirmDialog}
+      {sessionActions.confirmDialog}
+      {/* stable theming hook 'sidebar' — see website/docs/theming-contract.md. The region is the session picker a guide's "choose the session" step points at (`sessions.list`): both layouts draw their rows inside it. */}
     <div role="region" aria-label={i18nT('pages.chatSidebar.sessions')} {...uiLocation('sessions.list', sidebarRootRef)} onPointerOver={onRootPointerOver} onPointerLeave={releaseHoverPin} className={`${LIST_SHELL_CLS} flex flex-col shrink-0 relative h-full`} style={rootStyle}>
       {/* Scroll peek: full titles in a floating, click-through layer. The
           card itself keeps `sidebarWidth`. */}
@@ -933,6 +951,7 @@ function ChatSidebar({
        *  ever open one, and so the ProjectPicker it hosts has a single owner. */}
       {folderModal && renderFolderModal(scope, folderModal)}
     </div>
+    </>
   )
 }
 

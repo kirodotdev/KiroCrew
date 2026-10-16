@@ -11,6 +11,7 @@ import SearchableSelect from '../../components/SearchableSelect'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import ListDetailBack from '../../components/ListDetailBack'
 import { useListDetailView } from '../../hooks/useListDetailView'
+import { useConfirm } from '../../components/ConfirmDialog'
 import type { SteeringFile, SteeringList } from '../../types'
 
 import { parseErrorCode } from '../../utils/errorReport'
@@ -352,6 +353,7 @@ const EDITOR_CLASS =
 const PANE_SHELL_CLASS = 'flex gap-3 -mx-2 md:mx-0 h-[calc(100vh-260px)] supports-[height:100svh]:h-[calc(100svh-260px)] min-h-[420px]'
 
 export default function SteeringTab() {
+  const { confirm, confirmDialog } = useConfirm()
   const queryClient = useQueryClient()
   const [filter, setFilter] = useState('')
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
@@ -648,6 +650,7 @@ export default function SteeringTab() {
   const rootHint = roots.map(r => r.path).join('  ·  ')
 
   return (<>
+    {confirmDialog}
     <Modal
       open={creating}
       onClose={() => setCreateDialog(false)}
@@ -870,7 +873,15 @@ export default function SteeringTab() {
                         title={selectedReadOnly
                           ? i18nT('pages.overview.steeringTab.linked_read_only', { target: selected.target })
                           : undefined}
-                        onClick={() => { if (confirm(i18nT('pages.overview.steeringTab.delete_confirm', { path: selected.rel }))) deleteFile.mutate(selected.key) }}>{i18nT('pages.overview.steeringTab.delete')}</Btn>
+                        onClick={async () => {
+                          if (selectedReadOnly || deleteFile.isPending) return
+                          const key = selected.key
+                          const ok = await confirm({
+                            title: i18nT('pages.overview.steeringTab.delete_confirm', { path: selected.rel }),
+                            confirmLabel: i18nT('pages.overview.steeringTab.delete'),
+                          })
+                          if (ok) deleteFile.mutate(key)
+                        }}>{i18nT('pages.overview.steeringTab.delete')}</Btn>
                     </>)}
                   </div>
                 </div>

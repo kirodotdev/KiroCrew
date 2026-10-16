@@ -22,6 +22,7 @@ import { ghostPoseForKey } from './ghostEyes'
 import { GhostEyeOverlay } from './GhostEyeOverlay'
 import { LottieRenderer } from '../../components/appearancePacks/LottieRenderer'
 import { SpriteRenderer } from '../../components/appearancePacks/SpriteRenderer'
+import { useConfirm } from '../../components/ConfirmDialog'
 import { PackEditor } from './PackEditor'
 import { SpriteImporter } from './SpriteImporter'
 import { buildSpritePackData, firstFramePreview } from './petdexImport'
@@ -932,6 +933,7 @@ function DetailPanel({ detail, isActive, onClose, onApply, onExport, onEdit, onD
  * tools need.
  */
 export const GalleryPanel: React.FC = () => {
+  const { confirm, confirmDialog } = useConfirm()
   const [packs, setPacks] = useState<PackMeta[]>([])
   const [activePackId, setActivePackId] = useState<string>('')
   const [selectedPackId, setSelectedPackId] = useState<string | null>(null)
@@ -1110,7 +1112,10 @@ export const GalleryPanel: React.FC = () => {
 
   const handleDelete = useCallback(async () => {
     if (!detail) return
-    if (!confirm(i18nT('apps.crewCompanion.gallery.deleteConfirm', { name: detail.meta.name }))) return
+    if (!(await confirm({
+      title: i18nT('apps.crewCompanion.gallery.deleteConfirm', { name: detail.meta.name }),
+      confirmLabel: i18nT('apps.crewCompanion.gallery.delete'),
+    }))) return
     try {
       const wasActive = detail.meta.id === activePackId
       if (wasActive) {
@@ -1138,7 +1143,7 @@ export const GalleryPanel: React.FC = () => {
     } catch (err) {
       setError(errorText(err) || i18nT('apps.crewCompanion.gallery.deleteFailed'))
     }
-  }, [detail, fetchPacks, activePackId])
+  }, [detail, fetchPacks, activePackId, confirm])
 
   const handleCreateNew = useCallback(() => {
     setEditingPack(undefined)
@@ -1283,6 +1288,7 @@ export const GalleryPanel: React.FC = () => {
 
   return (
     <div style={S.root}>
+      {confirmDialog}
       {/* Header — title + the two ways to add an avatar */}
       <div style={S.header}>
         <span style={S.title}>{i18nT('apps.crewCompanion.gallery.title')}</span>
