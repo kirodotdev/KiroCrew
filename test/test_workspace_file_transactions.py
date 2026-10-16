@@ -276,7 +276,7 @@ def test_git_status_runs_no_repository_filter_driver(tmp_path, key):
     _git(root, "config", f"filter.x.y.{key}", f"touch {marker}; cat")
     (root / ".gitattributes").write_text("*.txt filter=x.y\n")
     (root / "a.txt").write_text("two\n")  # same size: status must hash it
-    out = wt._git_status(wt.Workspace(str(root)))
+    out = wt.browse(wt.Workspace(str(root)), {"op": "git_status"})
     assert not marker.exists()
     assert out["git"] is True and "a.txt" in out["output"]
 
@@ -314,7 +314,7 @@ def test_git_status_runs_no_submodule_filter_driver(tmp_path):
     git(inner, "config", "filter.x.clean", f"touch {marker}; cat")
     (inner / ".gitattributes").write_text("*.txt filter=x\n")
     (inner / "a.txt").write_text("two\n")  # same size: status must hash it
-    out = wt._git_status(wt.Workspace(str(root)))
+    out = wt.browse(wt.Workspace(str(root)), {"op": "git_status"})
     assert not marker.exists()
     assert out["git"] is True
 
@@ -366,7 +366,7 @@ def test_git_status_runs_no_repository_hook(tmp_path, where):
     if where == "hooks_path":
         _git(root, "config", "core.hooksPath", str(hooks))
     (root / "a.txt").write_text("two\n")  # stale stat: a plain status would refresh the index
-    out = wt._git_status(wt.Workspace(str(root)))
+    out = wt.browse(wt.Workspace(str(root)), {"op": "git_status"})
     assert not marker.exists()
     assert out["git"] is True and "a.txt" in out["output"]
 
