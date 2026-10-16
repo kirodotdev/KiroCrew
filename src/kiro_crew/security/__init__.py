@@ -61,6 +61,7 @@ from . import (
     denied_rules,
     diagnostics,
     exfil,
+    exposure_floor,
     helpers,
     inline_payload,
     paths,
@@ -1257,6 +1258,11 @@ def is_denied(
     # under backtracking and are already enforced by the ``_is_git_publish`` floor
     # below (see ``_GIT_PUBLISH_RULE_PATTERNS``).
     regex_patterns = [p for p in regex_patterns if p not in _rules._GIT_PUBLISH_RULE_PATTERNS]
+    # Same for the network-exposure rows: enabled-ness is captured first, then their
+    # patterns leave the regex tier, because the argv floor below is their only
+    # enforcement (see ``_NETWORK_EXPOSURE_FLOOR_BY_ID``).
+    exposure_enabled = {p for p in regex_patterns if p in _rules._NETWORK_EXPOSURE_FLOOR_PATTERNS}
+    regex_patterns = [p for p in regex_patterns if p not in _rules._NETWORK_EXPOSURE_FLOOR_PATTERNS]
     # The two self-protection rules get an ADDITIONAL argv-structural floor
     # below, for the reason documented on ``_SELF_PROTECTION_FLOOR_PATTERNS``:
     # only a tokenized view can tell ``kirocrew "token"`` from
@@ -1436,6 +1442,26 @@ def is_denied(
                 pattern,
                 _rules._SELF_PROTECTION_FLOOR_NOTES.get(rule_id, ""),
                 rule=rule_id,
+                component="argv-floor",
+            )
+    # Network-exposure floor: handed the RAW command, so a same-line assignment
+    # resolves case-sensitively (``ts`` and ``TS`` are different variables).
+    if exposure_enabled:
+        enabled_ids = {
+            rid
+            for rid, pattern in _rules._NETWORK_EXPOSURE_FLOOR_BY_ID.items()
+            if pattern in exposure_enabled
+        }
+        exposure_rule = _submodule("exposure_floor")._tailscale_exposure_rule(
+            tool_name, enabled_ids
+        )
+        exposure_pattern = _rules._NETWORK_EXPOSURE_FLOOR_BY_ID.get(exposure_rule or "")
+        if exposure_pattern is not None:
+            _emit_deny_event(tool_name, exposure_pattern, lower)
+            return _reason(
+                exposure_pattern,
+                _rules._NETWORK_EXPOSURE_FLOOR_NOTE,
+                rule=exposure_rule,
                 component="argv-floor",
             )
     # The self-management SUBCOMMAND floors have no catalog row (their

@@ -356,7 +356,13 @@ def _url_payload_command(n: int) -> str:
 #: ``_approved_oauth_authorization_endpoint`` and the facade export. The rationale
 #: lives in the security spec, not the package. An approved endpoint gets exactly
 #: the builtin set's exemption; no pattern, threshold or pass moved.
-_PACKAGE_LINE_BUDGET = 29_492
+#:
+#: Raised again, from 29,492, for the tailscale ``network-exposure`` family: five
+#: catalog rows in ``denied_rules.py`` (most of it their comments and descriptions),
+#: and ``exposure_floor.py``, the argv floor that is their only enforcement, with its
+#: wiring in ``is_denied``.
+#: No other rule, floor or pass moved.
+_PACKAGE_LINE_BUDGET = 29_866
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
