@@ -142,9 +142,35 @@ class TestIsSensitiveResolvedPath:
         assert security.is_sensitive_resolved_path(real) is True
         assert security.is_sensitive_resolved_path(os.path.realpath(os.sep)) is False
 
-    def test_the_inline_anchors_are_the_bounded_anchors(self, monkeypatch) -> None:
+    def test_the_inline_anchors_are_the_bounded_anchors(self, tmp_path, monkeypatch) -> None:
         # Same targets from both routes, and the same cache key, so the
         # decision cannot drift between the loop's gate and the walker's.
+        #
+        # The two builds resolve the same anchors at two different moments, so
+        # the comparison is only about the ROUTE if the filesystem under those
+        # anchors cannot change in between. It can: the per-test crew
+        # home is a path the floor pins but never creates, and any thread that
+        # reaches ``config_dir()`` while this test runs creates it, because the
+        # env var is process-global. On Windows that flips ``realpath``'s first
+        # and second lookup of an anchor from "path not found" to "file not
+        # found", and ntpath then keeps the ``\\?\`` prefix on that one answer
+        # -- an extra target in whichever build straddled the mkdir. So this
+        # test owns its home and creates the directory above every anchor the
+        # build resolves BEFORE either build. A concurrent writer can then only
+        # add a missing LEAF, which ntpath resolves the same either way.
+        home = tmp_path / "crew"
+        home.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        resolved: dict[str, str | None] = {}
+        security.paths._anchor_targets(
+            security.paths._SENSITIVE_HOME_DIRS, security.paths._resolved_root_key(), resolved
+        )
+        # The build anchors on the RESOLVED home (``/var`` -> ``/private/var`` on macOS).
+        real_home = Path(os.path.realpath(home))
+        for anchor in resolved:
+            parent = Path(anchor).parent
+            if parent.is_relative_to(real_home):
+                parent.mkdir(parents=True, exist_ok=True)
         monkeypatch.setattr(security.paths, "_home_targets_cache", {})
         bounded = security.paths._home_dir_targets(security.paths._SENSITIVE_HOME_DIRS)
         monkeypatch.setattr(security.paths, "_home_targets_cache", {})
