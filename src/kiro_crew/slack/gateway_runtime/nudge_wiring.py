@@ -253,13 +253,18 @@ async def _init_autonudge(self: GatewayOrchestrator) -> None:
                 # the same redaction as the structured record below -- every
                 # writer checks a kind against the registry, but a state file
                 # edited by hand is read back as written.
+                # An ungated loop settled while held has no monitor; its
+                # ``subject_outcome`` is the same fact about a pull request.
                 "monitor_outcome": (
                     loop.monitor.outcome.value
                     if loop.monitor is not None and loop.monitor.outcome is not None
-                    else ""
+                    else loop.subject_outcome if loop.monitor is None else ""
                 ),
                 "monitor_kind": (
-                    _redact_monitor_value(loop.monitor.kind) if loop.monitor is not None else ""
+                    _redact_monitor_value(loop.monitor.kind)
+                    if loop.monitor is not None
+                    # ``probes.GH_PR``: only a pull-request read records one.
+                    else "gh-pr" if loop.subject_outcome else ""
                 ),
                 # An ACTIVE loop holding for an unanswered approval; the
                 # popover words it as paused.
@@ -906,7 +911,11 @@ def _notify_nudge_expired(self: GatewayOrchestrator, loop: NudgeLoop) -> bool:
             )
         elif terminal:
             settled = getattr(loop.monitor, "outcome", None) if loop.monitor else None
-            decided = getattr(settled, "value", settled) or owed
+            decided = (
+                getattr(settled, "value", settled)
+                or str(getattr(loop, "subject_outcome", "") or "")
+                or owed
+            )
             if decided == "success":
                 title = "Monitoring loop finished — what it was watching is done"
                 body = (

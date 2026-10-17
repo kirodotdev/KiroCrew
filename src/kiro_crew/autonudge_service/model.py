@@ -495,6 +495,11 @@ class NudgeLoop:
     # indistinguishable from a budget-stopped one, and a budget raise would
     # resume unattended execution against the user's explicit pause.
     stopped_reason: str = ""
+    # How the watched pull request ended, for a loop settled by a read that had no
+    # monitor to record it on: an ungated loop found merged ("success") or closed
+    # unmerged ("blocked") while it was held for approval (``subject_reads``). "" for
+    # every other row; a gated loop records the same fact on ``monitor.outcome``.
+    subject_outcome: str = ""
     # Evidence that a cycle in this loop's session asked for tool approval and
     # nobody answered within the window. Set by ``notify_approval_stalled`` and
     # read by ``_timer`` as a HOLD on every later wake: the loop stays active but

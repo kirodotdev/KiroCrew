@@ -965,11 +965,9 @@ def _reconcile_once(self: AutoNudgeService) -> None:
             continue
         if loop.id in self._firing or loop.id in self._maintenance_quiescing:
             continue
-        if loop.approval_stalled and not is_structured_monitor_loop(loop):
-            # Paused for approval: no live timer is the intended state, and
-            # ``release_approval_hold`` re-arms it. Rescuing it here would only
-            # wake a tick that holds again, every pass, for as long as it waits.
-            continue
+        # A legacy loop paused for approval is NOT skipped: its held tick reads the
+        # subject and re-arms itself (``subject_reads.hold_tick``), so a held loop
+        # with no live timer has lost that read and is rescued like any other.
         monitor = loop.monitor
         if monitor is not None and monitor.version != MONITOR_STATE_VERSION:
             continue

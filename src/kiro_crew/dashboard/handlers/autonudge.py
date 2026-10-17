@@ -207,6 +207,9 @@ _MONITOR_WITHHELD_LEGACY_FIELDS = frozenset(
         "max_cycles",
         "cycle_count",
         "last_fire_ts",
+        # A held UNGATED loop's settled outcome. A structured monitor never writes it
+        # (its outcome is ``monitor.outcome``, mapped below), so it says nothing here.
+        "subject_outcome",
         # The wake judge's own state. Withheld from a STRUCTURED monitor's legacy
         # projection, and each for its own reason rather than as a block. A plain
         # loop -- which is where a judge actually lives -- does not pass through

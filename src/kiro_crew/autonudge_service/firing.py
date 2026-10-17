@@ -49,6 +49,7 @@ from kiro_crew.autonudge_service.model import (
     runtime_budget_exceeded,
     runtime_elapsed,
 )
+from kiro_crew.autonudge_service.subject_reads import hold_tick, sleep_until_cycle
 from kiro_crew.autonudge_service.timers import (
     _ACTING_TIMER,
     _REARM_BACKOFF_MAX_SHIFT,
@@ -85,7 +86,7 @@ async def _tick_update(svc: AutoNudgeService, loop_id: str, **changes: Any) -> N
 
 async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = None) -> None:
     try:
-        await asyncio.sleep(loop.idle_secs if delay is None else delay)
+        await sleep_until_cycle(self, loop, loop.idle_secs if delay is None else delay)
     except asyncio.CancelledError:
         return
     if shutdown_event.is_set():
@@ -196,16 +197,19 @@ async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = 
     #
     # Recorded evidence only (``notify_approval_stalled``): a cycle's approval
     # went unanswered. Firing again would wake, be declined and spend a cycle that
-    # could never work, so the tick fires nothing and arms nothing. The loop stays
-    # active and inspectable (``approval_stalled`` on the record), the reconciler
-    # leaves it alone, and the release re-arms it once a person is back. A wake
-    # that lands meanwhile (a restart, a worker's push) reaches this line again.
+    # could never work, so the tick fires nothing. It still reads the pull request
+    # the loop names, so one that ended during the hold settles the loop, and it
+    # re-announces a long hold (``subject_reads.hold_tick``, which re-arms it one
+    # read interval out). The loop stays active and inspectable
+    # (``approval_stalled`` on the record), and the release re-arms it toward its
+    # deadline once a person is back.
     if loop.approval_stalled:
         logger.debug(
             "AutoNudge: loop %s is paused for approval -- not firing cycle %d",
             loop.id,
             loop.cycle_count + 1,
         )
+        await hold_tick(self, loop)
         return
     if runtime_budget_exceeded(loop):
         if await self._extend_for_open_ledger(loop, "max_runtime_secs"):

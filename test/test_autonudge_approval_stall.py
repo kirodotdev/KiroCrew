@@ -6,6 +6,7 @@ import pytest
 
 from kiro_crew import autonudge as _an
 from kiro_crew.autonudge import APPROVAL_STALL_REASON, AutoNudgeService, NudgeLoop
+from kiro_crew.autonudge_service.subject_reads import SUBJECT_READ_SECS
 
 
 @pytest.fixture(autouse=True)
@@ -135,12 +136,13 @@ async def test_starting_publishes_the_service_and_stopping_unpublishes_it(store_
 
 
 @pytest.mark.asyncio
-async def test_stall_holds_loop_instead_of_firing(svc, _nosleep):
+async def test_stall_holds_loop_instead_of_firing(svc, _nosleep, monkeypatch):
     """Recorded stall evidence PAUSES the loop: it stays active and fires nothing.
 
     A hold, not a stop -- no ``expired``, no ``stopped_reason``, the cycle count
     untouched -- so a patrol nobody was awake to answer is still there in the
-    morning, inspectable as paused for approval.
+    morning, inspectable as paused for approval. The held tick re-arms one read
+    interval out, so the subject keeps being read while nobody answers.
     """
     fired: list[NudgeLoop] = []
 
@@ -156,6 +158,8 @@ async def test_stall_holds_loop_instead_of_firing(svc, _nosleep):
 
     await _stall(svc)
     svc._cancel_timer(loop.id)
+    armed: list[tuple[str, float | None]] = []
+    monkeypatch.setattr(svc, "_arm_timer", lambda lp, delay=None: armed.append((lp.id, delay)))
     await svc._timer(loop)
 
     refreshed = svc._loops[loop.id]
@@ -168,8 +172,7 @@ async def test_stall_holds_loop_instead_of_firing(svc, _nosleep):
     assert ("expired", loop.id) not in events, "a hold is not a stop"
     assert ("updated", loop.id) in events, "the hold must reach the popover"
     assert events.count(("held", loop.id)) == 1, "the hold notice is sent once"
-    timer = svc._timers.get(loop.id)
-    assert timer is None or timer.done(), "a held tick must not arm another one"
+    assert armed == [(loop.id, SUBJECT_READ_SECS)], "a held tick re-arms one read interval out"
     await _stop_and_drain(svc)
 
 
@@ -308,18 +311,21 @@ async def test_release_is_inert_without_a_hold(svc, _nosleep):
 
 
 @pytest.mark.asyncio
-async def test_the_reconciler_leaves_a_held_loop_alone(svc, _nosleep):
-    """No live timer is the intended state of a hold, not a stranding."""
+async def test_the_reconciler_rescues_a_held_loop_with_no_timer(svc, _nosleep, monkeypatch):
+    """A held loop re-arms itself to keep reading its subject, so a dead timer is a stranding."""
     loop = await _armed(svc)
     await _stall(svc)
     svc._cancel_timer(loop.id)
+    armed: list[str] = []
+    monkeypatch.setattr(svc, "_arm_timer", lambda lp, delay=None: armed.append(lp.id))
     await svc._timer(loop)
+    armed.clear()  # the held tick's own re-arm, recorded but never started
 
     svc._reconcile_once()
     svc._reconcile_once()
 
-    timer = svc._timers.get(loop.id)
-    assert timer is None or timer.done(), "the reconciler re-armed a held loop"
+    assert armed == [loop.id], "the reconciler must re-arm a held loop that lost its timer"
+    assert svc._loops[loop.id].approval_stalled is True, "rescued, still held"
     await _stop_and_drain(svc)
 
 

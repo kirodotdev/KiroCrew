@@ -402,6 +402,23 @@ class PrObservation:
         """
         return bool(self.merged_at) or self.state == "MERGED"
 
+    @property
+    def conflict_kind(self) -> str:
+        """``"conflicting"``, ``"behind"`` or ``""``: whether the head needs a re-sync.
+
+        Only an open, read subject answers. ``mergeable`` is computed lazily by the
+        forge, so ``UNKNOWN`` right after the base moves reads as ``""`` here, not
+        as clean or conflicting: the next read settles it. ``BEHIND`` appears only
+        where branch protection requires an up-to-date head.
+        """
+        if not self.reached or self.is_terminal:
+            return ""
+        if self.mergeability == "CONFLICTING" or self.merge_state == "DIRTY":
+            return "conflicting"
+        if self.merge_state == "BEHIND":
+            return "behind"
+        return ""
+
     def bucket(self, name: str) -> tuple[str, ...]:
         """The check identities in one bucket, sorted for a stable reading."""
         return tuple(sorted(row.name for row in self.checks if row.bucket == name))
@@ -1259,6 +1276,41 @@ def fetch(message: object, *, budget_secs: float = _TICK_BUDGET_SECS) -> PrObser
         checks_read=folded,
         checks_complete=complete and statuses_ok and workflows_whole,
         **common,
+    )
+
+
+def fetch_state(message: object, *, budget_secs: float = _GH_TIMEOUT_SECS) -> PrObservation:
+    """The pull request's own state, mergeability and head: one ``gh`` call, no board.
+
+    For readers that only ask "has it ended?" or "does the head need a re-sync?" --
+    a held loop and an ungated loop's between-cycle read -- where :func:`fetch`'s
+    paginated check board would cost several calls a tick to answer nothing they
+    use. The observation carries no checks and no remarks, so it must never be
+    published as a monitor's reading. Never raises for a forge failure; a
+    ``ValueError`` still escapes for a message that can never be valid.
+    """
+    repo, pr, host = _parse_config(message)
+    data = _fetch_core(_Transport(host, budget_secs=budget_secs), repo, pr)
+    if data is None:
+        return PrObservation(
+            repo=repo,
+            pr=pr,
+            host=host,
+            status=STATUS_UNAVAILABLE,
+            observed_at=time.time(),
+            incomplete=("pull request unread",),
+        )
+    return PrObservation(
+        repo=repo,
+        pr=pr,
+        host=host,
+        status=STATUS_OK,
+        observed_at=time.time(),
+        state=str(data.get("state") or "").upper(),
+        mergeability=str(data.get("mergeable") or "").upper(),
+        merge_state=str(data.get("mergeStateStatus") or "").upper(),
+        head=str(data.get("headRefOid") or ""),
+        merged_at=str(data.get("mergedAt") or ""),
     )
 
 

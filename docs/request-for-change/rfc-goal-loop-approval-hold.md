@@ -53,7 +53,7 @@ Non-goals:
 `approval_stalled` stops being a terminal bound and becomes a **hold**.
 
 - **Start.** `notify_approval_stalled` records the hold: the flag, plus a new `approval_stalled_at` timestamp. It writes the record under the service lock and waits for the write before it logs a WARNING, emits `updated`, and sends one notification on the monitor channel ("Monitoring loop paused — a tool approval went unanswered", naming what resumes it). That notification replaces the old "loop stopped" one, so a person away from the session still hears about it. A write that fails leaves the loop running, unheld, and sends nothing.
-- **While held.** `_timer` checks the hold after the cycle cap and before the runtime budget. A held tick fires nothing and arms no timer. The reconciler skips a held loop, because no timer is the intended state. A wake that arrives anyway (a restart, a worker's push) reaches the same check and holds again.
+- **While held.** `_timer` checks the hold after the cycle cap and before the runtime budget. A held tick fires nothing. It reads the one pull request the loop names (one `gh pr view`, no model turn) and re-arms one read interval out, so the reconciler rescues a held loop whose timer died. A pull request that merged or closed during the hold settles the loop (`monitor_terminal`, with the usual expiry notice); a held loop delivers no turn, so a channel loop settles here too.
 - **Release.** `release_approval_hold` runs when a person is back. It is called from:
   - an approval answered in that session: the dashboard runner's decision closer (only when no host route decided it), the Slack and Discord approval waits, and the shared registry in `messaging/approval.py`;
   - a message a person typed into the dashboard session (`notify_user_input(human=True)`; an app's send does not count);
@@ -90,7 +90,7 @@ This amends the reading of [rfc-goal-popover-pause-play-controls.md](rfc-goal-po
 
 ## 4. Risks
 
-- **A hold nobody ends.** A held loop with nobody coming back stays held. It spends no turns and no budget, so the cost is a paused row, not a runaway. It is visible in the popover and in `monitor_inspect`.
+- **A hold nobody ends.** A held loop with nobody coming back stays held. It spends no turns and no budget, so the cost is a paused row and one state read per interval, not a runaway. It is visible in the popover and in `monitor_inspect`, and it ends on its own when the pull request it names merges or closes.
 - **An orphaned item keeps a watch extending.** If a worker dies and its item never closes, the watch keeps extending until the backstop. Each step is a WARNING line, and the backstop bounds the total.
 - **Held-time credit stretches the budget.** A loop held for a day runs a day later than its wall clock suggests. The credit covers only held time, and held time fires nothing.
 - **A lost write.** If the store refuses a write, the hold or the release is undone in full and nothing is announced. The loop keeps the state the store has.

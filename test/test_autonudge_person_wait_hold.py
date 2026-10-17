@@ -19,6 +19,7 @@ from kiro_crew import validation
 from kiro_crew import work_ledger as wl
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
 from kiro_crew.autonudge_service import firing
+from kiro_crew.autonudge_service.subject_reads import SUBJECT_READ_SECS
 from kiro_crew.crew_log import projection
 from kiro_crew.dashboard.handlers import autonudge as autonudge_routes
 from kiro_crew.probes import work_ledger as probe
@@ -319,16 +320,19 @@ async def test_a_mixed_ledger_does_not_hold(svc, _nosleep, ledger):
 
 
 @pytest.mark.asyncio
-async def test_an_approval_stalled_loop_is_left_to_the_approval_hold(svc, _nosleep, ledger):
+async def test_an_approval_stalled_loop_is_left_to_the_approval_hold(
+    svc, _nosleep, ledger, monkeypatch
+):
     ledger["fp"] = "fp-a"
     fired: list = []
     loop = await _armed(svc, fired)
     loop.approval_stalled = True
+    armed: list = []
+    monkeypatch.setattr(svc, "_arm_timer", lambda lp, delay=None: armed.append(delay))
     await _tick(svc, loop)
 
     assert svc._loops[loop.id].waiting_on_person is False
-    timer = svc._timers.get(loop.id)
-    assert timer is None or timer.done(), "the approval hold arms nothing"
+    assert armed == [SUBJECT_READ_SECS], "only the approval hold's own read re-arms it"
     assert len(fired) == 1
     await _drain(svc)
 

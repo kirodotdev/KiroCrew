@@ -831,6 +831,11 @@ class AutoNudgeService:
         #: check ("" when not every open item waits on a person). The delivered turn
         #: copies it to ``ledger_seen_fp``; see ``_holds_for_person_wait``.
         self._ledger_tick_fp: dict[str, str] = {}
+        #: ``loop id -> "<head>:<conflicting|behind>"`` an ungated loop's between-cycle
+        #: read last woke for, so one conflict on one head pulls one cycle forward. In
+        #: memory only (``subject_reads``): after a restart a still-standing conflict
+        #: wakes once more. Released with the loop.
+        self._subject_wake_fp: dict[str, str] = {}
         #: ``loop id -> item id -> wall-clock times`` of the pull-forwards that item
         #: bought its conductor in the last hour, and the ``(loop id, item id)`` pairs
         #: whose cap has already been logged in the current window. Read and written by
@@ -1047,6 +1052,14 @@ class AutoNudgeService:
                         loop_values["gate"],
                     )
                     loop_values["gate"] = False
+                # Read by the expiry wording only; anything but the two outcomes a
+                # settlement writes is not a fact about the subject.
+                if "subject_outcome" in loop_values and loop_values["subject_outcome"] not in (
+                    "",
+                    "success",
+                    "blocked",
+                ):
+                    loop_values["subject_outcome"] = ""
                 # The judge fields come out of the same agent-writable store, so they
                 # are normalised HERE rather than at each read site, for the reason
                 # ``gate`` is: a stored ``"judge": "yes"`` would otherwise reach a
