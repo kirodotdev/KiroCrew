@@ -18,7 +18,7 @@ _SRC_ROOT = _REPO_ROOT / "src" / "kiro_crew"
 # Each row owns an argv that can run under the desktop bundle's interpreter.
 # Keeping the inventory explicit makes a new process boundary a reviewed change.
 _INTERNAL_PYTHON_SPAWN_SITES = (
-    ("platform_compat.py", "reexec_python_module"),
+    ("platform_compat_runtime.py", "reexec_python_module"),
     ("agent.py", "_kirocrew_mcp_invocation"),
     ("apps/backend_runtime/provisioning.py", "_provision_app_deps_locked"),
     ("apps/backend.py", "_start_app_backend_body"),

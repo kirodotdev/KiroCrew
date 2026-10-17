@@ -15,8 +15,9 @@ dead pointer.
 So the pins here are deliberately the two the linter cannot make:
 
 * every public kill/reap helper on ``platform_compat`` is named in the entry,
-  DERIVED from that module rather than from a list copied into this file, so an
-  eighth helper reddens here instead of leaving the entry quietly incomplete;
+  DERIVED from that module and its ``platform_compat_*`` owners rather than from
+  a list copied into this file, so an eighth helper reddens here instead of
+  leaving the entry quietly incomplete;
 * every ``path::symbol`` anchor the entry cites resolves IN THE FILE IT NAMES.
 
 Neither pin needs a mock, a subprocess or a signal: this file reads source text
@@ -59,15 +60,16 @@ def _entry() -> str:
 
 
 def _public_kill_helpers() -> set[str]:
-    """Every public kill/reap helper on platform_compat, from its own AST.
+    """Every public kill/reap helper on platform_compat, from the ASTs of the
+    module and of every ``platform_compat_*`` owner it is split into.
 
     Derived, never hand-listed: a hand-listed set in this file would agree with
     a stale doc forever, which is the failure this test exists to catch.
     """
-    tree = ast.parse(PLATFORM_COMPAT.read_text(encoding="utf-8"))
     return {
         node.name
-        for node in tree.body
+        for path in sorted(PLATFORM_COMPAT.parent.glob("platform_compat*.py"))
+        for node in ast.parse(path.read_text(encoding="utf-8")).body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and not node.name.startswith("_")
         and ("kill" in node.name or "reap" in node.name)

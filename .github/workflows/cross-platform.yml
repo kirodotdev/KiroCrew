@@ -65,6 +65,7 @@ jobs:
             'src/kiro_crew/**/*.py' \
             ':(exclude)src/kiro_crew/_vendor/**' \
             ':(exclude)src/kiro_crew/platform_compat.py' \
+            ':(exclude)src/kiro_crew/platform_compat_*.py' \
             ':(exclude)src/kiro_crew/**/tests/**' \
             2>/dev/null | grep -E '^\+' | grep -vE '^\+\+\+' || true)"
 

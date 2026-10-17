@@ -205,6 +205,7 @@ jobs:
               - '**/*.ps1'
               - 'src/kiro_crew/flock_compat.py'
               - 'src/kiro_crew/platform_compat.py'
+              - 'src/kiro_crew/platform_compat_*.py'
               - 'src/kiro_crew/platform_lock_compat.py'
               - 'src/kiro_crew/platform_owner_compat.py'
               - 'src/kiro_crew/platform_log_append.py'
