@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect } from 'vitest'
-import { formatCommentsMessage, type Comment } from '../components/CommentOverlay'
+import { formatArtifactCommentsMessage, formatCommentsMessage, sliceCodePoints, type Comment } from '../components/CommentOverlay'
 import { findCoords, resolveSourcePos } from '../components/MarkdownPanel'
 
 describe('formatCommentsMessage', () => {
@@ -28,6 +28,40 @@ describe('formatCommentsMessage', () => {
     const cs: Comment[] = [{ id: '1', anchor, text: 't', line: 1, column: 1 }]
     const out = formatCommentsMessage('f', cs)
     expect(out).toContain('line 1, col 1, "' + 'x'.repeat(80) + '…"')
+  })
+
+  // A lone surrogate is not valid Unicode: sent to the agent it wedged the turn
+  // at "Thinking..." (reported on a markdown file with emojis in it).
+  const hasLoneSurrogate = (s: string) => /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(s)
+
+  it('never cuts an anchor through an emoji', () => {
+    const anchor = 'x'.repeat(79) + '😀' + 'y'.repeat(20)
+    const out = formatCommentsMessage('f', [{ id: '1', anchor, text: 't' }])
+    expect(hasLoneSurrogate(out)).toBe(false)
+    expect(out).toContain('"' + 'x'.repeat(79) + '…"')
+  })
+
+  it('never cuts the context snippet through an emoji', () => {
+    // The 'q' spacers put both ±20 window edges mid-pair.
+    const content = '😀'.repeat(15) + 'qtargetq' + '😀'.repeat(15)
+    const cs: Comment[] = [{ id: '1', anchor: 'target', text: 't', line: 1, column: 32 }]
+    const out = formatCommentsMessage('f.md', cs, content)
+    expect(out).toContain('target')
+    expect(hasLoneSurrogate(out)).toBe(false)
+  })
+
+  it('never cuts an artifact comment quote through an emoji', () => {
+    const quote = 'x'.repeat(79) + '😀' + 'y'.repeat(20)
+    const out = formatArtifactCommentsMessage('s', 'n', [{ body: 'b', anchor: { quote } }])
+    expect(hasLoneSurrogate(out)).toBe(false)
+    expect(out).toContain('"' + 'x'.repeat(79) + '…": ')
+  })
+
+  it('sliceCodePoints moves both edges off a surrogate pair', () => {
+    expect(sliceCodePoints('a😀b', 0, 2)).toBe('a')
+    expect(sliceCodePoints('a😀b', 2)).toBe('b')
+    expect(sliceCodePoints('a😀b', 0, 3)).toBe('a😀')
+    expect(sliceCodePoints('a😀b', 2, 2)).toBe('')
   })
 
   it('includes a surrounding-context snippet when content is provided', () => {

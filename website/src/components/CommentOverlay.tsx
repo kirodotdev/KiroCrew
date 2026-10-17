@@ -142,6 +142,25 @@ function CommentList({ comments, onEdit, onRemove, onSubmitAll, enableExtraPromp
   )
 }
 
+const isHighSurrogate = (code: number) => code >= 0xd800 && code <= 0xdbff
+const isLowSurrogate = (code: number) => code >= 0xdc00 && code <= 0xdfff
+
+/** `s.slice(start, end)` with both edges moved off a surrogate pair. A plain
+ *  UTF-16 slice through an astral character (an emoji) leaves a lone
+ *  surrogate in the text sent to the agent, which is not valid Unicode and
+ *  wedges the turn. Edges only ever move inward. */
+export function sliceCodePoints(s: string, start: number, end: number = s.length): string {
+  const from = snapOffPair(s, Math.max(0, start), 1)
+  const to = snapOffPair(s, Math.min(s.length, end), -1)
+  return from < to ? s.slice(from, to) : ''
+}
+
+/** Move UTF-16 index `i` off the middle of a surrogate pair: `dir` is +1 for
+ *  a start edge, -1 for an end edge, so the edge always moves inward. */
+function snapOffPair(s: string, i: number, dir: 1 | -1): number {
+  return i > 0 && i < s.length && isHighSurrogate(s.charCodeAt(i - 1)) && isLowSurrogate(s.charCodeAt(i)) ? i + dir : i
+}
+
 /** Format comments into a structured message for the agent.
  *  When `content` is provided, includes a short source-context snippet
  *  (~20 chars on each side of the anchor) so the agent can resolve the
@@ -176,13 +195,13 @@ export function formatCommentsMessage(filePath: string, comments: InlineComment[
   }
   lines.push('')
   comments.forEach((c, i) => {
-    const anchor = c.anchor.length > 80 ? c.anchor.slice(0, 80) + '…' : c.anchor
+    const anchor = c.anchor.length > 80 ? sliceCodePoints(c.anchor, 0, 80) + '…' : c.anchor
     const loc = c.line != null ? (c.column != null ? `line ${c.line}, col ${c.column}, ` : `line ${c.line}, `) : ''
     let ctx = ''
     if (srcLines && c.line != null && c.column != null && c.line >= 1 && c.line <= srcLines.length) {
       const src = srcLines[c.line - 1]
-      const start = Math.max(0, c.column - 1 - 20)
-      const end = Math.min(src.length, c.column - 1 + c.anchor.length + 20)
+      const start = snapOffPair(src, Math.max(0, c.column - 1 - 20), 1)
+      const end = snapOffPair(src, Math.min(src.length, c.column - 1 + c.anchor.length + 20), -1)
       const before = start > 0 ? '…' : ''
       const after = end < src.length ? '…' : ''
       ctx = ` in "${before}${esc(src.slice(start, end))}${after}"`
@@ -242,7 +261,7 @@ export function formatArtifactCommentsMessage(
   lines.push('')
   human.forEach((c, i) => {
     const quote = c.anchor?.quote ?? ''
-    const trimmed = quote.length > 80 ? quote.slice(0, 80) + '…' : quote
+    const trimmed = quote.length > 80 ? sliceCodePoints(quote, 0, 80) + '…' : quote
     const anchorPart = trimmed ? `"${esc(trimmed)}": ` : ''
     lines.push(`${i + 1}. ${anchorPart}"${esc(c.body)}"`)
   })
