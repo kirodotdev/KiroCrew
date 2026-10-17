@@ -830,7 +830,7 @@ class TestModelContextPolicy:
 
         monkeypatch.setattr(mmap, "mmap", _refuse_mapping)
         model = _write_gguf_model(tmp_path / "bert.gguf", architecture="bert", context_length=512)
-        assert embeddings_mod._read_gguf_embedding_metadata(model) == ("bert", None, 512)
+        assert embeddings_mod._read_gguf_embedding_metadata(model) == ("bert", None, 512, None)
 
     @pytest.mark.parametrize(
         ("architecture", "causal", "context_length", "expected_sizes"),

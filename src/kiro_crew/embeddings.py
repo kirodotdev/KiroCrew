@@ -154,13 +154,13 @@ _REJECTED_MODEL_SENTINEL = ".rejected-custom-model.invalid"
 
 # ── Runtime constants ──
 
-# Qwen3-Embedding requires last-token pooling (LLAMA_POOLING_TYPE_LAST). Every
-# model, custom encoders included, is loaded with this value passed explicitly,
-# so the runtime never reads a GGUF's own pooling_type key; honouring a declared
-# key is tracked separately. On BERT-family files measured last-token vectors
-# rank paraphrases above unrelated pairs as well as mean-pooled ones do (see the
-# embedding section of docs/system-specs/modules/memory-skills-hooks.md).
+# Qwen3-Embedding requires last-token pooling (LLAMA_POOLING_TYPE_LAST), and it
+# stays the pooling of every model whose id names no other (see
+# model_pooling_type): the bundled model, and a custom model recorded before its
+# file's declared pooling was honoured. The value is always passed explicitly.
 _POOLING_TYPE_LAST = 3
+# llama.cpp's `enum llama_pooling_type` values for the poolings a model can ask for.
+_POOLING_TYPES = {"mean": 1, "cls": 2, "last": _POOLING_TYPE_LAST}
 # Architectures the vendored llama.cpp runs WITHOUT a KV cache (the `res =
 # nullptr` cases of llama_model::create_memory in src/llama-model.cpp, plus the
 # t5encoder encoder-only path). llama_decode() routes them through encode(),
@@ -174,7 +174,7 @@ _POOLING_TYPE_LAST = 3
 # satisfies the check), while an ADDED cache-less architecture is invisible to it
 # and must be re-mirrored by hand (see the bump procedure in _vendor/README.md).
 # Membership decides only the micro-batch shape (see _model_context_policy);
-# pooling is _POOLING_TYPE_LAST for every file.
+# pooling comes from the model's id (see model_pooling_type).
 # Non-causal models that DO keep a KV cache (llama-embed, or any decoder family
 # re-tagged bidirectional) are not named here: they declare
 # `<architecture>.attention.causal = false` and _model_context_policy() reads
@@ -835,25 +835,29 @@ _GGUF_CAUSAL_SUFFIX = ".attention.causal"
 # with, which llama.cpp reads into ``hparams.n_ctx_train``. For an encoder with
 # learned absolute positions it is also the row count of the position table.
 _GGUF_CONTEXT_LENGTH_SUFFIX = ".context_length"
+# `<architecture>.pooling_type`: the pooling the converter recorded for the model,
+# which llama.cpp itself falls back to when no pooling is passed.
+_GGUF_POOLING_TYPE_SUFFIX = ".pooling_type"
 
 
 class _GGUFEmbeddingMetadata(NamedTuple):
-    """The KV-header fields that decide a model's llama.cpp context parameters."""
+    """The KV-header fields that decide a model's llama.cpp load parameters."""
 
     architecture: str | None
     causal: bool | None
     context_length: int | None
+    pooling_type: int | None = None
 
 
 def _read_gguf_embedding_metadata(path: Path) -> _GGUFEmbeddingMetadata:
-    """Read the architecture and its optional causal and context-length keys.
+    """Read the architecture and its optional causal, context-length and pooling keys.
 
-    All three come from the GGUF KV header. The causal flag is the
+    All four come from the GGUF KV header. The causal flag is the
     ``<architecture>.attention.causal`` boolean that llama.cpp reads for every
     architecture into ``hparams.causal_attn`` (default true when absent); the
     context length is the ``<architecture>.context_length`` integer it reads
-    into ``hparams.n_ctx_train``. The file's ``pooling_type`` key is not read:
-    every model is loaded with ``_POOLING_TYPE_LAST`` passed explicitly.
+    into ``hparams.n_ctx_train``; the pooling is the ``<architecture>.pooling_type``
+    integer it reads into ``hparams.pooling_type`` (see :func:`gguf_declared_pooling`).
 
     The header is walked with plain bounded reads, never a mapping: a mapping's
     length is fixed when it is built, so a GGUF truncated in place while its
@@ -952,12 +956,14 @@ def _parse_gguf_embedding_metadata(source: BinaryIO, file_size: int) -> _GGUFEmb
     architecture: str | None = None
     causal_by_architecture: dict[str, bool] = {}
     context_length_by_architecture: dict[str, int] = {}
+    pooling_by_architecture: dict[str, int] = {}
     for _ in range(metadata_count):
         key = _read_string()
         capture = (
             key == "general.architecture"
             or key.endswith(_GGUF_CAUSAL_SUFFIX)
             or key.endswith(_GGUF_CONTEXT_LENGTH_SUFFIX)
+            or key.endswith(_GGUF_POOLING_TYPE_SUFFIX)
         )
         value = _read_value(_unpack("<I"), capture=capture)
         if key == "general.architecture" and isinstance(value, str):
@@ -971,10 +977,17 @@ def _parse_gguf_embedding_metadata(source: BinaryIO, file_size: int) -> _GGUFEmb
             and value > 0
         ):
             context_length_by_architecture[key[: -len(_GGUF_CONTEXT_LENGTH_SUFFIX)].lower()] = value
+        elif (
+            key.endswith(_GGUF_POOLING_TYPE_SUFFIX)
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+        ):
+            pooling_by_architecture[key[: -len(_GGUF_POOLING_TYPE_SUFFIX)].lower()] = value
     return _GGUFEmbeddingMetadata(
         architecture,
         causal_by_architecture.get(architecture or ""),
         context_length_by_architecture.get(architecture or ""),
+        pooling_by_architecture.get(architecture or ""),
     )
 
 
@@ -1029,6 +1042,60 @@ def _model_context_policy(path: Path) -> _ContextPolicy:
     # Decoder models keep the lower-RSS micro-batch, which llama.cpp requires
     # to stay within the logical batch.
     return _ContextPolicy(window, window, min(_N_UBATCH, window))
+
+
+# ── Per-model pooling ──
+
+# A custom model's pooling is part of its identity label (`custom@mean`), so the
+# pooling is part of what names its vector space. Last-token keeps the plain
+# `custom` label every custom model carried before the file's pooling was read.
+_CUSTOM_LABEL = "custom"
+_POOLING_LABEL_SEPARATOR = "@"
+
+
+def gguf_declared_pooling(path: Path) -> str:
+    """The pooling *path*'s GGUF declares, or ``"last"`` when it declares none usable.
+
+    Every embedding GGUF a current converter writes carries the key: Qwen3
+    declares last-token, EmbeddingGemma and Nemotron mean, the ModernBERT family
+    CLS. A missing or unreadable header, or a pooling Kiro Crew cannot use (none,
+    rank), keeps last-token, the pooling every custom model ran with before.
+    """
+    try:
+        declared = _read_gguf_embedding_metadata(path).pooling_type
+    except (OSError, OverflowError, UnicodeError, ValueError, struct.error):
+        return "last"
+    return next((name for name, value in _POOLING_TYPES.items() if value == declared), "last")
+
+
+def custom_model_label(pooling: str) -> str:
+    """The identity label a custom file is recorded under for *pooling*."""
+    if pooling not in _POOLING_TYPES:
+        raise ValueError(f"unknown pooling {pooling!r}")
+    return (
+        _CUSTOM_LABEL
+        if pooling == "last"
+        else f"{_CUSTOM_LABEL}{_POOLING_LABEL_SEPARATOR}{pooling}"
+    )
+
+
+# The labels the loader records a custom file under, one per pooling.
+_LOADER_LABELS = frozenset(custom_model_label(pooling) for pooling in _POOLING_TYPES)
+
+
+def model_pooling_type(model_id: str) -> int:
+    """The llama.cpp pooling the model named by *model_id* runs with.
+
+    Only a label the loader writes itself names a pooling (``custom@mean``,
+    ``custom@cls``). Everything else -- the bundled model, a plain ``custom``
+    label and an operator's own label, even one containing ``@`` -- runs with
+    last-token pooling, so the vectors stored under an existing id never change.
+    """
+    label = model_id.rpartition(":sha256:")[0]
+    base, separator, pooling = label.rpartition(_POOLING_LABEL_SEPARATOR)
+    if separator and base == _CUSTOM_LABEL and pooling in _POOLING_TYPES:
+        return _POOLING_TYPES[pooling]
+    return _POOLING_TYPE_LAST
 
 
 # ── Model paths ──
@@ -1396,7 +1463,13 @@ def _verify_custom_model(path: Path, configured: str, recorded_stamp: object, co
                 and str(memory.get("embed_model_id", "") or "").strip() == configured
                 and _model_file_stamp(path) == stamp
             ):
-                if not memory.get("embed_model_stamp") and ":sha256:" not in configured:
+                if (
+                    not memory.get("embed_model_stamp")
+                    and ":sha256:" not in configured
+                    # Legacy vectors were made with last-token pooling; a model
+                    # running another rebuilds them, so it inherits nothing.
+                    and model_pooling_type(model_id) == _POOLING_TYPE_LAST
+                ):
                     labels = {f"custom:{path.name}:{stamp[2]}"}
                     if configured:
                         labels.add(configured)
@@ -1440,9 +1513,13 @@ def _start_model_verification(path: Path, configured: str, recorded_stamp: objec
         _model_verification_thread.start()
 
 
-@functools.lru_cache(maxsize=8)
-def _model_content_digest(path: Path, stamp: tuple[int, ...]) -> str:
-    """Reuse the digest until file identity, size or write timestamps change."""
+def _refuse_on_event_loop() -> None:
+    """Raise :class:`_ModelIdentityUnverified` when called on a running event loop.
+
+    Called first in each cached file read, so a loop caller that misses the cache
+    raises instead of reading; ``lru_cache`` does not cache the exception, and the
+    off-loop verification worker fills the entry.
+    """
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -1451,6 +1528,12 @@ def _model_content_digest(path: Path, stamp: tuple[int, ...]) -> str:
         raise _ModelIdentityUnverified(
             "custom model identity is unverified; verification is running"
         )
+
+
+@functools.lru_cache(maxsize=8)
+def _model_content_digest(path: Path, stamp: tuple[int, ...]) -> str:
+    """Reuse the digest until file identity, size or write timestamps change."""
+    _refuse_on_event_loop()
     digest = _sha256_file(path)
     if _model_file_stamp(path) != stamp:
         raise OSError("embedding model changed while computing its identity")
@@ -1515,7 +1598,7 @@ def _model_file_stamp_unaliased(path: Path) -> tuple[int, ...] | None:
 def _custom_model_id(path: Path, configured: str, *, recorded_stamp: object = None) -> str:
     """Reuse a verified file stamp; never hash model weights on the event loop."""
     stamp = _model_file_stamp(path)
-    _label, separator, recorded_digest = configured.rpartition(":sha256:")
+    recorded_label, separator, recorded_digest = configured.rpartition(":sha256:")
     if (
         recorded_stamp == list(stamp)
         and separator
@@ -1524,8 +1607,29 @@ def _custom_model_id(path: Path, configured: str, *, recorded_stamp: object = No
     ):
         return configured
     digest = _model_content_digest(path, stamp)
-    label = configured.split(":sha256:", 1)[0] if configured else "custom"
+    # A model recorded for the first time takes its file's declared pooling into
+    # its label, and so does a file replaced under a label the loader wrote, which
+    # names the old file's pooling (the digest changed, so it re-embeds anyway).
+    # An operator's own label, and an id recorded for this file, keep theirs.
+    if not configured or (
+        separator and recorded_digest != digest and recorded_label in _LOADER_LABELS
+    ):
+        label = _new_model_label(path, stamp)
+    else:
+        label = configured.split(":sha256:", 1)[0]
     return f"{label}:sha256:{digest}"
+
+
+@functools.lru_cache(maxsize=8)
+def _new_model_label(path: Path, stamp: tuple[int, ...]) -> str:
+    """The label a file is recorded under from its declared pooling, cached per stamp.
+
+    A loop caller that misses the cache is refused before the GGUF header is
+    walked, exactly as a digest miss is, and the off-loop verification worker
+    fills the entry.
+    """
+    _refuse_on_event_loop()
+    return custom_model_label(gguf_declared_pooling(path))
 
 
 def _is_sensitive_model_path(path: Path) -> bool:
@@ -1737,6 +1841,14 @@ def resolve_custom_model() -> "CustomModelSpec | None":
     configured_id = str(memory_cfg.get("embed_model_id", "") or "").strip()
 
     path, error, code = validate_custom_model_path(raw, origin)
+    if (not configured_id or configured_id.split(":sha256:", 1)[0] in _LOADER_LABELS) and Path(
+        str(memory_cfg.get("embed_model_path", "") or "").strip()
+    ).expanduser() != path:
+        # Only memory.embed_model_path is ever recorded (_verify_custom_model), so
+        # a file named only by the env var is never recorded; it keeps the plain
+        # label and last-token pooling rather than taking a pooling no apply chose,
+        # whether from its own header or from a label recorded for another file.
+        configured_id = _CUSTOM_LABEL
     model_id = "custom:unavailable"
     if not error:
         try:
@@ -2036,6 +2148,9 @@ def _align_store_embedding_space(store: "_AlignableStore") -> int:
             and isinstance(backend, LlamaCppEmbedder)
             and backend.model_path == Path(str(memory.get("embed_model_path", ""))).expanduser()
             and backend.model_id == memory.get("embed_model_id")
+            # The legacy vectors were made with last-token pooling, so they are
+            # this space only while the model still runs with it.
+            and model_pooling_type(backend.model_id) == _POOLING_TYPE_LAST
             and store._embedding_dim == dim
             and store.recorded_embedding_space()
             in {embedding_space_signature(label, dim) for label in legacy_ids}
@@ -2172,6 +2287,9 @@ class LlamaCppEmbedder(EmbeddingBackend):
         self._model_path = model_path or active_model_path()
         self._dim = dim
         self._model_id = model_id
+        # A pure function of the id, which is what names the vector space, so
+        # the pooling can never change under vectors already stored for this id.
+        self._pooling_type = model_pooling_type(model_id)
         # Only the bundled factory paths set this. A custom model may declare
         # the same id and width without containing the same weights.
         self._uses_bundled_identity = False
@@ -2378,9 +2496,9 @@ class LlamaCppEmbedder(EmbeddingBackend):
             llm = llama_cls(
                 model_path=str(self._model_path),
                 embedding=True,
-                # Passed for every file, so the runtime never falls back to the
-                # GGUF's own pooling_type key.
-                pooling_type=_POOLING_TYPE_LAST,
+                # From the model's id, passed for every file: a model whose id
+                # was recorded under last-token keeps it whatever the file says.
+                pooling_type=self._pooling_type,
                 # n_batch == n_ctx so the logical batch always covers the whole
                 # input in one go, which last-token pooling needs. In embedding mode
                 # the vendored constructor skips the ~1.24 GB per-token logits
