@@ -1070,6 +1070,9 @@ async def fork_slot(
     # context (agent resolution, steering files, CWD) instead of falling back to
     # the config/workspace default on first message.
     new_slot.project = slot.project
+    # Copied WITH the project because only the pair distinguishes "cleared" from
+    # "never had one", and the clear is what invalidates a warm binding.
+    new_slot.project_cleared = slot.project_cleared
     # Keep the app-owned agent binding with the agent it binds: the fork runs as
     # the same app agent, so the per-turn shadow check must still apply to it.
     new_slot.app_agent_owner = slot.app_agent_owner

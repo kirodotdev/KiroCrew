@@ -214,7 +214,10 @@ def init_session_fields(self: _ChatSlot) -> None:
     # assignment. Only a protected binding or an explicit owner pick clears
     # that admission boundary; this marker is not persisted in the transcript.
     self._memory_assignment_from_history = False
-    self.project = ""
+    self._project = ""
+    # A CLEARED project and one never set both leave ``project`` empty, but only a clear
+    # invalidates a warm pooled child's binding.
+    self.project_cleared = False
     # Relay-archive binding, read off disk. ``executor`` is "local" for every
     # ordinary slot; "remote" marks a chat an older build ran on the peer
     # ``instance_id`` (its slot ``remote_slot``). Such a slot is read-only:

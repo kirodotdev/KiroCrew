@@ -1686,9 +1686,17 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
     clear = bool(args.get("clear"))
     project = str(args.get("project") or "").strip()
     old_project = getattr(slot, "project", "") or ""
+    old_project_cleared = bool(getattr(slot, "project_cleared", False))
     if clear or not project:
         slot.project = ""
-        if old_project:
+        # ``project=""`` alone cannot say whether the user removed a project or
+        # never set one, and only the removal invalidates a stored cwd.
+        slot.project_cleared = True
+        # The marker going false-to-true unbinds a directory even when the project
+        # text was already empty: an empty project does not block warm-pool reuse,
+        # so the slot is live in a pooled child's directory. Same condition as the
+        # HTTP clear path.
+        if old_project or not old_project_cleared:
             slot._pending_reset_history_key = effective_session_key(slot)
         _push(state)
         return "Project cleared. The next message cold-starts with no project scope."

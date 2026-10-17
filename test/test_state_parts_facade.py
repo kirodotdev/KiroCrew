@@ -255,6 +255,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "pending_consumer": ("function", False, False, "(self) -> 'Iterator[None]'"),
     "pending_has_consumer": ("property", False, False, "(self) -> 'bool'"),
     "pin_completed_todo_rows": ("function", False, False, "(self) -> 'None'"),
+    "project": ("property", False, False, "(self) -> 'str'"),
     "purge_chunks": ("function", False, False, "(self) -> 'int'"),
     "push_wire_frame": ("function", False, False, "(self, cls: 'str', content: 'str') -> 'None'"),
     "queue_append": (
@@ -303,6 +304,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "permission_row: 'dict') -> 'None'",
     ),
     "release_pending_chunks": ("function", False, False, "(self) -> 'int'"),
+    "resolved_cwd": ("function", True, False, "(self, session_key: 'str | None') -> 'str | None'"),
     "running": ("property", False, False, "(self) -> 'bool'"),
     "set_mcp_report": (
         "function",
@@ -511,6 +513,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_posttoken_retry_used": ("value", "False"),
     "_prefetch_ttl_task": ("value", "None"),
     "_prestream_exhausted_cycles": ("value", "0"),
+    "_project": ("value", "''"),
     "_projection": ("type", "kiro_crew.dashboard.slot_projection.SlotProjection"),
     "_promise_only_retries": ("value", "0"),
     "_prompt_busy_retries": ("value", "0"),
@@ -635,7 +638,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "muted": ("value", "False"),
     "mutes_opened": ("value", "False"),
     "pinned": ("value", "False"),
-    "project": ("value", "''"),
+    "project_cleared": ("value", "False"),
     "recovery_retrigger_count": ("value", "0"),
     "remote_slot": ("value", "''"),
     "replays": ("type", "kiro_crew.dashboard.recovery_replays.RecoveryReplays"),
