@@ -270,7 +270,6 @@
  1 test_queue_boundary_finalize.py
  4 test_queue_depth_after_deferred_start.py
  3 test_queue_receipt.py
- 6 test_queued_prompt_durability.py
  1 test_registry_store_art_prewarm.py
  6 test_registry_store_art_prewarm_batch.py
  1 test_registry_store_art_prewarm_rewarm.py
