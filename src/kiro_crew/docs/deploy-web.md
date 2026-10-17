@@ -210,6 +210,7 @@ to serve content from a bucket that is never itself public.
 
 ### 6.1 Credentials never touch Kiro Crew
 - The local registry stores a **profile name**, region, last-verified account metadata, and the selected default in `~/.kiro/crew/deploy/profiles.json`; it does not store credentials.
+- A registry entry whose name or region is malformed is ignored on load (a warning log names it), and a default that pointed at such an entry is cleared on load rather than moved to another profile. The next registry write (adding, editing or removing any profile) saves the filtered list, so the malformed entry is then removed from `profiles.json` for good; that write may also pick a new default under the editing route's own rules (removing a profile in the AWS control app fills an empty default with the first remaining profile).
 - Every AWS call runs through the **`aws` CLI as a subprocess** with `--profile` rather than an
   in-process SDK, so credential resolution stays in your OS credential store.
 - Kiro Crew **never writes IAM** and never creates or manages accounts, users, or roles. You apply
