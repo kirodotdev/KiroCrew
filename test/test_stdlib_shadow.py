@@ -50,7 +50,7 @@ _GATEWAY_RECOVERY = _SRC.parent / "website" / "electron" / "gateway-recovery.js"
 _BUILD_YML = _SRC.parent / ".github" / "workflows" / "build.yml"
 _WIN_INSTALLER_TEST = _SRC.parent / ".github" / "scripts" / "test-windows-installer.ps1"
 _WIN_SMOKE = _SRC.parent / "scripts" / "smoke-windows-install.ps1"
-_CLI_SERVER = _SRC / "kiro_crew" / "cli_server.py"
+_CLI_SERVER = _SRC / "kiro_crew" / "cli_server_restart.py"
 SHIM_IN_BUILD_YML = "'\"%~dp0..\\python.exe\" -s -P -m kiro_crew %*'"
 
 

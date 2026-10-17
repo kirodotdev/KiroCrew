@@ -378,7 +378,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "CLI update output",
-        "cli_server.py",
+        "cli_server_update.py",
         "What `kirocrew update` prints around a wheel update: the release-feed "
         "URL it is checking and the plain-pip in-place upgrade hint (its command "
         "or failure note). Both embed the CDN base -- with a userinfo-bearing "
@@ -2625,7 +2625,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # Each redacts a value bound for an audit record or a log tail, and the
         # user-facing surfaces that consume them are registered sinks above.
         "platform/context.py",
-        "mcp_shared.py",
+        "mcp_shared_calls.py",
+        "mcp_shared_dispatch.py",
+        "mcp_shared_policy.py",
         "dashboard/handlers/agents.py",
         # The agents handlers composed into dashboard/handlers/agents.py, in the
         # same class as that facade and the dashboard handlers around it: the

@@ -61,7 +61,7 @@ class _Clock:
         Matches the whole server rather than one file: the ``wait`` handler lives
         in ``mcp_tools/control.py``, the plumbing it calls stays in
         ``mcp_core.py``, and the sleep between its steps is ``drive_deferred``
-        in ``mcp_shared.py``. Keying on a single module name would silently stop
+        in ``mcp_shared_calls.py``. Keying on a single module name would silently stop
         advancing the fake timeline and leave the loop sleeping for real.
         """
         import sys

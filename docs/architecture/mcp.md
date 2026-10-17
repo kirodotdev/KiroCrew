@@ -1524,7 +1524,7 @@ not do is let a Kiro Crew server out, so a handler whose code location cannot be
 keeps the policy.
 
 `tools/call` fails **closed** on the four reasons in `_UNRESOLVED_REFUSES_CALL`
-(`mcp_shared.py`): `policy_unreadable`, `identity_unattested`, `identity_unattestable`
+(`mcp_shared_policy.py`): `policy_unreadable`, `identity_unattested`, `identity_unattestable`
 and `resolution_failed`. Each means "an operator exclusion may exist and this process
 could not read it". `policy_unreadable` is the gateway's `409`
 whose body carries `"code": "policy_unreadable"`: a spec for this session exists and its
@@ -2500,6 +2500,23 @@ The remaining upward dependency is known: the plumbing could move to a module th
 handlers own, which would make `mcp_tools` a leaf. That is a separate change —
 it has to retarget every patch site, which is mechanical but touches far more
 test code than moving the handlers did.
+
+`mcp_shared.py`, the stdio plumbing every managed server shares, keeps the server's entry
+-- `run_mcp_stdio_loop`, the process identity it declares (`set_internal_caller`) and its
+hard-exit signal handlers -- and is a mirror facade (`kiro_crew._facade_mirror`) over four
+owners, so every name they define still reads and patches as `mcp_shared.<name>`. New work
+goes to the owner of its responsibility:
+
+| Owner | Owns |
+|---|---|
+| `mcp_shared_wire` | the JSON-RPC wire: the framing the first frame decides, the private stdout fd, `respond` and `notify`, the frame size limits, the Windows stdin pump |
+| `mcp_shared_calls` | a tool call's life: the queued, parked and cancelled-call bounds, `DeferredTool` with `drive_deferred` and `map_deferred`, the step pool, `ToolCancelled`, and the audited `call_tool_with_logging` |
+| `mcp_shared_policy` | which tools a session may list and call: `_resolve_tool_policy` with its cache and failure backoff, `_UNRESOLVED_REFUSES_CALL`, `ToolPolicy`, the identity notes, `serves_managed_tools` |
+| `mcp_shared_dispatch` | `_run_stdio_dispatch_loop`, the loop `run_mcp_stdio_loop` runs, with its worker, wake pipe and tunables |
+
+A global the family rebinds at run time (the framing, the stdout fd, the policy's failure
+state) lives in the one owner that rebinds it, beside every reader of it, and the owners
+log as `kiro_crew.mcp_shared`. `test/test_mcp_shared_facade.py` pins the contract.
 
 Descriptors carry no per-caller state and are rebuilt per call, not cached: some
 quote a live value (the concurrent sub-agent cap), and a cache would pin the

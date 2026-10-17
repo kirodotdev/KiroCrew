@@ -215,7 +215,7 @@ class TestNoNewBareLoopbackSender:
     silently reopens the hole, and the failure presents as a hang before it presents
     as a failure. This gate is what makes the fix stick.
 
-    Deliberately line-level, not file-level: ``cli_server.py`` sends a secret AND
+    Deliberately line-level, not file-level: ``cli_server_update.py`` sends a secret AND
     legitimately fetches an external update feed, which must keep the proxy.
     """
 

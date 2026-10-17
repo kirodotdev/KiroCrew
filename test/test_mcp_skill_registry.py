@@ -179,7 +179,7 @@ class TestSkillDiscover:
 
     def test_error_returns_start_with_the_audit_sentinel(self, fake_get):
         """`call_tool_with_logging` classifies outcome by
-        ``result.startswith("Error:")`` (mcp_shared.py). Without the prefix a
+        ``result.startswith("Error:")`` (mcp_shared_calls.py). Without the prefix a
         gateway failure is audited as outcome="completed" — a wrong immutable
         record — so the prefix is behavior, not phrasing."""
         calls, responses = fake_get
