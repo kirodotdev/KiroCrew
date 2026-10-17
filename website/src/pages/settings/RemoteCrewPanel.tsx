@@ -92,7 +92,7 @@ import { AUTO_CONNECT_KEY } from '../../hooks/useAutoConnectInstances'
 import { copyToClipboard } from '../../utils/clipboard'
 import { useScrollEdges } from '../../hooks/useScrollEdges'
 import { useAppDispatch, useAppSelector } from '../../store'
-import { removeWarm, setCrewEditForm } from '../../store/instancesSlice'
+import { removeWarm, setCrewEditForm, setCrewLaunchDraft, dropLaunchedCrewDraft, type CrewLaunchDraft } from '../../store/instancesSlice'
 import { setCrewEnabled } from '../../lib/crewEnabled'
 import { i18nT } from '../../i18n/t'
 import { guideCaution } from '../../guide/trustRoot'
@@ -1267,8 +1267,9 @@ function PrereqRow({
       <div className="min-w-0 flex-1">
         <div className="text-[13px] font-medium text-text-strong">{title}</div>
         {failure ? (
-          // askAgent ON: the launch form on this tab persists its size and
-          // account, so the navigation loses nothing. showIcon OFF: the row's
+          // askAgent ON: the launch form on this tab keeps every entry the
+          // reader has not launched with (size, account, subnet, sign-in), so
+          // the navigation loses nothing. showIcon OFF: the row's
           // warning circle already marks the failed check.
           <div className="mt-0.5">
             {failureDetail ? (
@@ -1329,8 +1330,9 @@ function PrereqRow({
         )}
         {/* Its own line under the action row, not inside it: the notice carries
             the hand-off button, and Copy + Re-check already fill the row's
-            two-action budget. askAgent ON: the launch form on this tab persists
-            its size and account, so the navigation loses nothing. */}
+            two-action budget. askAgent ON: the launch form on this tab keeps
+            every entry the reader has not launched with, so the navigation
+            loses nothing. */}
         <ErrorNotice variant="inline" className="mt-1.5" message={error} askAgent />
       </div>
     </li>
@@ -1522,14 +1524,33 @@ export function RemoteCrewPanel() {
   // machine's own sign-in (an Identity Center user gets their organization's
   // portal, not the Builder ID one) and overridable; the server re-validates.
   // `identity_region` is the IAM Identity Center region — NOT the EC2 region.
-  const [identityMode, setIdentityMode] = useState<'builder_id' | 'identity_center'>('builder_id')
-  const [identityStartUrl, setIdentityStartUrl] = useState('')
-  const [identityRegion, setIdentityRegion] = useState('')
-  const [subnetId, setSubnetId] = useState('')
-  const identityTouched = useRef(false)
+  // Seeded from the reader's own unlaunched choice when the store holds one
+  // (crewForms.launch): that choice is theirs, so it counts as touched and the
+  // inherited identity does not overwrite it.
+  const heldLaunchDraft = useAppSelector(s => s.instances.crewForms?.launch ?? null)
+  const [launchDraft] = useState(heldLaunchDraft)
+  const identityDraft = launchDraft?.identity ?? null
+  const [identityMode, setIdentityMode] = useState<'builder_id' | 'identity_center'>(identityDraft?.mode ?? 'builder_id')
+  const [identityStartUrl, setIdentityStartUrl] = useState(identityDraft?.start_url ?? '')
+  const [identityRegion, setIdentityRegion] = useState(identityDraft?.region ?? '')
+  const [subnetId, setSubnetId] = useState(launchDraft?.subnet_id ?? '')
+  const identityTouched = useRef(identityDraft !== null)
   // Render-visible twin of the ref: an explicit choice must re-render the
   // Launch gate even when it re-selects the already-checked default.
-  const [identityChosen, setIdentityChosen] = useState(false)
+  const [identityChosen, setIdentityChosen] = useState(identityDraft !== null)
+  // Only a sign-in choice the reader made is kept: the inherited preselection
+  // is read again on the next visit anyway.
+  const currentLaunchDraft = useMemo<CrewLaunchDraft | null>(
+    () => (subnetId || identityChosen
+      ? { subnet_id: subnetId, identity: identityChosen ? { mode: identityMode, start_url: identityStartUrl, region: identityRegion } : null }
+      : null),
+    [subnetId, identityChosen, identityMode, identityStartUrl, identityRegion],
+  )
+  // Held on every edit, like the add form, so every exit keeps it.
+  useEffect(() => { dispatch(setCrewLaunchDraft(currentLaunchDraft)) }, [dispatch, currentLaunchDraft])
+  // The draft the last built-in launch was sent with, so its success drops that
+  // draft and not one typed while the request was in flight.
+  const sentLaunchDraft = useRef<CrewLaunchDraft | null>(null)
   const identityQuery = useQuery({
     queryKey: ['cloud-identity'],
     queryFn: api.cloudIdentity,
@@ -2106,8 +2127,15 @@ export function RemoteCrewPanel() {
     mutationFn: (body: { provider_id?: string; profile: string; region: string; size_key: string; subnet_id?: string }) =>
       api.cloudLaunch(body),
     onMutate: () => setActionErr(null),
-    onSuccess: job => { setActiveLaunchId(job.id); reloadLaunches() },
+    onSuccess: job => {
+      setActiveLaunchId(job.id)
+      reloadLaunches()
+      // The built-in form's draft has been used. Only the built-in Launch sets
+      // the ref, so a registered provisioner's launch leaves the draft alone.
+      if (sentLaunchDraft.current) dispatch(dropLaunchedCrewDraft(sentLaunchDraft.current))
+    },
     onError: e => setActionErr(errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error'))),
+    onSettled: () => { sentLaunchDraft.current = null },
   })
   const enableMutation = useMutation({
     mutationFn: () => api.patchConfig('instances.enabled', true),
@@ -2282,8 +2310,9 @@ export function RemoteCrewPanel() {
   const Notices = (
     <>
       {/* askAgent ON on both notices: every unsaved input this panel holds
-          outlives the navigation — the add-crew and edit-crew forms live in the
-          store (setCrewAddForm / setCrewEditForm), the launch form's size and
+          outlives the navigation — the add-crew and edit-crew forms and the
+          launch form's unlaunched subnet and sign-in choice live in the store
+          (setCrewAddForm / setCrewEditForm / setCrewLaunchDraft), its size and
           account in localStorage — so the hand-off destroys nothing, and every
           message here (a refused connect, a failed diagnose, a rejected launch)
           is a gateway-side failure the agent can look into. */}
@@ -2526,8 +2555,8 @@ export function RemoteCrewPanel() {
               renders (the list is presentation, not permission), but the
               failure is said rather than swallowed: a newer dashboard on an
               older gateway is exactly the version skew the agent can explain.
-              askAgent ON: the launch form persists its account and size, so
-              the navigation destroys nothing. */}
+              askAgent ON: the launch form keeps every entry the reader has not
+              launched with, so the navigation destroys nothing. */}
           {provisionersQuery.isError && (
             <ErrorNotice
               message={errMsg(provisionersQuery.error, i18nT('pages.settings.remoteCrewPanel.provisioners_unavailable'))}
@@ -2613,8 +2642,8 @@ export function RemoteCrewPanel() {
             {/* Rendered independently of `preflight`: a failed RE-check keeps the
                 previous result in cache, and the rows below would otherwise paint
                 that stale verdict as if the check had just passed. askAgent ON:
-                the launch form on this tab keeps its size and account in
-                localStorage (see the diagnosis notice above), so the navigation
+                the launch form on this tab keeps every entry the reader has not
+                launched with (see the diagnosis notice above), so the navigation
                 destroys nothing, and a preflight that cannot even run is exactly
                 the credential/CLI problem the agent can look into. */}
             {preflightQuery.isError && (
@@ -2739,35 +2768,40 @@ export function RemoteCrewPanel() {
               <div className="text-[13px] text-muted mb-2">{i18nT('pages.settings.remoteCrewPanel.identity')}</div>
               {identityQuery.isError ? (
                 <>
-                  {/* No hand-off: this notice sits beside the unsaved Identity Center
-                      start-URL and region draft, and the hand-off navigates to chat,
-                      which would unmount the form and discard that draft. The failure is
-                      non-blocking — the only consequence is that the launching computer's
-                      identity could not be read to preselect the radios; the user can
-                      still pick and type the target below. */}
+                  {/* askAgent ON: the launch form keeps every entry the reader has
+                      not launched with (crewForms.launch), so the hand-off
+                      loses nothing, and a sign-in the gateway could not read is one
+                      the agent can look into. The failure is non-blocking: the user
+                      can still pick and type the target below. Once they have
+                      picked, the notice says the selected option is theirs rather
+                      than asking them to choose. */}
                   <ErrorNotice
                     variant="inline"
                     className="mb-2"
-                    message={i18nT('pages.settings.remoteCrewPanel.identity_lookup_failed')}
+                    message={i18nT(identityChosen
+                      ? 'pages.settings.remoteCrewPanel.identity_unknown_chosen'
+                      : 'pages.settings.remoteCrewPanel.identity_lookup_failed')}
+                    askAgent
                   />
                 </>
               ) : identityUnknownCause !== null ? (
                 <>
-                  {/* No hand-off: like the notice above, this sits beside the unsaved
-                      Identity Center start-URL and region draft, and a hand-off navigates
-                      to chat, unmounting the form and discarding that draft. The server
-                      suggests nothing, so no radio is checked until the user picks, and
-                      Launch waits for that pick. The notice names the cause the server
-                      reported: whoami did not answer, or an Identity Center sign-in was
-                      read without its portal address. */}
+                  {/* askAgent ON, as above. The server suggests nothing, so no radio
+                      is checked until the user picks, and Launch waits for that pick.
+                      The notice names the cause the server reported: whoami did not
+                      answer, or an Identity Center sign-in was read without its
+                      portal address; after a pick it says the choice is theirs. */}
                   <ErrorNotice
                     variant="inline"
                     className="mb-2"
                     message={i18nT(
-                      identityUnknownCause === 'no_portal'
-                        ? 'pages.settings.remoteCrewPanel.identity_unknown_no_portal'
-                        : 'pages.settings.remoteCrewPanel.identity_unknown_no_answer',
+                      identityChosen
+                        ? 'pages.settings.remoteCrewPanel.identity_unknown_chosen'
+                        : identityUnknownCause === 'no_portal'
+                          ? 'pages.settings.remoteCrewPanel.identity_unknown_no_portal'
+                          : 'pages.settings.remoteCrewPanel.identity_unknown_no_answer',
                     )}
+                    askAgent
                   />
                 </>
               ) : null}
@@ -2858,7 +2892,7 @@ export function RemoteCrewPanel() {
                   behind a different engine; omitting the id would let the server
                   default to the built-in and provision on the wrong lane. Only
                   an UNKNOWN list (loading or failed) sends the pre-seam body. */}
-              <Btn primary onClick={() => launchMutation.mutate({ ...(selectedProvisioner ? { provider_id: selectedProvisioner.id } : {}), profile, region, size_key: sizeKey, ...(subnetId.trim() ? { subnet_id: subnetId.trim() } : {}), ...loginTargetBody })} disabled={!blockingOk || !identityOk || launchMutation.isPending}>
+              <Btn primary onClick={() => { sentLaunchDraft.current = currentLaunchDraft; launchMutation.mutate({ ...(selectedProvisioner ? { provider_id: selectedProvisioner.id } : {}), profile, region, size_key: sizeKey, ...(subnetId.trim() ? { subnet_id: subnetId.trim() } : {}), ...loginTargetBody }) }} disabled={!blockingOk || !identityOk || launchMutation.isPending}>
                 <Rocket className="lucide-inline" /> {launchMutation.isPending ? i18nT('pages.settings.remoteCrewPanel.launching') : i18nT('pages.settings.remoteCrewPanel.launch')}
               </Btn>
               <span className="text-[12px] text-muted">
@@ -2910,7 +2944,8 @@ export function RemoteCrewPanel() {
               below is absent and this notice is the only thing that says why.
               When a card IS showing, it shows the last state received, not a
               live one, and would otherwise just stop moving. askAgent ON: the
-              launch form persists its size and account, so the navigation loses
+              launch form keeps every entry the reader has not launched with,
+              so the navigation loses
               nothing. */}
           {effectiveLaunchId && launchStatusQuery.isError && (
             <ErrorNotice

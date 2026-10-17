@@ -18159,6 +18159,7 @@
         "identity_region_hint": "La regione AWS in cui si trova la tua istanza Identity Center, non la regione EC2 in cui gira la crew.",
         "identity_resolving": "Lettura dell'accesso Kiro di questo computer per preselezionare un'identità… oppure scegline una qui sotto.",
         "identity_start_url": "URL di avvio di Identity Center",
+        "identity_unknown_chosen": "Non è stato possibile leggere l'accesso Kiro di questo computer. La nuova crew accederà con l'opzione che hai scelto qui sotto.",
         "identity_unknown_no_answer": "Non è stato possibile leggere l'accesso Kiro di questo computer (kiro-cli whoami non ha risposto), quindi nessuna identità è preselezionata. Scegline una qui sotto per abilitare Avvia.",
         "identity_unknown_no_portal": "Questo computer ha effettuato l'accesso tramite Identity Center, ma non è stato possibile leggere l'indirizzo del portale, quindi nulla è preselezionato. Scegli Identity Center qui sotto e inserisci URL di avvio e regione, oppure scegli Builder ID.",
         "keep_setting_up": "Continua la configurazione",

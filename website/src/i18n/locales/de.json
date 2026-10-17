@@ -17894,6 +17894,7 @@
         "identity_region_hint": "Die AWS-Region, in der deine Identity-Center-Instanz liegt – nicht die EC2-Region, in der die Crew läuft.",
         "identity_resolving": "Die Kiro-Anmeldung dieses Computers wird gelesen, um eine Identität vorauszuwählen… oder wähle unten eine aus.",
         "identity_start_url": "Identity-Center-Start-URL",
+        "identity_unknown_chosen": "Die Kiro-Anmeldung dieses Computers konnte nicht gelesen werden. Die neue Crew meldet sich mit der Option an, die du unten gewählt hast.",
         "identity_unknown_no_answer": "Die Kiro-Anmeldung dieses Computers konnte nicht gelesen werden (kiro-cli whoami hat nicht geantwortet), daher ist keine Identität vorausgewählt. Wähle unten eine aus, um Starten zu aktivieren.",
         "identity_unknown_no_portal": "Dieser Computer ist über Identity Center angemeldet, aber die Portaladresse konnte nicht gelesen werden, daher ist nichts vorausgewählt. Wähle unten Identity Center und gib Start-URL und Region ein, oder wähle Builder ID.",
         "keep_setting_up": "Einrichtung fortsetzen",

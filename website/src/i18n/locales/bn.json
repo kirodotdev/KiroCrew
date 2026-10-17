@@ -17894,6 +17894,7 @@
         "identity_region_hint": "যে AWS রিজিয়নে আপনার Identity Center ইনস্ট্যান্স আছে — crew যেখানে চলে সেই EC2 রিজিয়ন নয়।",
         "identity_resolving": "পরিচয় আগে থেকে নির্বাচন করতে এই কম্পিউটারের Kiro সাইন-ইন পড়া হচ্ছে… অথবা নিচে একটি বেছে নিন।",
         "identity_start_url": "Identity Center স্টার্ট URL",
+        "identity_unknown_chosen": "এই কম্পিউটারের Kiro সাইন-ইন পড়া যায়নি। নতুন crew নিচে তোমার বেছে নেওয়া বিকল্প দিয়ে সাইন-ইন করবে।",
         "identity_unknown_no_answer": "এই কম্পিউটারের Kiro সাইন-ইন পড়া যায়নি (kiro-cli whoami উত্তর দেয়নি), তাই কোনো পরিচয় আগে থেকে নির্বাচিত নেই। লঞ্চ সক্ষম করতে নিচে একটি বেছে নিন।",
         "identity_unknown_no_portal": "এই কম্পিউটার Identity Center-এর মাধ্যমে সাইন-ইন করা, কিন্তু এর পোর্টাল ঠিকানা পড়া যায়নি, তাই কিছুই আগে থেকে নির্বাচিত নেই। নিচে Identity Center বেছে নিয়ে আপনার স্টার্ট URL ও রিজিয়ন লিখুন, অথবা Builder ID বেছে নিন।",
         "keep_setting_up": "সেটআপ চালিয়ে যাও",

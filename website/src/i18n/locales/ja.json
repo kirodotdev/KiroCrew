@@ -17629,6 +17629,7 @@
         "identity_region_hint": "Identity Center インスタンスがある AWS リージョンです。crew が動く EC2 のリージョンではありません。",
         "identity_resolving": "アイデンティティを事前選択するため、このコンピューターの Kiro サインインを読み取っています… または下から選択してください。",
         "identity_start_url": "Identity Center のスタート URL",
+        "identity_unknown_chosen": "このコンピューターの Kiro サインインを読み取れませんでした。新しい crew は、下で選んだ方法でサインインします。",
         "identity_unknown_no_answer": "このコンピューターの Kiro サインインを読み取れなかった（kiro-cli whoami が応答しなかった）ため、アイデンティティは事前選択されていません。起動を有効にするには下から選択してください。",
         "identity_unknown_no_portal": "このコンピューターは Identity Center でサインインしていますが、ポータルのアドレスを読み取れなかったため、何も事前選択されていません。下で Identity Center を選んでスタート URL とリージョンを入力するか、Builder ID を選択してください。",
         "keep_setting_up": "セットアップを続ける",

@@ -17629,6 +17629,7 @@
         "identity_region_hint": "Identity Center 实例所在的 AWS 区域，而非运行 crew 的 EC2 区域。",
         "identity_resolving": "正在读取此计算机的 Kiro 登录信息以预选身份… 或在下方选择一个。",
         "identity_start_url": "Identity Center 起始 URL",
+        "identity_unknown_chosen": "无法读取此计算机的 Kiro 登录信息。新的 crew 将使用你在下方选择的方式登录。",
         "identity_unknown_no_answer": "无法读取此计算机的 Kiro 登录信息（kiro-cli whoami 未响应），因此未预选任何身份。请在下方选择一个以启用启动。",
         "identity_unknown_no_portal": "此计算机已通过 Identity Center 登录，但无法读取其门户地址，因此未预选任何内容。请在下方选择 Identity Center 并输入起始 URL 和区域，或选择 Builder ID。",
         "keep_setting_up": "继续创建",

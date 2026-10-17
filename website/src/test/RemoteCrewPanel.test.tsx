@@ -1183,11 +1183,12 @@ describe('RemoteCrewPanel', () => {
     renderWithProviders(<RemoteCrewPanel />)
     await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
     // The failure is shown as a short human cause (never the raw exception
-    // text) and offers NO agent hand-off: a hand-off would unmount the form
-    // the user is about to submit.
+    // text) and offers the agent hand-off: the form keeps what the user typed,
+    // so the navigation loses nothing.
     const notice = await screen.findByText(/request to read this computer's Kiro sign-in failed/i)
     expect(notice.textContent).not.toMatch(/whoami timed out/)
-    expect(screen.queryByRole('button', { name: /Ask the agent/i })).toBeNull()
+    const alert = notice.closest('[role="alert"]') as HTMLElement
+    expect(within(alert).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
     // Nothing is known about this computer's sign-in, so NO radio renders
     // checked and Launch waits for the user to pick: a checked Builder ID
     // beside a gate that says "choose" would read as a choice already made,

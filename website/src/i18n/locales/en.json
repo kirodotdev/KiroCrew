@@ -9814,6 +9814,7 @@
         "identity_region_hint": "The AWS Region your Identity Center instance lives in — not the EC2 region the crew runs in.",
         "identity_resolving": "Reading this computer's Kiro sign-in to preselect an identity… or choose one below.",
         "identity_start_url": "Identity Center start URL",
+        "identity_unknown_chosen": "This computer's Kiro sign-in could not be read. The new crew will sign in with the option you picked below.",
         "identity_unknown_no_answer": "This computer's Kiro sign-in could not be read (kiro-cli whoami did not answer), so no identity is preselected. Choose one below to enable Launch.",
         "identity_unknown_no_portal": "This computer is signed in through Identity Center, but its portal address could not be read, so nothing is preselected. Choose Identity Center below and enter your start URL and region, or choose Builder ID.",
         "keep_setting_up": "Keep setting up",
