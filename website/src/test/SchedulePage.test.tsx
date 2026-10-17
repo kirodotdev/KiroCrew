@@ -739,4 +739,45 @@ describe('SchedulePage failed-job error surface', () => {
 
     expect(await screen.findByText('12 files copied')).toBeInTheDocument()
   })
+
+  it('the failed-run traceback surface is not clipped to the 200px sliver', async () => {
+    // #21061: the detail dialog is `max-h-[86vh]` with its own scrolling body,
+    // and the Last Error notice sat under a fixed `max-h-[200px]`, so a
+    // multi-line traceback rendered as a ~200px window that collapsed to a
+    // one- or two-line sliver when the dialog scrolled -- exactly the line
+    // naming the failure fell off. Both run surfaces carry the taller
+    // viewport-relative cap instead.
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({
+      jobs: [mkJob({
+        command: 'backup.sh',
+        last_status: 'error',
+        last_error: 'Traceback (most recent call last):\n  File "daily_report.py", line 42, in run\nConnectionError: Max retries exceeded',
+      })],
+    })
+
+    renderWithProviders(<SchedulePage />)
+    fireEvent.click(await screen.findByText('Nightly report'))
+
+    const notice = await screen.findByTestId('schedule-job-last-error')
+    expect(notice.className).toContain('max-h-[min(45vh,420px)]')
+    expect(notice.className).not.toContain('max-h-[200px]')
+  })
+
+  it('the successful-run output surface is not clipped to the 200px sliver', async () => {
+    // Same cap as the Last Error notice (#21061): a long `last_result` on a
+    // succeeded job lost all but ~200px to the inner scrollbar too.
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({
+      jobs: [mkJob({ command: 'backup.sh', last_status: 'ok', last_result: '12 files copied' })],
+    })
+
+    renderWithProviders(<SchedulePage />)
+    fireEvent.click(await screen.findByText('Nightly report'))
+
+    const pre = (await screen.findByText('12 files copied')).closest('pre')
+    expect(pre).not.toBeNull()
+    expect(pre!.className).toContain('max-h-[min(45vh,420px)]')
+    expect(pre!.className).not.toContain('max-h-[200px]')
+  })
 })
