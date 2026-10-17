@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <RootNamespace>Loupedeck.KiroCrewPlugin.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <!-- The endpoint sources have no Logi API dependency, so they compile straight into the tests. -->
+  <ItemGroup>
+    <Compile Include="../src/AlertEvents.cs" Link="Subject/AlertEvents.cs" />
+    <Compile Include="../src/AlertRequestRouter.cs" Link="Subject/AlertRequestRouter.cs" />
+    <Compile Include="../src/HttpRequestHead.cs" Link="Subject/HttpRequestHead.cs" />
+    <Compile Include="../src/AlertEndpoint.cs" Link="Subject/AlertEndpoint.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="../src/package/events/**/*.yaml" Link="package/events/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+</Project>

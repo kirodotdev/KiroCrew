@@ -1,0 +1,15 @@
+displayName: Kiro Crew
+description: Alerts from your Kiro Crew agents
+
+events:
+  - name: turn_done
+    displayName: Agent finished
+    description: A Kiro Crew conversation finished and is waiting for you.
+
+  - name: needs_input
+    displayName: Agent needs your input
+    description: A Kiro Crew agent asked a question or is waiting for an approval.
+
+  - name: notification
+    displayName: New notification
+    description: A new item arrived in the Kiro Crew notification feed.
