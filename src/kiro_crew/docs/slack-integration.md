@@ -263,6 +263,56 @@ things about it are worth knowing before you use it:
 Secrets are written to `.env` in the config directory with owner-only permissions, never
 to `config.json`.
 
+## Slack Code: code channels
+
+A switch in the Slack channel view's **Slack Code** section, off by default and applied
+without a restart. When it is on, it runs only once your installed Slack app can use the
+feature: its permissions (read from Slack each time the gateway connects) include the
+feature's scope, and Slack has not refused it for your workspace. Until then Slack works
+exactly as with the switch off, and the page says why under the switch.
+
+- **Code channels** (`slack.code_channels`) lets the agent open a Slack code channel for
+  coding work: one channel per task, with a context bar, a diff tab and channel commands.
+  It adds the `code_channels:manage`, `chat:write.customize`, `canvases:write`,
+  `channels:write.invites` and `groups:write.invites` scopes. Your workspace must have
+  Slack code channels enabled.
+
+**Defaults for new code channels** (`slack.code_channel_defaults`, applied without a
+restart): a folder, an agent, a model and a reasoning effort. Set any of them; anything
+empty falls through:
+
+- folder: the default folder here, else a top-level **Code channels** folder. That folder is
+  created the first time a code channel needs it, with `kirocrew-conductor` as its default
+  agent, so a code channel with nothing set runs the conductor there. **New folder…** in
+  the folder list creates a sidebar folder (name, optional project directory and default
+  agent) and selects it;
+- agent: the default agent here, then the folder's default agent, then the agent Slack
+  already uses. The list offers every agent a chat can run, the shipped ones included,
+  except background-only ones (`kirocrew-lite`, `kirocrew-guest`, `kirocrew-heartbeat`);
+- project: the folder's project directory, then the project of the thread the channel was
+  opened from;
+- model and effort: set here, else the agent's own.
+
+The page previews what a new code channel will run with. A folder or agent deleted after
+you saved it is flagged on the page and skipped; the other defaults still apply.
+
+**Updating an existing Slack app.** A switch changes the manifest (scopes, events and
+feature blocks), and Slack grants scopes only when the app is (re)installed. The
+**Update your Slack app** panel lists what each switch adds, compares it with the scopes
+your installed app holds, and reads one of: *Up to date*, *Needs update*, *Workspace not
+enabled* (Slack refuses code channels for this workspace), *Cannot check*. To update:
+copy the manifest, open the app's **App Manifest** page (the panel links it), replace the
+YAML, save, reinstall the app when Slack asks, then select **Check again**: the gateway
+picks up the new permissions at once. Slack does not report event subscriptions, so the
+check covers scopes only. If Slack refuses a feature at runtime (`feature_disabled`,
+`missing_scope`), Kiro Crew posts one notification, keeps Slack working as before and
+retries after the next reconnect.
+
+The same manifest is printed by `kirocrew manifest`, which renders the switches saved in
+`config.json`. Kiro Crew does not push the manifest into your app itself:
+`apps.manifest.update` replaces the whole app configuration and needs a workspace-wide
+configuration token (see `docs/request-for-change/rfc-slack-code-channels.md`).
+
 ## Related docs
 
 - [Channel capabilities](channel-capabilities.md): the ten-channel matrix — streaming, buttons, uploads, reply length, approval timeout

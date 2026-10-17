@@ -7,6 +7,12 @@
 #   2. Install the app to your workspace and copy the Bot Token (xoxb-...)
 #   3. Run `kirocrew setup` and paste both tokens
 #
+## Template notes (never rendered): a line ending in "#@<feature>" is rendered
+## only when that Slack Code switch (slack.<feature>, registered in
+## slack_manifest.FEATURE_SCOPES) is on; "#@a|b" means either one.
+## `kirocrew manifest` and Settings → Slack render this file for the
+## switches you have on.
+#
 # See docs/guides/slack-setup.md for the full walkthrough.
 
 display_information:
@@ -19,6 +25,10 @@ features:
     home_tab_enabled: true
     messages_tab_enabled: true
     messages_tab_read_only_enabled: false
+  # Code channels: one channel per coding task, with a context bar, a diff tab  #@code_channels
+  # and channel commands. Socket Mode delivers the commands, so no URL is set.  #@code_channels
+  code_channels:  #@code_channels
+    enabled: true  #@code_channels
   bot_user:
     display_name: KiroCrew-{{ALIAS}}
     always_online: true
@@ -32,14 +42,21 @@ oauth_config:
   scopes:
     bot:
       - app_mentions:read
+      # agents.conversations.* (create, context bar, views, commands, archive);  #@code_channels
+      # the invite scopes let the agent add people to the channel it opens.  #@code_channels
+      - canvases:write  #@code_channels
       - channels:history
       - channels:read
+      - channels:write.invites  #@code_channels
       - chat:write
+      - chat:write.customize  #@code_channels
+      - code_channels:manage  #@code_channels
       - commands
       - files:read
       - files:write
       - groups:history
       - groups:read
+      - groups:write.invites  #@code_channels
       - im:history
       - im:read
       - im:write
@@ -67,6 +84,9 @@ settings:
       - message.groups
       - app_mention
       - app_home_opened
+      # A code channel's native Stop button (shown only while its session is  #@code_channels
+      # processing).  #@code_channels
+      - agent_session_stopped  #@code_channels
       - file_change
       - member_joined_channel
   interactivity:

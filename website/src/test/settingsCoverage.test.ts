@@ -88,6 +88,7 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'ReleasesPanel.tsx': 'read-only changelog viewer, zero persistent settings',
   'ReportProblemCard.tsx': 'feedback action card, no settings',
   'SettingsSearch.tsx': 'the settings search box itself — indexing it would be self-referential',
+  'SlackManifestUpdate.tsx': "the Slack Code section's update-your-Slack-app panel (install status, copy manifest, App Manifest link, Check again); it reports and acts on the installed app and holds no setting",
   'ThemeDroppedRulesNotice.tsx': 'informational notice, zero controls',
   'TranslucentPanelsPreview.tsx': 'aria-hidden illustration under the Translucent panels switch (registry id display.translucent-panels, on DisplayPanel); it holds no control of its own',
   'WebhooksPanel.tsx': 'status summary card; the real controls live on the /webhooks page',
@@ -285,6 +286,13 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
   'SettingsSearch.tsx': {
     counts: { input: 1 },
     reason: 'the settings search box itself',
+  },
+  'SlackCodePanel.tsx': {
+    counts: { SimpleSelect: 3 },
+    reason:
+      'the code-channel default folder, agent and effort pickers: one nested ' +
+      'slack.code_channel_defaults object, reached through the Code channels switch the ' +
+      'extractor indexes (channels.code-channels-slack), which reveals them',
   },
   'SlackPanel.tsx': {
     counts: { Input: 1 },

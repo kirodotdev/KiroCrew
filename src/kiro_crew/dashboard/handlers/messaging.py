@@ -188,6 +188,7 @@ from kiro_crew.dashboard.messaging_api.slack_settings import (  # noqa: F401
     _validate_slack_token,
     api_slack_config_get,
     api_slack_config_save,
+    api_slack_manifest_status,
 )
 from kiro_crew.dashboard.messaging_api.spawn import (  # noqa: F401
     _continue_on_loop,
@@ -444,10 +445,12 @@ class _LockedSectionWrite:
         blank_keys: tuple[str, ...] = (),
         seed_from: str | None = None,
         finalize: Callable[[dict], None] | None = None,
+        merge_nested: tuple[str, ...] = (),
     ) -> None:
         self._path = path
         self._section = section
         self._changes = dict(changes)
+        self._merge_nested = merge_nested
         self._drop_keys = drop_keys
         self._blank_keys = blank_keys
         self._seed_from = seed_from
@@ -465,6 +468,25 @@ class _LockedSectionWrite:
         # ``restore`` uses it to recognise a section that exists only because this
         # write created it, seeded contents included.
         self._created_from: dict | None = None
+
+    def _merged_changes(self, section: dict) -> dict[str, object]:
+        """``changes`` with each ``merge_nested`` object merged into the stored one.
+
+        A nested object the caller changed only part of (Slack's
+        ``code_channel_defaults``) is merged key by key into the object as
+        re-read inside the lock, so a concurrent edit to a sibling key -- a
+        ``kirocrew config set slack.code_channel_defaults.agent`` that landed
+        while the save verified a token -- is kept rather than replaced by the
+        caller's older snapshot of the whole object.
+        """
+        changes = dict(self._changes)
+        for key in self._merge_nested:
+            stored, new = section.get(key), changes.get(key)
+            if isinstance(new, dict):
+                # Always a fresh object: the section must never share a dict
+                # with the caller's request or with ``_written``.
+                changes[key] = {**stored, **new} if isinstance(stored, dict) else dict(new)
+        return changes
 
     def apply(self, fresh: dict) -> dict | None:
         """Merge into *fresh*; ``None`` when the section would be unchanged.
@@ -489,7 +511,7 @@ class _LockedSectionWrite:
         for key in self._blank_keys:
             if key in section:
                 section[key] = ""
-        section.update(self._changes)
+        section.update(self._merged_changes(section))
         touched = set(self._changes)
         if self._finalize is not None:
             pre = dict(section)
@@ -500,10 +522,39 @@ class _LockedSectionWrite:
             touched |= {
                 k for k in set(pre) | set(section) if pre.get(k, _ABSENT) != section.get(k, _ABSENT)
             }
-        self._written = {k: section[k] for k in touched if k in section}
+        # Copies of the nested objects: ``restore`` compares against what was
+        # WRITTEN, which a later in-place edit of the section must not move.
+        self._written = {
+            k: dict(section[k]) if isinstance(section[k], dict) else section[k]
+            for k in touched
+            if k in section
+        }
         if isinstance(self._prior, dict) and section == self._prior:
             return None
         return fresh
+
+    def _restore_nested(self, section: dict, key: str, written: dict, prior: Any) -> None:
+        """Undo this save's part of a ``merge_nested`` object, field by field.
+
+        Only the sub-keys this save asked for are undone, and only where the
+        stored value is still the one it wrote; a sibling a concurrent writer
+        changed in between stays, so their edit neither blocks this rollback
+        nor is lost to it.
+        """
+        stored = section.get(key)
+        if not isinstance(stored, dict):
+            return  # replaced wholesale by another writer since; theirs
+        requested = self._changes.get(key)
+        before = prior if isinstance(prior, dict) else {}
+        for sub in requested if isinstance(requested, dict) else ():
+            if sub not in written or stored.get(sub, _ABSENT) != written[sub]:
+                continue  # not ours any more
+            if sub in before:
+                stored[sub] = before[sub]
+            else:
+                stored.pop(sub, None)
+        if prior is _ABSENT and not stored:
+            section.pop(key, None)
 
     def restore(self, fresh: dict) -> dict:
         section = fresh.get(self._section)
@@ -519,6 +570,9 @@ class _LockedSectionWrite:
         else:
             before = self._created_from if self._created_from is not None else {}
         for key, written in self._written.items():
+            if key in self._merge_nested and isinstance(written, dict):
+                self._restore_nested(section, key, written, before.get(key, _ABSENT))
+                continue
             if section.get(key) != written:
                 continue  # not ours any more
             if key in before:
@@ -2422,20 +2476,39 @@ async def api_slack_manifest(request: web.Request) -> web.Response:
     Slack's new-app deep link. ``command`` is the slash command that manifest
     registers. The gateway answers only ``/{slack.command}`` and this endpoint
     writes no config, so a caller that passes ``?alias=`` gets the value its
-    ``kirocrew config set slack.command`` step needs. Settings → Slack passes no
-    alias, so its link registers the default ``/kirocrew``. Serves only the
-    public template — no secrets.
+    ``kirocrew config set slack.command`` step needs. With no alias, the
+    endpoint renders for this install: the alias the saved ``slack.command`` was
+    generated from, and that command, so a manifest copied to update an existing
+    app keeps its slash command. Serves only the public template — no secrets.
     """
     from kiro_crew import slack_manifest
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.slack.features import manifest_features
 
-    # Default to a non-identifying alias: $USER is a host account name and
-    # should not be volunteered to every authenticated client.
-    alias = request.query.get("alias", "").strip() or slack_manifest.DEFAULT_ALIAS
+    try:
+        cfg = KiroCrewConfig.load()
+    except Exception:
+        cfg = None
+    explicit = request.query.get("alias", "").strip()
+    # With no ?alias, render for THIS install: the alias its saved slash command
+    # was generated from, and that command itself, so the manifest an existing
+    # app is updated from keeps the name and the /command the gateway answers.
+    # The default alias stays non-identifying: $USER is a host account name and
+    # is never volunteered to an authenticated client.
+    saved_command = str(getattr(getattr(cfg, "slack", None), "command", "") or "")
+    alias = explicit or slack_manifest.alias_for_command(saved_command)
     if not slack_manifest.valid_alias(alias):
         return web.json_response({"error": "invalid alias"}, status=400)
+    command = None if explicit else saved_command or None
+    # The SAME switches `kirocrew manifest` renders for: the manifest a user
+    # copies here must ask Slack for what the gateway will use.
     try:
-        rendered = slack_manifest.render(alias)
-        create_url = slack_manifest.deep_link(alias)
+        features = manifest_features(cfg) if cfg is not None else frozenset()
+    except Exception:
+        features = frozenset()
+    try:
+        rendered = slack_manifest.render(alias, features=features, command=command)
+        create_url = slack_manifest.deep_link(alias, features)
     except FileNotFoundError:
         return web.json_response({"error": "manifest template missing"}, status=500)
     return web.json_response(
@@ -2443,7 +2516,8 @@ async def api_slack_manifest(request: web.Request) -> web.Response:
             "alias": alias,
             "manifest": rendered,
             "create_url": create_url,
-            "command": slack_manifest.slash_command(alias),
+            "command": command or slack_manifest.slash_command(alias),
+            "features": [f for f in slack_manifest.FEATURES if f in features],
         }
     )
 
