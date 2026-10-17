@@ -147,12 +147,10 @@
 2780 test/test_admission_gate.py
 3538 test/test_agent_panel_routes.py
 2200 test/test_app_backend_composition_contract.py
-4051 test/test_app_manager.py
 5489 test/test_apps_backend_coverage.py
 5277 test/test_apps_registry.py
 5531 test/test_apps_routes_coverage.py
 3299 test/test_artifacts_handlers.py
-4053 test/test_auto_research.py
 3522 test/test_aws_control_app.py
 6303 test/test_aws_control_backup.py
 2170 test/test_aws_control_backup_composition_contract.py
@@ -233,7 +231,6 @@
 2190 test/test_onboarding_import_refactor_contract.py
 3579 test/test_overload_integration_glue.py
 2429 test/test_pinned_staging.py
-4048 test/test_pipeline_conductor_fleet_probe.py
 3012 test/test_playwright_cli_installer.py
 2725 test/test_plugin_import.py
 8519 test/test_pod.py

@@ -49,7 +49,7 @@
  2 test_ai_runner_coverage.py
  2 test_api_agent_config_put_succeeds.py
  3 test_app_dev_mode.py
- 1 test_app_manager.py
+ 1 test_app_manager_copy_tree.py
  6 test_app_route_trust_gate.py
  3 test_app_ui_file_route.py
  2 test_apple_speech.py
