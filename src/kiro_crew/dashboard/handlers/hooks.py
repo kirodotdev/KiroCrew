@@ -25,7 +25,13 @@ from kiro_crew.agent import (
 )
 from kiro_crew.agent_capabilities import CapabilityError
 from kiro_crew.agent_discovery import _read_agent_spec, list_agents
-from kiro_crew.agent_sdk.mcp_problems import session_mcp_problems
+from kiro_crew.agent_sdk.mcp_problems import (
+    UNATTENDED_MCP_WAIT_SECS,
+    declared_mcp_missing,
+    missing_mcp_notice,
+    session_mcp_problems,
+    wait_for_declared_mcp,
+)
 from kiro_crew.config.loader import KiroCrewConfig, data_home
 from kiro_crew.constants import (
     DENY_CAUSE_AUDIT_UNAVAILABLE,
@@ -1366,6 +1372,10 @@ async def _run_hook_inner(
     client, is_new, resumed = await state.sessions.get_or_create(session_key, agent=agent)
     if on_client is not None:
         on_client(client)
+    if is_new:
+        # Nobody can reconnect a slow MCP server by hand in this run, so the
+        # first prompt waits (bounded) for the agent spec's servers to report.
+        await wait_for_declared_mcp(client, UNATTENDED_MCP_WAIT_SECS)
     full_message = message
     # The ContextBuilder prompt is the only text on this path that legitimately
     # MINTS structural boundary markers, so it is the one text the scrub below
@@ -1623,6 +1633,8 @@ async def _run_hook_agent(
     detail = ""
     clients: list[Any] = []
     mcp_problems = ""
+    mcp_missing: tuple[str, ...] = ()
+    mcp_never_reported = ""
     try:
         # Loading the persisted context (written by the register_hook MCP tool)
         # is INSIDE the try because the caller's permit and the in-flight claim
@@ -1704,6 +1716,8 @@ async def _run_hook_agent(
         # down. Here rather than in the inner turn so a timeout or crash still
         # says which servers never started.
         mcp_problems = session_mcp_problems(clients[0] if clients else None)
+        mcp_missing = declared_mcp_missing(clients[0] if clients else None)
+        mcp_never_reported = missing_mcp_notice(clients[0] if clients else None)
         if mcp_problems:
             logger.warning(
                 "Hook agent %s: MCP servers unusable in this run — %s",
@@ -1744,6 +1758,12 @@ async def _run_hook_agent(
     # received nothing.
     destinations: list[str] = []
     mcp_notice = f"MCP servers unusable in this run: {mcp_problems}" if mcp_problems else ""
+    if mcp_missing and outcome == webhooks.OUTCOME_COMPLETED:
+        # A turn that ran without a declared server is not a clean completion:
+        # a distinct outcome lets the operator retry it instead of trusting it.
+        outcome = webhooks.OUTCOME_DEGRADED
+    if mcp_never_reported:
+        mcp_notice = f"{mcp_never_reported}. {mcp_notice}" if mcp_notice else mcp_never_reported
     if mcp_notice:
         result_text = f"{result_text}\n\n{mcp_notice}" if result_text else mcp_notice
     if result_text:
@@ -1777,7 +1797,7 @@ async def _run_hook_agent(
                     logger.exception("Hook agent: Slack delivery failed")
 
     delivered = bool(destinations)
-    if outcome == "completed" and not detail:
+    if outcome in (webhooks.OUTCOME_COMPLETED, webhooks.OUTCOME_DEGRADED) and not detail:
         if not deliver or not result_text:
             detail = "No result to deliver"
         elif destinations:

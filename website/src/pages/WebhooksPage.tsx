@@ -105,6 +105,10 @@ const OUTCOME: Record<WebhookOutcome, {
     label: () => i18nT('pages.webhooksPage.completed'), badge: 'ok', dot: 'bg-ok',
     blurb: () => i18nT('pages.webhooksPage.completed_blurb'),
   },
+  degraded: {
+    label: () => i18nT('pages.webhooksPage.degraded'), badge: 'warn', dot: 'bg-warn',
+    blurb: () => i18nT('pages.webhooksPage.degraded_blurb'),
+  },
   timeout: {
     label: () => i18nT('pages.webhooksPage.timed_out'), badge: 'warn', dot: 'bg-warn',
     blurb: () => i18nT('pages.webhooksPage.timed_out_blurb'),
@@ -670,7 +674,7 @@ export default function WebhooksPage() {
               onClick={() => select({ kind: 'run', id: run.id })}
               dot={<Dot className={OUTCOME[run.outcome].dot} square />}
               title={<span className="font-mono">{run.hook_id ?? i18nT('pages.webhooksPage.unknown_caller')}</span>}
-              subtitle={`${OUTCOME[run.outcome].label()}${run.outcome === 'completed' ? ` — ${durationLabel(run.duration_ms)} · ${sizeLabel(run.result_chars)}` : ''}`}
+              subtitle={`${OUTCOME[run.outcome].label()}${run.outcome === 'completed' || run.outcome === 'degraded' ? ` — ${durationLabel(run.duration_ms)} · ${sizeLabel(run.result_chars)}` : ''}`}
               age={timeAgo(run.started_at)}
               testId={`webhook-row-run-${run.id}`}
             />
@@ -1135,14 +1139,28 @@ export default function WebhooksPage() {
     </>
   )
 
+  // A degraded run's detail is "<missing servers> | <delivery>" (hooks.py joins
+  // them once, last). Split it once: the notice names the servers, the
+  // Delivered to row keeps the delivery, and neither shows the other's part.
+  const degradedSplit = selectedRun?.outcome === 'degraded' && selectedRun.detail
+    ? (() => {
+        const at = selectedRun.detail.lastIndexOf(' | ')
+        return at < 0
+          ? { missing: selectedRun.detail, delivery: '' }
+          : { missing: selectedRun.detail.slice(0, at), delivery: selectedRun.detail.slice(at + 3) }
+      })()
+    : null
+
   const runPane = selectedRun && (
     <>
       <Banner
         tone={selectedRun.outcome === 'completed' ? 'ok'
-          : selectedRun.outcome === 'timeout' ? 'warn' : 'danger'}
+          : selectedRun.outcome === 'timeout' || selectedRun.outcome === 'degraded' ? 'warn'
+            : 'danger'}
         icon={selectedRun.outcome === 'completed'
           ? <Check size={16} className="text-ok" />
-          : <AlertTriangle size={16} className={selectedRun.outcome === 'timeout' ? 'text-warn' : 'text-danger'} />}
+          : <AlertTriangle size={16} className={selectedRun.outcome === 'timeout' || selectedRun.outcome === 'degraded'
+            ? 'text-warn' : 'text-danger'} />}
         title={`${OUTCOME[selectedRun.outcome].label()} · ${timeAgo(selectedRun.started_at)}`}
         right={<Badge variant={OUTCOME[selectedRun.outcome].badge}>
           {OUTCOME[selectedRun.outcome].label()}
@@ -1168,7 +1186,8 @@ export default function WebhooksPage() {
           // had gone out on runs where only the dashboard notification landed.
           // `detail` carries the exact set ("Delivered to ..."), so show that.
           [i18nT('pages.webhooksPage.delivered_to'), selectedRun.delivered
-            ? (selectedRun.detail || i18nT('pages.webhooksPage.dashboard_notification_slack_dm'))
+            ? ((degradedSplit ? degradedSplit.delivery : selectedRun.detail)
+              || i18nT('pages.webhooksPage.dashboard_notification_slack_dm'))
             : <span key="d" className="text-muted">{i18nT('pages.webhooksPage.not_delivered')}</span>],
           [i18nT('pages.webhooksPage.authorized_by'), selectedRun.token_id
             ? (
@@ -1186,12 +1205,18 @@ export default function WebhooksPage() {
         />
       </Section>
 
+      {/* A degraded run's detail names the server it went without, so it gets
+          this notice too, under a title that says so: one fixed place for the
+          name whether or not anything was delivered. */}
       {selectedRun.outcome !== 'completed' && (
-        <Section title={i18nT('pages.webhooksPage.failure_detail')}>
+        <Section title={selectedRun.outcome === 'degraded'
+          ? i18nT('pages.webhooksPage.missing_servers')
+          : i18nT('pages.webhooksPage.failure_detail')}>
           {/* Hand-off while the new-source draft is empty: the run itself is
               history and cannot be lost, see hasSourceDraft. */}
           <ErrorNotice
-            message={selectedRun.detail || OUTCOME[selectedRun.outcome].blurb()}
+            message={(degradedSplit ? degradedSplit.missing : selectedRun.detail)
+              || OUTCOME[selectedRun.outcome].blurb()}
             askAgent={!hasSourceDraft}
             testId="webhook-run-failure"
           />

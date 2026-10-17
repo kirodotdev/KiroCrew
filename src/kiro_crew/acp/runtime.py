@@ -7847,6 +7847,15 @@ class AcpRuntime:
                 handle.mcp_session_report().record_header_secret_refs(header_refs, omitted)
         except Exception:
             logger.debug("remote-header guard: evaluation failed", exc_info=True)
+        try:
+            # The same spec names the servers an unattended run waits for, but
+            # only on kiro-cli: it launches the spec's own servers (via --agent)
+            # and reports each one's start. Elsewhere a spec server may be held
+            # back or never report, and every run would wait out the bound.
+            if self._expect_mcp_reports and self.acp_backend == ACP_BACKEND_KIRO:
+                handle.mcp_session_report().record_declared(spec)
+        except Exception:
+            logger.debug("declared MCP servers: spec unreadable", exc_info=True)
 
     async def _finish_create_session(
         self,

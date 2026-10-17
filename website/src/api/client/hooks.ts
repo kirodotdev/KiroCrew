@@ -15,7 +15,8 @@ import type { ClientTransport } from './transport'
 export type WebhookFreshness = 'fresh' | 'stale' | 'expired'
 
 export type WebhookOutcome =
-  | 'completed' | 'timeout' | 'error' | 'rejected_capacity' | 'unauthorized' | 'disabled'
+  | 'completed' | 'degraded' | 'timeout' | 'error' | 'rejected_capacity' | 'unauthorized'
+  | 'disabled'
 
 export interface WebhookTokenEntry {
   id: string
