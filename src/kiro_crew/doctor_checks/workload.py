@@ -138,6 +138,38 @@ def _doctor_task_store(issues: list[str]) -> None:
         issues.append(warning)
 
 
+def _doctor_ledger_backlog() -> None:
+    """Count the ledgers ``kirocrew ledger-sweep`` would list, and name that command.
+
+    Advisory and read-only, so it takes no ``issues`` list: an old finished ledger
+    is housekeeping, not a broken install, and an entry there would fail the
+    doctor run. It runs the sweep's own :func:`ledger_sweep.scan` at the module's
+    default window, so the count includes every entry the dry run lists: finished
+    stores plus unreadable, linked or unaddressable stores listed for a human.
+    It never purges. Per-ledger detail stays in the dry run. A ledger root that
+    exists but cannot be read makes ``scan`` raise ``OSError``; that becomes one
+    "could not check" row so the rest of the report still runs.
+    """
+    from kiro_crew import ledger_sweep
+    from kiro_crew.terminal_safe import safe_terminal_line
+
+    window = f"{ledger_sweep.DEFAULT_OLDER_THAN_DAYS:g}-day window"
+    print("\nLedgers")
+    try:
+        report = ledger_sweep.scan()
+    except OSError as exc:
+        print(f"  ledgers:     ⚠️  could not check: {safe_terminal_line(str(exc))}")
+        return
+    count = len(report.candidates)
+    if not count:
+        print(f"  ledgers:     ✅ kirocrew ledger-sweep lists nothing ({window})")
+        return
+    print(
+        f"  ledgers:     🧹 kirocrew ledger-sweep lists {count} ledger(s) ({window})"
+        " -- run it to review them"
+    )
+
+
 def _doctor_overload_resilience(cfg: KiroCrewConfig) -> None:
     """Print the overload-resilience contract this install runs under.
 

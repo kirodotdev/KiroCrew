@@ -2192,6 +2192,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Overload resilience: configured bounds + platform liveness evidence ──
     workload._doctor_overload_resilience(cfg)
+    workload._doctor_ledger_backlog()  # count of what `kirocrew ledger-sweep` lists
 
     # ── Agent Spec Paths (dead command/args/env paths) ──
     # Own module + single call so a sibling sweep wiring into doctor rebases
