@@ -13,6 +13,7 @@ import SkillForm, { assembleSkillContent, parseSkillContent, skillPathProblem, s
 import SkillDirectoryBrowser from '../../components/SkillDirectoryBrowser'
 import SkillBrowserModal from '../../components/SkillBrowserModal'
 import DiffBlock from '../../components/DiffBlock'
+import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
 import ListDetailBack from '../../components/ListDetailBack'
 import { useListDetailView } from '../../hooks/useListDetailView'
@@ -33,6 +34,8 @@ import { uiLocation } from '../../uiLocations/uiLocation'
 import { parseErrorCode, findReport, type ErrorReport } from '../../utils/errorReport'
 import { SettingRef } from '../../components/settingRef/SettingRef'
 import { putRowBack, takeRow } from '../../lib/optimisticRemoval'
+import SkillsAuditModal, { type SkillAuditCluster, type SkillAuditMember, type SkillAuditSelection } from './SkillsAuditModal'
+
 const EMPTY_FORM: SkillFormData = { name: '', category: '', description: '', triggers: '', tags: '', always: false, body: '' }
 
 /**
@@ -112,6 +115,8 @@ export default function SkillsTab() {
   const [editReadError, setEditReadError] = useState('')
   // Multi-provider skill browser drawer (Add Skill button).
   const [skillBrowserOpen, setSkillBrowserOpen] = useState(false)
+  const [auditOpen, setAuditOpen] = useState(false)
+  const [auditFocus, setAuditFocus] = useState<{ pendingSlug: string; target: string } | null>(null)
   const [createError, setCreateError] = useState('')
   // Update/delete failures get their own state rather than sharing one string:
   // the save failure belongs next to the detail editor where the save was
@@ -188,6 +193,8 @@ export default function SkillsTab() {
       setCreating(false)
       setCreateError('')
       queryClient.invalidateQueries({ queryKey: ['skills'] })
+      // A new live skill can change any pending row's related-skill hints.
+      queryClient.invalidateQueries({ queryKey: ['skills-audit'] })
     },
     // The form's sanitizeSkillName mirror gates most bad names before they leave
     // the browser, but it is a mirror rather than the authority: a name the
@@ -218,6 +225,7 @@ export default function SkillsTab() {
       // contradict this success.
       queryClient.invalidateQueries({ queryKey: ['skills'] })
       queryClient.invalidateQueries({ queryKey: ['skill-detail'] })
+      queryClient.invalidateQueries({ queryKey: ['skills-audit'] })
     },
     // Same narrow as createSkill above. `readonly_skill_prefix` is the one
     // coded refusal the PUT verb returns, and its server prose names on-disk
@@ -324,6 +332,8 @@ export default function SkillsTab() {
       // Discover results carry an installed flag derived from the skills
       // dir -- drop them so the Add Skill browser reflects the deletion.
       queryClient.invalidateQueries({ queryKey: ['discover-skills'] })
+      // A deleted live skill must not stay linked from a pending row.
+      queryClient.invalidateQueries({ queryKey: ['skills-audit'] })
     },
     onError: (err: Error, key, context) => {
       // Only this skill's row comes back: a whole-list snapshot would also
@@ -429,6 +439,37 @@ export default function SkillsTab() {
     setSelectedKey(s.key); setDetailEditing(false); openDetail()
   }
 
+  const focusAuditMember = (member: SkillAuditMember): SkillAuditSelection => {
+    // An open edit session holds the only copy of its draft, and selecting a
+    // live member would end it. Keep the modal open and say so, rather than
+    // closing it onto an editor for a different skill than the link named;
+    // leaving the draft goes through Cancel or Save, which settle it.
+    if (detailEditing && member.kind !== 'pending') return 'draft_open'
+    let rowId: string
+    if (member.kind === 'pending' && member.slug) {
+      rowId = `pending-skill-row-${member.slug}`
+      // A pending candidate can be approved or dismissed while the modal is
+      // open; confirm its row is still rendered before closing.
+      if (!document.getElementById(rowId)) return 'missing'
+    } else {
+      // A live member's name is its catalog key. A frontmatter display name is
+      // not an identifier: another skill can carry this key as its display name.
+      // Membership is read from the filtered data, not the DOM, because on a
+      // phone the list pane is unmounted while a skill's detail is open.
+      const skill = allFiltered.find(item => item.key === member.name)
+      if (!skill) return 'missing'
+      rowId = `skill-row-${skill.key}`
+      selectSkill(skill)
+    }
+    setAuditOpen(false)
+    requestAnimationFrame(() => {
+      const row = document.getElementById(rowId)
+      row?.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+      row?.focus()
+    })
+    return 'selected'
+  }
+
   /** One row in the left list. */
   const renderRow = (s: Skill) => {
     const isSel = s.key === selectedKey
@@ -439,6 +480,7 @@ export default function SkillsTab() {
     const usage = skillUsage(s)
     return (
       <div
+        id={`skill-row-${s.key}`}
         key={s.key}
         role="button"
         tabIndex={0}
@@ -505,9 +547,31 @@ export default function SkillsTab() {
     && !createSkill.isPending
 
   return (<>
-    <PendingSkillsPanel sort={skillSort} />
+    <PendingSkillsPanel
+      sort={skillSort}
+      askAgent={!detailEditing}
+      onOpenAudit={(pendingSlug, target) => {
+        setAuditFocus({ pendingSlug, target })
+        setAuditOpen(true)
+      }}
+    />
     <ProjectSkillsPlatformHint />
     <ProjectSkillsTrustList />
+    {auditOpen && (
+      // The modal ships in this tab's chunk. This boundary keeps a render crash
+      // inside the tab instead of the app-shell error screen. While a draft is
+      // open, only Retry is offered: the Ask-agent hand-off is a hard navigation
+      // that would unmount the tab and lose the draft.
+      <ErrorBoundary retryOnly={detailEditing}>
+        <SkillsAuditModal
+          open
+          onClose={() => setAuditOpen(false)}
+          onSelectMember={focusAuditMember}
+          focus={auditFocus}
+          askAgent={!detailEditing}
+        />
+      </ErrorBoundary>
+    )}
     {/* Create Skill Modal */}
     {/* The gate reads the SANITIZED name and category, not the raw ones and not
         the combined path: a segment that sanitizes to nothing (typically one
@@ -562,6 +626,9 @@ export default function SkillsTab() {
             value={skillSort}
             onChange={v => setSkillSort(v as SkillSort)}
           />
+          <Btn onClick={() => { setAuditFocus(null); setAuditOpen(true) }}>
+            {i18nT('pages.overview.skillsTab.audit_find_overlapping_skills')}
+          </Btn>
           {/* Disabled while a refresh runs, so the name carries the reason: a
               disabled "Refresh skills" reads as unavailable, not busy. */}
           <Btn onClick={() => refetch()} disabled={isFetching} aria-label={isFetching ? i18nT('pages.overview.skillsTab.refreshing_skills') : i18nT('pages.overview.skillsTab.refresh_skills')} {...uiLocation('skills.refresh')}><RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} /></Btn>
@@ -864,6 +931,19 @@ interface PendingSkill {
    *  card warn BEFORE the click that Approve cannot succeed as-is. */
   script_validation?: SkillScriptValidation
 }
+interface AuditRelatedSkill {
+  target: string
+  classification: SkillAuditCluster['classification']
+  score: number
+}
+
+// On a pending row the named skill is the live one, so "subsumed" is phrased
+// from its side: the live skill covers this candidate.
+const RELATED_CLASSIFICATION_KEY = {
+  duplicate: 'pages.overview.skillsTab.audit_duplicate',
+  subsumed: 'pages.overview.skillsTab.audit_covers_candidate',
+  overlapping: 'pages.overview.skillsTab.audit_overlapping',
+} as const
 interface PendingDetail {
   name: string
   content: string
@@ -917,7 +997,7 @@ function ValidationFindings({ report }: { report: Record<string, string[]> }) {
   )
 }
 
-function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprove, onDismiss }: {
+function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, related, onApprove, onDismiss, onOpenRelated }: {
   p: PendingSkill
   /** True when a notification deep-linked at THIS candidate (?review=<slug>). */
   autoOpen?: boolean
@@ -926,8 +1006,10 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
   /** True when the queue holds a flagged candidate — the only shape where the
       disabled fade can be misread as a validation state. */
   mixedQueue?: boolean
+  related: AuditRelatedSkill[]
   onApprove: (slug: string, contentSha256: string) => void
   onDismiss: (slug: string, contentSha256?: string) => void
+  onOpenRelated: (pendingSlug: string, target: string) => void
 }) {
   const [open, setOpen] = useState(false)
   const rowRef = useRef<HTMLDivElement>(null)
@@ -959,7 +1041,12 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
     staleTime: 0,
   })
   return (
-    <div ref={rowRef} className={`p-2 rounded-md border ${autoOpen ? 'border-accent ring-1 ring-accent' : 'border-border'}`}>
+    <div
+      id={`pending-skill-row-${p.slug}`}
+      ref={rowRef}
+      tabIndex={-1}
+      className={`p-2 rounded-md border ${autoOpen ? 'border-accent ring-1 ring-accent' : 'border-border'}`}
+    >
       <div className="flex items-center gap-3">
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-text-strong truncate">
@@ -1103,6 +1190,30 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
           />
         </div>
       )}
+      {related.length > 0 && (
+        <div className="mt-2 text-[11px] text-muted">
+          <div>{i18nT('pages.overview.skillsTab.related_skills')}:</div>
+          <ul className="mt-0.5 space-y-1">
+            {related.map(item => (
+              <li key={item.target} className="min-w-0">
+                {/* The shared Btn, restyled as a text link: twMerge lets these
+                    classes override its padding, border and background. */}
+                <Btn
+                  type="button"
+                  className="inline-block max-w-full truncate rounded-none border-0 bg-transparent p-0 text-left text-[11px] text-accent underline underline-offset-2 hover:border-0 hover:bg-transparent hover:text-text-strong active:scale-100"
+                  title={item.target}
+                  onClick={() => onOpenRelated(p.slug, item.target)}
+                >
+                  <span translate="no">{item.target}</span>{' '}
+                  <span className="text-muted">
+                    ({i18nT(RELATED_CLASSIFICATION_KEY[item.classification])})
+                  </span>
+                </Btn>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {open && detail && (
         <div className="mt-2 space-y-2">
           {(detail.script_validation?.ok === false || p.script_validation?.ok === false)
@@ -1196,7 +1307,16 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
   )
 }
 
-function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
+function PendingSkillsPanel({
+  sort = 'default',
+  onOpenAudit,
+  askAgent = true,
+}: {
+  sort?: SkillSort
+  onOpenAudit: (pendingSlug: string, target: string) => void
+  /** False while the tab holds an unsaved draft the Ask-agent hand-off would discard. */
+  askAgent?: boolean
+}) {
   const qc = useQueryClient()
   // Shared ['skills'] cache (same key/fn as the tab's own list): read-only
   // here, resolving a not-found notice's "approved or dismissed" — whether a
@@ -1264,6 +1384,35 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
     () => (sort === 'created' ? sortByCreated(pending, pendingCreatedAt) : pending),
     [pending, sort],
   )
+  const { data: auditData, error: auditError } = useQuery<{ clusters: SkillAuditCluster[] }>({
+    queryKey: ['skills-audit'],
+    queryFn: () => api.skillsAudit(),
+    enabled: pending.length > 0,
+    staleTime: 0,
+  })
+  const relatedBySlug = useMemo(() => {
+    const result = new Map<string, AuditRelatedSkill[]>()
+    for (const cluster of auditData?.clusters ?? []) {
+      const byId = new Map(cluster.members.map(member => [member.id, member]))
+      for (const relation of cluster.relations) {
+        const pair = relation.members.map(id => byId.get(id)).filter(Boolean) as SkillAuditMember[]
+        const pendingMember = pair.find(member => member.kind === 'pending')
+        const liveMember = pair.find(member => member.kind === 'live')
+        if (!pendingMember?.slug || !liveMember) continue
+        const items = result.get(pendingMember.slug) ?? []
+        items.push({
+          target: liveMember.name,
+          classification: relation.classification,
+          score: relation.score,
+        })
+        result.set(pendingMember.slug, items)
+      }
+    }
+    for (const items of result.values()) {
+      items.sort((left, right) => right.score - left.score || left.target.localeCompare(right.target, 'en'))
+    }
+    return result
+  }, [auditData])
   // Why the last Approve click was refused, per slug. Server prose stays out of
   // the UI: the coded body picks a catalog message, and the findings report
   // renders next to the card so the user learns WHAT was flagged.
@@ -1466,6 +1615,7 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
       // row keeps rendering its pre-approval diff from cache.
       qc.invalidateQueries({ queryKey: ['skills-pending-detail'] })
       qc.invalidateQueries({ queryKey: ['skills-pending'] })
+      qc.invalidateQueries({ queryKey: ['skills-audit'] })
       qc.invalidateQueries({ queryKey: ['skills'] })
     },
   })
@@ -1558,6 +1708,7 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
       // user might then approve without seeing the replacement).
       qc.removeQueries({ queryKey: ['skills-pending-detail', slug] })
       qc.invalidateQueries({ queryKey: ['skills-pending'] })
+      qc.invalidateQueries({ queryKey: ['skills-audit'] })
     },
   })
   const dismissAll = useMutation({
@@ -1583,6 +1734,7 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
       setApproveRefusals({})
       qc.removeQueries({ queryKey: ['skills-pending-detail'] })
       qc.invalidateQueries({ queryKey: ['skills-pending'] })
+      qc.invalidateQueries({ queryKey: ['skills-audit'] })
     },
   })
   // Only claim a deep-linked candidate is gone once the queue has actually been
@@ -1669,6 +1821,18 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
           {i18nT('pages.overview.skillsTab.linked_candidate_no_longer_pending')}
         </div>
       )}
+      {auditError && (
+        /* A failed audit must not read as "no related skills": every row would
+           otherwise render the empty relationship state. */
+        <ErrorNotice
+          className="mb-2"
+          variant="inline"
+          askAgent={askAgent}
+          title={i18nT('pages.overview.skillsTab.audit_related_failed')}
+          message={(auditError as Error).message}
+          testId="skill-audit-related-failure"
+        />
+      )}
       {pending.length > 0 && (
         <Card>
           <div className="space-y-2">
@@ -1679,8 +1843,10 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
                 autoOpen={p.slug === reviewSlug}
                 approveRefusal={approveRefusals[p.slug]}
                 mixedQueue={pending.some(c => c.script_validation?.ok === false)}
+                related={relatedBySlug.get(p.slug) ?? []}
                 onApprove={(slug, contentSha256) => approve.mutate({ slug, contentSha256 })}
                 onDismiss={(s, contentSha256) => dismiss.mutate({ slug: s, contentSha256 })}
+                onOpenRelated={onOpenAudit}
               />
             ))}
           </div>

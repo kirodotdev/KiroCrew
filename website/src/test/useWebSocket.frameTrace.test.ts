@@ -1041,6 +1041,7 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
   "skills.pending_changed": [
     'query invalidateQueries ["skills-pending"]',
     'query invalidateQueries ["skills"]',
+    'query invalidateQueries ["skills-audit"]',
   ],
   "todo_update": [
     'action dashboard/sseTodoUpdate {"slot":"slot-a","todo":{"items":[]}}',

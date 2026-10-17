@@ -111,6 +111,9 @@ export function createSkillsEndpoints({ get, post, put, del, j, jfetch: fetch }:
         contentSha256 ? { content_sha256: contentSha256 } : {},
       ).then(j),
     dismissAllPendingSkills: (slugs: string[]) => post('/api/skills/-/pending/-/dismiss-all', { slugs }).then(j),
+    /** Pending-vs-live overlap clusters for the Skills tab audit modal and the
+     *  per-row "Related skills" hint. Read-only. */
+    skillsAudit: () => get('/api/skills/-/audit').then(j),
     pinSkill: (name: string, pinned: boolean) => post('/api/skills/-/pin', { name, pinned }).then(j),
     /** Opt a skill in/out of full-body injection when its triggers match.
      *  `inject: false` reduces the skill to a one-line pointer on a match. */

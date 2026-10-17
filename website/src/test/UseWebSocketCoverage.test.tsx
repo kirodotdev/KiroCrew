@@ -356,9 +356,11 @@ describe('useWebSocket frame router', () => {
 
   it('refreshes the pending-skill queues when a candidate is staged', () => {
     const { ws } = mount()
+    const invalidateSpy = vi.spyOn(testQueryClient, 'invalidateQueries')
     act(() => { ws.simulateMessage({ type: 'skills.pending_changed', data: {} }) })
-    // Nothing to assert on the store: the arm exists to invalidate react-query
-    // caches, and reaching it without throwing is the contract.
+    const keys = invalidateSpy.mock.calls.map(([filters]) => filters?.queryKey)
+    // The overlap audit is refreshed too, so related-skill hints never go stale.
+    expect(keys).toEqual(expect.arrayContaining([['skills-pending'], ['skills'], ['skills-audit']]))
     expect(dash().connected).toBe(true)
   })
 
