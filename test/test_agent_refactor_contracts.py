@@ -65,7 +65,7 @@ BASE_SURFACE: dict[str, str] = {
     "_CC_MCP_JSON": "value host",
     "_CONDUCTOR_AGENT_FILENAME": "value str 923f5ca0627d569f",
     "_CONDUCTOR_CORE_GRANTS": "value tuple 7152a6eb169c7c40",
-    "_CONDUCTOR_DASHBOARD_GRANTS": "value tuple 0b859d2b54e84503",
+    "_CONDUCTOR_DASHBOARD_GRANTS": "value tuple f03c511726da361a",
     "_CONDUCTOR_SYSTEM_PROMPT": "value str 1209a2f6c77c3e84",
     "_CREW_ONLY_HOOK_EVENTS": "value frozenset 9d900cfb866f983a",
     "_DEFAULT_KIRO_HOOKS_DIR": "value host",
@@ -911,9 +911,18 @@ def test_the_member_grants_extend_the_conductor_grants_in_order() -> None:
         "@kirocrew-dashboard/chat_folder_file_self",
         "@kirocrew-dashboard/session_create",
         "@kirocrew-dashboard/session_read_message",
+        "@kirocrew-dashboard/session_rename_self",
         "@kirocrew-dashboard/session_status",
     )
-    assert agent._MEMBER_DASHBOARD_GRANTS == agent._CONDUCTOR_DASHBOARD_GRANTS + (
+    # The conductor's grants in order, less the self-rename a member's pinned thread
+    # cannot use, then the member writes.
+    assert agent._MEMBER_DASHBOARD_GRANTS == (
+        "@kirocrew-dashboard/chat_folder_tree",
+        "@kirocrew-dashboard/chat_folder_create",
+        "@kirocrew-dashboard/chat_folder_file_self",
+        "@kirocrew-dashboard/session_create",
+        "@kirocrew-dashboard/session_read_message",
+        "@kirocrew-dashboard/session_status",
         "@kirocrew-dashboard/session_send",
         "@kirocrew-dashboard/session_broadcast",
         "@kirocrew-dashboard/session_stop",

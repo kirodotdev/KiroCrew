@@ -112,6 +112,7 @@
     "session_set_model": "Set session model",
     "session_reload": "Reload session",
     "session_rename": "Rename session",
+    "session_rename_self": "Rename this session",
     "session_generate_title": "Regenerate session title",
     "session_status": "Read session roster",
     "session_revive": "Reopen session",

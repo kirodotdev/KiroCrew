@@ -169,6 +169,9 @@ _HISTORY_WORK_VERBS: frozenset[str] = frozenset(
         "@kirocrew-work/work_brief",
     }
 )
+# The self-only rename, shipped on the two conductors that take their dashboard
+# grants from ``_CONDUCTOR_DASHBOARD_GRANTS``.
+_RENAME_SELF = "@kirocrew-dashboard/session_rename_self"
 #: Spec name -> every ``allowedTools`` grant any release has shipped on it. Retired
 #: today: the goal conductor's bare ``@kirocrew-core``. Beyond each spec's current
 #: tuple the table holds exactly that entry (pinned by test), so an entry can join
@@ -181,7 +184,7 @@ _SHIPPED_GRANT_HISTORY: dict[str, frozenset[str]] = {
         | _HISTORY_CORE_VERBS
         | {"@kirocrew-core/select_crew", "@kirocrew-core/reset_conversation"}
         | _HISTORY_DASHBOARD_VERBS
-        | {"@kirocrew-dashboard/chat_folder_file_self"}
+        | {"@kirocrew-dashboard/chat_folder_file_self", _RENAME_SELF}
         | _HISTORY_WORK_VERBS
         | {"@kirocrew-work/work_ledger_rebuild"}
     ),
@@ -190,7 +193,7 @@ _SHIPPED_GRANT_HISTORY: dict[str, frozenset[str]] = {
         | _HISTORY_CORE_VERBS
         | {"@kirocrew-core/select_crew", "@kirocrew-core/reset_conversation"}
         | _HISTORY_DASHBOARD_VERBS
-        | {"@kirocrew-dashboard/chat_folder_file_self"}
+        | {"@kirocrew-dashboard/chat_folder_file_self", _RENAME_SELF}
         | _HISTORY_WORK_VERBS
         | {"@kirocrew-work/work_ledger_rebuild"}
     ),

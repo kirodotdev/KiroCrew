@@ -178,6 +178,9 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # Renaming relabels a session in the person's sidebar, named from thread text
     # other people wrote; same containment reason as the tree verbs below.
     "session_rename",
+    # The self-only form relabels the caller's own tab; the matcher does not
+    # read a trailing underscore as a boundary, so it needs its own entry.
+    "session_rename_self",
     # Retitling spends a model call and relabels a session in the person's
     # sidebar; same containment reason as stop.
     "session_generate_title",

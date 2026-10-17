@@ -5,13 +5,13 @@ another one, change its model, reload its agent process, and take another one un
 the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 36 of its tools, written for the agent that is about to use them.
+for all 37 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
 - **Session control** — `session_create`, `session_fork`, `session_send`,
   `session_read_message`, `session_summary`, `session_stop`, `session_end_wait`, `session_retry`,
-  `session_continue`, `session_set_model`, `session_reload`, `session_rename`, `session_generate_title`, `session_close`, `session_revive`,
+  `session_continue`, `session_set_model`, `session_reload`, `session_rename`, `session_rename_self`, `session_generate_title`, `session_close`, `session_revive`,
   `session_history_list`, `session_broadcast`, `session_status`, `session_adopt`, `session_release`,
   `session_move_to_column`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
@@ -700,6 +700,26 @@ fails with `title_persist_failed`. The sidebar already shows the new title, and
 the session's next save writes it; until then a restart brings back the previous
 one. Renaming again with the same title is safe. A call that returns `ok` has
 been saved.
+
+### `session_rename_self`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `title` | yes | New sidebar title for **this** session, 1 to 200 characters after surrounding whitespace is stripped |
+
+Renames the session making the call and no other. There is no `target`: the
+session is the row the verified `dashboard:<slot>` caller key names, found by
+that exact key among the live sessions, so a title cannot be aimed at a peer. A
+caller with no sidebar slot of its own (a channel thread, a scheduled run, a
+spawned subagent) is refused. So are a crew member's pinned DM thread, which is
+one thread across every goal the member runs and would keep one goal's phase
+label after it ends, and a private (incognito or temporary) session. Nothing is
+renamed on a refusal, and `chat_folder_file_self` refuses the same rows. The
+call goes to the same route as `session_rename`, so the title rules, the
+redaction, the final rename and the `title_persist_failed` behaviour are the
+same. A conductor holds this verb without an approval prompt, because it changes
+only a label it already owns. `session_rename` stays behind a prompt for the
+conductor.
 
 ### `session_generate_title`
 

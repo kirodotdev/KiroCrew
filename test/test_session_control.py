@@ -4355,6 +4355,7 @@ _DASHBOARD_TOOL_CALLS = {
     "session_set_model": {"target": "chat-2", "model": "sonnet"},
     "session_reload": {"target": "chat-2"},
     "session_rename": {"target": "chat-2", "title": "Worker"},
+    "session_rename_self": {"title": "Worker"},
     "session_generate_title": {"target": "chat-2"},
     "session_close": {"target": "chat-2"},
     "session_revive": {"target": "chat-2"},

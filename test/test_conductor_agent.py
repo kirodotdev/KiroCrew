@@ -204,6 +204,9 @@ class TestConductorInstaller:
             "chat_folder_file_self",
             "session_create",
             "session_read_message",
+            # The caller's own title only: no target argument, so ingested content
+            # cannot aim it at a peer (the peer verb `session_rename` stays gated).
+            "session_rename_self",
             # A pure read, narrower than `session_read_message` beside it (a
             # liveness word per child, no transcript content), and asked on every
             # unattended patrol cycle -- so gating it would put an approval prompt
@@ -228,6 +231,7 @@ class TestConductorInstaller:
             "@kirocrew-dashboard/chat_folder_file_self",
             "@kirocrew-dashboard/session_create",
             "@kirocrew-dashboard/session_read_message",
+            "@kirocrew-dashboard/session_rename_self",
             "@kirocrew-dashboard/session_status",
         }
         # The bare server must never appear: it would grant every verb, including
@@ -732,6 +736,7 @@ class TestConductorInstaller:
             "@kirocrew-dashboard/chat_folder_file_self",
             "@kirocrew-dashboard/session_create",
             "@kirocrew-dashboard/session_read_message",
+            "@kirocrew-dashboard/session_rename_self",
             "@kirocrew-dashboard/session_status",
             "@kirocrew-work/work_ledger_read",
             "@kirocrew-work/work_ledger_record",
@@ -775,6 +780,7 @@ class TestConductorInstaller:
             "kirocrew-dashboard/chat_folder_tree",
             "kirocrew-dashboard/session_create",
             "kirocrew-dashboard/session_read_message",
+            "kirocrew-dashboard/session_rename_self",
             "kirocrew-dashboard/session_status",
         ]
         work_resources = [
@@ -930,6 +936,7 @@ class TestConductorInstaller:
             "@kirocrew-dashboard/chat_folder_file_self",
             "@kirocrew-dashboard/session_create",
             "@kirocrew-dashboard/session_read_message",
+            "@kirocrew-dashboard/session_rename_self",
             "@kirocrew-dashboard/session_status",
             "@kirocrew-work/work_ledger_read",
             "@kirocrew-work/work_ledger_record",
