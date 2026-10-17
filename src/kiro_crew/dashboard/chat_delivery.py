@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.chat_utils import (
-    STEER_INTENT_META,
+    COMPOSER_SEND_META,
     STEER_POSSIBLY_DELIVERED_META,
     _redact_for_display,
     _redact_meta,
@@ -551,7 +551,7 @@ async def steer_into_running_turn(
         # with the attachment lists rather than in the lockstep origin maps,
         # which the persisting tail drops while the steer is still unconsumed: a
         # steer the turn ends before taking keeps its intent past the sub-agent
-        # hold (``STEER_INTENT_META``) instead of parking behind a wave its
+        # hold (``COMPOSER_SEND_META``) instead of parking behind a wave its
         # sender chose not to wait for.
         slot._steer_act_now.add(message)
     if decision_strip:
@@ -963,17 +963,16 @@ def queue_for_next_turn(
     channel_recipient: dict[str, Any] | None = None,
     quote: dict[str, Any] | None = None,
     commands_off: bool = False,
-    steer_intent: bool = False,
+    composer_send: bool = False,
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
 
     The running turn's teardown drains the queue, so this is how a message
     reaches a busy slot when steering is unavailable or not asked for.
 
-    *steer_intent* stamps :data:`STEER_INTENT_META`: the session's own human asked
-    this send to act now and the running turn could not take it, so the sub-agent
-    hold releases it at the turn's end rather than parking it behind the wave.
-    Only the composer's steer fallback passes it.
+    *composer_send* stamps :data:`COMPOSER_SEND_META`: the session's own human
+    typed this into the composer, so the sub-agent hold releases it at the turn's
+    end rather than parking it behind the wave. Only the composer passes it.
 
     *commands_off* stamps :data:`COMMANDS_OFF_META_KEY` on the entry: the drained
     turn hands the text to the model as content and never runs its first word as a
@@ -1055,8 +1054,8 @@ def queue_for_next_turn(
         meta["decisions_strip"] = decision_strip
     if commands_off:
         meta[COMMANDS_OFF_META_KEY] = True
-    if steer_intent:
-        meta[STEER_INTENT_META] = True
+    if composer_send:
+        meta[COMPOSER_SEND_META] = True
     qid = slot.queue_append(
         message,
         meta=meta,

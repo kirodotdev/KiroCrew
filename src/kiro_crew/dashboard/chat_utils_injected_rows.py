@@ -437,26 +437,26 @@ STEER_POSSIBLY_DELIVERED_NOTE = (
 )
 
 
-#: Queue-entry meta key: the session's own human sent this message asking it to
-#: act NOW (the composer's Steer), and it reached the queue only because the
-#: running turn could not take it -- the steer was unavailable, or the turn ended
-#: before consuming it. The sub-agent hold releases such an entry like a system
-#: injection: the sender already chose not to wait for the wave, and parking it
-#: behind the children would turn that choice into a Queue they never picked.
-STEER_INTENT_META = "steer_intent"
+#: Queue-entry meta key: the session's own human typed this into the composer
+#: while the main turn was running -- queued by choice, by Jev's ``auto``
+#: decision, or as a steer the turn could not take. The sub-agent hold releases
+#: such an entry like a system injection at that turn's end: Queue means "after
+#: this turn", and background sub-agents are not the turn, so parking the
+#: message behind them would leave the person unable to talk to their session.
+COMPOSER_SEND_META = "composer_send"
 
 
 def releases_past_subagent_hold(item: dict) -> bool:
     """Whether the sub-agent hold lets *item* drain while children still run.
 
     System injections keep flowing (see :func:`is_system_injection_item`), and so
-    does a human's steer that degraded into a queue entry
-    (:data:`STEER_INTENT_META`). Every other user message waits for the wave.
+    does the session's own human's composer send (:data:`COMPOSER_SEND_META`).
+    A peer's, channel's or app's message waits for the wave.
     """
     if is_system_injection_item(item):
         return True
     meta = item.get("meta")
-    return isinstance(meta, dict) and meta.get(STEER_INTENT_META) is True
+    return isinstance(meta, dict) and meta.get(COMPOSER_SEND_META) is True
 
 
 def carries_attachments(item: dict) -> bool:
@@ -529,7 +529,7 @@ def _dequeue_next_system_message(slot) -> tuple:
     sub-agents run for a slot, a tangential user message is held (not drained)
     so it does not start a main turn mid-run, while system injections that must
     keep flowing (sub-agent completions, cron notifications) are still drained,
-    and so is a steer that fell back to the queue
+    and so is the session's own human's composer send
     (:func:`releases_past_subagent_hold`). Returns ``(content, [item])`` for the
     drained item, or ``(None, [])`` when only held (user) messages remain queued.
     """

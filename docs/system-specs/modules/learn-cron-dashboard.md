@@ -2535,8 +2535,10 @@ the floor when the queue moved during the read, rather than stranded on an
 idle slot. A held queue keeps the entries it held when the hold was decided,
 but an entry that arrived during the read is the user's next send, the one
 a hold resumes on, so it runs (`required_queue_id`) -- unless sub-agents are
-still attached: the sub-agent hold would keep that send queued on an idle
-slot, so it stays queued here too, and no held entry runs in its place. The
+still attached and the entry is not one the sub-agent hold releases (a
+composer send is; a peer's, channel's or app's is not): the hold would keep
+that send queued on an idle slot, so it stays queued here too, and no held
+entry runs in its place. The
 drain after the synthesis fire-gate read is skipped for a held queue for the
 same reason. The frame of a held
 queue does not count its entries as continuing work (`queue_held`). The `done` row, the release and the

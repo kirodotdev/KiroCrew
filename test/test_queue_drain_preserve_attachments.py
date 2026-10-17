@@ -221,10 +221,22 @@ class TestQueuePushFrameCarriesTheLists:
 
     @pytest.mark.asyncio
     async def test_sub_agent_hold_frame(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard import chat_runner
+
         state, slot = _busy_state(tmp_path, monkeypatch)
-        # The idle-slot hold: no turn is running, but children are.
+        # The idle-slot hold branch: no turn is running and the only child is
+        # stalled, so a composer send joins the queue behind a message parked
+        # while that child was live (the parked one drains; this one waits).
         slot.task = None
-        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=["agent-1"]))
+        state.subagents = MagicMock(
+            running_agents_for=MagicMock(return_value=[{"id": "agent-1", "stalled": True}])
+        )
+        slot.queue_append("parked while the child was live")
+        monkeypatch.setattr(chat_runner, "_run_chat", MagicMock(return_value=MagicMock()))
+        monkeypatch.setattr(chat_runner, "spawn_guarded_turn", lambda *a, **k: None)
+        load = MagicMock()
+        load.return_value.dashboard.merge_queued_messages = False
+        monkeypatch.setattr(chat_runner.KiroCrewConfig, "load", load)
         receipt = await _post_busy(state, "busy-chat", _WIRE, {"files": [_PATH]})
         (frame,) = _queue_push_frames(state)
         assert frame["queue_id"] == receipt["queue_id"]

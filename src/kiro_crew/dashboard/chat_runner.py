@@ -378,7 +378,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _BLOCKED_SLASH_COMMANDS,
     _KIRO_ONLY_BLOCKED_SLASH_COMMANDS,
     _MAX_TOOL_PURPOSE,
-    STEER_INTENT_META,
+    COMPOSER_SEND_META,
     STEER_POSSIBLY_DELIVERED_META,
     STEER_POSSIBLY_DELIVERED_NOTE,
     TURN_END_WIRE_CLS,
@@ -411,6 +411,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     mirror_is_paused,
     open_construct_at_end,
     parse_workflow_command,
+    releases_past_subagent_hold,
     remember_slack_options,
     restore_replacement_if_handover_did_not_land,
     run_to_completion,
@@ -5035,9 +5036,13 @@ async def _start_next_queued_turn(
         and subagents_hold_user_messages(state, effective_session_key(slot))
     )
     if required_queue_id and hold_users:
-        # The hold dequeues only system entries, so it could start a different
-        # entry than the one card asked for. That card stays queued instead.
-        return False
+        # The hold dequeues only entries it releases, so a held card could start
+        # a different entry than the one asked for: that card stays queued. A
+        # card the hold releases (the session's own composer send) runs, and
+        # promotion below puts it first so the hold's dequeue takes exactly it.
+        _required = next((q for q in slot._queue if q.get("id") == required_queue_id), None)
+        if _required is None or not releases_past_subagent_hold(_required):
+            return False
     if required_queue_id and not slot.queue_promote_by_id(required_queue_id):
         return False
     if hold_users:
@@ -5336,7 +5341,7 @@ async def _start_next_queued_turn(
     # Model input only: the row keeps the user's text as typed.
     _possibly_delivered_steer = bool(_drained_meta.pop(STEER_POSSIBLY_DELIVERED_META, False))
     # Queue plumbing for the sub-agent hold only; says nothing about the row.
-    _drained_meta.pop(STEER_INTENT_META, None)
+    _drained_meta.pop(COMPOSER_SEND_META, None)
     # Queue plumbing like the steer mark above, read the way the channel origin is:
     # ANY consumed entry a channel hand-off stamped keeps the merged text content,
     # so a batch cannot smuggle a channel's "/clear" into a command by sitting
