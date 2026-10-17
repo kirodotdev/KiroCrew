@@ -171,11 +171,12 @@ def build_session_context(
     and hooks are injected for all agents.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew.agent_files import is_kirocrew_default_agent
 
     execution_context, desk_member, member, memory_store, blocks_reads = _member.resolve_turn_owner(
         execution_context, session_key, member, memory_store, blocks_reads
     )
-    is_custom = agent and agent != "kirocrew"
+    is_custom = bool(agent) and not is_kirocrew_default_agent(agent)
     # A harness that is not named is not assumed to be kiro-cli: the
     # essentials builder, the folder dedup and the ``is_cc`` gate all read
     # the value as given.

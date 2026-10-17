@@ -31,6 +31,7 @@ from kiro_crew.agent_files import (
     GUEST_AGENT_FILENAME,
     LITE_AGENT_FILENAME,
     OWNED_KIRO_AGENT_FILES,
+    is_kirocrew_default_agent,
 )
 from kiro_crew.agent_spec_format import (
     is_agent_spec_name,
@@ -1635,7 +1636,7 @@ def agent_skill_globs(
         rows = list_agents(agents_dir=agents_dir, project_dir=str(project_dir))
         winner = next((row for row in rows if row.name == agent), None)
         if winner is None or not winner.filename:
-            if strict and agent != "kirocrew":
+            if strict and not is_kirocrew_default_agent(agent):
                 raise SkillScopeResolutionError(f"Cannot resolve skill scope for agent {agent!r}")
             return []
         if winner.scope == SCOPE_PROJECT:
@@ -1656,7 +1657,7 @@ def agent_skill_globs(
         if (
             not globs
             and inherit_defaults
-            and agent != "kirocrew"
+            and not is_kirocrew_default_agent(agent)
             and data is not None
             and can_inherit_skills(data)
         ):
@@ -1669,10 +1670,15 @@ def agent_skill_globs(
         if data.get("name") != agent and f.stem != agent:
             continue
         globs = [g for uri in skill_resource_uris(data) if (g := expand_skill_uri(uri, f))]
-        if not globs and inherit_defaults and agent != "kirocrew" and can_inherit_skills(data):
+        if (
+            not globs
+            and inherit_defaults
+            and not is_kirocrew_default_agent(agent)
+            and can_inherit_skills(data)
+        ):
             return inherited_skill_globs(project_dir)
         return globs
-    if strict and agent != "kirocrew":
+    if strict and not is_kirocrew_default_agent(agent):
         raise SkillScopeResolutionError(f"Cannot resolve skill scope for agent {agent!r}")
     return []
 
@@ -1723,7 +1729,7 @@ def session_skill_globs(
         strict=True,
         inherit_defaults=provider_type == PROVIDER_ACP,
     )
-    return None if template == "kirocrew" and not mapped else mapped
+    return None if is_kirocrew_default_agent(template) and not mapped else mapped
 
 
 #: Ceiling on a ``welcomeMessage`` rendered into a chat transcript. The field is

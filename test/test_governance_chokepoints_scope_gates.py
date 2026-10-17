@@ -141,6 +141,32 @@ class TestSpawnGate:
 
         assert subagent._vet_spawn_governance("cli_chat", "anything") is None
 
+    def test_the_routed_worker_is_vetted_not_only_the_member(self):
+        # A member bound to the dispatch-only mate conductor routes an unnamed
+        # spawn to `kirocrew-worker`. An `agents` scope that names crew members
+        # but NOT the routed worker must deny that worker — the worker cannot
+        # ride the member's own scope to escape the operator's ceiling. This is
+        # the invariant `_run_inner_impl` enforces by vetting the routed agent
+        # in addition to the member (`policy_agent`).
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {
+                    "spawn": {
+                        "enabled": True,
+                        "scopes": {"agents": {"mode": "allow", "allow": ["mate"]}},
+                    }
+                },
+            }
+        )
+        from kiro_crew import subagent
+
+        # The member itself is permitted …
+        assert subagent._vet_spawn_governance("cli_chat", "mate") is None
+        # … but the routed worker is NOT, so the second vet denies the spawn.
+        assert subagent._vet_spawn_governance("cli_chat", "kirocrew-worker") is not None
+
 
 _SPAWN_OFF = {
     "version": 1,

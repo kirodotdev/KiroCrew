@@ -36,6 +36,15 @@ PIPELINE_CONDUCTOR_AGENT_FILENAME = "kirocrew-pipeline-conductor.json"
 LEDGER_CONDUCTOR_AGENT_FILENAME = "kirocrew-ledger-conductor.json"
 SECURITY_CONDUCTOR_AGENT_FILENAME = "kirocrew-security-conductor.json"
 WORKER_AGENT_FILENAME = "kirocrew-worker.json"
+# The mate conductor: the agent a crewmate's own chat runs on. A DISPATCH-ONLY
+# conductor (rfc-mate-owned-agent-config.md §5.0, migration step 1): its prompt,
+# tools and mcpServers are defined in source and narrowed so it plans and
+# dispatches work to a worker and never does the work itself -- no file-writing
+# tool, no shell, no user MCP server. An unnamed `spawn_run` by a member bound to
+# it routes to `kirocrew-worker` (`worker_route_for_template`), not back to this
+# write-less conductor. Step 1 does not yet read or write `~/.kiro/mates/agents/`
+# (that is step 3).
+MATE_CONDUCTOR_AGENT_FILENAME = "kirocrew-mate-conductor.json"
 # The dashboard-author crewmate: authors ONE dashboard template and lands it as a
 # pull request, writing no runtime code. Its own file because it is a dispatched,
 # worker-shaped agent with its own charter and tool surface -- it writes files and
@@ -75,6 +84,93 @@ ASSISTANT_MEMBER_NAME = "mate"
 ASSISTANT_DEFAULT_DISPLAY_NAME = "Mate"
 
 
+#: Agent names a chat session treats as "the kirocrew default" for context
+#: assembly, never as a hand-written custom agent. ``context_assembly`` guards
+#: workspace identity, the docs pointer and steering re-injection behind an
+#: ``is_custom`` check whose question is "did a user replace the default
+#: agent", so it is keyed on NAME EQUALITY to ``AGENT_FILENAME``'s stem
+#: (``"kirocrew"``) rather than on content. A mate's own chat runs on
+#: ``kirocrew-mate-conductor`` -- a Crew-owned spec byte-identical to the
+#: default template, not a user's custom agent -- so it belongs in this set:
+#: without it, a crewmate's chat loses its workspace identity block and docs
+#: pointer purely because its spec has its own filename. The existing
+#: ``kirocrew-research``/``kirocrew-worker``/``kirocrew-team-lead`` service and
+#: dispatch specs do NOT join this set: those are backend loops this change
+#: does not touch, and widening their classification is a separate decision.
+KIROCREW_DEFAULT_AGENT_NAMES = frozenset(
+    {
+        AGENT_FILENAME[: -len(".json")],
+        "kirocrew-mate-conductor",
+    }
+)
+
+
+def is_kirocrew_default_agent(agent: object) -> bool:
+    """Whether *agent* is treated as the Crew default for IDENTITY-class decisions.
+
+    The single predicate every reader that decides "is this the Crew default
+    agent?" by NAME must call instead of repeating the name-equality literal --
+    the ``is_custom`` checks in ``context.py`` and ``context_assembly/`` for
+    workspace identity and the docs pointer, the skill-scope resolution in
+    ``agent_discovery.py`` and ``acp/skill_projection.py``, the model-pin tiers in
+    ``config/loader.py`` and ``session_parts/policy.py``, the KAS install in
+    ``service_agents.py``, the dangling-template self-heal, and the ``cli_doctor``
+    hints. The mate conductor joins this set because for all of those it IS the
+    default a crewmate runs -- its workspace, memory store, model tiers and
+    doctor treatment are the default's.
+
+    NOT for the agent's PROMPT or its MCP-server list: those describe the agent's
+    actual SURFACE, and the mate conductor's surface is its own narrowed,
+    dispatch-only one, NOT the full default template's. Use
+    :func:`renders_default_agent_surface` for a prompt- or MCP-list decision, or
+    the full persona prompt replaces the conductor's charter and the MCP panel
+    reports servers the conductor never mounts.
+    """
+    return agent in KIROCREW_DEFAULT_AGENT_NAMES
+
+
+def renders_default_agent_surface(agent: object) -> bool:
+    """Whether *agent* renders the full Kiro Crew default SURFACE -- the persona
+    prompt (``prompt.md``) and the global MCP-server list.
+
+    True only for the real default template ``kirocrew``: the ONE spec whose
+    prompt is the shared persona and whose servers are the global set. The mate
+    conductor is a Crew default for identity (:func:`is_kirocrew_default_agent`)
+    but renders its OWN narrowed surface -- its source charter prompt and the
+    narrowed ``mcpServers`` its spec declares -- so it is NOT default here: a
+    prompt reader must load its charter (treat it as custom), and the MCP panel
+    must read its spec, not the global file. Keeping this distinct from
+    :func:`is_kirocrew_default_agent` is what lets the conductor stay the default
+    for workspace/model/docs while its prompt and server list are its own.
+    """
+    return agent == AGENT_FILENAME[: -len(".json")]
+
+
+#: The agent-spec stems (filename without ``.json``) the worker-route mapping uses.
+MATE_CONDUCTOR_AGENT = MATE_CONDUCTOR_AGENT_FILENAME[: -len(".json")]
+WORKER_AGENT = WORKER_AGENT_FILENAME[: -len(".json")]
+
+
+def worker_route_for_template(template_id: object) -> str:
+    """The agent an unnamed ``spawn_run`` should run for a member bound to
+    *template_id*, or ``""`` when the ordinary member-template inheritance stands.
+
+    The mate conductor is DISPATCH-ONLY: it has no file-writing tool and no shell
+    (rfc-mate-owned-agent-config.md §5.0, migration step 1). The member-template
+    inheritance re-runs a member's own template as its unnamed worker, so without
+    this mapping a mate-conductor-bound member's ``spawn_run`` would run the
+    write-less, shell-less conductor AS its own worker — unable to do the work the
+    conductor dispatched. Map that one template to ``kirocrew-worker`` (the mirror
+    of the default template, which carries the user's servers) so the work runs on
+    an agent that can actually do it; every other template inherits unchanged.
+
+    Step 1 routes to today's ``kirocrew-worker``; step 2 installs the
+    source-defined worker base and step 3 flips the route to it (the RFC's Step 2
+    note: "the route does not flip here").
+    """
+    return WORKER_AGENT if template_id == MATE_CONDUCTOR_AGENT else ""
+
+
 def is_assistant_member(name: object, entry: object) -> bool:
     """True when *name* is the first crewmate's key. *entry* is not consulted.
 
@@ -99,6 +195,7 @@ OWNED_KIRO_AGENT_FILES = (
     LEDGER_CONDUCTOR_AGENT_FILENAME,
     SECURITY_CONDUCTOR_AGENT_FILENAME,
     WORKER_AGENT_FILENAME,
+    MATE_CONDUCTOR_AGENT_FILENAME,
     DASHBOARD_AUTHOR_AGENT_FILENAME,
     KNOWLEDGE_AGENT_FILENAME,
     RESEARCH_AGENT_FILENAME,

@@ -393,6 +393,28 @@ class TestVetAgainstParentSpec:
         assert "could not be read" in denial
         assert planted not in denial and "[REDACTED" in denial
 
+    def test_a_conductor_route_is_vetted_as_the_worker_not_the_conductor(self) -> None:
+        """The dispatch-only mate conductor's unnamed spawn runs ``kirocrew-worker``,
+        and the allowlist must vet the agent that ACTUALLY launches. An operator
+        allowlist admitting the conductor but excluding the worker must refuse the
+        spawn -- otherwise the route silently bypasses the spawn ceiling (the gate
+        resolves ``worker_route_for_template`` BEFORE ``_vet_parent_available_agents``).
+
+        This pins the composition the gate performs: the EFFECTIVE template is the
+        routed worker, and that worker is matched against the parent's allowlist."""
+        from kiro_crew.agent_files import worker_route_for_template
+
+        # The operator admits the conductor as a template but NOT the worker.
+        allowlist = ("kirocrew-mate-conductor",)
+        effective = (
+            worker_route_for_template("kirocrew-mate-conductor") or "kirocrew-mate-conductor"
+        )
+        assert effective == "kirocrew-worker"
+        # The agent that launches (the worker) is NOT on the conductor-only list.
+        assert not sa.agent_matches_allowlist(effective, allowlist)
+        # And an allowlist that DOES include the worker admits it.
+        assert sa.agent_matches_allowlist(effective, ("kirocrew-mate-conductor", "kirocrew-worker"))
+
     def test_listed_agent_is_admitted(self, triage_fixture: Path) -> None:
         for name in ("agent1", "agent2", "agent3"):
             assert _vet("orchestrator", name) is None

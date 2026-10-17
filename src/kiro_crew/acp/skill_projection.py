@@ -34,6 +34,7 @@ from kiro_crew.agent_discovery import (
     _read_agent_spec,
     can_inherit_skills,
     inherited_skill_globs,
+    is_kirocrew_default_agent,
     list_agents,
     skill_search_refusal,
 )
@@ -3789,12 +3790,12 @@ def prepare_native_skill_projection(
         # one keeps the view it had and gets no search: it never relied on it, and
         # it is not a search agent, so no session of it is refused either.
         inherited_only = (
-            agent.name != "kirocrew"
+            not is_kirocrew_default_agent(agent.name)
             and not mapped
             and bool(inherited_globs)
             and can_inherit_skills(spec)
         )
-        if agent.name == "kirocrew" or mapped or inherited_only:
+        if is_kirocrew_default_agent(agent.name) or mapped or inherited_only:
             refusal = skill_search_refusal(view)
             if refusal is not None:
                 errors[agent.name] = refusal
