@@ -234,13 +234,38 @@ async def test_announce_appends_the_same_line_the_in_turn_command_does(tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_the_picker_without_announce_appends_nothing(tmp_path, monkeypatch):
+async def test_the_picker_without_announce_appends_only_the_boundary_notice(tmp_path, monkeypatch):
+    """The picker writes no ``/agent`` line, only the session-switch notice."""
     state, slot = await _chat_with_worker(tmp_path, monkeypatch)
     before = list(slot.messages)
     status, body = await _post_switch(state, {"agent": WORKER, "agent_kind": "template"})
     assert status == 200 and body["ok"], body
     assert slot.agent == WORKER
+    assert slot.messages[: len(before)] == before
+    added = slot.messages[len(before) :]
+    assert [row["meta"]["kind"] for row in added] == ["session_switch"]
+    assert added[0]["content"] == switch_announcement(WORKER)
+
+
+@pytest.mark.asyncio
+async def test_a_re_pick_of_the_bound_agent_appends_no_boundary_row(tmp_path, monkeypatch):
+    state, slot = await _chat_with_worker(tmp_path, monkeypatch)
+    status, body = await _post_switch(state, {"agent": WORKER, "agent_kind": "template"})
+    assert status == 200 and body["ok"], body
+    before = list(slot.messages)
+    status, body = await _post_switch(state, {"agent": WORKER, "agent_kind": "template"})
+    assert status == 200 and body["ok"], body
     assert slot.messages == before
+
+
+@pytest.mark.asyncio
+async def test_an_announced_switch_appends_no_second_boundary_row(tmp_path, monkeypatch):
+    state, slot = await _chat_with_worker(tmp_path, monkeypatch)
+    status, body = await _post_switch(
+        state, {"agent": WORKER, "agent_kind": "template", "announce": True}
+    )
+    assert status == 200 and body["ok"], body
+    assert not any((row.get("meta") or {}).get("kind") == "session_switch" for row in slot.messages)
 
 
 @pytest.mark.asyncio

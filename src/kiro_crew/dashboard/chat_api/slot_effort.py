@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         KiroCrewConfig,
         LLMProvider,
         _app_cancel_denied,
+        _append_session_switch_notice,
         _ChatSlot,
         _remember_reasoning_effort_for_restore,
         _reset_slot_session_or_warn,
@@ -482,6 +483,12 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                     },
                     status=409,
                 )
+            # The reset path is committed: mark the boundary in the
+            # transcript, inside both locks. The live-push, deferral and
+            # not-effort-capable paths reset nothing and append nothing, and so
+            # does a same-level re-pick that only normalizes a legacy pin.
+            if prior_effort != effort:
+                await _append_session_switch_notice(slot, "reasoning_effort", effort or "default")
             if teardown_incomplete:
                 normalized = normalize_legacy_model()
                 state.push_slots_update()

@@ -15,6 +15,7 @@ from aiohttp import web
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_handlers import (
         _TEARDOWN_INCOMPLETE_WARNING,
+        SESSION_SWITCH_KIND,
         DashboardState,
         KiroCrewConfig,
         LLMProvider,
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
         _CommitToken,
         _default_template_stamp,
         _emit_agent_assignment,
+        _has_conversation,
         _history_key_for,
         _record_explicit_agent_selection,
         _reset_slot_session_or_warn,
@@ -38,6 +40,7 @@ if TYPE_CHECKING:
         drained_to_thread,
         effective_session_key,
         is_registered_agent_name,
+        load_window_off_loop,
         logger,
         members_mod,
         person_priority,
@@ -53,10 +56,47 @@ if TYPE_CHECKING:
         schedule_eager_spawn,
         sel,
         session_agent_selection_name,
+        session_switch_notice,
         slot_not_found,
         switch_announcement,
         warm_project_agent_names,
     )
+
+
+async def _append_session_switch_notice(slot: _ChatSlot, switch: str, value: str) -> None:
+    """Leave the boundary row a committed, session-resetting switch owes the transcript.
+
+    Called by the agent, model, bulk-model, reasoning-effort and workspace
+    switches at their commit point, still inside the slot and session locks,
+    so a same-value pick (answered earlier under the same locks) and a refused
+    or rolled-back switch append nothing. Only a conversation that has started
+    gets the row (:func:`_has_conversation`): a pick made on an empty chat
+    before its first message is no boundary, and a notice there would be the
+    chat's first row. ``append`` broadcasts the row itself.
+
+    A restored row that was never opened still has its window on disk, and the
+    bulk route is not a per-slot route that loads it first, so the window is
+    loaded off the loop here before ``messages`` is read. A failed load leaves
+    the window pending and omits the notice, without failing the committed switch.
+    """
+    try:
+        await load_window_off_loop(slot)
+    except Exception:
+        logger.warning(
+            "Skipping session-switch notice for %s: transcript window could not be loaded",
+            slot.key,
+            exc_info=True,
+        )
+        return
+    if not _has_conversation(slot):
+        return
+    # Truncation can remove the syntax that makes a credential recognizable.
+    value, _ = redact_credentials(value)
+    value, _ = redact_exfiltration_urls(value)
+    text = session_switch_notice(switch, value)
+    text, _ = redact_credentials(text)
+    text, _ = redact_exfiltration_urls(text)
+    slot.append("assistant", text, "msg msg-a", meta={"kind": SESSION_SWITCH_KIND})
 
 
 def clear_slot_model_binding(slot: Any) -> None:
@@ -107,6 +147,9 @@ class SlotAgentSwitchCaller(NamedTuple):
     request: web.Request | None = None
     #: The switch runs inside the slot's own turn (see ``_switch_target_busy``).
     own_turn: bool = False
+    #: Append the session-switch boundary row on commit. Off for a caller that
+    #: writes its own ``/agent`` announcement line, so the switch is marked once.
+    notice: bool = True
 
     @classmethod
     def for_request(cls, request: web.Request) -> SlotAgentSwitchCaller:
@@ -123,7 +166,8 @@ class SlotAgentSwitchCaller(NamedTuple):
     def for_turn(cls, slot: _ChatSlot) -> SlotAgentSwitchCaller:
         # The slot's own app scope: an app's turn is held to what that app's
         # own request could do, never widened to the dashboard's.
-        return cls(app=slot._app or "", remote="", owner=False, own_turn=True)
+        # The in-turn command appends its own announcement line, so no notice.
+        return cls(app=slot._app or "", remote="", owner=False, own_turn=True, notice=False)
 
     @property
     def scope(self) -> web.Request | Mapping[str, Any]:
@@ -176,7 +220,9 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         name,
         body.get("agent", ""),
         body.get("agent_kind", ""),
-        SlotAgentSwitchCaller.for_request(request),
+        # The announce line below marks the switch itself; the picker gets the
+        # boundary notice instead.
+        SlotAgentSwitchCaller.for_request(request)._replace(notice=not announce),
     )
     if announce:
         ok, outcome = agent_switch_outcome(resp)
@@ -1150,6 +1196,11 @@ async def switch_slot_agent(
         # (which the acting tab writes into its store) must name the slot's
         # newest reality, not a pre-await snapshot.
         workspace = slot.workspace or "default"
+        # The switch is committed and the session reset: mark the boundary in
+        # the transcript, still inside both locks. A re-pick of the bound agent
+        # changes nothing the row could name, so it appends none.
+        if caller.notice and agent_changed:
+            await _append_session_switch_notice(slot, "agent", agent_name)
     # The reset destroyed any eagerly created session; picking an agent is
     # itself a strong first-message intent signal (it also resets the
     # project), so re-arm the speculative spawn for the new bindings.

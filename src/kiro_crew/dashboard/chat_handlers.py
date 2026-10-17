@@ -76,6 +76,7 @@ from kiro_crew.dashboard.chat_api import source_links as _owner_source_links
 from kiro_crew.dashboard.chat_api import turn_stop as _owner_turn_stop
 from kiro_crew.dashboard.chat_api.agent_switch import (  # noqa: F401
     SlotAgentSwitchCaller,
+    _append_session_switch_notice,
     _MemberMemoryRequiresNewConversation,
     agent_switch_outcome,
     api_chat_slot_agent,
@@ -474,7 +475,12 @@ from kiro_crew.dashboard.state import (  # noqa: F401
     request_slot_origin,
     row_mid,
 )
-from kiro_crew.dashboard.system_notices import SESSION_RELOAD_KIND, is_system_notice  # noqa: F401
+from kiro_crew.dashboard.system_notices import (  # noqa: F401
+    SESSION_RELOAD_KIND,
+    SESSION_SWITCH_KIND,
+    is_system_notice,
+    session_switch_notice,
+)
 from kiro_crew.dashboard.token_auth import folder_principal  # noqa: F401
 from kiro_crew.dashboard.turn_dispatch import (  # noqa: F401
     chat_turn_timeout_secs,

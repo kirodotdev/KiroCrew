@@ -21,6 +21,7 @@ if TYPE_CHECKING:
         DashboardState,
         LLMProvider,
         _app_cancel_denied,
+        _append_session_switch_notice,
         _ChatSlot,
         _CommitToken,
         _reset_slot_session,
@@ -407,10 +408,9 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
         # switch costs the LIVE agent context and nothing persisted -- and
         # `api_chat_slot_agent` already re-points
         # ``slot.workspace`` mid-conversation, with no message-count guard,
-        # whenever the picked agent carries different bindings. A transcript
-        # marker for the restart is deliberately NOT added here: every sibling
-        # reset site would need the same row, and that is one design for all of
-        # them, not a rider on this endpoint.
+        # whenever the picked agent carries different bindings. The restart
+        # is marked in the transcript at the commit point below, by the same
+        # helper every sibling reset site uses.
         #
         # Same-value re-pick: nothing to switch, so nothing to tear down.
         # Checked INSIDE the locks (the model handler's ordering): a serialized
@@ -568,6 +568,9 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
         # the OLD workspace/project over a switch the user saw succeed. The
         # same-value no-op changes nothing, so it does not need this.
         slot._dirty = True
+        # The transcript boundary for the reset, still inside both locks so
+        # the same-value check above and this append cannot interleave.
+        await _append_session_switch_notice(slot, "workspace", ws_name)
     state.push_slots_update()
     ws_resp: dict = {"ok": True, "workspace": ws_name}
     if teardown_incomplete:

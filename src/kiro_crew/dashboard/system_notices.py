@@ -1,7 +1,7 @@
 """Assistant-role system notices the gateway injects into a slot's feed.
 
-Status reports -- the auto-compaction notices and the session-reload
-confirmation -- not real turns. Every scan that walks for "the last real
+Status reports -- the auto-compaction notices, the session-reload
+confirmation and the session-switch boundary rows -- not real turns. Every scan that walks for "the last real
 message" (the conversation floor, the sidebar preview, backfill replay) must
 skip them, and the frontend keeps a twin of this set
 (``website/src/lib/systemNotice.ts``): a kind skipped on one side but not the
@@ -11,6 +11,7 @@ the real turn, or vice versa.
 
 import re
 
+from kiro_crew.agent_switch_command import switch_announcement
 from kiro_crew.constants import (
     SUBAGENT_BATCH_COMPLETION_PREFIX,
     SUBAGENT_COMPLETION_META_KEY,
@@ -19,8 +20,47 @@ from kiro_crew.constants import (
 from kiro_crew.preview_text import drop_format_chars
 
 SESSION_RELOAD_KIND = "session_reload"
+#: The boundary row a mid-conversation agent, model, reasoning-effort or
+#: workspace switch leaves when it resets the slot's agent session.
+SESSION_SWITCH_KIND = "session_switch"
 
-SYSTEM_NOTICE_KINDS: frozenset[str] = frozenset({"compaction", SESSION_RELOAD_KIND})
+SYSTEM_NOTICE_KINDS: frozenset[str] = frozenset(
+    {"compaction", SESSION_RELOAD_KIND, SESSION_SWITCH_KIND}
+)
+
+#: What a switch notice names, per switch. The agent switch has no entry: it
+#: reuses ``switch_announcement``, the line the ``/agent`` command and the
+#: composer's announced switch already write, so one switch reads one way.
+_SESSION_SWITCH_TEXT: dict[str, str] = {
+    "model": "Model switched to {value}. Replies from here on use the new model.",
+    "reasoning_effort": (
+        "Reasoning effort switched to {value}. Replies from here on use the new reasoning effort."
+    ),
+    "workspace": "Workspace switched to {value}. Replies from here on use the new workspace.",
+}
+
+_SWITCH_VALUE_MAX = 80
+
+
+def session_switch_notice(switch: str, value: str) -> str:
+    """The text of the boundary row a session-resetting switch appends.
+
+    Worded for both reset outcomes: when a live agent process existed it was
+    torn down, and when none existed nothing was -- either way the next reply
+    is the first one under the new value, so the row claims only that. It
+    never says the agent "forgets": ``SessionManager.reset`` keeps the resume
+    pointer, so the next turn reloads the conversation. An agent switch reads
+    ``switch_announcement``'s line.
+
+    *value* is shown on one line and capped: the workspace name reaches here
+    from a request body with no grammar of its own.
+    """
+    shown = " ".join(str(value).split())
+    if len(shown) > _SWITCH_VALUE_MAX:
+        shown = shown[: _SWITCH_VALUE_MAX - 1] + "…"
+    if switch == "agent":
+        return switch_announcement(shown)
+    return _SESSION_SWITCH_TEXT[switch].format(value=shown)
 
 
 def is_system_notice(role: object, meta: object) -> bool:

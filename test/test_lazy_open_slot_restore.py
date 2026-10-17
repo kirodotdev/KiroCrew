@@ -450,6 +450,77 @@ async def test_a_send_to_a_pending_row_loads_it_off_the_loop(seeded, caplog, mon
     assert not _loads_on_loop(caplog)
 
 
+@pytest.mark.asyncio
+async def test_a_bulk_model_switch_loads_a_pending_row_off_the_loop(seeded, caplog):
+    # The bulk route names no slot, so no middleware loads the window first;
+    # the session-switch notice has to read the history to see a started chat.
+    from kiro_crew.dashboard.chat import api_chat_slots_model
+    from kiro_crew.dashboard.system_notices import SESSION_SWITCH_KIND
+
+    state = await _restore_on_loop(seeded)
+    state.sessions.reset = AsyncMock()
+    key = _pending_key(state)
+    app = _make_app(state)
+    app.router.add_post("/api/chat/slots/model", api_chat_slots_model)
+
+    with caplog.at_level(logging.WARNING):
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots/model", json={"model": "claude-opus-4.8"})
+            assert resp.status == 200
+
+    assert not _loads_on_loop(caplog)
+    rows = state._slots[key].messages
+    assert rows[0]["content"] == f"{key} question 0"
+    assert (rows[-1].get("meta") or {}).get("kind") == SESSION_SWITCH_KIND
+
+
+@pytest.mark.asyncio
+async def test_bulk_model_switch_survives_an_unreadable_pending_window(seeded, caplog, monkeypatch):
+    from kiro_crew.dashboard.chat import api_chat_slots_model
+    from kiro_crew.dashboard.system_notices import SESSION_SWITCH_KIND
+
+    state = await _restore_on_loop(seeded)
+    key = _pending_key(state)
+    slot = state._slots[key]
+    later_key = next(k for k in _KEYS[_KEYS.index(key) + 1 :] if k in state._slots)
+    # Make the pending slot the first iteration, so later success proves isolation.
+    state._slots = {key: slot, later_key: state._slots[later_key]}
+    path = state.conversation_log._path(_history_key_for(key))
+    before = path.read_bytes().splitlines()[1:]
+    read_messages = state.conversation_log.read_messages_chained
+
+    def unreadable_window(history_key):
+        if history_key == _history_key_for(key):
+            # Fail at the strict decoder without racing restore's metadata writes.
+            b"\xff".decode("utf-8")
+        return read_messages(history_key)
+
+    monkeypatch.setattr(state.conversation_log, "read_messages_chained", unreadable_window)
+    state.sessions.reset = AsyncMock(return_value=True)
+    push = MagicMock(wraps=state.push_slots_update)
+    monkeypatch.setattr(state, "push_slots_update", push)
+    app = _make_app(state)
+    app.router.add_post("/api/chat/slots/model", api_chat_slots_model)
+    target = "claude-opus-4.8"
+
+    with caplog.at_level(logging.WARNING):
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots/model", json={"model": target})
+            assert resp.status == 200
+            body = await resp.json()
+
+    assert body["switched"] == [key, later_key]
+    assert body["failed"] == []
+    assert slot.model == state._slots[later_key].model == target
+    assert state.sessions.reset.await_count == 2
+    push.assert_called_once()
+    assert slot.window_pending and slot.loaded_messages() == []
+    assert path.read_bytes().splitlines()[1:] == before
+    assert state._slots[later_key].messages[-1]["meta"]["kind"] == SESSION_SWITCH_KIND
+    assert "Skipping session-switch notice" in caplog.text
+    assert not _loads_on_loop(caplog)
+
+
 _THREAD_TS = "1790000000.000100"
 
 

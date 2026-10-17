@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         KiroCrewConfig,
         LLMProvider,
         _app_cancel_denied,
+        _append_session_switch_notice,
         _ChatSlot,
         _context_usage_payload,
         _history_key_for,
@@ -698,6 +699,7 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
                 busy_provider = state.sessions.get_provider(session_key)
                 live_serves_target = _live_serves_target(busy_provider)
                 if live_serves_target:
+                    went_live = True
                     # See _live_serves_target: slot.model is consistent with
                     # what actually runs, so success without teardown is the
                     # truthful answer; the un-pushed effort override is
@@ -762,6 +764,11 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
                     status=409,
                 )
             _broadcast_context_reset(state, slot.key, None)
+            # The reset path is committed: mark the boundary in the transcript,
+            # inside the locks the same-value check above ran under. A live
+            # in-place switch resets nothing and appends nothing.
+            if not went_live:
+                await _append_session_switch_notice(slot, "model", model_name or "auto")
     state.push_slots_update()
     model_resp: dict = {"ok": True, "model": model_name, "jev_route": jev_route}
     if teardown_incomplete:
@@ -994,6 +1001,9 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
             # the owner just chose for this slot.
             slot.jev_route = False
             _broadcast_context_reset(state, slot.key, None)
+            # Same boundary row as the single-slot reset, per switched slot and
+            # inside its locks; unchanged and skipped slots append nothing.
+            await _append_session_switch_notice(slot, "model", model_name or "auto")
             switched.append(name)
 
     if switched:
