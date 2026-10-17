@@ -16,6 +16,7 @@ import type { ChatInputProps } from './props'
 import type { MemorySource } from '../../lib/agentMemorySource'
 import { withMemorySource } from '../../utils/agentLabel'
 import type { useAutoCompactThreshold } from './autoCompact'
+import { useCacheHitRatio } from './cacheHitRatio'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { useGuidePredicate } from '../../guide/guidePredicates'
 
@@ -203,9 +204,47 @@ export function AgentChip({ agentName, agentLabel, agentIsInheritedDefault, agen
   )
 }
 
+/** The prompt-cache hit rate, in a group of its own: it is a share of the prompt,
+ *  so it is kept apart from the context-window token counts above it and carries
+ *  its basis. It is mounted only while the popover is open, which is when the read
+ *  starts. Two states have no rate. A read that failed is an error, so it renders
+ *  through `ErrorNotice` like the auto-compact load failure below it. A backend
+ *  that reports token counts but no cache counts yet has not failed, so it gets a
+ *  muted line. A backend that reports no token counts at all has nothing to wait
+ *  for and draws nothing. */
+function CacheHitRate({ slot }: { slot: string | null }) {
+  const { ratio, failed, reported } = useCacheHitRatio(slot)
+  if (failed) {
+    return (
+      <div className="mt-2 pt-2 border-t border-border">
+        {/* No hand-off: the composer draft below is unsaved. */}
+        <ErrorNotice
+          variant="inline"
+          testId="cache-hit-rate-load-error"
+          message={i18nT('components.chatInput.cache_hit_rate_load_failed')}
+        />
+      </div>
+    )
+  }
+  if (ratio == null && reported) {
+    return (
+      <div className="mt-2 pt-2 border-t border-border text-[10px] text-muted" data-testid="cache-hit-rate-no-data">
+        {i18nT('components.chatInput.cache_hit_rate_no_data')}
+      </div>
+    )
+  }
+  if (ratio == null) return null
+  return (
+    <div className="mt-2 pt-2 border-t border-border" data-testid="context-cache-hits">
+      <div className="flex justify-between text-[11px] font-mono"><span className="text-muted">{i18nT('components.chatInput.cache_hit_rate')}</span><span className="text-text">{fmtPercent(ratio)}</span></div>
+      <div className="text-[10px] text-muted">{i18nT('components.chatInput.cache_hit_rate_basis')}</div>
+    </div>
+  )
+}
+
 /** The context-window readout and its popover (usage, model, the per-session
  *  auto-compact threshold). */
-export function ContextUsageControl({ contextPct, contextUsedTokens, contextWindowTokens, showContextPct, showContextTokens, shelfCompact, modelName, ctxPopoverOpen, setCtxPopoverOpen, ctxWrapRef, autoCompactThreshold }: {
+export function ContextUsageControl({ contextPct, contextUsedTokens, contextWindowTokens, showContextPct, showContextTokens, shelfCompact, modelName, cacheSlot, ctxPopoverOpen, setCtxPopoverOpen, ctxWrapRef, autoCompactThreshold }: {
   contextPct: number
   contextUsedTokens?: number
   contextWindowTokens?: number
@@ -213,6 +252,8 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
   showContextTokens?: boolean
   shelfCompact: boolean
   modelName?: string
+  /** The slot whose crew log the cache hit rate is read from; null reads nothing. */
+  cacheSlot?: string | null
   ctxPopoverOpen: boolean
   setCtxPopoverOpen: (update: (open: boolean) => boolean) => void
   ctxWrapRef: React.RefObject<HTMLDivElement>
@@ -261,6 +302,7 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
                   <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.remaining')}</span><span className="text-text">{approx ? '~' : ''}{fmtTokens(remaining)}</span></div>
                   <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.total')}</span><span className="text-text">{fmtTokens(win)}</span></div>
                 </div>
+                <CacheHitRate slot={cacheSlot ?? null} />
                 {modelName && (
                   <div className="mt-2 pt-2 border-t border-border flex justify-between text-[11px] font-mono">
                     <span className="text-muted">{i18nT('components.chatInput.model')}</span><span className="text-text truncate max-w-[120px]" title={modelName}>{modelName}</span>
