@@ -211,12 +211,12 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # Pinning belongs with the tree verbs: it moves another session to or from
     # the top of the person's sidebar, and a channel agent names that session
     # from thread text other people wrote. This entry covers the permission
-    # prompt; the chat_session_pin handler in mcp_dashboard.py refuses a
-    # ``channel:`` caller at dispatch, which is what holds for auto-approval.
+    # prompt; the chat_session_pin handler in mcp_dashboard_tag_runs.py refuses
+    # a ``channel:`` caller at dispatch, which is what holds for auto-approval.
     "chat_session_pin",
     # The board-column writes, on the same reason as pinning: they rearrange
-    # the person's own sidebar board. The handlers in mcp_dashboard.py also
-    # refuse a ``channel:`` caller at dispatch, for auto-approved calls.
+    # the person's own sidebar board. The handlers in mcp_dashboard_tag_runs.py
+    # also refuse a ``channel:`` caller at dispatch, for auto-approved calls.
     # ``chat_tag_column_list`` stays available: the layout names no session.
     "chat_tag_column_create",
     "chat_tag_column_move",

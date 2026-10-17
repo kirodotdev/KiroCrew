@@ -1693,7 +1693,7 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 | `kirocrew-cron` | `kirocrew mcp-cron` (`mcp_cron.py`) | `cron_add`, `cron_list`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger`, `cron_secret_request` |
 | `kirocrew-core` | `kirocrew mcp-core` (`mcp_core.py` + `mcp_core_parts/` + `mcp_tools/`) | spawn/subagent, learn, task, messaging, artifact, workflow, knowledge and session-directive tools (see below) |
 | `kirocrew-computer` | `kirocrew mcp-computer` (`mcp_computer.py`) | `computer_list_apps`, `computer_launch_app`, `computer_get_state`, `computer_click`, `computer_drag`, `computer_type_text`, `computer_press_key`, `computer_set_value`, `computer_scroll`, `computer_perform_action`, `computer_end_turn` |
-| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_update`, `chat_folder_move_session`, `chat_folder_delete`, `chat_folder_file_self`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`, `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`, `session_move_to_column`, `chat_session_pin`, `chat_session_pin_move`, `session_create`, `session_fork`, `session_stop`, `session_end_wait`, `session_retry`, `session_continue`, `session_set_model`, `session_reload`, `session_rename`, `session_generate_title`, `session_close`, `session_revive`, `session_history_list`, `session_send`, `session_broadcast`, `session_status`, `session_adopt`, `session_release`, `session_read_message`, `session_summary` |
+| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py` + `mcp_dashboard_*.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_update`, `chat_folder_move_session`, `chat_folder_delete`, `chat_folder_file_self`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`, `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`, `session_move_to_column`, `chat_session_pin`, `chat_session_pin_move`, `session_create`, `session_fork`, `session_stop`, `session_end_wait`, `session_retry`, `session_continue`, `session_set_model`, `session_reload`, `session_rename`, `session_generate_title`, `session_close`, `session_revive`, `session_history_list`, `session_send`, `session_broadcast`, `session_status`, `session_adopt`, `session_release`, `session_read_message`, `session_summary` |
 | `kirocrew-work` | `kirocrew mcp-work` (`mcp_work.py`) | `work_brief`, `work_report`, `work_ledger_read`, `work_ledger_rebuild`, `work_ledger_record` |
 | `kirocrew-crew-log` | `kirocrew mcp-crew-log` (`mcp_crew_log.py`) | `crew_log_list`, `crew_log_read`, `crew_log_projection` |
 | `kirocrew-debug` | `kirocrew mcp-debug` (`mcp_debug.py`) | `debug_gateway`, `debug_refusals`, `debug_threads`, `debug_processes`, `debug_snapshots` |
@@ -2533,6 +2533,22 @@ A new dashboard tool is one more row in the family function it belongs to
 `test_mcp_tool_registry.py` holds the rows to those three, and
 `test_mcp_call_site_auth_coverage.py` checks every declared route against the
 internal allowlists.
+
+`mcp_dashboard.py` keeps the folder, tag and board rows, `TABLE` with its strict gate
+and `SESSION_CONTROL_TOOLS`, and the stdio entry point (`_call_tool`,
+`run_mcp_server`). It is a mirror facade (`kiro_crew._facade_mirror`) over flat
+sibling owners, and binds every name they define, so each still reads and patches as
+`mcp_dashboard.<name>`. New code goes to the owner of its responsibility:
+
+| Owner | Owns |
+|---|---|
+| `mcp_dashboard_folder_tree` | the folder tree as the sidebar draws it: the sort-mode read, the order and name keys, sibling and render order, the free order slot, human paths, and each group's pinned-first session order |
+| `mcp_dashboard_references` | resolving a folder, session, tag or board-column reference to an id, and `_get_rows`, the list read those resolve against |
+| `mcp_dashboard_caller_scope` | what a caller may see or shape: `_caller_app_scope`, `_visible_chat_slots`, `_refuse_tree_shaping_if_unverifiable`, the caller's own slot, the `channel:` board-write refusal, `_is_messaging_caller`, `SERVER_NAME` |
+| `mcp_dashboard_session_tools` | `_session_tools`, the session-control rows (the board's `session_move_to_column` row is in `_board_tools`) |
+| `mcp_dashboard_session_runs` | the body behind each `_session_tools` row, and the folder filing `session_create`, `session_fork` and `session_revive` share |
+| `mcp_dashboard_folder_runs` | every `_run_chat_folder_*` body |
+| `mcp_dashboard_tag_runs` | the tag, pin, pin-move, board-column and move-to-column bodies, and the tag and board renderers |
 
 External servers a user may install (a Slack server, anything else) are ordinary
 user-added servers: they live in one of the scope files and are merged into the

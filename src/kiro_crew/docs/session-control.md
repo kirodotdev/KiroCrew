@@ -7,7 +7,8 @@ the sidebar. The tools come from the
 never has them — exactly like any other MCP server. This page is the reference
 for all 37 of its tools, written for the agent that is about to use them.
 
-The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
+The server is defined in `src/kiro_crew/mcp_dashboard.py` and its `mcp_dashboard_*`
+owner modules. Two halves:
 
 - **Session control** — `session_create`, `session_fork`, `session_send`,
   `session_read_message`, `session_summary`, `session_stop`, `session_end_wait`, `session_retry`,

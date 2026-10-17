@@ -33,7 +33,7 @@ from mcp_dashboard_folders_helpers import (
     _writes,
 )
 
-from kiro_crew import mcp_dashboard
+from kiro_crew import mcp_dashboard, mcp_dashboard_caller_scope
 from kiro_crew.mcp_tools.dashboard_client import DashboardRequest
 from kiro_crew.mcp_tools.table import Caller
 
@@ -940,7 +940,7 @@ class TestASubagentCannotOutrankItsParent:
         deletes that admission, this fails and they have to re-argue it.
         """
         assert set(mcp_dashboard._DELEGATED_CALLER_PREFIXES) == {"subagent:", "cron:"}
-        src = inspect.getsource(mcp_dashboard)
+        src = inspect.getsource(mcp_dashboard_caller_scope)
         marker = src.split("_DELEGATED_CALLER_PREFIXES = ")[0]
         assert "KNOWINGLY INCOMPLETE" in marker
 

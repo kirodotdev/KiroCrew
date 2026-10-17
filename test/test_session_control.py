@@ -4424,8 +4424,9 @@ def test_no_dashboard_refusal_opens_with_a_cross_mark():
     import re
     from pathlib import Path
 
-    src = Path(sc.__file__).parent.parent / "mcp_dashboard.py"
-    bare = re.findall(r"return[^\n]*\\u274c[^\n]*", src.read_text(encoding="utf-8"))
+    parts = sorted(Path(sc.__file__).parent.parent.glob("mcp_dashboard*.py"))
+    text = "".join(p.read_text(encoding="utf-8") for p in parts)
+    bare = re.findall(r"return[^\n]*\\u274c[^\n]*", text)
     assert not bare, f"dashboard refusals not prefixed with 'Error:': {bare}"
 
 
