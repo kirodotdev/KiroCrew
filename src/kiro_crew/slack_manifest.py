@@ -94,6 +94,9 @@ def slash_command(alias: str) -> str:
     return SLASH_COMMAND_PREFIX + alias.lower()[:room]
 
 
+#: Slack Code switch: the app is a Slack agent (``features.agent_view``): threads
+#: run as agent sessions with a live status, a title and Slack's native Stop.
+AGENT_SESSIONS = "agent_sessions"
 #: Slack Code switch: the app may open code channels (``features.code_channels``).
 CODE_CHANNELS = "code_channels"
 #: The Slack Code switch REGISTRY: switch name -> the bot scope it cannot run
@@ -104,6 +107,7 @@ CODE_CHANNELS = "code_channels"
 #: requirement diffs, the drift probe, the capability record and the settings
 #: page's update panel all follow from this mapping.
 FEATURE_SCOPES: dict[str, str] = {
+    AGENT_SESSIONS: "assistant:write",
     CODE_CHANNELS: "code_channels:manage",
 }
 #: Every registered switch, in a fixed (display) order.

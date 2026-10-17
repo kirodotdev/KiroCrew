@@ -194,6 +194,7 @@ from kiro_crew.session_lifecycle import (  # noqa: F401 - read by the owners
     consume_stop_declined,
     decline_stop,
 )
+from kiro_crew.slack.agent_sessions.fence import enter_turn, exit_turn
 from kiro_crew.slack.blocks import (  # noqa: F401 - read by the owners
     build_working_blocks,
     deprecation_warning_block,
@@ -1438,6 +1439,7 @@ async def handle_message(
     # Set assistant thread status while we wait for the LLM to respond.
     # Defer start_stream until the first text chunk arrives so the user
     # sees the status indicator instead of a blank bot message.
+    _turn_scope = enter_turn(channel, reply_ts)  # native Stop's write fence, to the tail
     await slack.set_thread_status(channel, reply_ts, _STATUS_WORKING)
 
     # Post inline stop button (only in threaded conversations to avoid breaking tests)
@@ -2140,6 +2142,7 @@ async def handle_message(
                 )
                 task.resume()
                 status_ctrl.resume_stall_watchdog()
+                await answer.resume_after_approval()
                 sel().log_tool_invocation(
                     session_key=session_key,
                     source="slack",
@@ -3333,6 +3336,7 @@ async def handle_message(
         if _options_verdict_deferred and not _verdict_booked:
             await _book_failure()
         _release_permit()
+        exit_turn(_turn_scope)
 
 
 # ── Slack thread auto-title ─────────────────────────────────────────────

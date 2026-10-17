@@ -63,6 +63,11 @@ from kiro_crew.messaging.renderer import (
 from kiro_crew.messaging.split import repaired_for_delivery, split_markdown_safe
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.slack.agent_sessions.status import (
+    SESSION_STATUS_PROCESSING,
+    SESSION_STATUS_SUSPENDED,
+    set_session_status,
+)
 from kiro_crew.slack.files import (
     extract_outbound_with_audit,
     rejection_notes,
@@ -437,6 +442,21 @@ class SlackApprovalDecider:
         SlackApprovalDecider._NONCES[key] = nonce
         return nonce
 
+    def on_decided(self, request_id: str | int, callback: Callable[[], None]) -> bool:
+        """Run *callback* once the reserved window for *request_id* is decided.
+
+        Any end counts -- a click, the deny-by-default timeout, a teardown -- since
+        after each one the turn waits on nobody. A window already decided (a click
+        that beat this call) runs *callback* on the next loop pass. False when no
+        reservation is open (off the loop).
+        """
+        fut = self._futures.get(str(request_id))
+        if fut is None:
+            return False
+        # On a done future asyncio schedules the callback instead of dropping it.
+        fut.add_done_callback(lambda _f: callback())
+        return True
+
     def discard(self, request_id: str | int) -> None:
         """Close a window whose prompt never went out (idempotent).
 
@@ -706,6 +726,11 @@ class SlackRenderer(Renderer):
         # Visible text withheld from the append-only stream because a local image
         # reference is in play; released (markup removed) at the seal.
         self._ref_hold = ""
+        # The agent session is paused on a tool-approval prompt (``suspended``);
+        # the decision, or failing that the next output, puts it back to
+        # ``processing``. Only ever set while agent sessions are live.
+        self._suspended = False
+        self._resume_tasks: set[asyncio.Task[None]] = set()
 
     async def on_turn_start(self) -> None:
         # Native sets the working thread-status before streaming and arms the
@@ -1206,6 +1231,9 @@ class SlackRenderer(Renderer):
         turn's reaction to the error state.
         """
         self._cancel_tool_timer()
+        self._suspended = False
+        for task in list(self._resume_tasks):
+            task.cancel()
         if not self._finalized and self._controller is not None:
             try:
                 self._controller.finalize(error=True)
@@ -1314,6 +1342,7 @@ class SlackRenderer(Renderer):
         # the answer (no-op when show_thinking is off or nothing accumulated).
         await self._maybe_post_thinking()
         self._set_phase("thinking")
+        await self._resume_from_suspended()
         ts = await self._ensure_stream()
         # Accumulate the FULL raw text (incl. any [OPTIONS:...]) so the final
         # extract_options in on_done sees it; only filter what is *shown*.
@@ -1554,6 +1583,40 @@ class SlackRenderer(Renderer):
                 self.decider.discard(request_id)
             raise
 
+        # The turn now waits on a person: with agent sessions live the session reads
+        # ``suspended`` until the decision lands (the approved tool then runs with
+        # its "Working..." loader and Stop button back), and ``active`` at turn end.
+        # No call at all with the feature off. Best-effort: the prompt is posted.
+        if self.thread_ts:
+            self._suspended = await set_session_status(
+                self.slack, self.channel, self.thread_ts, SESSION_STATUS_SUSPENDED
+            )
+            if self._suspended and self.decider is not None:
+                self.decider.on_decided(request_id, self._schedule_resume)
+
+    def _schedule_resume(self) -> None:
+        # A future's done-callback runs in the context it was added from -- this
+        # turn's -- so the write fence still applies to the resume it starts.
+        task = asyncio.ensure_future(self._resume_from_suspended())
+        self._resume_tasks.add(task)
+        task.add_done_callback(self._resume_tasks.discard)
+
+    async def _settle_resumes(self) -> None:
+        """Let a resume started by an approval decision land before the turn's last
+        status, so a late ``processing`` can never follow the closing ``active``."""
+        pending = [task for task in self._resume_tasks if not task.done()]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    async def _resume_from_suspended(self) -> None:
+        """Put a session paused on an approval back to ``processing``; never raises."""
+        if not self._suspended:
+            return
+        self._suspended = False
+        await set_session_status(
+            self.slack, self.channel, self.thread_ts or None, SESSION_STATUS_PROCESSING
+        )
+
     async def on_compaction(self, context_usage_pct: float) -> None:
         # Best-effort: MUST NOT raise. Decoration only.
         try:
@@ -1749,6 +1812,8 @@ class SlackRenderer(Renderer):
         # MUST NOT raise: the answer is already delivered above — a
         # raising status clear must not convert a delivered turn into a
         # recorded failure.
+        self._suspended = False  # an approval decided after this must not re-arm it
+        await self._settle_resumes()
         try:
             await self.slack.set_thread_status(self.channel, self.thread_ts or "", "")
         except Exception:

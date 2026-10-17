@@ -13,6 +13,7 @@ import type { SlackCodeSwitchKey } from '../../api/client'
 
 /** Catalog key of each switch's name, as its toggle and the update panel show it. */
 export const SLACK_CODE_SWITCH_LABEL: Record<SlackCodeSwitchKey, string> = {
+  agent_sessions: 'pages.settings.slackPanel.slackCode.agent_sessions',
   code_channels: 'pages.settings.slackPanel.slackCode.code_channels',
 }
 

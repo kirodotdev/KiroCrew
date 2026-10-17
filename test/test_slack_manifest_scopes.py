@@ -66,6 +66,10 @@ _BASE_BOT_EVENTS = [
 #: A code channel shows Slack's Stop button only when the app subscribes to it.
 _CODE_CHANNEL_EVENTS = ["agent_session_stopped"]
 
+_AGENT_SESSION_SCOPES = ["assistant:write"]
+
+_AGENT_SESSION_EVENTS = ["agent_session_stopped", "agent_session_title_changed"]
+
 _COMBOS = slack_manifest.feature_sets()
 
 
@@ -132,6 +136,8 @@ class TestManifestGrantsNothingMore:
             want = set(_BASE_BOT_SCOPES)
             if slack_manifest.CODE_CHANNELS in combo:
                 want |= set(_CODE_CHANNEL_SCOPES)
+            if slack_manifest.AGENT_SESSIONS in combo:
+                want |= set(_AGENT_SESSION_SCOPES)
             assert sorted(_bot_scopes(_manifest(combo))) == sorted(want), combo
 
     def test_bot_events_are_exactly_the_reviewed_set(self) -> None:
@@ -139,6 +145,8 @@ class TestManifestGrantsNothingMore:
             want = set(_BASE_BOT_EVENTS)
             if slack_manifest.CODE_CHANNELS in combo:
                 want |= set(_CODE_CHANNEL_EVENTS)
+            if slack_manifest.AGENT_SESSIONS in combo:
+                want |= set(_AGENT_SESSION_EVENTS)
             events = _bot_events(_manifest(combo))
             assert len(events) == len(set(events)), combo  # no duplicate subscription
             assert sorted(events) == sorted(want), combo
@@ -146,9 +154,12 @@ class TestManifestGrantsNothingMore:
     def test_feature_blocks_follow_the_switches(self) -> None:
         for combo in _COMBOS:
             feats = _manifest(combo)["features"]
-            # No switch registered here declares the app a Slack agent: the
-            # one-way agent_view lands with its runtime, never ahead of it.
-            assert "agent_view" not in feats, combo
+            # Only the Agent sessions switch declares the app a Slack agent
+            # (one-way in Slack), and nothing ever declares assistant_view.
+            if slack_manifest.AGENT_SESSIONS in combo:
+                assert set(feats["agent_view"]) == {"agent_description"}, combo
+            else:
+                assert "agent_view" not in feats, combo
             assert "assistant_view" not in feats, combo
             if slack_manifest.CODE_CHANNELS in combo:
                 # Socket Mode delivers channel commands: no slash_command_url.

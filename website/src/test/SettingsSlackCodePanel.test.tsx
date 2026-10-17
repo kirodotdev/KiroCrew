@@ -58,6 +58,7 @@ function config(over: Partial<SlackConfigData> = {}): SlackConfigData {
     bot_token_set: true, app_token_set: true, bot_token_preview: 'xoxb-••••', app_token_preview: 'xapp-••••',
     owner_id: 'U000OWNER', command: 'kirocrew', allowed_enterprise_ids: [],
     reactions_enabled: true, show_thinking: true,
+    agent_sessions: false,
     code_channels: false,
     code_channel_defaults: { folder: null, agent: null, model: null, reasoning_effort: null },
     code_channel_effective: {
@@ -97,7 +98,7 @@ describe('Slack Code payload', () => {
     const saved = slackCodeDraftFrom(config({ code_channel_defaults: { folder: 'aaaaaaaaaaaa', agent: null, model: 'gone-model', reasoning_effort: null } }))
     expect(slackCodePayload(saved, saved)).toEqual({})
     expect(slackCodePayload({ ...saved, effort: 'high' }, saved)).toEqual({ code_channel_defaults: { reasoning_effort: 'high' } })
-    expect(slackCodePayload({ ...saved, folder: '', switches: { code_channels: true } }, saved)).toEqual({
+    expect(slackCodePayload({ ...saved, folder: '', switches: { agent_sessions: false, code_channels: true } }, saved)).toEqual({
       code_channels: true,
       code_channel_defaults: { folder: null },
     })
@@ -106,6 +107,56 @@ describe('Slack Code payload', () => {
   it('stores the inherit model as unset', () => {
     const saved = slackCodeDraftFrom(config({ code_channel_defaults: { folder: null, agent: null, model: 'claude-x', reasoning_effort: null } }))
     expect(slackCodePayload({ ...saved, model: 'auto' }, saved)).toEqual({ code_channel_defaults: { model: null } })
+  })
+})
+
+describe('Agent sessions switch', () => {
+  it('warns that the manifest step is one-way and asks before turning on', async () => {
+    const { save } = seed()
+    await hydrated()
+    const warning = screen.getByTestId('slack-agent-sessions-warning')
+    expect(warning).toHaveTextContent('one-way')
+    expect(warning).toHaveTextContent('loses its separate Chat and History tabs')
+    expect(warning).toHaveTextContent('you can turn it off here at any time')
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Agent sessions' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent('Turn on agent sessions?')
+    // The dialog says the switch is reversible before it names the permanent step.
+    const text = dialog.textContent ?? ''
+    expect(text.indexOf('you can turn it off here at any time')).toBeGreaterThan(-1)
+    expect(text.indexOf('you can turn it off here at any time'))
+      .toBeLessThan(text.indexOf('The permanent step is saving that manifest'))
+    expect(dialog).toHaveTextContent("on Slack's App Manifest page")
+    expect(dialog).toHaveTextContent('Slack cannot switch it back')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Turn on agent sessions' }))
+    expect(screen.getByRole('switch', { name: 'Agent sessions' })).toBeChecked()
+
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ agent_sessions: true })
+    expect(save.mock.calls[0][0]).not.toHaveProperty('code_channels')
+  })
+
+  it('stays off when the confirmation is cancelled', async () => {
+    seed()
+    await hydrated()
+    fireEvent.click(screen.getByRole('switch', { name: 'Agent sessions' }))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('switch', { name: 'Agent sessions' })).not.toBeChecked()
+  })
+
+  it('turns off without asking', async () => {
+    const { save } = seed({ agent_sessions: true })
+    await hydrated()
+    const toggle = screen.getByRole('switch', { name: 'Agent sessions' })
+    await waitFor(() => expect(toggle).toBeChecked())
+    fireEvent.click(toggle)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ agent_sessions: false })
   })
 })
 
@@ -391,9 +442,11 @@ describe('Slack Code switch registry', () => {
   it('offers only the registered switches', async () => {
     seed()
     await hydrated()
-    expect(screen.getByRole('switch', { name: 'Code channels' })).toBeInTheDocument()
-    // Agent sessions lands with its runtime: this build offers no switch for it.
-    expect(screen.queryByRole('switch', { name: 'Agent sessions' })).toBeNull()
+    expect(screen.getAllByRole('switch', { name: /^(Agent sessions|Code channels)$/ })).toHaveLength(2)
+    // In registry order: Agent sessions first, then Code channels.
+    const agentSessions = screen.getByRole('switch', { name: 'Agent sessions' })
+    const codeChannels = screen.getByRole('switch', { name: 'Code channels' })
+    expect(agentSessions.compareDocumentPosition(codeChannels) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('names a feature the server reports that this build does not register by its raw name', async () => {
