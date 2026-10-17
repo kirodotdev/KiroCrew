@@ -1086,6 +1086,36 @@ def _session_tools() -> tuple[Tool, ...]:
             routes=("POST /api/session-control/set-model",),
         ),
         Tool(
+            name="session_set_backend",
+            description=(
+                "Pick the backend (agent harness) a chat runs on, e.g. 'kiro', "
+                "'claude' or 'codex'; pass '' to go back to the gateway default. "
+                "The backend is fixed when a session starts, so a change ends the "
+                "chat's current agent session and its next turn starts fresh on the "
+                "new backend; the transcript is kept. Only an IDLE chat takes the "
+                "change: a turn in flight fails with 'a turn is in flight' and "
+                "running sub-agents with 'sub-agents are running'; nothing changes. A backend that is not allowed or not "
+                "installed is refused with the backends that can start."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Slot key, or its 'dashboard:<slot>' session key.",
+                    },
+                    "backend": {
+                        "type": "string",
+                        "description": "Backend id, or '' for the gateway default.",
+                    },
+                },
+                "required": ["target", "backend"],
+            },
+            run=_run_session_set_backend,
+            identity="strict",
+            routes=("POST /api/session-control/set-backend",),
+        ),
+        Tool(
             name="session_reload",
             description=(
                 "Relaunch the agent process of a session you created, the same thing as "
@@ -3155,6 +3185,23 @@ def _run_session_set_model(args: dict[str, Any], ctx: ToolContext) -> str:
     else:
         change = effort_text
     return redact(f"\U0001f501 `{target}` will switch to {change} when its next turn starts.")
+
+
+def _run_session_set_backend(args: dict[str, Any], ctx: ToolContext) -> str:
+    target = str(args["target"]).strip()
+    if "backend" not in args:
+        return "Error: pass backend, a backend id such as 'claude', or '' for the gateway default."
+    try:
+        resp = ctx.client.post(
+            "/api/session-control/set-backend",
+            {"target": target, "backend": args["backend"]},
+            session_key=ctx.caller_key,
+        )
+    except DashboardError as refused:
+        return redact(f"Error: could not change that session's backend: {refused.error}")
+    backend = resp.get("backend") or "the gateway default"
+    shown = resp.get("target") or target
+    return redact(f"\U0001f501 `{shown}` will run on {backend} from its next turn.")
 
 
 def _run_session_rename(args: dict[str, Any], ctx: ToolContext) -> str:

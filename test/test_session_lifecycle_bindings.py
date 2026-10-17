@@ -55,7 +55,7 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "_cancel_parent_children": ("function", True, "c38136ad1de2", "parent_end"),
     "_child_teardown": ("property", False, "5d305fdfa44b", "session_lifecycle"),
     "_discard_replay_gap": ("function", False, "8964ba011f68", "turn_stop"),
-    "_eager_respawn": ("function", True, "958babeb61c8", "turn_stop"),
+    "_eager_respawn": ("function", True, "b3604a9f94ca", "turn_stop"),
     "_fire_recycle_callback": ("function", True, "d9b2aabefef9", "session_lifecycle"),
     "_identity_sweep_lock": ("property", False, "fd738ff11600", "session_lifecycle"),
     "_on_recycled": ("property", False, "67238bb9d853", "session_lifecycle"),

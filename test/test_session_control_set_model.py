@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 import pytest
 from chat_test_helpers import _make_state
 
+from kiro_crew import members
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers import session_control as handlers_sc
@@ -218,7 +219,7 @@ def test_the_model_check_uses_the_targets_backend(tmp_path, monkeypatch):
 
     monkeypatch.setattr(chat_handlers, "_model_rejected_reason", _reason)
     monkeypatch.setattr(sc, "is_claude_code", lambda p: p == "claude-seam")
-    monkeypatch.setattr(sc, "select_provider_backend", lambda *_a: "claude-backend")
+    monkeypatch.setattr(members, "select_provider_backend", lambda *_a: "claude-backend")
     monkeypatch.setattr(
         sc,
         "capabilities_for",
@@ -338,16 +339,34 @@ def test_the_alias_correction_follows_the_targets_own_backend(tmp_path, monkeypa
     target_key = effective_session_key(target)
     seen: list[str | None] = []
 
-    def _select(session_key, _member_backend, _default):
+    def _select(session_key, _member_backend, _default, _override=None):
         seen.append(session_key)
         return "member-kiro" if session_key == target_key else "default-other"
 
-    monkeypatch.setattr(sc, "select_provider_backend", _select)
+    monkeypatch.setattr(members, "select_provider_backend", _select)
 
     out = _set_model(state, caller, "chat-2", "sonnet")
 
     assert seen == [target_key]
     assert out["model"] == "wire-sonnet"
+
+
+def test_the_check_uses_the_chats_own_backend_pick(tmp_path, monkeypatch):
+    state = _make_state(tmp_path)
+    caller = state.get_or_create_slot("chat-1")
+    target = state.get_or_create_slot("chat-2")
+    target.backend = "codex"
+    overrides: list[str | None] = []
+
+    def _select(_session_key, _member_backend, default, override=None):
+        overrides.append(override)
+        return default
+
+    monkeypatch.setattr(members, "select_provider_backend", _select)
+
+    _set_model(state, caller, "chat-2", "sonnet")
+
+    assert overrides == ["codex"]
 
 
 def test_a_padded_model_is_stored_stripped(tmp_path, monkeypatch):

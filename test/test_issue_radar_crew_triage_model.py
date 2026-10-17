@@ -497,6 +497,7 @@ class TestAPersonsPickWins(_Isolated):
 PICK_GEN_WRITERS: dict[tuple[str, str], tuple[str, int]] = {
     ("dashboard/chat_api/slot_model.py", "api_chat_slot_model"): ("pick", 2),
     ("dashboard/chat_api/slot_model.py", "api_chat_slots_model"): ("pick", 1),
+    ("dashboard/chat_handlers.py", "switch_slot_backend"): ("pick", 1),
     ("dashboard/session_control_parts/session_create.py", "create_session"): ("pick", 1),
     ("dashboard/session_control_parts/model_switch.py", "apply_pending_model_pick"): ("pick", 1),
     ("dashboard/server_runtime/config_watch.py", "_switch_provider"): ("runtime", 1),

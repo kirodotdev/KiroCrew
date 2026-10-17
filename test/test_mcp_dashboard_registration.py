@@ -388,6 +388,7 @@ class TestWhatThisSetGrants:
         "session_retry",
         "session_continue",
         "session_set_model",
+        "session_set_backend",
         "session_reload",
         # Relabels a session the caller may already stop, or itself; same gate.
         "session_rename",

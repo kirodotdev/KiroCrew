@@ -329,9 +329,9 @@ async def _send_abort_for_session(self: SessionManager, key: str, session: Any) 
     await self._lifecycle_boundary()._send_abort_for_session(key, session)
 
 
-async def _eager_respawn(self: SessionManager, key: str) -> None:
+async def _eager_respawn(self: SessionManager, key: str, **identity: Any) -> None:
     """Respawn after hard teardown and release the acquired lease."""
-    await self._lifecycle_boundary()._eager_respawn(key)
+    await self._lifecycle_boundary()._eager_respawn(key, **identity)
 
 
 async def drain_all_providers(self: SessionManager) -> list:

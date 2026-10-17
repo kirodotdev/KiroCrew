@@ -1059,6 +1059,8 @@ async def fork_slot(
             raise
     new_slot.forked_from = effective_session_key(slot)
     new_slot.reasoning_effort = slot.reasoning_effort
+    # The backend pick travels with the model, which is that backend's id.
+    new_slot.backend = slot.backend
     # Inherited beside the model it belongs to: the constructor takes `model` and
     # the routing choice is the other half of the same answer, so a fork of an
     # "Auto (Jev)" session that arrived pinned would run the parent's next turns

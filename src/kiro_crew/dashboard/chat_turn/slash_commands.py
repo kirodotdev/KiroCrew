@@ -3,7 +3,7 @@ to one no channel can take."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -15,27 +15,28 @@ if TYPE_CHECKING:
         capabilities_of,
         schedule_eager_spawn,
         sel,
-        select_provider_backend,
+        slot_backend,
     )
     from kiro_crew.dashboard.chat_turn.segment_flush import _append_command_reply
     from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
 
 
-async def _slash_command_backend(state: DashboardState, session_key: str) -> str:
+async def _slash_command_backend(state: DashboardState, session_key: str, slot: Any = None) -> str:
     """The backend a slash command on *session_key* would reach.
 
     A positively live provider answers for itself (peeked, never created);
-    otherwise the factory's member-aware selection does, so a dead row cannot
-    answer for its successor.
+    otherwise the factory's member-aware selection does, with *slot*'s own
+    backend pick, so a dead row cannot answer for its successor.
     """
     provider = state.sessions.get_provider(session_key)
     if provider is not None and await state.sessions.is_provider_alive(session_key) is True:
         return capabilities_of(provider).backend
     agent_cfg = KiroCrewConfig.load().agent
-    backend = select_provider_backend(
-        session_key,
+    backend = slot_backend(
+        slot,
         getattr(agent_cfg, "member_acp_backend", ""),
         getattr(agent_cfg, "acp_backend", ""),
+        session_key,
     )
     return backend if isinstance(backend, str) else ACP_BACKEND_KIRO
 

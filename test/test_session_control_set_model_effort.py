@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 import pytest
 from chat_test_helpers import _make_state
 
+from kiro_crew import members
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.chat_utils import slot_history_key
@@ -184,7 +185,7 @@ def test_a_pair_id_backend_folds_the_legacy_suffix_off_the_pin(tmp_path, monkeyp
     """On a backend that spells effort into the model id the pin must not keep
     claiming the old level once a new one is committed."""
     monkeypatch.setattr(sc, "ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS", frozenset({"stub-pair"}))
-    monkeypatch.setattr(sc, "select_provider_backend", lambda *_a: "stub-pair")
+    monkeypatch.setattr(members, "select_provider_backend", lambda *_a: "stub-pair")
     state, caller, target = _pair(tmp_path)
     target.model = "gpt-6-astra[max]"
     _set(state, caller, "chat-2", reasoning_effort="low")
@@ -199,7 +200,7 @@ def test_a_pair_id_model_pick_supersedes_the_pending_effort(tmp_path, monkeypatc
     guard: checking only the effort generation would strip the user's newer
     ``[max]`` pin and commit the stale level."""
     monkeypatch.setattr(sc, "ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS", frozenset({"stub-pair"}))
-    monkeypatch.setattr(sc, "select_provider_backend", lambda *_a: "stub-pair")
+    monkeypatch.setattr(members, "select_provider_backend", lambda *_a: "stub-pair")
     state, caller, target = _pair(tmp_path)
     target.model = "gpt-6-astra[low]"
     _set(state, caller, "chat-2", reasoning_effort="high")

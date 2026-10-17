@@ -1145,6 +1145,21 @@ def _without_warm_task_brief_messages(messages: list[dict]) -> list[dict]:
     return [row for row in messages if not is_warm_task_brief_message(row)]
 
 
+#: A transcript row whose ``meta`` carries this key truthy ends the history a
+#: replay may send: a chat switched to another backend replays only what came
+#: after its switch notice, on every later cold start. The rows stay on display.
+REPLAY_CUTOFF_META_KEY = "replay_cutoff"
+
+
+def after_replay_cutoff(messages: list[dict]) -> list[dict]:
+    """The rows after the last replay cutoff; all of them when there is none."""
+    for index in range(len(messages) - 1, -1, -1):
+        meta = messages[index].get("meta")
+        if isinstance(meta, dict) and meta.get(REPLAY_CUTOFF_META_KEY):
+            return messages[index + 1 :]
+    return messages
+
+
 def _replay_rows(
     conversation_log: "ConversationLog | None",
     session_key: str,
@@ -1163,7 +1178,7 @@ def _replay_rows(
         messages = _merge_replay_rows(messages, pending_messages or [], current_message)
     elif exclude_last_n > 0:
         messages = messages[:-exclude_last_n]
-    messages = _without_warm_task_brief_messages(messages)
+    messages = _without_warm_task_brief_messages(after_replay_cutoff(messages))
     return _replay._quota_tail(
         messages, conv_max=_REPLAY_CONVERSATION_MAX_ROWS, inject_max=_REPLAY_INJECT_MAX_ROWS
     )

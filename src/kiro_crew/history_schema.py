@@ -32,6 +32,7 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "agent",
         "model",
         "reasoning_effort",
+        "backend",
         "autocompact_pct",
         "turn_timeout_secs",
         # Source-link dismissals: the slot save is authoritative (it rebuilds the

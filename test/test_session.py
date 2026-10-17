@@ -1791,6 +1791,48 @@ class TestStopTurn:
         await mgr.close_all()
 
     @pytest.mark.asyncio
+    async def test_hard_stop_respawns_on_the_sessions_own_backend(self, cfg):
+        """A session started on a per-session backend is respawned on it, not
+        on the gateway default (a chat's backend pick survives a hard Stop)."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("key1")
+        mgr.release("key1")
+        mgr._sessions["key1"].backend_override = "codex"
+        provider.cancel = AsyncMock(return_value="timeout")
+
+        with patch.object(mgr, "_eager_respawn", new_callable=AsyncMock) as mock_respawn:
+            await mgr.stop_turn("key1")
+            await asyncio.sleep(0)
+            mock_respawn.assert_awaited_once_with("key1", backend_override="codex")
+
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("override", ["claude", None])
+    async def test_a_hard_stopped_sub_agent_respawns_on_its_own_backend(self, cfg, override):
+        """A session started with ``backend_override`` (a ``spawn_run(backend=...)``
+        sub-agent or a picked chat) is allocated again with that override after a
+        hard Stop, end to end through the respawn; a session started without one
+        is allocated again with no override keyword."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        started = {} if override is None else {"backend_override": override}
+        provider, _, _ = await mgr.get_or_create("subagent:run-1", **started)
+        mgr.release("subagent:run-1")
+        provider.cancel = AsyncMock(return_value="timeout")
+        real = mgr.get_or_create
+
+        with patch.object(mgr, "get_or_create", new_callable=AsyncMock, side_effect=real) as alloc:
+            await mgr.stop_turn("subagent:run-1")
+            # The respawn runs as a retained background task; wait for it.
+            await asyncio.gather(*list(mgr._background_tasks))
+            if override is None:
+                assert "backend_override" not in alloc.await_args.kwargs
+            else:
+                assert alloc.await_args.kwargs["backend_override"] == override
+
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
     async def test_eager_respawn_failure_logged(self, cfg, caplog):
         """_eager_respawn swallows exceptions and logs at debug."""
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())

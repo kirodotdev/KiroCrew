@@ -194,6 +194,10 @@ def init_session_fields(self: _ChatSlot) -> None:
     # choice landed even when that choice returned to the level it saw.
     self._effort_pick_gen = 0
     self._reasoning_effort = ""
+    # The backend this chat runs on, spelled as a governance policy id
+    # (``"kiro"``, ``"codex"`` ...). "" = the gateway default. Read when the
+    # session is allocated (``chat_runner.slot_backend_override``).
+    self.backend = ""
     # Per-session auto-compact threshold override (percent). None = follow
     # the global session.autocompact_pct. Persisted with the slot and
     # re-seeded into the SessionManager after restore.

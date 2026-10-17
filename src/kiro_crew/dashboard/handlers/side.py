@@ -460,11 +460,25 @@ async def _run_side_turn(
         # The config itself is kept too: the first-turn envelope reads the
         # reply-style setting off it (``build_side_format_prompt``), and a
         # failed load leaves it ``None`` so that block is simply omitted.
+        # Deferred: chat_runner imports this module's neighbours at load.
+        from kiro_crew.dashboard.chat_runner import slot_backend, slot_backend_override
+
+        # The chat's own backend pick decides the tool posture and allocates the
+        # session, so the two never disagree.
+        picked = slot_backend_override(slot)
         side_backend: str | None = None
         cfg: KiroCrewConfig | None = None
         try:
             cfg = KiroCrewConfig.load()
-            side_backend = cfg.agent.acp_backend
+            # Through the same governance gate the session's own allocation
+            # crosses, so a pick policy disallows decides no posture.
+            side_backend = (
+                slot_backend(
+                    slot, cfg.agent.member_acp_backend, cfg.agent.acp_backend, picked=picked
+                )
+                if picked
+                else cfg.agent.acp_backend
+            )
             # Warm off-loop, resolve inline — same reasoning as the main chat path
             # (offloading the resolver itself would swallow a StopIteration into a
             # Future and hang the await).
@@ -583,6 +597,9 @@ async def _run_side_turn(
             side_agent = kiro_agent or slot_agent
             approval_policy = ToolApprovalPolicy.REJECT_ALL
             binding = (side_agent or "", project or "", "reject_all")
+        if picked:
+            # A picked backend is part of what the session was spawned on.
+            binding = (binding[0], binding[1], f"{binding[2]}|backend={picked['backend_override']}")
 
         # The derivation suspended this task; a close (or close+reopen) may have
         # landed meanwhile. A stale task must not touch any session: its own
@@ -639,6 +656,7 @@ async def _run_side_turn(
             cwd=project,
             start_priority=start_priority,
             **side_session_kwargs,
+            **picked,
         )
         acquired_key = side_key
         # ``get_or_create`` suspended this task as well. A close landing during

@@ -730,7 +730,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_slash_command_backend",
             "async function",
-            "(state: 'DashboardState', session_key: 'str') -> 'str'",
+            "(state: 'DashboardState', session_key: 'str', slot: 'Any' = None) -> 'str'",
         ),
         (
             "_answer_slash_without_channel",

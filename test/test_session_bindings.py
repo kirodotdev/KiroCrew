@@ -87,7 +87,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_drain_and_claim": ("function", True, "f7fc1af9bfcd", "runtimes"),
     "_draining_bg_runtimes": ("property", False, "eb482a8b1e3b", "state_views"),
     "_draining_subagent_runtimes": ("property", False, "eb482a8b1e3b", "state_views"),
-    "_eager_respawn": ("function", True, "958babeb61c8", "teardown"),
+    "_eager_respawn": ("function", True, "b3604a9f94ca", "teardown"),
     "_ensure_background": ("function", True, "ffb4efadb2a1", "runtimes"),
     "_ensure_cleanup_task": ("function", False, "b60c5fea256e", "sweeps"),
     "_evict_stale_session": ("function", True, "70690b0be258", "claims"),

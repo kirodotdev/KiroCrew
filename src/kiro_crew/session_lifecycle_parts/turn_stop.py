@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from kiro_crew.messaging.link import canonical_key
-from kiro_crew.session_lifecycle_parts.parked_queue import _park_queue
+from kiro_crew.session_lifecycle_parts.parked_queue import _park_queue, allocation_identity
 from kiro_crew.session_lifecycle_parts.stop_decline import StopOutcome, _compaction_waits_for_turn
 
 if TYPE_CHECKING:
@@ -375,6 +375,12 @@ async def stop_turn(
         if late:
             session.queue.clear()
             _park_queue(owner, key, late)
+    # A session started on a per-session backend respawns on it, read from
+    # the identity a reset successor rebuilds; others respawn as before.
+    identity = allocation_identity(owner, key, session)
+    respawn = (
+        {"backend_override": identity["backend_override"]} if "backend_override" in identity else {}
+    )
     await owner.reset(key)
     elapsed = self._deps.monotonic() - t0
     logger.info(
@@ -384,7 +390,7 @@ async def stop_turn(
     )
     # Retain the task strongly until completion; the event loop alone keeps
     # only a weak reference.
-    task = asyncio.create_task(owner._eager_respawn(key))
+    task = asyncio.create_task(owner._eager_respawn(key, **respawn))
     owner._background_tasks.add(task)
     task.add_done_callback(owner._background_tasks.discard)
     if on_hard:
@@ -438,7 +444,7 @@ async def _send_abort_for_session(self: SessionLifecycleService, key: str, sessi
         logger.debug("_send_abort_for_session failed for %s", key, exc_info=True)
 
 
-async def _eager_respawn(self: SessionLifecycleService, key: str) -> None:
+async def _eager_respawn(self: SessionLifecycleService, key: str, **identity: Any) -> None:
     """Respawn after hard kill and release its acquired turn semaphore.
 
     A start that succeeds here also delivers what a forced channel stop parked:
@@ -446,7 +452,7 @@ async def _eager_respawn(self: SessionLifecycleService, key: str) -> None:
     wakes the adopted entries' channel drains.
     """
     try:
-        await self._owner.get_or_create(key)
+        await self._owner.get_or_create(key, **identity)
         self._owner.release(key)
     except Exception:
         self._deps.logger.debug("Eager respawn failed for %s", key, exc_info=True)

@@ -1560,6 +1560,67 @@ async def test_a_claude_turn_on_an_unverified_adapter_runs_no_tools(tmp_path, mo
 
 
 @pytest.mark.asyncio
+async def test_turn_follows_the_chats_backend_pick(tmp_path, monkeypatch):
+    # The gateway runs a harness without read-only tools, but the chat picked
+    # Kiro: the reply runs on Kiro and gets Kiro's read-only tools.
+    state = _make_state(tmp_path)
+    slot, mid = _member_slot(state)
+    slot.backend = "kiro"
+    calls = _arm_turn(state, monkeypatch, answer="ok", backend="other-harness")
+    assert _seed_reply(state, slot, mid, "user", "hi") == "ok"
+    await _run_thread_turn(
+        state, slot, mid, "run-1", "hi", _parent(), [], f"{slot.key}:{mid}", _identity(state, slot)
+    )
+    acquired = next(c for c in calls if "key" in c)
+    streamed = next(c for c in calls if "message" in c)
+    assert acquired["backend_override"] == ACP_BACKEND_KIRO
+    assert streamed["approval_policy"] == chat_threads.ToolApprovalPolicy.READ_ONLY
+
+
+@pytest.mark.asyncio
+async def test_a_switch_mid_turn_does_not_move_the_thread_off_its_posture(tmp_path, monkeypatch):
+    # The posture is built for the pick read at the start of the turn; a switch
+    # that lands during the turn's awaits must not change the allocated backend.
+    state = _make_state(tmp_path)
+    slot, mid = _member_slot(state)
+    slot.backend = "kiro"
+    calls = _arm_turn(state, monkeypatch, answer="ok", backend="other-harness")
+
+    async def _switch(*_a, **_kw):
+        slot.backend = "claude"
+
+    monkeypatch.setattr(chat_threads, "warm_project_agent_names", _switch)
+    assert _seed_reply(state, slot, mid, "user", "hi") == "ok"
+    await _run_thread_turn(
+        state, slot, mid, "run-1", "hi", _parent(), [], f"{slot.key}:{mid}", _identity(state, slot)
+    )
+    acquired = next(c for c in calls if "key" in c)
+    assert acquired["backend_override"] == ACP_BACKEND_KIRO
+
+
+@pytest.mark.asyncio
+async def test_a_pick_governance_no_longer_allows_gets_no_claude_posture(tmp_path, monkeypatch):
+    # The chat picked claude, but governance has since taken it out of the
+    # selectable set, so the session degrades: the posture must not be claude's.
+    state = _make_state(tmp_path)
+    slot, mid = _member_slot(state)
+    slot.backend = "claude"
+    calls = _arm_turn(state, monkeypatch, answer="ok", backend="other-harness")
+    monkeypatch.setattr(chat_threads, "claude_adapter_honours_session_options", lambda: True)
+    from kiro_crew import members
+
+    monkeypatch.setattr(members, "select_provider_backend", lambda *a: "other-harness")
+    assert _seed_reply(state, slot, mid, "user", "hi") == "ok"
+    await _run_thread_turn(
+        state, slot, mid, "run-1", "hi", _parent(), [], f"{slot.key}:{mid}", _identity(state, slot)
+    )
+    acquired = next(c for c in calls if "key" in c)
+    streamed = next(c for c in calls if "message" in c)
+    assert "side_read_only" not in acquired
+    assert streamed["approval_policy"] == chat_threads.ToolApprovalPolicy.REJECT_ALL
+
+
+@pytest.mark.asyncio
 async def test_empty_answer_becomes_the_visible_boundary_line(tmp_path, monkeypatch):
     state = _make_state(tmp_path)
     events = _capture_broadcasts(state)

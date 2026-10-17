@@ -39,9 +39,11 @@ def _format_parent_snapshot(slot: _ChatSlot) -> str:
     the relevant context. Mirrors
     ``_format_side_history``.
     """
+    from kiro_crew.context import after_replay_cutoff
+
     lines: list[str] = []
     total = 0
-    for entry in reversed(slot.messages):
+    for entry in reversed(after_replay_cutoff(list(slot.messages))):
         role = entry.get("role", "")
         if role not in ("user", "assistant"):
             continue
@@ -78,7 +80,7 @@ def _format_side_history(slot: _ChatSlot) -> str:
     """
     if slot._side is None:
         return ""
-    entries = slot._side.messages
+    entries = slot._side.messages[slot._side.replay_from :]
     if entries and entries[-1].get("role") == "user":
         entries = entries[:-1]
     # Iterate reversed to keep the most recent turns under the cap;

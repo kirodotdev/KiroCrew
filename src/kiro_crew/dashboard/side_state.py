@@ -77,6 +77,9 @@ class SideState:
     #: the old agent, in the old cwd, with the old grants. ``None`` = no live
     #: session has been bound through this sidecar yet.
     binding: tuple[str, str, str] | None = None
+    #: Index of the first side message a cold start may replay: a backend
+    #: switch moves it past every message the previous backend saw.
+    replay_from: int = 0
     #: The asyncio task driving the in-flight turn, so a stop request can cancel
     #: it by lookup. The turn's own handle is otherwise only in
     #: ``state._background_tasks`` (a set with no per-slot key), which a stop

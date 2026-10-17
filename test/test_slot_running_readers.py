@@ -151,6 +151,7 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # registered yet.
                 ("chat_api/session_relaunch.py", "api_chat_slot_project"),
                 ("chat_api/slot_effort.py", "api_chat_slot_reasoning_effort"),
+                ("chat_handlers.py", "switch_slot_backend"),
                 # Reload refuses a reserved slot or sibling alias through
                 # _switch_target_busy, as the session_reload verb does.
                 ("chat_api/session_relaunch.py", "api_chat_slot_reload"),

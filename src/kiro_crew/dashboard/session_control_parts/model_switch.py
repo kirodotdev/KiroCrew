@@ -31,7 +31,7 @@ from kiro_crew.dashboard.session_control_parts.caller_access import (
 from kiro_crew.dashboard.session_control_parts.target_authorization import authorize_target
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.llm_helpers import slot_switch_session_lock
-from kiro_crew.members import select_provider_backend
+from kiro_crew.members import select_provider_backend  # noqa: F401 - offered by session_control
 from kiro_crew.security import redact
 from kiro_crew.sel import sel
 
@@ -92,7 +92,7 @@ async def set_model_target(
         _subagents_attached_response,
         _switch_target_busy,
     )
-    from kiro_crew.dashboard.chat_runner import _JEV_ROUTE_AUTO_MODELS
+    from kiro_crew.dashboard.chat_runner import _JEV_ROUTE_AUTO_MODELS, slot_backend
 
     # Validated before any gate: a malformed pick needs no target lookup, and
     # refusing it first keeps a bad argument from reading as an access decision.
@@ -181,7 +181,8 @@ async def set_model_target(
     # resolved through the same member-aware gate the provider factory uses: a
     # member DM routes to agent.member_acp_backend, which can differ from the
     # configured default, and a Claude backend takes canonical keys as wire ids.
-    backend = select_provider_backend(effective_session_key(slot), member_backend, default_backend)
+    # A chat's own backend pick takes precedence, as it does at allocation.
+    backend = slot_backend(slot, member_backend, default_backend)
     target_provider = (
         provider if is_claude_code(provider) else capabilities_for(backend).provider_seam
     )

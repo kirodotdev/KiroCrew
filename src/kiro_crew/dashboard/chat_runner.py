@@ -846,6 +846,56 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402, F401
     tool_calls_are_read_only_preparation,
 )
 
+
+def backend_override_for(pick: str) -> dict[str, Any]:
+    """The ``backend_override`` keyword a backend pick adds to allocation.
+
+    Empty for no pick, so an unpicked chat allocates with exactly the keywords
+    it always did. A pick is a governance policy id (``"kiro"``, ``"codex"``);
+    the factory takes the backend id, where Kiro's is ``""``. An unknown id is
+    passed as written and the factory's gate degrades it to Kiro with the
+    reason in the log.
+    """
+    from kiro_crew.dashboard.handlers.messaging import backend_id_for_policy_id
+
+    if not pick:
+        return {}
+    backend = backend_id_for_policy_id(pick)
+    return {"backend_override": pick if backend is None else backend}
+
+
+def slot_backend_override(slot: Any) -> dict[str, Any]:
+    """:func:`backend_override_for` the slot's own backend pick."""
+    return backend_override_for(getattr(slot, "backend", "") or "")
+
+
+def slot_backend(
+    slot: Any,
+    member_backend: str,
+    default_backend: str,
+    session_key: str | None = None,
+    picked: dict[str, Any] | None = None,
+) -> str:
+    """The backend *slot* runs on: its own pick, then the member route, then the default.
+
+    The one place a chat's backend is resolved before its session exists,
+    through the same gate the session's allocation crosses. *session_key*
+    defaults to the slot's effective key. *picked* is a
+    :func:`slot_backend_override` value the caller already read, for a caller
+    that must decide and allocate on the same reading.
+    """
+    from kiro_crew import members
+
+    if picked is None:
+        picked = slot_backend_override(slot)
+    return members.select_provider_backend(
+        session_key if session_key is not None else effective_session_key(slot),
+        member_backend,
+        default_backend,
+        picked.get("backend_override"),
+    )
+
+
 # Consumption contract carried inside every pending-context frame, between the
 # opening delimiter and the injected content. One sentence, imperative, because
 # it is re-sent on every turn that drains context: it must be cheap and it must
@@ -1399,7 +1449,7 @@ async def _recover_app_agent_binding(
     return bindings
 
 
-def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str, str]:
+def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str, str, str]:
     """The slot bindings an eager handshake bakes into the session it registers.
 
     ONE definition, because two exist to be compared: ``_eager_spawn`` snapshots
@@ -1417,6 +1467,7 @@ def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str, str]:
         slot.memory_store,
         # The namespace the name is read in: a kind change is a binding change.
         slot.agent_kind,
+        slot.backend,
     )
 
 
@@ -1657,8 +1708,8 @@ async def _eager_spawn(
             # with no channel identity.
             if allow_resume and resume_takes_tool_search_replay(
                 tool_search=cfg.agent.tool_search,
-                backend=select_provider_backend(
-                    session_key, cfg.agent.member_acp_backend, cfg.agent.acp_backend
+                backend=slot_backend(
+                    slot, cfg.agent.member_acp_backend, cfg.agent.acp_backend, session_key
                 ),
                 channel_id=None,
                 session_key=session_key,
@@ -1844,6 +1895,7 @@ async def _spawn_admitted_prefetch(
                 speculative_resume=allow_resume,
                 reasoning_effort_override=slot.reasoning_effort or None,
                 start_priority=start_priority,
+                **slot_backend_override(slot),
             )
         except (SpeculativeResumeRefused, SessionClosingError, SessionEndingError):
             # A refusal, a gateway shutdown, or a key being ended: no agent
@@ -5870,7 +5922,7 @@ async def _run_chat(
     # member-aware successor selection. Acquisition still confirms support,
     # because the provider can be replaced between this probe and the claim.
     if first_word in _KIRO_ONLY_BLOCKED_SLASH_COMMANDS:
-        _todos_backend = await _slash_command_backend(state, session_key)
+        _todos_backend = await _slash_command_backend(state, session_key, slot)
         if not capabilities_for(_todos_backend).supports_native_todos:
             _refuse_blocked_slash()
             return
@@ -5908,10 +5960,11 @@ async def _run_chat(
             # A dead registry row is not the harness dispatch would reach:
             # get_or_create evicts it and uses this same member-aware selector.
             _agent_cfg = KiroCrewConfig.load().agent
-            _cfg_backend = select_provider_backend(
-                session_key,
+            _cfg_backend = slot_backend(
+                slot,
                 getattr(_agent_cfg, "member_acp_backend", ""),
                 getattr(_agent_cfg, "acp_backend", ""),
+                session_key,
             )
             _compact_unsupported = (
                 _cfg_backend
@@ -5963,7 +6016,7 @@ async def _run_chat(
         and first_word != "/compact"
         and first_word not in _KIRO_ONLY_BLOCKED_SLASH_COMMANDS
     ):
-        _command_backend = await _slash_command_backend(state, session_key)
+        _command_backend = await _slash_command_backend(state, session_key, slot)
         if _command_backend == ACP_BACKEND_KAS or (
             _this_turn_is_clear and _command_backend in ACP_BACKENDS_LOCAL_CLEAR
         ):
@@ -6524,6 +6577,12 @@ async def _run_chat(
         # which decides whether to send it, and the crew log's `session/opened`,
         # which records the choice.
         _requested_model = slot.model or agent_model or default_model or ""
+        _picked = slot_backend_override(slot)
+        _pick = _picked.get("backend_override")
+        if _pick is not None and slot_backend(slot, "", "", session_key, _picked) != _pick:
+            # The gate degrades this pick to its fallback, which does not serve a
+            # model chosen for the pick: the turn starts on the fallback's default.
+            _requested_model = ""
         _allocation_kwargs: dict[str, Any] = dict(
             agent=kiro_agent or slot.agent or None,
             # Same canonical crew identity as the eager-spawn path — the two
@@ -6538,6 +6597,7 @@ async def _run_chat(
             channel_id=_provider_channel_id or None,
             reasoning_effort_override=slot.reasoning_effort or None,
             start_priority=_turn_priority,
+            **_picked,
         )
 
         def _release_dispatch_lock() -> None:

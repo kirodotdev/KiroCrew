@@ -1192,3 +1192,187 @@ _facade_compose(
 # client has read the buffer down by about 48 KiB, so a reader that is merely
 # slow (a few hundred bytes a second) finishes every write well inside this.
 _SSE_WRITE_DEADLINE_SECS = 120.0
+
+
+def _switch_refusal(response: web.Response) -> Any:
+    """A shared refusal helper's response as the verb's ``SessionControlError``."""
+    from kiro_crew.dashboard.session_control import SessionControlError
+
+    body = json.loads(response.text or "{}")
+    return SessionControlError(
+        str(body.get("error") or "backend not changed"),
+        status=response.status,
+        code=str(body.get("code") or "set_backend_failed"),
+    )
+
+
+def _switch_error(message: str, *, status: int, code: str) -> Any:
+    from kiro_crew.dashboard.session_control import SessionControlError
+
+    return SessionControlError(message, status=status, code=code)
+
+
+def _target_replaced() -> Any:
+    return _switch_error(
+        "the target session was replaced during the switch", status=404, code="target_replaced"
+    )
+
+
+async def _runs_on_same_backend(slot: _ChatSlot, current: str, pick: str) -> bool:
+    """Whether *current* and *pick* put *slot* on the same backend, through the one gate."""
+    from kiro_crew.dashboard.chat_runner import backend_override_for, slot_backend
+
+    config = await asyncio.to_thread(KiroCrewConfig.load)
+    member, default = config.agent.member_acp_backend, config.agent.acp_backend
+    return slot_backend(
+        slot, member, default, picked=backend_override_for(current)
+    ) == slot_backend(slot, member, default, picked=backend_override_for(pick))
+
+
+async def switch_slot_backend(
+    state: DashboardState,
+    slot: _ChatSlot,
+    name: str,
+    pick: str,
+    *,
+    still_ours: Callable[[], bool],
+    requested_by: str = "",
+) -> dict[str, Any]:
+    """Set *slot*'s backend to *pick* and end its session so the next turn starts on it.
+
+    A switch that changes the backend appends one notice to the chat, naming
+    *requested_by* when given. The notice is a replay cutoff: no later cold
+    start, main chat or Side Chat, replays the pre-switch conversation to the
+    new backend.
+
+    The caller supplies its authorization as ``still_ours()``, re-run after
+    every await before anything changes (False refuses with ``target_replaced``).
+    A refusal raises the verb's ``SessionControlError``; success returns the body.
+
+    Validated by the resolver ``spawn_run(backend=...)`` uses, with its refusal
+    codes. A backend is fixed when the session starts, so a change ends the
+    current session and the next turn cold-starts on the new one; the
+    transcript is kept, and the model is cleared to the new backend's default.
+    A turn or sub-agents in flight answer 409. A chat with no live session
+    keeps the pick: there is nothing to tear down.
+    """
+    from kiro_crew.dashboard.handlers.messaging import _requested_backend
+    from kiro_crew.members import is_member_session_key
+
+    _, refused = await _requested_backend(pick)
+    if refused is not None:
+        raise _switch_refusal(refused)
+    refusal = relay_archive_refusal(slot)
+    if refusal is not None:
+        raise _switch_refusal(refusal)
+    if is_member_session_key(effective_session_key(slot)):
+        # A crewmate DM runs on agent.member_acp_backend, which a chat pick
+        # would override; the design keeps those out of scope.
+        raise _switch_error(
+            "a crewmate direct-message session follows agent.member_acp_backend",
+            status=409,
+            code="member_session",
+        )
+    # A lazily restored chat reads its transcript on first access; load it off
+    # the loop now, so the notice below appends to the whole window.
+    await load_window_off_loop(slot)
+    # The workspace handler's locks and re-checks, in the same order.
+    async with contextlib.AsyncExitStack() as _stack:
+        await _stack.enter_async_context(slot._lock)
+        if not still_ours():
+            raise _target_replaced()
+        session_key = effective_session_key(slot)
+        await _stack.enter_async_context(_slot_switch_session_lock(session_key))
+        # The switch clears the pending model pick, so it holds the pick lock
+        # (inner, the documented order) like the model handlers do.
+        await _stack.enter_async_context(slot._model_pick_lock)
+        if not still_ours():
+            raise _target_replaced()
+        if slot.backend == pick:
+            return {"ok": True, "backend": pick, "changed": False}
+        if await _runs_on_same_backend(slot, slot.backend, pick):
+            # ``""`` and ``"kiro"`` on a Kiro gateway: the pick is recorded, but
+            # the session already runs on that backend, so nothing is torn down.
+            if not still_ours():
+                raise _target_replaced()
+            slot.backend = pick
+            slot._dirty = True
+            return {"ok": True, "backend": pick, "changed": False}
+        children_409 = await _subagents_attached_response(state, slot, session_key, "slot_backend")
+        if children_409 is not None:
+            raise _switch_refusal(children_409)
+        # The probe awaited: re-run the caller's gate before anything changes.
+        if not still_ours():
+            raise _target_replaced()
+        if _switch_target_busy(state, slot, session_key, state.sessions.get_provider(session_key)):
+            raise _switch_error("a turn is in flight", status=409, code="turn_in_flight")
+        prior = slot.backend
+        prior_model, prior_jev_route = slot.model, slot.jev_route
+        prior_pending, prior_pick_gen = slot._pending_model_pick, slot._model_pick_gen
+
+        def _rollback() -> None:
+            if slot.backend == pick:
+                slot.backend = prior
+                slot.model, slot.jev_route = prior_model, prior_jev_route
+                if slot._model_pick_gen == prior_pick_gen + 1:
+                    # No newer pick landed meanwhile, so the restored pending
+                    # pick is still the current one.
+                    slot._pending_model_pick = prior_pending
+                    slot._model_pick_gen = prior_pick_gen
+            slot._dirty = True
+
+        slot.backend = pick
+        # A model id belongs to one backend, so a switch clears it, and any
+        # pending pick, to the new backend's default, as a provider switch does
+        # (config_watch).
+        slot.model = ""
+        slot.jev_route = False
+        slot._pending_model_pick = None
+        slot._model_pick_gen += 1
+        logger.info("Slot %s backend switched to %r, resetting session", name, pick or "default")
+        reset_ok = await _reset_slot_session_or_warn(
+            state, slot, session_key, switch_kind="backend"
+        )
+        if reset_ok is False:
+            # ``reset`` also answers False when there is no session to tear
+            # down (a new chat, one restored after a restart): the next turn
+            # cold-starts on the pick, so keep it. A live idle session that
+            # declined is retried once, as the workspace handler does; only an
+            # active turn, or a second decline, answers 409.
+            provider = state.sessions.get_provider(session_key)
+            if provider is None:
+                reset_ok = True
+            elif isinstance(provider, LLMProvider) and not provider.has_active_turn():
+                reset_ok = await _reset_slot_session_or_warn(
+                    state, slot, session_key, switch_kind="backend"
+                )
+        if effective_session_key(slot) != session_key:
+            # Rebound mid-reset: the session torn down is not the one the next
+            # turn uses, so undo the pick.
+            _rollback()
+            raise _switch_error(
+                "slot session was rebound during the switch", status=409, code="session_rebound"
+            )
+        if reset_ok is False:
+            _rollback()
+            raise _switch_error("a turn is in flight", status=409, code="turn_in_flight")
+        # The new backend starts with no memory of the conversation (the RFC's
+        # switching rule). Appended under the locks, so no turn lands before it.
+        from kiro_crew.context import REPLAY_CUTOFF_META_KEY
+
+        slot.append(
+            "assistant",
+            f"Backend switched to {f'`{pick}`' if pick else 'the gateway default'}; "
+            "the model was reset to that backend's default."
+            + (f" Requested by session `{requested_by}`." if requested_by else ""),
+            "msg msg-a",
+            meta={"kind": SESSION_RELOAD_KIND, REPLAY_CUTOFF_META_KEY: True},
+        )
+        if slot._side is not None:
+            slot._side.replay_from = len(slot._side.messages)
+        slot._dirty = True
+    state.push_slots_update()
+    resp: dict[str, Any] = {"ok": True, "backend": pick}
+    if reset_ok is None:
+        resp["warning"] = _TEARDOWN_INCOMPLETE_WARNING
+    return resp
