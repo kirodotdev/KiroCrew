@@ -40,20 +40,25 @@ module goes wrong.
 Trusted resolution buys one thing, on both paths: the interpreter is root-owned,
 resolved from a fixed list of trusted system directories, and never
 ``sys.executable`` — which rules out escalating the venv python, the one that is
-user-writable. It says nothing about what that interpreter then loads. Invoked
-without ``-I``/``-S``, CPython prepends the caller's working directory to
-``sys.path`` and imports ``site``, so code from that working directory,
-``PYTHONPATH``, a user-site ``.pth`` line, ``sitecustomize`` or ``usercustomize``
-runs before or during the payload's own first import — ``ctypes``, which a planted
-module on any of those paths shadows.
+user-writable. It says nothing about what that interpreter then loads, so the
+probe also runs it ISOLATED: ``python3 -I`` (no working directory on
+``sys.path``, no user site, no ``PYTHON*`` variables), from the fixed directory
+``/``, with every ``PYTHON*`` variable dropped from the environment it inherits.
+Without that, CPython prepends the caller's working directory to ``sys.path``
+and imports ``site``, so code from that working directory, ``PYTHONPATH``, a
+user-site ``.pth`` line, ``sitecustomize`` or ``usercustomize`` would run before
+or during the payload's own first import — ``ctypes``, which a planted module on
+any of those paths shadows. ``cd /tmp && sudo kirocrew service install`` is the
+case that needs no privilege at all.
 
 WHOSE privileges that loaded code gets is what ``setpriv`` decides, and both
 install paths are live. It reuids to the account the INSTALLER was invoked as
 (``os.getuid()``): started as an ordinary user — the default, where this module
 escalates individual commands through ``sudo`` — it reuids from sudo's root back
-to that user, so the probe and anything it loads stay unprivileged; started as
-``sudo kirocrew service install`` it reuids to 0, which is a no-op, and only on
-that path does the loaded code run as root.
+to that user, so the probe stays unprivileged; started as
+``sudo kirocrew service install`` it reuids to 0, which is a no-op, so on that
+path the probe runs as root and the isolation above is what keeps planted code
+out of it.
 
 What IS bounded on both paths is the PAYLOAD: a constant stdlib snippet importing
 no ``kiro_crew``, so no MCP / LLM / agent code is reached deliberately.
@@ -525,6 +530,8 @@ def _require_privilege() -> None:
 def _sudo_run(
     *args: str,
     input_text: str | None = None,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a command with root privilege, capturing output.
 
@@ -544,6 +551,8 @@ def _sudo_run(
         return subprocess.run(
             [*_privilege_prefix(), *args],
             input=input_text,
+            cwd=cwd,
+            env=env,
             capture_output=True,
             text=True,
             check=False,
@@ -913,9 +922,22 @@ def _sudo_capture(*argv: str) -> tuple[int, str]:
     unconfined user cannot aa_change_onexec into a named profile, and aa-exec
     does not fail loudly when it cannot transition) AND its exit code is the
     answer rather than an error, so it cannot use the raising helper.
+
+    The check runs a trusted ``python3`` as root on the ``sudo kirocrew service
+    install`` path, so it starts from the fixed root-owned directory
+    ``/`` rather than the operator's working directory, and with every
+    ``PYTHON*`` variable removed from the environment it inherits. The probe
+    also passes ``-I``; these two keep the same guarantee should any other
+    child in the chain read the working directory or those variables.
     """
-    res = _sudo_run(*argv)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
+    res = _sudo_run(*argv, cwd=_PROBE_CWD, env=env)
     return (res.returncode, (res.stderr or "") + (res.stdout or ""))
+
+
+# Where the privileged enforcement probe starts. Root-owned and not writable by
+# an ordinary user, unlike whatever directory the operator ran the install from.
+_PROBE_CWD = "/"
 
 
 def _sudo_run_checked(*argv: str) -> None:
