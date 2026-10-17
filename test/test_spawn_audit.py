@@ -334,6 +334,25 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # ``test_the_routing_read_back_runs_off_the_event_loop`` in
         # ``test/test_acp_opencode_backend.py`` pins that.
         "acp/harness/opencode.py::_verify_opencode_routing",
+        # The opencode generation probe. ONE fixed argv -- the resolved harness
+        # binary plus the literal word ``--version`` -- with no shell, a 15s
+        # timeout, and no cwd dependence. The binary comes from Crew's own
+        # resolution (PATH search plus explicit override), never from a turn;
+        # stdout is read for the major version only, which decides which seed
+        # shape the session gets, and an unanswerable binary refuses the
+        # session rather than guessing. Listed here rather than routed because
+        # nothing about the argv is agent-influenced; ``--version`` is proven
+        # not to load config or plugins, so there is no credential surface.
+        "acp/harness/opencode.py::_probe_opencode_major",
+        # The v2 routing read-back, the same shape as the v1 one above. ONE
+        # fixed argv -- the resolved harness binary plus ``debug config`` --
+        # with no shell, a 30s timeout, a cwd that is the session work dir,
+        # and the caller-built scrubbed environment. The agent supplies
+        # nothing to it; stdout lists config sources (never effective values
+        # on v2), and the seed-document assertions above it are pure Python.
+        # Listed rather than routed for the same reason: nothing about the
+        # argv comes from a turn.
+        "acp/harness/opencode.py::_verify_opencode_v2_routing",
         # The pi gate read-back, the same shape as the opencode one above. ONE fixed
         # argv -- Kiro Crew's own gate launcher (a file this core wrote into the
         # sandbox run directory, execing the resolved ``pi`` binary) plus the three

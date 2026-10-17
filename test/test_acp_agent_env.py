@@ -507,6 +507,16 @@ class _StopReadback(Exception):
     """Raised from the env resolver: the read-back's environment is all we need."""
 
 
+@pytest.fixture(autouse=True)
+def _v1_binary_generation(monkeypatch):
+    """The fake ``/opt/bin/harness`` binary cannot answer ``--version``, so
+    without this the seed site's generation probe would refuse before the v1
+    read-back under test. These tests pin v1 behavior; v2 has its own file."""
+    from kiro_crew.acp.harness import opencode as opencode_mod
+
+    monkeypatch.setattr(opencode_mod, "_probe_opencode_major", lambda binary: 1)
+
+
 def _readback_calls(tmp_path):
     """Each env-sensitive tool-gate read-back, called on a client of its harness."""
     from kiro_crew.acp.harness import deepseek as deepseek_mod

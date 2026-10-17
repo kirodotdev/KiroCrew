@@ -571,6 +571,7 @@ def test_every_enforced_harness_reaches_the_spawn_preflight(tmp_path: pathlib.Pa
     from kiro_crew.acp import launch as launch_mod
     from kiro_crew.acp import runtime as runtime_mod
     from kiro_crew.acp.harness import codex as codex_mod
+    from kiro_crew.acp.harness import opencode as opencode_mod
     from kiro_crew.acp_backends import ACP_BACKEND_ROUTING, ACP_BACKENDS_ACP_RUNTIME
 
     enforced = {
@@ -609,6 +610,10 @@ def test_every_enforced_harness_reaches_the_spawn_preflight(tmp_path: pathlib.Pa
                 patch.object(codex_mod, "resolve_spawn_masks", new=real_codex_masks),
                 patch.object(launch_mod, "_sandbox_preflight", side_effect=_preflight),
                 patch.object(driver, "wrap_argv_async", side_effect=_wrap),
+                # The opencode seed site probes the binary generation; captured
+                # binaries are fakes that cannot answer --version. Pin v1: this
+                # test counts preflights and masks, not generations.
+                patch.object(opencode_mod, "_probe_opencode_major", return_value=1),
             ),
         )
 
