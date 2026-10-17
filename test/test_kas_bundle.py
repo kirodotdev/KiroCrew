@@ -784,3 +784,52 @@ class TestExistingRoutesAreUntouched:
                 return  # an unrelated pre-spawn gate on a bare tmp home; not our concern
         assert plan.argv[:2] == ["/opt/kiro/kiro-cli", "acp"]
         assert "--agent-engine" not in plan.argv
+
+
+# ── old-glibc refusal ──────────────────────────────────────────────────────────
+
+
+def _patch_glibc(version: tuple[int, int] | None):
+    """Patch the ONE glibc reader kas_bundle reuses, so the test never reads the host's libc."""
+    return patch("kiro_crew.constants._host_glibc_version", return_value=version)
+
+
+class TestOldGlibcRefusal:
+    """A Linux host below the official Node glibc floor (Amazon Linux 2 ships glibc
+    2.26) cannot run the bundle: the Node build needs glibc 2.28, and AL2-era hosts
+    below glibc 2.27 also lack the glibc 2.27 the engine's onnxruntime library
+    needs. The install refuses up front with a message naming the found glibc, the
+    minimum, and onnxruntime, before anything is downloaded or published -- not the
+    raw loader line the probe would surface after a download. Every other host is
+    unchanged. The glibc reader is mocked, so results do not depend on the CI libc."""
+
+    def test_old_glibc_refuses_before_download_naming_the_reason(self, source_dir, tmp_path):
+        root = tmp_path / "root"
+        with _patch_glibc((2, 26)):
+            with pytest.raises(kas_bundle.KasBundleError) as exc:
+                _install(source_dir, root)
+        msg = str(exc.value)
+        assert "2.26" in msg and "2.28" in msg and "onnxruntime" in msg
+        # Nothing downloaded, extracted or published.
+        assert kas_bundle.installed_bundle(root=root, version="0.66.33") is None
+        assert kas_bundle.installed_versions(root=root) == []
+        assert not any(root.glob("**/downloads")) if root.exists() else True
+
+    def test_modern_glibc_installs_as_before(self, source_dir, tmp_path):
+        root = tmp_path / "root"
+        with _patch_glibc((2, 34)):
+            installed = _install(source_dir, root)
+        record = json.loads((installed.root / "install.json").read_text())
+        assert record["node_key"] == "linux-x64"
+
+    def test_unreadable_glibc_installs_as_before(self, source_dir, tmp_path):
+        root = tmp_path / "root"
+        with _patch_glibc(None):
+            installed = _install(source_dir, root)
+        assert installed.version == "0.66.33"
+
+    def test_non_linux_never_consults_glibc(self):
+        # The refusal is Linux-only; a non-Linux host never reads glibc.
+        with _patch_glibc((2, 26)) as reader:
+            kas_bundle._require_loadable_glibc("Darwin", "arm64")
+        reader.assert_not_called()

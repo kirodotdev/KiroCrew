@@ -3124,7 +3124,14 @@ Node archive (`node.builds[<os>-<arch>]`, one binary per architecture), transfer
 both through `asset_downloader.download_to` (https-only, same-host redirects,
 sha256 and exact size pinned by the manifest), extracts into a staging directory,
 probes the Node binary (`--version` must match the manifest), and publishes the
-version with one rename under `<data home>/engines/kas/<version>/`. Which
+version with one rename under `<data home>/engines/kas/<version>/`. On a Linux
+host whose glibc is below the official Node floor (2.28; Amazon Linux 2 ships
+2.26) the install refuses up front, before any download, naming the found glibc,
+the minimum, and that the bundled Node needs glibc 2.28 while Amazon Linux 2-era
+hosts (glibc below 2.27) also lack the glibc 2.27 the engine's native onnxruntime
+library needs (the glibc reader and floor are `constants._host_glibc_version` /
+`_OFFICIAL_NODE_GLIBC_FLOOR`, the same ones doctor's Node remedy uses); nothing is
+published. Which
 version runs is the release's pin, not a file on disk: `acp/kas_pin.py` holds
 `KAS_PIN_VERSION` and `KAS_PIN_MANIFEST_SHA256` (the sha256 of that version's
 published `manifest.json`, which in turn pins every artifact), `kirocrew kas
