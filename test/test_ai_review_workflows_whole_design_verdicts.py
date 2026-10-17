@@ -21,6 +21,7 @@ from ai_review_workflows_helpers import (
     _step_script,
     _workflow,
 )
+from workflow_annotation_helpers import annotation_calls
 
 # The three design/premise/UX lanes on a fork, whose verdict lands as a
 # check-run this repo controls end to end.
@@ -348,7 +349,7 @@ class TestConcernsIsVisibleInTheChecksUi:
             # PASS|CONCERNS branch, so only BLOCK can fail this gate.
             assert "\n  PASS|CONCERNS)\n" in status, name
             assert '  if [ "$VERDICT" = "CONCERNS" ]; then' in status, name
-            assert "::error::" in status, name
+            assert annotation_calls(status, "error"), name
             block_at = status.index("\n  BLOCK)\n")
             concerns_at = status.index("\n  PASS|CONCERNS)\n")
             assert "exit 1" not in status[concerns_at:block_at], name

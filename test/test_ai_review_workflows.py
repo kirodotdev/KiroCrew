@@ -26,6 +26,7 @@ from ai_review_workflows_helpers import (
     _step_script,
     _workflow,
 )
+from workflow_annotation_helpers import annotation_calls
 
 _GHA_CONDITION_TOKEN = re.compile(r"\s*(\|\||&&|==|!=|!|\(|\)|'(?:[^']|'')*'|[A-Za-z_][\w.\-]*)")
 
@@ -936,7 +937,7 @@ class TestFirstPrinciplesReview:
 
         assert "for attempt in 1 2; do" in finalize
         assert "completing stranded check-run" in finalize
-        assert "::warning::could not complete check-run" in finalize
+        assert 'warn "could not complete check-run' in finalize
 
     def test_sweep_only_completes_check_runs_this_pr_created(self) -> None:
         # Two open PRs can share a head commit, so a check-run of this name on this
@@ -1042,7 +1043,7 @@ class TestFirstPrinciplesReview:
         assert "SKIPPED)" in status
         # Only a real BLOCK turns the check red.
         assert "BLOCK)" in status
-        assert "::error::First-principles review verdict" in status
+        assert 'err "First-principles review verdict' in status
 
     def test_fork_scope_skip_completes_success_not_skipped(self) -> None:
         # pr-readiness.yml reads an only-`skipped` advisory check-run as "the
@@ -1157,7 +1158,7 @@ class TestFirstPrinciplesReview:
             step = _step_script(workflow, "Extract the review contract from the base commit")
             assert 'echo "available=false" >> "$GITHUB_OUTPUT"' in step
             assert "exit 1" not in step
-            assert "::warning::" in step
+            assert annotation_calls(step, "warning")
             # The review only runs against a base-provided contract.
             assert "steps.contract.outputs.available == 'true'" in workflow
             # No head fallback anywhere.

@@ -51,6 +51,7 @@ import re
 from pathlib import Path
 
 import yaml
+from workflow_annotation_helpers import annotation_calls
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -407,14 +408,14 @@ def test_the_artifact_probe_retries_a_blip_but_still_fails_closed() -> None:
     probe = _publish_step("Probe for the installer artifact")["run"]
     assert "for attempt in" in probe, "a transient listing failure must be retried"
     assert "sleep" in probe, "retries need to back off, not hammer the API"
-    assert "::error::" in probe and "exit 1" in probe, (
+    assert annotation_calls(probe, "error") and "exit 1" in probe, (
         "a sustained listing failure must still fail closed rather than be "
         "laundered into nothing-to-publish"
     )
     # The absence branch must stay reachable: a build that genuinely produced no
     # installer is a clean skip, which is what keeps a Windows-only failure from
     # blocking the other platforms' lanes.
-    assert "present=" in probe and "::notice::" in probe
+    assert "present=" in probe and annotation_calls(probe, "notice")
 
 
 def test_the_signature_is_verified_before_the_bytes_become_immutable() -> None:
@@ -557,7 +558,7 @@ def test_the_pairing_guard_runs_before_the_upload_and_fails_hard() -> None:
     guard = _step("installer/blockmap")
     run = guard["run"]
     assert "exit 1" in run, "the guard must fail the job, not merely annotate"
-    assert "::error::" in run, "the failure must annotate the run"
+    assert annotation_calls(run, "error"), "the failure must annotate the run"
     assert "GITHUB_STEP_SUMMARY" in run, (
         "soft_fail keeps the run green, so the reason must reach the run "
         "summary page rather than living only in the job log"
@@ -669,9 +670,9 @@ def test_a_promoted_candidate_without_an_installer_skips_but_a_fresh_build_fails
     assert locate["env"]["PROMOTE"] == "${{ inputs.promote }}"
     assert "${{" not in run, f"run: block interpolates a workflow expression: {run!r}"
     assert 'if [ "${#FOUND[@]}" -eq 0 ] && [ "${PROMOTE}" = "true" ]' in run
-    assert "staged=" in run and "::notice::" in run
+    assert "staged=" in run and annotation_calls(run, "notice")
     assert 'if [ "${#FOUND[@]}" -ne 1 ]' in run
-    assert "::error::expected exactly one .exe" in run
+    assert 'err "expected exactly one .exe' in run
     # The blockmap requirement holds in BOTH modes: an installer published
     # without it degrades every client to a full download, silently.
     assert '[ ! -f "${SRC}.blockmap" ]' in run

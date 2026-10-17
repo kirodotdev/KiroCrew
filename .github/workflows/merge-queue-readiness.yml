@@ -103,6 +103,8 @@ jobs:
           BRANCH: ${{ github.ref_name }}
           WORKFLOWS: ci.yml fast-gate.yml build.yml internal-content-scan-gate.yml client-py.yml main-ratchet-audit.yml
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -uo pipefail
 
           # Every polled workflow starts from the same webhook, so their runs
@@ -186,7 +188,7 @@ jobs:
             [ "$left" -ge 1 ] || left=1
             [ "$wait" -le "$left" ] || wait="$left"
             [ "$wait" -le "$backoff" ] || backoff="$wait"
-            echo "::warning::API rate limit hit; it resets at epoch $reset." \
+            warn "API rate limit hit; it resets at epoch $reset." \
                  "Sleeping ${wait}s before the next tick."
           }
 
@@ -232,14 +234,14 @@ jobs:
 
             for wf in ${workflows[@]+"${workflows[@]}"}; do
               if ! latest="$(latest_run "$wf")"; then
-                echo "::warning::$wf: could not read its runs on $SHA:" \
+                warn "$wf: could not read its runs on $SHA:" \
                      "$(api_error). Retrying on the next tick."
                 errored="$errored $wf"
                 continue
               fi
               if [ "$latest" = "null" ] || [ -z "$latest" ]; then
                 if seen_id="$(seen_run_id "$wf")"; then
-                  echo "::warning::$wf: run $seen_id was listed earlier" \
+                  warn "$wf: run $seen_id was listed earlier" \
                        "but this listing holds no run for $SHA. Treating the" \
                        "answer as an API error and retrying."
                   errored="$errored $wf"
@@ -266,7 +268,7 @@ jobs:
                 # lanes are not awaited: every tick this group stays queued
                 # holds every group behind it. The attempt is the API's, so a
                 # rerun someone started by hand is named for what it is.
-                echo "::error::$wf concluded '$conclusion' on merge group $SHA" \
+                err "$wf concluded '$conclusion' on merge group $SHA" \
                      "($url) on attempt $attempt. The group is not cleared to" \
                      "merge; re-queue the pull request to try again."
                 exit 1
@@ -275,7 +277,7 @@ jobs:
             done
 
             if [ -n "$missing" ] && [ "$elapsed" -ge "$APPEAR_BUDGET" ]; then
-              echo "::error::No merge_group run found for$missing on $SHA ($BRANCH)" \
+              err "No merge_group run found for$missing on $SHA ($BRANCH)" \
                    "after ${elapsed}s. The verdict cannot be read, so the group is" \
                    "not cleared to merge."
               exit 1
@@ -288,7 +290,7 @@ jobs:
             fi
 
             if [ "$elapsed" -ge "$TOTAL_BUDGET" ]; then
-              echo "::error::Still waiting on${missing}${pending}${errored} after" \
+              err "Still waiting on${missing}${pending}${errored} after" \
                    "${elapsed}s. Failing closed rather than clearing the group" \
                    "unverified."
               exit 1

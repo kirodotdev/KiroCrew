@@ -53,6 +53,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -uo pipefail
           # A diff this step could not COMPUTE is not a diff that touched
           # nothing visual. `2>/dev/null || true` collapsed a failed `git diff`
@@ -72,7 +73,7 @@ jobs:
             ':(exclude)website/src/**/*.test.tsx' \
             ':(exclude)website/src/test/**' \
             ':(exclude)website/src/**/*.d.ts')"; then
-            echo "::error::Could not compute the diff between the base and head commits, so this check cannot tell whether a user-visible surface changed. This is a diff failure, not an absence of visual changes -- re-run this job."
+            err "Could not compute the diff between the base and head commits, so this check cannot tell whether a user-visible surface changed. This is a diff failure, not an absence of visual changes -- re-run this job."
             exit 1
           fi
           if [ -n "$changed" ]; then
@@ -97,9 +98,11 @@ jobs:
           # Labelled PRs pass with a warning rather than silently.
           EXEMPT: ${{ contains(github.event.pull_request.labels.*.name, 'no-screenshots') }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -uo pipefail
           if [ "$EXEMPT" = "true" ]; then
-            echo "::warning::'no-screenshots' label present -- visual-evidence requirement waived for this PR."
+            warn "'no-screenshots' label present -- visual-evidence requirement waived for this PR."
             exit 0
           fi
 
@@ -128,7 +131,7 @@ jobs:
             fi
           done
           if [ -z "$read_ok" ]; then
-            echo "::error::Could not read this PR's description from the API after 3 attempts, so the check cannot judge whether it carries evidence. This is a read failure, not missing evidence -- re-run this job."
+            err "Could not read this PR's description from the API after 3 attempts, so the check cannot judge whether it carries evidence. This is a read failure, not missing evidence -- re-run this job."
             {
               echo "### Could not read the PR description"
               echo
@@ -171,10 +174,10 @@ jobs:
             # asterisks are skipped so a bare bold "**Why no screenshot:**"
             # does not count, while a reason opening with emphasis does.
             if grep -qiE 'why no screenshots?:(\*\*)?[[:space:]]*\**[^*[:space:]]' <<< "$body"; then
-              echo "::warning::'<!-- no-visual-delta -->' marker present in the PR body -- visual-evidence requirement waived. The author's justification is in the PR description."
+              warn "'<!-- no-visual-delta -->' marker present in the PR body -- visual-evidence requirement waived. The author's justification is in the PR description."
               exit 0
             fi
-            echo "::error::The PR body carries the '<!-- no-visual-delta -->' marker without a justification line."
+            err "The PR body carries the '<!-- no-visual-delta -->' marker without a justification line."
             {
               echo "### Marker present, justification missing"
               echo
@@ -188,7 +191,7 @@ jobs:
             exit 1
           fi
 
-          echo "::error::This PR changes a user-visible frontend surface but its description carries no screenshot or recording."
+          err "This PR changes a user-visible frontend surface but its description carries no screenshot or recording."
           {
             echo "### Screenshot evidence required"
             echo

@@ -28,6 +28,7 @@ from ai_review_workflows_helpers import (
     _step_script,
     _workflow,
 )
+from workflow_annotation_helpers import annotation_calls
 
 PREPARE_PR_SKILL = (
     ROOT
@@ -433,7 +434,7 @@ class TestOpusTwoStageArchitecture:
             assert "TRUNCATED at" not in script, f"{lane}: truncation path survived"
             assert 'head -c "$MAX_CANDIDATE_BYTES"' not in script, lane
             over = script.index('-gt "$MAX_CANDIDATE_BYTES"')
-            assert "::error::" in script[over:], f"{lane}: must error, not warn"
+            assert annotation_calls(script[over:], "error"), f"{lane}: must error, not warn"
             assert "exit 1" in script[over:], f"{lane}: must exit nonzero"
             assert 'MAX_CANDIDATE_BYTES: "200000"' in workflow, lane
 
@@ -475,9 +476,9 @@ class TestOpusTwoStageArchitecture:
         """
         for lane in self.LANES:
             script = _step_script(_workflow(lane), "Capture discovery candidates")
-            assert "::error::Discovery produced no [OPUS-DISCOVERY] marker" in script, lane
-            assert "::warning::Discovery produced no" not in script, lane
-            marker_at = script.index("::error::Discovery produced no")
+            assert 'err "Discovery produced no [OPUS-DISCOVERY] marker' in script, lane
+            assert 'warn "Discovery produced no' not in script, lane
+            marker_at = script.index('err "Discovery produced no')
             assert "exit 1" in script[marker_at:], f"{lane}: must exit nonzero"
 
     def test_verdict_is_gated_on_sha_scoped_markers_not_structured_output(self) -> None:
@@ -1307,7 +1308,7 @@ class TestOpusDiscoveryCaptureExecutes:
         the exit, the branch may echo fixed keys and validated tokens only."""
 
         def _code(script: str) -> str:
-            start = script.index("::error::Discovery produced no [OPUS-DISCOVERY] marker")
+            start = script.index('err "Discovery produced no [OPUS-DISCOVERY] marker')
             end = _exit_line_at(script, start)
             return "\n".join(
                 ln for ln in script[start:end].splitlines() if not ln.strip().startswith("#")
