@@ -42,9 +42,9 @@ APP_NAME = "issue-radar"
 
 
 #: Crews get a turn on this idle gap when the sweep has nothing to report. The
-#: watcher is the real scheduler (it fires on an actual signal); this is the
-#: fallback clock that lets an idle crew pick up NEW work, so it is deliberately
-#: slow. ``autonudge`` clamps it to [15s, 24h].
+#: watcher is the real scheduler (it fires on an actual signal, new work included);
+#: this is the fallback clock for whatever the watcher cannot see, so it is
+#: deliberately slow. ``autonudge`` clamps it to [15s, 24h].
 DEFAULT_IDLE_SECS = 300
 
 
@@ -351,6 +351,21 @@ NO_PERMIT_CARD = (
 )
 
 
+#: ``async (slot_key, prompt, consumed)``, set by ``crew_wake_inflight``: told when
+#: the model consumed a crew turn's prompt, or the turn ended before it did.
+_ADMISSION_HOOK: Any = None
+
+
+async def _tell_admission(slot: Any, prompt: str, admitted: bool) -> None:
+    hook = _ADMISSION_HOOK
+    if hook is None:
+        return
+    try:
+        await hook(str(getattr(slot, "key", "")), prompt, admitted)
+    except Exception:  # never let the bookkeeping fail a turn
+        logger.warning("issue-radar: crew admission hook failed", exc_info=True)
+
+
 async def _capped_run_chat(state: Any, slot: Any, prompt: str) -> None:
     """One crew turn, charged against the app-owned background-turn cap.
 
@@ -368,14 +383,87 @@ async def _capped_run_chat(state: Any, slot: Any, prompt: str) -> None:
     expires. That is reported here rather than swallowed: a refused turn and a
     finished one must not look the same from the outside.
     """
+    # The hook hears ``True`` only once the model has CONSUMED the prompt: the
+    # runner's consumption callbacks (output streamed, or a real end of turn), which
+    # also ride any retry it queues. A cancel or a permit timeout before that tells
+    # it ``False``; a restart tells it nothing, and the carry's process stamp hands
+    # the ask back. ``finalized`` is set before the shielded write, so a cancel that
+    # lands during it neither races it nor returns a consumed ask.
+    #
+    # Each attempt is settled when it ends. The first one here: consumed, or else
+    # returned unless a retry carrying these callbacks is queued (a cancellation the
+    # runner swallowed ends it the same way). A retry the queue drain runs later is
+    # watched from its own ``_on_consumed(True)``: when that turn ends still
+    # consumed (an empty response retracts it), the ask is consumed.
+    consumed = False
+    finalized = False
+    first_done = False
+    watched: set[Any] = set()
+
+    async def _finalize() -> None:
+        nonlocal finalized
+        if not finalized:
+            finalized = True
+            await asyncio.shield(_tell_admission(slot, prompt, True))
+
+    async def _settle_after(turn: Any) -> None:
+        try:
+            await turn
+        except (asyncio.CancelledError, Exception):
+            if not turn.done():
+                raise
+        if consumed:
+            await _finalize()
+
+    def _note_consumed(value: bool = True) -> None:
+        nonlocal consumed
+        consumed = value
+        turn = asyncio.current_task()
+        if value and first_done and turn is not None and turn not in watched:
+            watched.add(turn)
+            watcher = asyncio.ensure_future(_settle_after(turn))
+            tasks = getattr(state, "_background_tasks", None)
+            keep = tasks if isinstance(tasks, set) else watched
+            keep.add(watcher)
+            watcher.add_done_callback(keep.discard)
+
+    def _retry_queued() -> bool:
+        queue = getattr(slot, "_queue", None)
+        items = queue if isinstance(queue, list) else []
+        return any(isinstance(e, dict) and e.get("_on_consumed") is _note_consumed for e in items)
+
+    async def _admitted_chat() -> None:
+        nonlocal first_done
+        # The prompt is composed by the crew runtime, so the ledger records the crew
+        # as the actor rather than a user.
+        try:
+            await _run_chat(
+                state,
+                slot,
+                prompt,
+                _directive_user_origin=False,
+                _turn_actor="crew",
+                _on_consumed=_note_consumed,
+                _on_irreversibly_consumed=_finalize,
+            )
+        finally:
+            # On every exit, a cancellation included: a retry it left queued is then
+            # watched like any other.
+            first_done = True
+        if consumed:
+            await _finalize()
+        elif not finalized and not _retry_queued():
+            await _tell_admission(slot, prompt, False)
+
     try:
-        await state.run_background_turn(
-            slot,
-            # The prompt is composed by the crew runtime, so the ledger records
-            # the crew as the actor rather than a user.
-            _run_chat(state, slot, prompt, _directive_user_origin=False, _turn_actor="crew"),
-        )
+        await state.run_background_turn(slot, _admitted_chat())
+    except asyncio.CancelledError:
+        if not finalized and (consumed or not _retry_queued()):
+            await asyncio.shield(_tell_admission(slot, prompt, consumed))
+        raise
     except (asyncio.TimeoutError, TimeoutError):
+        if not finalized:
+            await _tell_admission(slot, prompt, consumed)
         logger.warning(
             "issue-radar: crew turn on %s never got a background-turn permit",
             getattr(slot, "key", "?"),

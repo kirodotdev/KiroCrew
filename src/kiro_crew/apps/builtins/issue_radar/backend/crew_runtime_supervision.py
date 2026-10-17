@@ -392,6 +392,13 @@ async def _wake_crew_body(
             reason or "signal",
         )
         return False
+    # A turn that started during the awaits above makes this wake a drop, not a
+    # queued prompt: a queued wake would run outside the consumption bookkeeping
+    # that a carried mention ask relies on, and the sweep would ask it again.
+    # Nothing awaits from here to the dispatch, so the check holds there.
+    if getattr(slot, "running", False):
+        logger.info("issue-radar crew %s: mid-turn at dispatch, wake dropped", crew.get("id"))
+        return False
     # The model this turn runs on, from the ledger read above and the record just
     # re-read. Synchronous, and nothing awaits between it and the dispatch, so no
     # other turn can start on the slot in between.
