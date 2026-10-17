@@ -34,7 +34,6 @@ src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/cloudwatch.py 
 src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/http.py 53.8   # 35/65
 src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/pagerduty.py 68.8   # 75/109
 src/kiro_crew/apps/builtins/workflows/server.py 61.2   # 82/134
-src/kiro_crew/apps/route_registry.py 51.9   # 67/129
 src/kiro_crew/cli_cloud.py 61.2   # 178/291
 src/kiro_crew/cloud/ui.py 51.4   # 90/175
 src/kiro_crew/cloud/wizard.py 65.8   # 283/430

@@ -2334,9 +2334,12 @@ answers `tools/list` from):
   `workflow_cancel`, `workflow_rerun_subtree`, `register_hook`
 - **App bridges:** `issue_radar_record_investigation`,
   `ops_mission_control_api`, `design_tweak_update_thread`, `pod_up`, `pod_down`,
-  `pod_status`, `pod_ls`, `issue_radar_crew_read`, `issue_radar_crew_record`.
-  Listed only while the app each one reaches is enabled — see § An app's tools
-  follow the app's enablement below.
+  `pod_status`, `pod_ls`, `issue_radar_crew_read`, `issue_radar_crew_record`,
+  `app_request`. Each tool but `app_request` is listed only while the app it
+  reaches is enabled — see § An app's tools follow the app's enablement below.
+  `app_request` reaches whichever app the call names, so it is listed only while
+  some installed app that is not disabled declares `agentRoutes`, and refuses a
+  disabled app per call.
 - **Browser:** `browser`
 - **Diagnostics:** `resource_status`, `kiro_cli_logs` — a redacted tail of kiro-cli's own mcp/lsp protocol logs, so
   the agent can self-diagnose a rejected turn. Reads log files only: never the
@@ -2373,6 +2376,14 @@ answers `tools/list` from):
   applies it. `status` is restricted to `done` (forward progress only — no
   clear/dismiss), and the gateway admits only that one path for internal-secret
   callers, never the app's state-mutating routes
+- **App bridges (declared routes):** `app_request` calls any installed app's
+  hook route named in that app's signed `agentRoutes` manifest field, sending
+  the caller's strictly-resolved session key; the tool itself refuses a disabled
+  app before sending any request, and the gateway refuses an undeclared route.
+  Every call carries a
+  dedicated marker that the gateway admits only through the registry agent-route
+  arm; static internal paths remain exclusive to their dedicated MCP tools even
+  if an installed manifest names one
 
 ### A `kirocrew-core` tool has two halves
 
@@ -2420,6 +2431,13 @@ session with none of the apps enabled was told about tools that could only
 refuse — and because kiro-cli reads `tools/list` once per session and Crew's own
 servers are exempt from `tool_search` deferral, each one cost its full schema in
 every request of that session.
+
+The tenth `apps`-domain tool, `app_request`, is not one of them: it reaches
+whichever installed app the call names, so it has no single app to follow. It
+is absent from `TOOL_APPS` and follows the whole set instead: it is listed only
+while some installed app whose enablement is not a readable `False` declares a
+non-empty `agentRoutes`, and it still refuses a disabled app on each call. The
+scan fails open, like the per-app gate: a raising read lists the tool.
 
 `mcp_tools.apps.advertised()` therefore emits a tool's descriptor only while its
 app is enabled, and the decision reads **the same record the call refusal reads**:

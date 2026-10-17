@@ -68,6 +68,12 @@ KIROCREW_SANDBOX_TOOL_VALUE = "1"
 #: ACP tree to learn the env name.
 BUNDLED_KAS_DIR_ENV = "KIROCREW_BUNDLED_KAS_DIR"
 
+# Marks traffic emitted by the generic app_request MCP tool. The auth middleware
+# uses this wire marker to keep that tool on the registry-admitted agent-route arm
+# and out of dedicated tools' static internal endpoint allowlists.
+APP_REQUEST_HEADER = "X-KiroCrew-App-Request"
+APP_REQUEST_HEADER_VALUE = "1"
+
 # Canonical truthy set for boolean environment variables (KIROCREW_NO_JAIL,
 # KIROCREW_DEV_MODE, …).  Use ``env_flag_enabled`` rather than ``bool(os.environ
 # .get(...))`` — a bare bool() treats ``"0"``/``"false"`` as truthy, which for a

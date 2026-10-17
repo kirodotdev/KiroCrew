@@ -466,8 +466,8 @@ def _transport_failure(message: str, mark: bool) -> dict:
     reached the gateway before the response failed (a read timeout after spawn
     acceptance, say), so the caller must not declare a definite rejection nor
     retry on its own. Its readers (spawn_run's batch reconcile, the cron tool
-    proxy, learn_add) all post, so the flag stays opt-in per verb rather than
-    becoming a new field on every reply.
+    proxy, learn_add, mutating app requests) all post, so the flag stays
+    opt-in per verb rather than becoming a new field on every reply.
     """
     out: dict[str, object] = {"error": message}
     if mark:
@@ -505,7 +505,7 @@ def _refused_message(refused_base: str, exc: BaseException) -> str:
     )
 
 
-def _http_error_body(exc: urllib.error.HTTPError) -> dict:
+def _http_error_body(exc: urllib.error.HTTPError, *, max_response_bytes: int | None = None) -> dict:
     """Decode the JSON body of an ``HTTPError`` into the standard error dict.
 
     Prefers the structured ``{"error": ...}`` JSON body (so callers can match
@@ -520,9 +520,14 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
     ``"unknown session"`` intact, so downstream matching is unaffected.
     """
     try:
-        raw = exc.read().decode("utf-8", "replace").strip()
+        raw_bytes = (
+            exc.read(max_response_bytes + 1) if max_response_bytes is not None else exc.read()
+        )
     except Exception:
-        raw = ""
+        raw_bytes = b""
+    if max_response_bytes is not None and len(raw_bytes) > max_response_bytes:
+        return {"error": f"response body exceeds the {max_response_bytes}-byte limit"}
+    raw = raw_bytes.decode("utf-8", "replace").strip()
     message = raw or str(exc)
     counted = False
     code = ""
