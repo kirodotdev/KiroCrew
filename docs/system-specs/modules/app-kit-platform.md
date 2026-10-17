@@ -1869,7 +1869,7 @@ than at one gate, so it is not folded into the approved set.
 
 **Prefix grants are narrowed to owned resources on the cross-session routes.**
 `permissions.api` is a prefix match, so the routes below are judged per resource
-for an app caller (`handlers/sessions.py`). The rule keys on the request's `app`
+for an app caller (`handlers/sessions.py`, rule in `handlers/sessions_parts/app_scope.py`). The rule keys on the request's `app`
 claim, so it covers an app token and also an internal-secret caller whose calling
 session `token_auth` derives to an app (`_derive_internal_caller_app`: an app's
 slot, cron job or subagent).

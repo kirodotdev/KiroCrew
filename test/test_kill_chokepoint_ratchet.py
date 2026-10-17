@@ -281,7 +281,7 @@ _RELEASE_BEFORE_KILL = (
         "_dispatch_hard_kill",
     ),
     (
-        "src/kiro_crew/dashboard/handlers/sessions.py",
+        "src/kiro_crew/dashboard/handlers/sessions_parts/restart.py",
         "release_session_lease",
         "_sync_kill_provider",
     ),

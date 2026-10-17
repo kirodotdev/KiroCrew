@@ -524,11 +524,11 @@ exercises the production value. Symptom: a test that "shortens" a timeout yet
 still takes the full production duration.
 
 ```python
-# WRONG — handlers/__init__.py only re-exports the constant; sessions.py
-# still reads its own module global (test silently waits the real 10s):
+# WRONG — handlers/__init__.py only re-exports the constant; the sessions
+# family still reads its own module global (test silently waits the real 10s):
 monkeypatch.setattr("kiro_crew.dashboard.handlers._SHUTDOWN_TIMEOUT_SECS", 0.05)
 
-# RIGHT — patch where the constant is defined and read:
+# RIGHT — patch the sessions facade, whose mirror writes the owner that reads it:
 monkeypatch.setattr("kiro_crew.dashboard.handlers.sessions._SHUTDOWN_TIMEOUT_SECS", 0.05)
 ```
 

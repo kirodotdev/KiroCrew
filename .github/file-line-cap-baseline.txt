@@ -65,7 +65,6 @@
 2695 src/kiro_crew/dashboard/handlers/memory.py
 2788 src/kiro_crew/dashboard/handlers/messaging.py
 2807 src/kiro_crew/dashboard/handlers/security.py
-5451 src/kiro_crew/dashboard/handlers/sessions.py
 3358 src/kiro_crew/dashboard/handlers/updates.py
 2158 src/kiro_crew/dashboard/handlers/work_ledger.py
 2856 src/kiro_crew/dashboard/handlers_instances.py

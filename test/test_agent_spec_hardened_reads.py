@@ -1350,7 +1350,9 @@ _EXPECTED_PARSED_SPECS_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 # every caller names the surface whose resolution the denial belongs to.
 _EXPECTED_DECLARED_NAME_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/acp/kas_agents.py": [("kas_agent_projection", "unknown")],
-    "kiro_crew/dashboard/handlers/sessions.py": [("session_tool_policy", "dashboard")],
+    "kiro_crew/dashboard/handlers/sessions_parts/tool_policy.py": [
+        ("session_tool_policy", "dashboard")
+    ],
 }
 
 
@@ -1373,7 +1375,7 @@ _EXPECTED_STRICT_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("conductor_spec_regeneration", "unknown"),
     ],
     "kiro_crew/crewmate_prune_migration.py": [("crewmate_prune", "dashboard")],
-    "kiro_crew/dashboard/handlers/sessions.py": [
+    "kiro_crew/dashboard/handlers/sessions_parts/tool_policy.py": [
         ("session_tool_policy", "dashboard"),
         ("session_tool_policy", "dashboard"),
     ],

@@ -2361,9 +2361,13 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/server_runtime/owner_notices.py",
         "dashboard/server_runtime/workflow_startup.py",
         "dashboard/handlers/sessions.py",
+        "dashboard/handlers/sessions_parts/history_reads.py",
+        "dashboard/handlers/sessions_parts/summaries.py",
+        "dashboard/handlers/sessions_parts/tool_policy.py",
+        "dashboard/handlers/sessions_parts/usage_scrape.py",
         # Roster last-message previews: same preview + redaction chain as
-        # handlers/sessions.py, feeding the same dashboard HTTP surface the
-        # registered sink already covers.
+        # handlers/sessions_parts/history_reads.py, feeding the same dashboard
+        # HTTP surface the registered sink already covers.
         "dashboard/handlers/members.py",
         # The crewmate recap lines `handlers/members.py`'s recap route returns:
         # a helper behind that same dashboard HTTP surface, not a boundary itself.

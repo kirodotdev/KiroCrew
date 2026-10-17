@@ -806,7 +806,8 @@ class CCWorker(Worker):
             start_new_session=platform_compat.IS_POSIX,
             creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             # The agent enforcement point, passed exactly as the agent-CLI
-            # spawns in ``dashboard/handlers/sessions.py`` pass it. This worker
+            # spawns in ``dashboard/handlers/sessions.py`` and
+            # ``sessions_parts/usage_scrape.py`` pass it. This worker
             # runs with its permission prompts disabled and its inputs are
             # knowledge documents, so gateway-owned credentials must not be
             # readable inside it. The tier does not cover this: no tier below
