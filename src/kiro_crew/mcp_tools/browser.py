@@ -26,11 +26,14 @@ polarities: availability fails **closed** -- no ``playwright-cli`` and no native
 panel yields an "install it from Settings -> Browser" error -- while a
 ``capabilities.browse`` denial refuses **outright** with no playwright fallback,
 because a fallback would let browsing continue and defeat the control. The
-handler re-checks availability rather than trusting the advertisement because
-kiro-cli caches ``tools/list`` for the life of a session, so a session that
-started with the CLI installed keeps offering the tool after it is removed.
-Presence of the CLI is the availability signal for browsing on this host (see
-``browser_cli.install``), not consent to bypass the approval path.
+native panel is Electron's own view and needs no CLI, so CLI presence is checked
+only where the op would fall back to playwright-cli; a fresh desktop install
+browses without installing anything. The handler re-checks availability rather
+than trusting the advertisement because kiro-cli caches ``tools/list`` for the
+life of a session, so a session that started with the CLI installed keeps
+offering the tool after it is removed. Presence of the CLI is the availability
+signal for the playwright-cli path (see ``browser_cli.install``), not consent to
+bypass the approval path.
 """
 
 from __future__ import annotations
@@ -91,6 +94,20 @@ _DISABLED_TEXT = (
     "The built-in browser is turned off in Settings -> Browser, so browsing uses "
     "playwright-cli. Use the playwright-cli browser verbs directly -- e.g. "
     "`playwright-cli open <url>`, `snapshot`, `click <ref>`, `screenshot`."
+)
+
+# Returned only when the op needs the playwright-cli fallback AND the CLI is
+# absent. The native panel needs no CLI, so this never fires for a desktop
+# session whose panel is serving. Worded for relay: a customer who asked to open
+# a page has no reason to know a Settings page exists, so the agent must say what
+# is missing and where the one-click install lives rather than echo an error.
+_NOT_SET_UP_TEXT = (
+    "Error: browsing is not set up on this host -- this session has no built-in "
+    "browser panel to use, and the playwright-cli fallback is not installed. "
+    "Tell the user plainly that browser support needs a one-time install and "
+    "that Settings -> Browser (/settings/browser) has an Install button; do not "
+    "assume they know that page exists. Offer to continue their request once it "
+    "is installed. For a page that only needs reading, use web_fetch meanwhile."
 )
 
 # Per-op ceilings (ms) forwarded to the bus. A page load or an explicit
@@ -423,15 +440,19 @@ def _with_own_browser_step(text: str) -> str:
     return f"{text} {own_browser.next_step()}"
 
 
-def browser(name: str, args: dict[str, Any]) -> str:
-    # Re-checked here as well as in ``schemas()``: kiro-cli caches the tool list
-    # for a session's life, so a session that started with the CLI installed
-    # keeps offering the tool after it is removed. Fail-CLOSED.
+def _playwright_fallback(text: str) -> str:
+    """The playwright-cli guidance, or the install guidance when the CLI is absent.
+
+    Checked per call rather than trusted from the advertisement: kiro-cli caches
+    the tool list for a session's life, so a session that started with the CLI
+    installed keeps offering the tool after it is removed. Fail-CLOSED.
+    """
     if not _browsing_available():
-        return (
-            "Error: browsing is not set up on this host. Install it from "
-            "Settings -> Browser first."
-        )
+        return _NOT_SET_UP_TEXT
+    return _with_own_browser_step(text)
+
+
+def browser(name: str, args: dict[str, Any]) -> str:
     # Governance gate (capabilities.browse). A policy that denies web browsing
     # must stop it on the native path too, so refuse OUTRIGHT here -- do NOT
     # fall back to playwright-cli (that would let browsing continue and defeat
@@ -449,7 +470,7 @@ def browser(name: str, args: dict[str, Any]) -> str:
         logger.debug(
             "browser-cmdbus/tool: built-in browser disabled by setting -> playwright-cli fallback"
         )
-        return _with_own_browser_step(_DISABLED_TEXT)
+        return _playwright_fallback(_DISABLED_TEXT)
     op = args.get("op")
     if not isinstance(op, str) or op not in BROWSER_OPS:
         return f"Error: op must be one of: {', '.join(BROWSER_OPS)}"
@@ -525,7 +546,7 @@ def browser(name: str, args: dict[str, Any]) -> str:
         # route's peer check with a hard 403, masking the clean fallback. Route
         # to playwright-cli instead, exactly like the no-panel (503) case below.
         logger.debug("browser-cmdbus/tool: unresolved session -> playwright-cli fallback")
-        return _with_own_browser_step(_FALLBACK_TEXT)
+        return _playwright_fallback(_FALLBACK_TEXT)
     header_err = mcp_core._session_key_header_error(session_key)
     if header_err:
         return f"Error: {header_err}"
@@ -553,7 +574,7 @@ def browser(name: str, args: dict[str, Any]) -> str:
         logger.debug(
             "browser-cmdbus/tool: no native panel (status=%s) -> playwright-cli fallback", status
         )
-        return _with_own_browser_step(_FALLBACK_TEXT)
+        return _playwright_fallback(_FALLBACK_TEXT)
     code = payload.get("code") if isinstance(payload, dict) else None
     err = payload.get("error") if isinstance(payload, dict) else None
     return f"Error: browser command failed (HTTP {status}{f', {code}' if code else ''}): {err or 'no detail'}"

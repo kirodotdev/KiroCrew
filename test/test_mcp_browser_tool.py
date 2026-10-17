@@ -23,8 +23,8 @@ from kiro_crew.mcp_tools import browser as mod
 
 @pytest.fixture(autouse=True)
 def _browsing_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Presence of the CLI is the browse availability gate; force it on so the tool
-    # runs its body instead of the "not set up" early return.
+    # Presence of the CLI gates only the playwright-cli fallback; force it on so
+    # fallback tests get the guidance text instead of the "not set up" reply.
     monkeypatch.setattr(mod, "_browsing_available", lambda: True)
     # The header encodability guard is orthogonal to what these tests exercise.
     monkeypatch.setattr(mod.mcp_core, "_session_key_header_error", lambda sk: None)
@@ -349,10 +349,59 @@ def test_description_names_the_attach_command_for_this_host(
         assert own_browser.ATTACH_COMMAND not in description
 
 
-def test_browsing_not_set_up_degrades_at_call_time(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_native_panel_serves_without_playwright_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The native panel is Electron's own view: a fresh desktop install with no
+    # CLI must browse, not be told to install something it does not need.
     monkeypatch.setattr(mod, "_browsing_available", lambda: False)
+    monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-7-1")
+    calls: list[tuple[str, str, dict, str, int]] = []
+    monkeypatch.setattr(
+        mod, "_post_command", _capture_post(calls, 200, {"ok": True, "result": "ok"})
+    )
+    out = mod.browser("browser", {"op": "navigate", "args": {"url": "https://example.com"}})
+    assert len(calls) == 1
+    assert out == "Browser navigate: ok"
+
+
+@pytest.mark.parametrize("status", [503, 404, None])
+def test_no_panel_and_no_cli_gives_install_guidance(
+    monkeypatch: pytest.MonkeyPatch, status: int | None
+) -> None:
+    monkeypatch.setattr(mod, "_browsing_available", lambda: False)
+    monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-7-1")
+    monkeypatch.setattr(mod, "_post_command", _capture_post([], status, {}))  # type: ignore[arg-type]
     out = mod.browser("browser", {"op": "snapshot"})
+    assert out == mod._NOT_SET_UP_TEXT
     assert out.startswith("Error: browsing is not set up")
+    assert "Settings -> Browser" in out
+
+
+def test_unresolved_session_without_cli_gives_install_guidance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mod, "_browsing_available", lambda: False)
+    monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "")
+    out = mod.browser("browser", {"op": "snapshot"})
+    assert out == mod._NOT_SET_UP_TEXT
+
+
+def test_panel_turned_off_without_cli_gives_install_guidance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mod, "_browsing_available", lambda: False)
+    monkeypatch.setattr(mod, "_use_builtin_browser", lambda: False)
+    out = mod.browser("browser", {"op": "snapshot"})
+    assert out == mod._NOT_SET_UP_TEXT
+
+
+def test_governance_deny_wins_even_without_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The availability check moved after governance; a deny must still refuse
+    # outright rather than read as "go install it".
+    monkeypatch.setattr(mod, "_browsing_available", lambda: False)
+    monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-7-1")
+    monkeypatch.setattr(mod.mcp_core, "_vet_browse_governance", lambda s: "browse denied")
+    out = mod.browser("browser", {"op": "snapshot"})
+    assert out == "Error: browse denied"
 
 
 def test_op_ran_but_failed_surfaces_the_error(monkeypatch: pytest.MonkeyPatch) -> None:

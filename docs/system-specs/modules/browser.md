@@ -13,8 +13,13 @@ The native path is a **single MCP tool, not a Playwright tool namespace.** Its
 `select_option`, `screenshot`, `wait_for`, `back`, and `console`. The MCP shim
 posts one bounded command to the gateway's in-memory bus; Electron long-polls the
 bus, runs the operation in the panel it owns, and posts the result. A missing
-panel fails fast to the CLI fallback. The agent still decides per task whether a
-browser is warranted or whether `web_fetch` answers the question.
+panel fails fast to the CLI fallback. The native path needs no `playwright-cli`,
+so a fresh desktop install browses with nothing installed; CLI presence is
+checked only when an op falls back, and a fallback with no CLI returns guidance
+the agent relays to the user, naming the one-click install in
+**Settings → Browser** rather than assuming they know it exists. The agent still
+decides per task whether a browser is warranted or whether `web_fetch` answers
+the question.
 
 ```
 agent turn ──MCP browser(op, args)──▶ gateway command bus ──▶ Electron native view
