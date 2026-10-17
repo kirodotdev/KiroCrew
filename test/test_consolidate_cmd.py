@@ -6,6 +6,202 @@ import argparse
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _certified_standalone_authority(_floor_monkeypatch):
+    """Keep legacy command tests focused while preserving the real call site."""
+    from kiro_crew import cli, sandbox
+
+    _floor_monkeypatch.delenv("KIROCREW_SANDBOX_ACTIVE", raising=False)
+    _floor_monkeypatch.setattr(sandbox, "_macos_sandbox_state", lambda: None)
+    _floor_monkeypatch.setattr(
+        cli,
+        "initialize_gateway_auto_skill_private_authority",
+        lambda: object(),
+    )
+
+
+def test_standalone_consolidation_certifies_before_staging(
+    tmp_path,
+    monkeypatch,
+    no_auto_skill_authority_startup,
+):
+    from kiro_crew import cli
+    from kiro_crew import skills as skills_mod
+    from kiro_crew.config import KiroCrewConfig
+    from kiro_crew.skills import AutoSkillProvenance, SkillsLoader
+
+    del no_auto_skill_authority_startup
+    monkeypatch.setattr(
+        skills_mod,
+        "_auto_skill_authority_sandbox_refusal",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        cli,
+        "initialize_gateway_auto_skill_private_authority",
+        skills_mod.initialize_gateway_auto_skill_private_authority,
+    )
+    cfg = KiroCrewConfig()
+    cfg.skills.auto_create_from_sessions = True
+    monkeypatch.setattr(cli.KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+
+    log = MagicMock()
+    log._dir = tmp_path / "sessions"
+    log._dir.mkdir()
+    log.unconsolidated_count.return_value = 1
+    monkeypatch.setattr(cli, "ConversationLog", lambda: log)
+    memory = MagicMock()
+    monkeypatch.setattr(cli, "MemoryStore", lambda: memory)
+    monkeypatch.setattr(cli, "SessionManager", lambda *_args, **_kwargs: MagicMock())
+    monkeypatch.setattr(cli, "build_provider_factory", lambda _cfg: MagicMock())
+    monkeypatch.setattr(cli, "sel", lambda: MagicMock())
+    loader = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+    monkeypatch.setattr(cli, "SkillsLoader", lambda: loader)
+
+    class _Consolidator:
+        async def consolidate_now(self, key):
+            assert key == "standalone-session"
+            assert loader.stage_skill_candidate(
+                "standalone-candidate",
+                description="standalone candidate",
+                triggers="standalone",
+                procedure_md="## Steps\n\nRun it.",
+                provenance=AutoSkillProvenance(
+                    session_key=key,
+                    created_at="2026-10-06T13:00:00+00:00",
+                ),
+            ) == "auto/standalone-candidate"
+            log.unconsolidated_count.return_value = 0
+            return True
+
+    def build_consolidator(**kwargs):
+        assert kwargs["skills_loader"] is loader
+        assert kwargs["auto_skills_enabled"] is True
+        return _Consolidator()
+
+    monkeypatch.setattr(cli, "HistoryConsolidator", build_consolidator)
+
+    cli._consolidate_cmd(
+        argparse.Namespace(session_key="standalone-session", consolidate_all=False)
+    )
+
+    assert skills_mod._STARTUP_AUTHORITY_BINDING is not None
+    assert loader.get_pending_skill("standalone-candidate") is not None
+
+
+@pytest.mark.usefixtures("no_auto_skill_authority_startup")
+def test_consolidation_still_runs_on_a_delegated_host(tmp_path, monkeypatch, capsys):
+    """A closed auto-skill gate never stops ``kirocrew consolidate``.
+
+    Mirrors the gateway contract on a host whose agents run in a sandbox Kiro
+    Crew does not build: the real initializer refuses and records why, memory
+    consolidation runs and advances the transcript, skill detection is skipped
+    entirely (no skill prompt, no candidate, no detection marker), and the
+    operator who enabled auto-skill creation sees exactly one notice.
+    """
+    from kiro_crew import cli
+    from kiro_crew import skills as skills_mod
+    from kiro_crew.config import KiroCrewConfig
+    from kiro_crew.history import ConversationLog
+    from kiro_crew.memory import MemoryStore
+    from kiro_crew.skills import SkillsLoader
+
+    monkeypatch.setattr(skills_mod, "_agent_sandbox_is_delegated", lambda: True)
+    monkeypatch.setattr(
+        cli,
+        "initialize_gateway_auto_skill_private_authority",
+        skills_mod.initialize_gateway_auto_skill_private_authority,
+    )
+    cfg = KiroCrewConfig()
+    cfg.skills.auto_create_from_sessions = True
+    cfg.skills.auto_min_tool_calls = 2
+    monkeypatch.setattr(cli.KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+
+    key = "dashboard:delegated-consolidation"
+    conv_log = ConversationLog(base_dir=tmp_path / "sessions")
+    conv_log.init()
+    for i in range(6):
+        conv_log.append(key, "assistant", f"step {i}", tools=["Running: grep foo bar.txt"])
+    monkeypatch.setattr(cli, "ConversationLog", lambda: conv_log)
+    monkeypatch.setattr(cli, "MemoryStore", lambda: MemoryStore(workspace=tmp_path / "memory"))
+    monkeypatch.setattr(cli, "SessionManager", lambda *_args, **_kwargs: MagicMock())
+    monkeypatch.setattr(cli, "build_provider_factory", lambda _cfg: MagicMock())
+    monkeypatch.setattr(cli, "sel", lambda: MagicMock())
+    loader = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+    monkeypatch.setattr(cli, "SkillsLoader", lambda: loader)
+
+    prompts: list[str] = []
+
+    async def fake_llm(prompt, *, memory_store: str = "", session_key: str = ""):
+        prompts.append(prompt)
+        return {
+            "history_entry": "searched the logs",
+            "new_skill": {
+                "slug": "never-staged",
+                "description": "Search logs with grep",
+                "triggers": "grep, logs",
+                "procedure_md": "## Steps\n1. grep\n",
+            },
+        }
+
+    built: dict = {}
+    real_consolidator = cli.HistoryConsolidator
+
+    def build_consolidator(**kwargs):
+        consolidator = real_consolidator(**kwargs)
+        consolidator._call_llm = fake_llm
+        built["consolidator"] = consolidator
+        return consolidator
+
+    monkeypatch.setattr(cli, "HistoryConsolidator", build_consolidator)
+
+    cli._consolidate_cmd(argparse.Namespace(session_key=key, consolidate_all=False))
+
+    assert skills_mod._auto_skill_promotion_ruled_out() is True
+    assert conv_log.unconsolidated_count(key) == 0
+    assert prompts, "memory consolidation must still prompt"
+    assert not any("skill-extraction agent" in prompt for prompt in prompts)
+    assert built["consolidator"]._last_skillgen_marker == {}
+    assert loader.list_pending_skills() == []
+    assert loader.list_auto_skills() == []
+    notices = [
+        line
+        for line in capsys.readouterr().err.splitlines()
+        if "Auto-skill creation is off for this run" in line
+    ]
+    assert len(notices) == 1
+    assert "does not build" in notices[0]
+
+
+def test_standalone_refusal_is_silent_when_auto_skills_are_off(monkeypatch, capsys):
+    from kiro_crew import cli
+    from kiro_crew.config import KiroCrewConfig
+
+    cfg = KiroCrewConfig()
+    cfg.skills.auto_create_from_sessions = False
+    monkeypatch.setattr(cli.KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+    log = MagicMock()
+    log.unconsolidated_count.return_value = 0
+    monkeypatch.setattr(cli, "ConversationLog", lambda: log)
+    monkeypatch.setattr(cli, "MemoryStore", lambda: MagicMock())
+    monkeypatch.setattr(cli, "SkillsLoader", lambda: MagicMock())
+    monkeypatch.setattr(cli, "SessionManager", lambda *_args, **_kwargs: MagicMock())
+    monkeypatch.setattr(cli, "build_provider_factory", lambda _cfg: MagicMock())
+    monkeypatch.setattr(cli, "HistoryConsolidator", lambda **_kwargs: MagicMock())
+    monkeypatch.setattr(cli, "sel", lambda: MagicMock())
+
+    def refuse():
+        raise OSError("sandbox_off")
+
+    monkeypatch.setattr(cli, "initialize_gateway_auto_skill_private_authority", refuse)
+
+    cli._consolidate_cmd(argparse.Namespace(session_key="quiet-session", consolidate_all=False))
+
+    assert "Auto-skill" not in capsys.readouterr().err
+
 
 def _draining(mock_log):
     """A ``consolidate_now`` that leaves the tail empty, as the real one does.
