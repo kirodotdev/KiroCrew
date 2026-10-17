@@ -15,6 +15,7 @@ import zipfile
 from datetime import datetime
 from functools import partial
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import NamedTuple
 
 from aiohttp import web
 
@@ -37,6 +38,9 @@ from kiro_crew.dashboard.handlers._shared import (
 from kiro_crew.dashboard.handlers.files import (
     _ZIP_CONTAINER_EXTS,
     _content_matches_ext,
+    _PathProbeBusy,
+    _probe_busy_response,
+    _run_path_probe,
 )
 from kiro_crew.dashboard.origin import is_direct_local_request
 from kiro_crew.dashboard.upload_limits import bytes_to_mb_figure, knowledge_upload_max_bytes
@@ -1331,6 +1335,67 @@ async def pick_folder(request: web.Request) -> web.Response:
     return web.json_response({"path": path})
 
 
+#: URI prefixes add_source treats as remote: no filesystem probe runs for them.
+_REMOTE_URI_PREFIXES = ("https://", "http://", "upload://", "code://")
+
+
+class _LocalUriProbe(NamedTuple):
+    """What one off-loop look at a local source path found.
+
+    ``resolved`` is the canonical path. ``is_file`` / ``is_dir`` are only
+    probed when the path is not sensitive, so a restricted path is never
+    stat'ed.
+    """
+
+    resolved: str
+    sensitive: bool
+    is_file: bool
+    is_dir: bool
+
+
+def _probe_local_uri(uri: str) -> _LocalUriProbe:
+    """Resolve *uri* once, then check and stat that same canonical path.
+
+    Blocking, and the path is the caller's choice, so it runs on the
+    request-path probe pool via ``_run_path_probe``. One resolve feeds the
+    sensitive-path check and the type check alike, so no symlink swap between
+    two resolves can split what was checked from what is stored.
+    """
+    resolved = Path(uri).resolve()
+    canonical = str(resolved)
+    if is_sensitive_path(canonical):
+        return _LocalUriProbe(canonical, True, False, False)
+    return _LocalUriProbe(canonical, False, resolved.is_file(), resolved.is_dir())
+
+
+def _add_source_path_checks(  # type: ignore[no-untyped-def]
+    connector, config: dict, uri: str
+) -> tuple[str | None, _LocalUriProbe | None]:
+    """add_source's filesystem work, in the order the handler answers it.
+
+    Returns ``(connector_error, probe)``. A connector's ``validate_config`` can
+    stat the path (``LocalFolderConnector`` calls ``exists`` and ``is_dir``),
+    so it runs here, in the same hop as the resolve: one request pays one
+    trip to the probe pool. ``probe`` is ``None`` for an empty or remote uri.
+    """
+    if connector:
+        valid, err = connector.validate_config(config)
+        if not valid:
+            return err, None
+    if not uri or uri.startswith(_REMOTE_URI_PREFIXES):
+        return None, None
+    return None, _probe_local_uri(uri)
+
+
+def _file_path_restricted(file_path: str) -> bool:
+    """retry_file / skip_file's sensitive-path check: the raw and resolved forms.
+
+    Blocking (``Path.resolve``) on a request-supplied path, so the handlers run
+    it through ``_run_path_probe``.
+    """
+    return is_sensitive_path(file_path) or is_sensitive_path(str(Path(file_path).resolve()))
+
+
 async def add_source(request: web.Request) -> web.Response:
     """POST /api/knowledge/sources -- add a remote source."""
     owner_denied = await _require_knowledge_owner(request, "knowledge.source.add")
@@ -1390,24 +1455,27 @@ async def add_source(request: web.Request) -> web.Response:
             status=400,
         )
 
-    # Validate via connector if available
+    # Validate via connector if available. The connector check and the local
+    # path's resolve both touch the filesystem on a caller-chosen path, so they
+    # run off the loop, on the bounded probe pool, in one hop.
     sync_scheduler = request.app.get("knowledge_sync")
-    if sync_scheduler:
-        connector = sync_scheduler.get_connector(source_type)
-        if connector:
-            valid, err = connector.validate_config({**properties, "url": uri})
-            if not valid:
-                return web.json_response({"error": err}, status=400)
+    connector = sync_scheduler.get_connector(source_type) if sync_scheduler else None
+    try:
+        connector_err, probe = await _run_path_probe(
+            _add_source_path_checks, connector, {**properties, "url": uri}, uri
+        )
+    except _PathProbeBusy:
+        return _probe_busy_response(resource=str(uri), operation="knowledge.source.add")
+    if connector_err is not None:
+        return web.json_response({"error": connector_err}, status=400)
 
     if not uri:
         return web.json_response({"error": "uri required"}, status=400)
 
     # Sandbox guard: reject sensitive paths for any local source
-    if not uri.startswith(("https://", "http://", "upload://", "code://")):
-        resolved_uri = str(Path(uri).resolve())
-        if is_sensitive_path(resolved_uri):
-            _sel_log("source.add_denied", reason="sensitive_path", uri=uri)
-            return web.json_response({"error": "Path is restricted for security reasons"}, status=403)
+    if probe is not None and probe.sensitive:
+        _sel_log("source.add_denied", reason="sensitive_path", uri=uri)
+        return web.json_response({"error": "Path is restricted for security reasons"}, status=403)
 
     # Validate URI format for sources without a dedicated connector
     if source_type == "local_file":
@@ -1419,7 +1487,7 @@ async def add_source(request: web.Request) -> web.Response:
         #
         # UNC / extended-length prefixes are already refused by the pre-gate
         # above (before any Path.resolve() call), so we do not re-check them
-        # here — that check has to precede the sandbox guard's own resolve().
+        # here — that check has to precede the probe's own resolve().
         # is_absolute() is flavour-bound to the RUNNING host, so a Windows drive
         # path is NOT "absolute" to a POSIX gateway (the documented Windows
         # browser -> Linux gateway topology). Accept either flavour explicitly so
@@ -1429,15 +1497,13 @@ async def add_source(request: web.Request) -> web.Response:
                 {"error": "local_file URI must be an absolute path", "code": "uri_not_absolute"},
                 status=400,
             )
-        # Resolve symlinks and .. components before security check
-        resolved = Path(uri).resolve()
-        if is_sensitive_path(str(resolved)):
-            _sel_log("source.add_denied", reason="sensitive_path", uri=uri)
-            return web.json_response({"error": "path is restricted"}, status=403)
-        if not resolved.is_file():
+        # The probe resolved symlinks and ".." once and refused a sensitive
+        # result above; that same canonical path is what is typed here and
+        # then stored and ingested. A uri with a remote prefix was never
+        # probed and names no local file.
+        if probe is None or not probe.is_file:
             return web.json_response({"error": "file not found"}, status=404)
-        # Use canonical resolved path for storage and ingestion
-        uri = str(resolved)
+        uri = probe.resolved
     elif not (sync_scheduler and sync_scheduler.get_connector(source_type)):
         if not uri.startswith("https://"):
             return web.json_response({"error": "URI must start with https://"}, status=400)
@@ -1453,12 +1519,11 @@ async def add_source(request: web.Request) -> web.Response:
 
     # Folder sources: discovery walk + pending_confirmation (no auto-scan)
     if source_type in ("local_folder", "obsidian_vault"):
-        folder_path = Path(uri).resolve()
-        if is_sensitive_path(str(folder_path)):
-            _sel_log("source.add_denied", reason="sensitive_path", uri=uri)
-            return web.json_response({"error": "Path is restricted for security reasons"}, status=403)
-        if not folder_path.is_dir():
+        # The probe above already refused a sensitive path. A folder uri with a
+        # remote prefix was never probed, and is not a directory either.
+        if probe is None or not probe.is_dir:
             return web.json_response({"error": f"Directory not found: {uri}"}, status=400)
+        folder_path = probe.resolved
 
         # Run discovery walk to count files (no ingestion)
         watcher = request.app.get("knowledge_watcher")
@@ -1573,6 +1638,15 @@ async def _claim_sync_for_task(  # type: ignore[no-untyped-def]
             claim_settled.set()
 
 
+def _resolved_is_sensitive(path: str) -> bool:
+    """Whether *path* resolves to a sensitive location.
+
+    Blocking (``Path.resolve``), so ``_ingest_local_file_task`` runs it through
+    ``_run_path_probe``.
+    """
+    return is_sensitive_path(str(Path(path).resolve()))
+
+
 async def _ingest_local_file_task(  # type: ignore[no-untyped-def]
     pipeline, store, path: str, source_id: str, *, claim_settled: asyncio.Event | None = None
 ) -> None:
@@ -1597,7 +1671,15 @@ async def _ingest_local_file_task(  # type: ignore[no-untyped-def]
     if not await _claim_sync_for_task(store, source_id, claim_settled):
         return
     try:
-        if is_sensitive_path(str(Path(path).resolve())):
+        try:
+            restricted = await _run_path_probe(_resolved_is_sensitive, path)
+        except _PathProbeBusy:
+            # Transient, like the budget deferral below: 'pending' keeps the
+            # file in the sweep, where 'error' would quiesce it for good.
+            logger.warning("Ingestion deferred, path probe pool busy: %s", path)
+            await _write_status_cancel_safe(store, source_id, "pending")
+            return
+        if restricted:
             _sel_log("source.sensitive_path_blocked", path=path, source_id=source_id)
             logger.warning("Sensitive path detected at ingest time: %s", path)
             await asyncio.to_thread(_set_sync_status, store, source_id, "error")
@@ -2136,7 +2218,11 @@ async def retry_file(request: web.Request) -> web.Response:
     file_path = body.get("file_path", "")
     if not file_path:
         return web.json_response({"error": "file_path required"}, status=400)
-    if is_sensitive_path(file_path) or is_sensitive_path(str(Path(file_path).resolve())):
+    try:
+        restricted = await _run_path_probe(_file_path_restricted, file_path)
+    except _PathProbeBusy:
+        return _probe_busy_response(resource=str(file_path), operation="knowledge.source.file_retry")
+    if restricted:
         _sel_log("source.file.retry_denied", source_id=source_id, reason="sensitive_path")
         return web.json_response({"error": "path is restricted"}, status=403)
     await _audited_write(
@@ -2159,7 +2245,11 @@ async def skip_file(request: web.Request) -> web.Response:
     file_path = body.get("file_path", "")
     if not file_path:
         return web.json_response({"error": "file_path required"}, status=400)
-    if is_sensitive_path(file_path) or is_sensitive_path(str(Path(file_path).resolve())):
+    try:
+        restricted = await _run_path_probe(_file_path_restricted, file_path)
+    except _PathProbeBusy:
+        return _probe_busy_response(resource=str(file_path), operation="knowledge.source.file_skip")
+    if restricted:
         _sel_log("source.file.skip_denied", source_id=source_id, reason="sensitive_path")
         return web.json_response({"error": "path is restricted"}, status=403)
     await _audited_write(
