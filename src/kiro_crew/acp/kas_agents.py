@@ -1338,13 +1338,20 @@ def hoist_managed_servers(
     agent_id: str,
     session_servers: list[dict[str, Any]],
     session_token: str = "",
+    *,
+    resume: bool = False,
+    reserved_names: frozenset[str] = frozenset(),
 ) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]]]:
     """Carry the ACTIVE agent's managed declarations in the session-level array.
 
     Captured released kiro-cli 2.18.0 honours a session-level ``mcpServers``
     entry over a same-named global or workspace ``mcp.json`` server on
-    ``session/new`` and ``session/load`` alike, while an agent-block declaration
-    loses to the global one there, and it stamps no status provenance. The
+    ``session/new`` and ``session/load`` alike. On ``session/new`` an agent-block
+    declaration loses to a same-named global one; on ``session/load`` the
+    session-level array is re-initialised but the agent block is not re-launched,
+    so ``resume=True`` moves user-declared servers to the session-level array so
+    they are launched and win over the global entry. The array stamps no status
+    provenance. The
     retained 2.20.0 capture proves a session-level injection reports
     ``origin: client`` and reaches readiness; its same-name collision behaviour
     was not probed. The session-level array is therefore the one declaration site
@@ -1364,12 +1371,26 @@ def hoist_managed_servers(
 
     * a name the caller's array already carries -- a broker stub or the member
       dispatch entry is authoritative and a name must appear once;
-    * a non-managed server -- third-party declarations are not this seam's;
+    * a non-managed server when ``resume=False`` (the default) -- third-party
+      declarations are not this seam's; ``resume=True`` (for ``session/load``)
+      hoists remaining user-declared servers, without a session token, UNLESS
+      the name is in *reserved_names* (see below);
     * an inactive agent's block -- it must not widen the active session's tool
       surface or carry another identity's key;
     * an entry with a key outside :data:`_HOISTABLE_ENTRY_KEYS`, a ``type``
       other than ``stdio``, or no usable command -- a restriction, a registry
       marker or a malformed entry keeps the block path, where it is honoured.
+
+    *reserved_names* is the set of server names whose global-config entry should
+    win on ``session/load``.  A user-declared server whose name is in this set
+    stays in the agent block and is not hoisted, so kiro-cli uses the global
+    ``mcp.json`` entry instead -- matching the session/new precedence kiro-cli
+    enforces on its own.  Pass ``frozenset(global_server_names())`` at the
+    ``load_session`` call site; the default is empty (no reservations).  Managed
+    names (:data:`MANAGED_MCP_SERVER_NAMES`) are always exempt: the managed hoist
+    must succeed even when ``kirocrew-core`` or ``kirocrew-cron`` appear in the
+    global config (e.g. after a tool-toggle writes a ``disabledTools`` entry
+    there).
 
     *session_token* is this session's signed identity token, and every hoisted
     element carries it (``KIROCREW_STUB_SESSION_TOKEN``). The runtime stamps the
@@ -1414,7 +1435,7 @@ def hoist_managed_servers(
         str(entry.get("name"))
         for entry in session_servers
         if isinstance(entry, dict) and entry.get("name")
-    }
+    } | (reserved_names - MANAGED_MCP_SERVER_NAMES)
     hoisted: list[dict[str, Any]] = []
     out_agents: list[dict[str, Any]] = []
     for descriptor in custom_agents:
@@ -1425,8 +1446,9 @@ def hoist_managed_servers(
         remaining: dict[str, Any] = {}
         for name, entry in declared.items():
             keep = True
+            managed = name in MANAGED_MCP_SERVER_NAMES
             if (
-                name in MANAGED_MCP_SERVER_NAMES
+                (managed or resume)
                 and name not in taken
                 and isinstance(entry, dict)
                 and set(entry) <= _HOISTABLE_ENTRY_KEYS
@@ -1454,10 +1476,16 @@ def hoist_managed_servers(
     if session_token:
         # Deferred like session_mcp above: the kiro path returns before this, and
         # the token is per SESSION while the projection is per agent.
+        # Apply the token only to managed entries; user-declared servers hoisted
+        # via ``resume=True`` travel as projected with no session credential.
         from kiro_crew.mcp_gateway.session_servers import attach_stub_session_token
 
         hoisted = [
-            _tokened_managed_element(element, session_token, attach_stub_session_token)
+            (
+                _tokened_managed_element(element, session_token, attach_stub_session_token)
+                if element["name"] in MANAGED_MCP_SERVER_NAMES
+                else element
+            )
             for element in hoisted
         ]
     return out_agents, _pin_legacy_negotiation([*session_servers, *hoisted])

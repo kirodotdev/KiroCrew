@@ -389,6 +389,18 @@ def _global_settings(*, strict: bool = False) -> dict[str, Any]:
         return {}
 
 
+def global_server_names() -> frozenset[str]:
+    """Names of MCP servers in the user's global ``~/.kiro/settings/mcp.json``.
+
+    Used by :func:`~kiro_crew.acp.kas_agents.hoist_managed_servers` as
+    ``reserved_names`` on the ``session/load`` path, so a user-declared server
+    whose name matches a global entry stays in the agent block and the global
+    entry wins -- matching the ``session/new`` precedence kiro-cli enforces on
+    its own.  Returns an empty set when the file is absent or unreadable.
+    """
+    return frozenset(_global_settings().get("mcpServers", {}))
+
+
 class ToolsAllowlist(NamedTuple):
     """The spec's ``tools`` allowlist, as a value rather than a filter pass.
 
