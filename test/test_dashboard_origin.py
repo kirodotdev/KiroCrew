@@ -311,7 +311,9 @@ class TestFormatDashboardUrls:
     @patch.dict("os.environ", {}, clear=True)
     @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
     @patch(f"{_MOD}.machine_hostname", return_value="Mac-1234.local")
-    def test_a_hanging_hostname_lookup_cannot_stall_startup(self, _mh: object, _dp: object) -> None:
+    def test_a_hanging_hostname_lookup_cannot_stall_startup(
+        self, _mh: object, _dp: object, monkeypatch, tmp_path
+    ) -> None:
         """The Remote hint is cosmetic; the event loop it runs on is not.
 
         A GitHub macOS runner's own hostname does not resolve and the resolver
@@ -321,11 +323,25 @@ class TestFormatDashboardUrls:
         bounded and abandoned, so the lines come back without the hint.
         """
         import threading
-        import time
+
+        import kiro_crew.config.paths as _paths
+        from kiro_crew.testing.wait import wait_until
+
+        # Mitigation: while @patch.dict(clear=True) has KIROCREW_HOME absent, any
+        # _resolve_default_home() call sets _resolved_home to the real ~/.kiro/crew
+        # and fires the suite's home-isolation guard. Pinning _resolve_default_home
+        # makes that impossible regardless of which code path reaches it in this
+        # test's execution window.
+        monkeypatch.setattr(_paths, "_resolve_default_home", lambda: tmp_path / "default")
 
         release = threading.Event()
+        lookups: list[threading.Thread] = []
+        # Captures whether the lookup was still pending when format_dashboard_urls
+        # returned (snapshot taken before release.set() unblocks the resolver).
+        lookup_pending_at_return: list[bool] = []
 
         def _hang(_host: str) -> str:
+            lookups.append(threading.current_thread())
             release.wait(30)
             return "10.0.0.1"
 
@@ -333,12 +349,23 @@ class TestFormatDashboardUrls:
             patch(f"{_MOD}.socket.gethostbyname", side_effect=_hang),
             patch(f"{_MOD}.HOSTNAME_RESOLVE_TIMEOUT_SECS", 0.2),
         ):
-            started = time.monotonic()
             try:
                 lines = format_dashboard_urls("http://localhost:5476", port=5476, local_only=True)
             finally:
+                # Record ordering BEFORE unblocking: True when the lookup is
+                # still running (is_alive) or not yet scheduled (lookups empty),
+                # meaning format_dashboard_urls returned without waiting for it.
+                lookup_pending_at_return.append(not lookups or any(t.is_alive() for t in lookups))
                 release.set()
-        assert time.monotonic() - started < 5
+            # Join the resolver thread inside the patch scope so a late-starting
+            # worker still calls _hang rather than the real gethostbyname.
+            wait_until(lambda: lookups and not any(t.is_alive() for t in lookups))
+
+        # The lookup was still pending when format_dashboard_urls returned: the
+        # function abandoned the resolver rather than blocking on it.
+        assert lookup_pending_at_return[
+            0
+        ], "format_dashboard_urls blocked until the hostname lookup completed"
         assert not any("Remote" in ln for ln in lines)
 
     @patch.dict("os.environ", {}, clear=True)
