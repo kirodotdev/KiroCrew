@@ -1,15 +1,26 @@
 """A dashboard turn's reaction to the signed-in kiro-cli account changing: retiring the sessions
-an identity change invalidates, and the signed-out latch."""
+an identity change invalidates, the helpers the check before every other session acquire
+shares its result with, and the signed-out latch."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import logger
 
 
-async def _retire_sessions_on_identity_change(state: Any, *, unattended: bool = False) -> None:
+class _IdentityCheckRead(NamedTuple):
+    """What one account check read: the live fingerprint, and the store read
+    generation right after that read."""
+
+    live: str
+    reads_before: int | None
+
+
+async def _retire_sessions_on_identity_change(
+    state: Any, *, unattended: bool = False
+) -> _IdentityCheckRead | None:
     """Recycle kiro-backed children when the signed-in account has changed.
 
     The counterpart to :func:`_mark_kiro_signed_out`, for the case that function
@@ -25,17 +36,20 @@ async def _retire_sessions_on_identity_change(state: Any, *, unattended: bool = 
     process recycle rather than a readiness verdict. It stays off the spawn path
     too -- the trigger is a local database read, briefly cached, not a ``whoami``.
 
-    ``unattended`` marks a caller with no person behind it, an agent cron. An
+    ``unattended`` marks every caller but the dashboard chat turn: the check the
+    session manager runs before each other acquire
+    (:func:`install_acquire_identity_check`), an agent cron run among them. An
     EMPTY live fingerprint is never reconciled, so every call under it sweeps, and
     that sweep spares nothing: it retires every idle kiro-backed session,
     cancelling an idle parent's ``spawn_run`` children and dropping each one's
     native conversation. After a real sign-out that is the point: every child
     still holding the old credential has to go. But the same
     empty fingerprint comes from a store the reader cannot identify (a social
-    login, an unreadable or relocated store), where it never goes away; a cron
-    would then repeat the sweep on every fire. Its own session survives from one
-    fire to the next mostly while its sub-agents are still running, so even
-    retiring just that one would usually end them. So an unattended caller sweeps
+    login, an unreadable or relocated store), where it never goes away; an
+    unattended caller would then repeat the sweep on every acquire, a cron on
+    every fire. A cron's own session survives from one fire to the next mostly
+    while its sub-agents are still running, so even retiring just that one would
+    usually end them. So an unattended caller sweeps
     under an empty fingerprint only when the read proved nobody is signed in
     (``identity_absence_is_definitive``), and only until one sweep under that
     sign-out completes (``identity_absence_already_swept``): a session started after
@@ -45,12 +59,18 @@ async def _retire_sessions_on_identity_change(state: Any, *, unattended: bool = 
 
     Best-effort: a failure here must not fail the turn, which would be a worse
     outcome than the staleness it exists to correct.
+
+    Returns what this check read (the live fingerprint it acted on and the
+    store read generation right after that read), or None when it read none (no
+    service, or the read failed). :func:`install_acquire_identity_check` lets a
+    concurrent unattended acquire take this check's result only while the store
+    still reads that fingerprint and no read since returned another.
     """
 
     service = getattr(state, "kiro_prerequisite_service", None)
     sessions = getattr(state, "sessions", None)
     if service is None or sessions is None:
-        return
+        return None
     try:
         changed, live = await service.identity_changed_since_sessions()
         # Capture the observation generation NOW, before the sweep runs:
@@ -60,6 +80,9 @@ async def _retire_sessions_on_identity_change(state: Any, *, unattended: bool = 
         # keep the latch armed -- see note_sessions_reconciled. Looked up
         # defensively like the other optional surfaces in this gate.
         observed_gen = getattr(service, "identity_observation_generation", None)
+        # And the store read count, so a concurrent acquire can tell whether any
+        # read after this one returned another account (_shared_check_still_covers).
+        read_gen = getattr(service, "identity_read_generation", None)
         # Captured with the read for the same reason: the sweep below awaits, and a
         # read that lands meanwhile must not speak for the one that started it.
         absence_proven = getattr(service, "identity_absence_is_definitive", False)
@@ -72,7 +95,7 @@ async def _retire_sessions_on_identity_change(state: Any, *, unattended: bool = 
             # See the docstring: an account the reader cannot identify, or a
             # sign-out a sweep already finished, is no reason for an unattended
             # caller to recycle anything.
-            return
+            return _IdentityCheckRead(live, read_gen)
         # BEFORE the unchanged early-return: the stamp check exists precisely
         # for the case where the baseline (and the interim latch) compare
         # equal -- an A->B->A round trip no read ever observed -- while a
@@ -102,7 +125,7 @@ async def _retire_sessions_on_identity_change(state: Any, *, unattended: bool = 
             # turn back here with holders still to retire.
             pending = getattr(sessions, "pending_identity_sweep_fingerprint", "")
             if not pending:
-                return
+                return _IdentityCheckRead(live, read_gen)
         # Defer an idle parent's live children only while its credential is still
         # VALID. An empty ``live`` is an external logout (or an unreadable store),
         # where the children must be cancelled rather than left running on a
@@ -169,8 +192,60 @@ async def _retire_sessions_on_identity_change(state: Any, *, unattended: bool = 
                 len(retired),
                 ", ".join(retired),
             )
+        return _IdentityCheckRead(live, read_gen)
     except Exception:
         logger.debug("Could not apply a Kiro identity change", exc_info=True)
+        return None
+
+
+async def _shared_check_still_covers(state: Any, shared: _IdentityCheckRead) -> bool:
+    """Whether an acquire may take *shared*'s result instead of checking itself.
+
+    Only a non-empty result, while the store still reads it and no read since it
+    returned anything else. A service that cannot answer the second question
+    shares nothing.
+    """
+    if not shared.live or shared.reads_before is None:
+        return False
+    if shared.live != await _live_identity_fingerprint(state):
+        return False
+    read_other_than = getattr(state.kiro_prerequisite_service, "identity_read_other_than", None)
+    if read_other_than is None:
+        return False
+    try:
+        return not read_other_than(shared.live, since=shared.reads_before)
+    except Exception:
+        logger.debug("Could not read the Kiro identity read record", exc_info=True)
+        return False
+
+
+async def _flag_stamp_mismatches_after_shared_check(state: Any, live: str) -> None:
+    """Run the shared check's stamp step again for an acquire that took its result.
+
+    A session can register after the shared sweep scanned the registry: a cold
+    start that began under an interim account during an A->B->A round trip comes up
+    stamped B while the store reads A again. Its stamp is the only evidence, so the
+    acquire flags it before it claims, as its own check would.
+    """
+    flag_stamp_mismatches = getattr(state.sessions, "flag_identity_stamp_mismatches", None)
+    if flag_stamp_mismatches is None:
+        return
+    try:
+        await flag_stamp_mismatches(live)
+    except Exception:
+        logger.debug("Could not flag sessions after a shared identity check", exc_info=True)
+
+
+async def _live_identity_fingerprint(state: Any) -> str | None:
+    """The store's fingerprint read fresh, or None when it cannot be read."""
+    try:
+        read: str = await state.kiro_prerequisite_service.current_identity_fingerprint(
+            allow_cached=False
+        )
+    except Exception:
+        logger.debug("Could not read the Kiro identity store", exc_info=True)
+        return None
+    return read
 
 
 def _mark_kiro_signed_out(state: Any) -> None:

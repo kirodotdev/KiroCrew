@@ -1200,7 +1200,6 @@ _GUARDED_TOKEN_HOMES: dict[str, frozenset[str]] = {
     "_run_chat": frozenset(
         {
             "cron_exec",
-            "cron_fire",
             "gateway",
             "nudge_dashboard_fire",
             "result_egress",

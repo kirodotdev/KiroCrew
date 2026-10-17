@@ -102,7 +102,6 @@ class _Fire:
             gw_mod, "_await_cron_fire_time_gate", AsyncMock(return_value=(None, False))
         )
         monkeypatch.setattr(gw_mod, "_pre_create_cron_slot", AsyncMock())
-        monkeypatch.setattr(gw_mod, "_retire_sessions_on_identity_change", AsyncMock())
         monkeypatch.setattr(gw_mod, "publish_turn_identity", AsyncMock())
         monkeypatch.setattr(gw_mod, "persist_token_record_async", AsyncMock())
         monkeypatch.setattr(gw_mod, "inject_cron_result_to_dashboard", MagicMock())

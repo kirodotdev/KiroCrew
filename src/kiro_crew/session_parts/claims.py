@@ -11,13 +11,16 @@ on an instance reaches every caller.
 
 Instance fields written: ``_allocation``.
 
-Instance fields read: none.
+Instance fields read: ``identity_check_before_acquire``.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+import asyncio
+import logging
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -31,6 +34,19 @@ if TYPE_CHECKING:
     from kiro_crew.session import LLMProvider, SessionManager
     from kiro_crew.session_allocation import InboundCallbackReservation
     from kiro_crew.session_parts.record import _Session
+
+logger = logging.getLogger("kiro_crew.session")
+
+#: The task whose ``get_or_create`` or ``open_task_session`` is in progress. An
+#: acquire that the same task makes inside it -- a won-race retry, or the fallback
+#: from a task session to a dedicated one -- is part of that acquire, which already
+#: ran ``identity_check_before_acquire``, so it does not run the check again. A task
+#: started meanwhile copies this value but is a different task, so its own acquires
+#: still check: keying on the task, not on a flag, is what stops a long-lived task
+#: spawned inside one acquire from skipping the check for the rest of its life.
+_ACQUIRING_TASK: "ContextVar[asyncio.Task[Any] | None]" = ContextVar(
+    "kiro_crew_session_acquiring_task", default=None
+)
 
 
 def process_shutdown_requested(sessions: SessionManager | None) -> bool:
@@ -134,8 +150,52 @@ def _spawn_in_flight(self: SessionManager, key: str) -> str | None:
 
 
 async def try_acquire(self: SessionManager, key: str) -> bool:
-    """Try to acquire an exact-key idle session."""
-    return await self._allocation_boundary().try_acquire(key)
+    """Try to acquire an exact-key idle session.
+
+    The Kiro account check runs first (:meth:`_acquire_after_identity_check`):
+    a channel ``/compact`` or model switch takes this lease and then prompts or
+    reconfigures the session, so a session left on a previous account must be
+    retired before it can be taken. The check runs before the lease rather than
+    after it, because a sweep only flags a session someone holds.
+    """
+    async with self._acquire_after_identity_check(identity_checked=False):
+        return await self._allocation_boundary().try_acquire(key)
+
+
+@asynccontextmanager
+async def _acquire_after_identity_check(
+    self: SessionManager, *, identity_checked: bool
+) -> AsyncIterator[None]:
+    """Run ``identity_check_before_acquire`` once per acquire, then the acquire.
+
+    First, so the check's sweep can retire a session that started under a
+    previous Kiro account before the acquire could hand that session out, and
+    before the acquire holds a cold-start permit: the sweep collects every
+    permit, so a check run after taking one would wait on itself. Skipped when
+    the caller ran the check itself just now (``identity_checked``, a dashboard
+    chat turn, whose check has its own rule), when the current task is already
+    inside an acquire (``_ACQUIRING_TASK``), and during the final drain
+    (``final_drain_started``: a shutdown or re-exec, when no session outlives
+    the process). During an update pause the check still runs, because
+    ``try_acquire`` stays open then and must not take a session the check would
+    retire. A check that fails is logged and the acquire goes ahead, as it would
+    have before the check existed.
+    """
+    task = asyncio.current_task()
+    if task is not None and _ACQUIRING_TASK.get() is task:
+        yield
+        return
+    token = _ACQUIRING_TASK.set(task)
+    try:
+        check = self.identity_check_before_acquire
+        if check is not None and not identity_checked and not self.final_drain_started:
+            try:
+                await check()
+            except Exception:
+                logger.warning("The Kiro account check before an acquire failed", exc_info=True)
+        yield
+    finally:
+        _ACQUIRING_TASK.reset(token)
 
 
 def capability_runtime_view(
@@ -245,40 +305,45 @@ async def get_or_create(
     wait_if_busy: bool = True,
     _won_race_retries: int = 0,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    identity_checked: bool = False,
     **extra_factory_kwargs: Any,
 ) -> tuple[LLMProvider, bool, bool]:
     """Claim or allocate a session and return its held lease.
 
     ``start_priority`` orders a cold start in the start queues; a caller passes
     FOREGROUND only where a person waits on it (rule: ``kiro_crew.start_priority``).
+    ``identity_checked`` says the caller ran the Kiro account check itself just
+    before this call; every other acquire runs it here first
+    (:meth:`_acquire_after_identity_check`).
     """
-    if key == BACKGROUND_KEY:
-        # ``_bg`` is one persistent session shared by every background job,
-        # so it is always the background agent, whichever caller reaches it
-        # first: a caller naming its own agent (the task runner's lesson
-        # extraction) gets the shared session, never a session created as
-        # that agent. A live ``_bg`` already ignores the requested agent.
-        agent = BACKGROUND_AGENT
-        if key not in self._sessions:
-            # Created on first use on a shared-runtime backend, and after a
-            # failed boot start on any other: through the same path the boot
-            # uses, so it keeps its start stamping.
-            await self._ensure_background(start_priority=start_priority)
-    return await self._allocation_boundary().get_or_create(
-        key,
-        agent=agent,
-        channel_id=channel_id,
-        approval_policy=approval_policy,
-        model=model,
-        cwd=cwd,
-        extra_env=extra_env,
-        speculative=speculative,
-        speculative_resume=speculative_resume,
-        wait_if_busy=wait_if_busy,
-        _won_race_retries=_won_race_retries,
-        start_priority=start_priority,
-        **extra_factory_kwargs,
-    )
+    async with self._acquire_after_identity_check(identity_checked=identity_checked):
+        if key == BACKGROUND_KEY:
+            # ``_bg`` is one persistent session shared by every background job,
+            # so it is always the background agent, whichever caller reaches it
+            # first: a caller naming its own agent (the task runner's lesson
+            # extraction) gets the shared session, never a session created as
+            # that agent. A live ``_bg`` already ignores the requested agent.
+            agent = BACKGROUND_AGENT
+            if key not in self._sessions:
+                # Created on first use on a shared-runtime backend, and after a
+                # failed boot start on any other: through the same path the boot
+                # uses, so it keeps its start stamping.
+                await self._ensure_background(start_priority=start_priority)
+        return await self._allocation_boundary().get_or_create(
+            key,
+            agent=agent,
+            channel_id=channel_id,
+            approval_policy=approval_policy,
+            model=model,
+            cwd=cwd,
+            extra_env=extra_env,
+            speculative=speculative,
+            speculative_resume=speculative_resume,
+            wait_if_busy=wait_if_busy,
+            _won_race_retries=_won_race_retries,
+            start_priority=start_priority,
+            **extra_factory_kwargs,
+        )
 
 
 @contextmanager

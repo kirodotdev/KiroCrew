@@ -154,11 +154,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.kiro_prerequisite_identity_tracking import (  # noqa: F401
         _AUTH_FINGERPRINT_CACHE_SECS,
+        _IDENTITY_READ_HISTORY,
         _SEED_BASELINE_TIMEOUT_SECS,
         _maybe_latch_interim_identity,
         current_identity_fingerprint,
         identity_changed_since_probe,
         identity_changed_since_sessions,
+        identity_read_other_than,
         note_absence_swept,
         note_sessions_reconciled,
         read_spawn_identity,

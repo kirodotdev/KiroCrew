@@ -66,6 +66,7 @@ from kiro_crew.dashboard import (  # noqa: F401
     tailnet,
     tailnet_serve,
 )
+from kiro_crew.dashboard.chat_runner import install_acquire_identity_check
 from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     wire_session_subagent_probe,
@@ -1780,6 +1781,10 @@ async def start_dashboard(
     # retired before reuse (see flag_identity_stamp_mismatches). Unwired (the
     # CLI, tests), spawns stay unstamped and keep the pre-stamping behavior.
     state.sessions.spawn_identity_reader = app["kiro_prerequisite_service"].read_spawn_identity
+    # Every session acquire then runs the account check first, unattended, so a
+    # task step, a channel turn or a cron run cannot reuse a session left on a
+    # previous Kiro account. The dashboard chat turn runs its own check.
+    install_acquire_identity_check(state)
     # Probe Kiro readiness during boot rather than on the dashboard's first
     # status request: the cold probe spawns sandboxed CLI subprocesses and can
     # take seconds, which is what made the first-run setup chrome visible to
@@ -2554,6 +2559,10 @@ async def start_api_server(
     # retired before reuse (see flag_identity_stamp_mismatches). Unwired (the
     # CLI, tests), spawns stay unstamped and keep the pre-stamping behavior.
     state.sessions.spawn_identity_reader = app["kiro_prerequisite_service"].read_spawn_identity
+    # Every session acquire then runs the account check first, unattended, so a
+    # task step, a channel turn or a cron run cannot reuse a session left on a
+    # previous Kiro account. The dashboard chat turn runs its own check.
+    install_acquire_identity_check(state)
     # Probe Kiro readiness during boot rather than on the dashboard's first
     # status request: the cold probe spawns sandboxed CLI subprocesses and can
     # take seconds, which is what made the first-run setup chrome visible to

@@ -1443,7 +1443,18 @@ class TestModelPickerOutcomes:
                 f"⚠️ Couldn't switch this conversation to {label} (RuntimeError) — "
                 "it applies to your next conversation (/new)."
             ),
+            "retired": f"✅ Model set to {label} — it applies to your next message.",
         }
+
+        def _retire_then_refuse(sess: Any) -> Any:
+            # The acquire's Kiro account check retired the session: it held another
+            # account, so nothing is live by the time the lease would be taken.
+            async def _try_acquire(key: str) -> bool:
+                sess._has = False
+                return False
+
+            return _try_acquire
+
         for case, expected in cases.items():
             d, cli, sess = self._post()
             if case == "not-live":
@@ -1452,12 +1463,16 @@ class TestModelPickerOutcomes:
                 sess._busy = True
             elif case == "no-set-model":
                 sess._gp.client = SimpleNamespace()
+            elif case == "retired":
+                sess.try_acquire = _retire_then_refuse(sess)
             else:
                 sess._gp.set_model_error = RuntimeError("x")
             asyncio.run(d.on_callback(_press("m:2")))
             assert cli.edits[-1][1] == expected, case
             assert d._model_pref[("direct", "7")] == label, case
-            assert sess.released == ([] if case in ("not-live", "busy") else [self._KEY]), case
+            assert sess.released == (
+                [] if case in ("not-live", "busy", "retired") else [self._KEY]
+            ), case
 
     def test_auto_outcomes_are_exact(self) -> None:
         d, cli, sess = self._post()
@@ -1490,6 +1505,26 @@ class TestModelPickerOutcomes:
             "⚠️ Couldn't switch this conversation to model-a (RuntimeError) — "
             "the resumed session was not changed."
         )
+
+    def test_a_resumed_session_the_account_check_retires_is_reported_unchanged(self) -> None:
+        d, _cli, sess = _dispatcher({7})
+        route = ("direct", "7")
+
+        async def _retire_then_refuse(key: str) -> bool:
+            # The acquire's Kiro account check retired the resumed session: it held
+            # another account, so nothing is live by the time the lease would be taken.
+            sess._has = False
+            return False
+
+        sess.try_acquire = _retire_then_refuse  # type: ignore[method-assign]
+
+        # A resumed session stores no route preference and restarts on its own model,
+        # so the pick reaches nothing: the answer must not promise the next message.
+        assert asyncio.run(d._apply_model(route, "model-a", "dashboard:x")) == (
+            "⚠️ Couldn't switch this conversation to model-a — the resumed "
+            "session was not changed."
+        )
+        assert route not in d._model_pref
 
 
 class TestCallbackRouting:

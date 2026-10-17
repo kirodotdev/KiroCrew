@@ -34,7 +34,6 @@ if TYPE_CHECKING:
         Path,
         _await_cron_fire_time_gate,
         _pre_create_cron_slot,
-        _retire_sessions_on_identity_change,
         agent_sequence_dispatches,
         build_cron_session_context,
         cron_job_env_without_reserved,
@@ -767,19 +766,10 @@ async def _acquire_with_model_fallback(
             expected=bound_execution,
         )
 
-    # The dashboard's per-turn account gate, run before acquiring as
-    # _run_chat runs it. A `cron:` key never claims a warm-pool
-    # process, but a fire whose sub-agents are still running skips the
-    # reset in its `finally`, and the next fire of a
-    # `persistent_session` job, or of the same `agent_sequence` step,
-    # reuses that live session. After an account switch or
-    # `kiro-cli logout` outside the dashboard it still holds the
-    # previous account, and a host where only crons run has no
-    # dashboard turn to retire it. Passed as unattended: when the gate
-    # cannot identify the signed-in account (a social login, an
-    # unreadable store) the fire touches no session, since it could
-    # not tell a stale one from a healthy one on any fire.
-    await _retire_sessions_on_identity_change(self.dashboard_state, unattended=True)
+    # The acquire runs the Kiro account check first
+    # (chat_runner.install_acquire_identity_check), which retires a
+    # session this job kept alive past an earlier fire when the account
+    # that session holds is not the signed-in one.
     try:
         client, is_new, resumed = await self.sessions.get_or_create(
             key,
