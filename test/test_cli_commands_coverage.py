@@ -199,7 +199,72 @@ class TestSpawnCli:
         ):
             cc._spawn(_ns(spawn_action="list", port=4321))
         assert exc.value.code == 1
-        assert "4321" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "4321" in out
+        assert "gateway not running" in out
+        assert "busy" not in out
+
+    @pytest.mark.parametrize(
+        "slow",
+        [
+            TimeoutError("timed out"),
+            urllib.error.URLError(TimeoutError("timed out")),
+        ],
+        ids=["read-timeout", "urlopen-timeout"],
+    )
+    def test_list_slow_gateway_reports_busy_not_not_running(
+        self, capsys: pytest.CaptureFixture[str], slow: BaseException
+    ) -> None:
+        # A live gateway that is slow (loop starved of the GIL) answers a
+        # timeout, not a refusal; it must read as busy, never not-running.
+        with (
+            patch("kiro_crew.cli_commands._internal_secret", return_value=""),
+            patch("kiro_crew.cli_commands.loopback_urlopen", side_effect=slow),
+            pytest.raises(SystemExit) as exc,
+        ):
+            cc._spawn(_ns(spawn_action="list", port=4321))
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "4321" in out and "busy" in out
+        assert "not running" not in out
+
+    @pytest.mark.parametrize(
+        "slow",
+        [
+            TimeoutError("timed out"),
+            urllib.error.URLError(TimeoutError("timed out")),
+        ],
+        ids=["read-timeout", "urlopen-timeout"],
+    )
+    def test_run_slow_gateway_reports_busy_not_not_running(
+        self, capsys: pytest.CaptureFixture[str], slow: BaseException
+    ) -> None:
+        with (
+            patch("kiro_crew.cli_commands._internal_secret", return_value=""),
+            patch("kiro_crew.cli_commands.loopback_urlopen", side_effect=slow),
+            pytest.raises(SystemExit) as exc,
+        ):
+            cc._spawn(_ns(spawn_action="run", port=4321, task="t", fire_and_forget=True))
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "4321" in out and "busy" in out
+        assert "not running" not in out
+
+    def test_run_unreachable_gateway_still_reports_not_running(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with (
+            patch("kiro_crew.cli_commands._internal_secret", return_value=""),
+            patch(
+                "kiro_crew.cli_commands.loopback_urlopen",
+                side_effect=urllib.error.URLError("refused"),
+            ),
+            pytest.raises(SystemExit) as exc,
+        ):
+            cc._spawn(_ns(spawn_action="run", port=4321, task="t", fire_and_forget=True))
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "gateway not running" in out and "busy" not in out
 
     def test_unknown_action_prints_usage(self, capsys: pytest.CaptureFixture[str]) -> None:
         cc._spawn(_ns(spawn_action="bogus", port=1))

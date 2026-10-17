@@ -3567,3 +3567,126 @@ class TestStatusMemoryLine:
         cli_server._status(SimpleNamespace(port=None))
         out = capsys.readouterr().out
         assert "Memory:      412 MiB rss, session ceiling 1536 MiB" in out
+
+
+# --------------------------------------------------------------------------
+# _update_approve / _file_delivery_approve — busy vs not-running
+# --------------------------------------------------------------------------
+
+
+class TestUpdateApproveBusyVsDown:
+    """A slow live gateway must read as busy, not as "not running" — a timeout
+    is an OSError, so the refused-connection branch must not swallow it."""
+
+    def _arm_pending(self, monkeypatch):
+        from types import SimpleNamespace
+
+        import kiro_crew.platform.update_stepup as stepup
+
+        # Not a packaged desktop install: take the host-approval path.
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_capability.derive_capability",
+            lambda: SimpleNamespace(managed_by="pip"),
+        )
+        monkeypatch.setattr(
+            stepup,
+            "read_pending",
+            lambda: SimpleNamespace(
+                version="9.9.9", channel="stable", expires_in=60, nonce="n" * 64
+            ),
+        )
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _p: 5476)
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda _port, **_kw: "s3cr3t")
+
+    @pytest.mark.parametrize(
+        "slow",
+        [
+            TimeoutError("timed out"),
+            urllib.error.URLError(TimeoutError("timed out")),
+        ],
+        ids=["read-timeout", "urlopen-timeout"],
+    )
+    def test_slow_gateway_reports_busy(self, monkeypatch, capsys, slow) -> None:
+        self._arm_pending(monkeypatch)
+
+        def stalls(req, port, timeout, *, operation=""):
+            raise slow
+
+        monkeypatch.setattr(cli_server, "_owner_verified_secret_urlopen", stalls)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update_approve()
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "5476" in out and "busy" in out
+        assert "not running" not in out
+
+    def test_refused_still_reports_not_running(self, monkeypatch, capsys) -> None:
+        self._arm_pending(monkeypatch)
+
+        def refused(req, port, timeout, *, operation=""):
+            raise urllib.error.URLError("refused")
+
+        monkeypatch.setattr(cli_server, "_owner_verified_secret_urlopen", refused)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update_approve()
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "is not running" in out and "busy" not in out
+
+
+class TestFileDeliveryApproveBusyVsDown:
+    """Same busy-vs-down split for `kirocrew file-delivery approve`."""
+
+    def _arm_pending(self, monkeypatch):
+        from types import SimpleNamespace
+
+        import kiro_crew.file_delivery_consent as fdc
+
+        monkeypatch.setattr(
+            fdc,
+            "read_pending_grant",
+            lambda: SimpleNamespace(
+                destination_class="slack", expires_in=60, nonce="n" * 64
+            ),
+        )
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _p: 5476)
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda _port, **_kw: "s3cr3t")
+        # Force the TCP branch so the stubbed loopback_urlopen is what runs,
+        # rather than a unix-socket dial needing a real socket file.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.urls.dashboard_socket_path",
+            lambda _port: (_ for _ in ()).throw(RuntimeError("no socket")),
+        )
+
+    @pytest.mark.parametrize(
+        "slow",
+        [
+            TimeoutError("timed out"),
+            urllib.error.URLError(TimeoutError("timed out")),
+        ],
+        ids=["read-timeout", "urlopen-timeout"],
+    )
+    def test_slow_gateway_reports_busy(self, monkeypatch, capsys, slow) -> None:
+        self._arm_pending(monkeypatch)
+        monkeypatch.setattr(
+            cli_server, "loopback_urlopen", lambda *a, **k: (_ for _ in ()).throw(slow)
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli_server._file_delivery_approve()
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "5476" in out and "busy" in out
+        assert "not running" not in out
+
+    def test_refused_still_reports_not_running(self, monkeypatch, capsys) -> None:
+        self._arm_pending(monkeypatch)
+        monkeypatch.setattr(
+            cli_server,
+            "loopback_urlopen",
+            lambda *a, **k: (_ for _ in ()).throw(urllib.error.URLError("refused")),
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli_server._file_delivery_approve()
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "is not running" in out and "busy" not in out

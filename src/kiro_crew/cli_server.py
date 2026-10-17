@@ -166,6 +166,11 @@ def _probe_dashboard_health(port: int) -> None:
 # still being healthy.
 _TOKEN_REQUEST_TIMEOUT = 20.0
 
+# How long the status command waits for the gateway to answer. Long enough that
+# a gateway briefly starved of the GIL is not misread as down, short enough that
+# "is it running?" stays snappy; a timeout classifies as busy, not not-running.
+_STATUS_REQUEST_TIMEOUT = 10.0
+
 # Second line of the "could not reach" failure: what to run so a gateway listens
 # on this host. Both spellings are given because they are different remedies --
 # `kirocrew gateway` runs one in the foreground for this login, `kirocrew
@@ -781,8 +786,18 @@ def _logout(port: int) -> None:
     except urllib.error.HTTPError as e:
         print(f"❌ Failed to revoke sessions: HTTP {e.code}")
         sys.exit(1)
-    except (urllib.error.URLError, OSError):
-        print("❌ Gateway not running — start it with: kirocrew gateway")
+    except (urllib.error.URLError, OSError) as e:
+        # A timeout means the gateway took the request and is still working, so
+        # it is up but busy, not gone -- saying "not running" would send the
+        # operator to restart a healthy gateway. A refused connection keeps the
+        # not-running remedy.
+        if _deadline_expired(e):
+            print(
+                f"❌ Gateway on port {port} is up but did not answer in time "
+                "(busy) — try again in a moment."
+            )
+        else:
+            print("❌ Gateway not running — start it with: kirocrew gateway")
         sys.exit(1)
 
 
@@ -3335,8 +3350,17 @@ def _update_approve() -> None:
             f"❌ Gateway refused the approval (HTTP {e.code})" + (f": {detail}" if detail else "")
         )
         sys.exit(1)
-    except (urllib.error.URLError, OSError):
-        print("❌ Gateway is not running — start it, or update directly with: kirocrew update")
+    except (urllib.error.URLError, OSError) as e:
+        # A timeout means the gateway took the request and is still working, so
+        # it is up but busy, not gone. A refused connection keeps the
+        # not-running remedy.
+        if _deadline_expired(e):
+            print(
+                f"❌ Gateway on port {port} is up but did not answer in time "
+                "(busy) — try again in a moment."
+            )
+        else:
+            print("❌ Gateway is not running — start it, or update directly with: kirocrew update")
         sys.exit(1)
     print(f"\n✅ Approved. The gateway is applying v{body.get('version', pending.version)}")
     print("   and will restart itself; watch progress in the dashboard.")
@@ -3407,8 +3431,20 @@ def _file_delivery_approve() -> None:
             f"❌ Gateway refused the approval (HTTP {e.code})" + (f": {detail}" if detail else "")
         )
         sys.exit(1)
-    except (urllib.error.URLError, OSError):
-        print("❌ Gateway is not running — start it, then re-run: kirocrew file-delivery approve")
+    except (urllib.error.URLError, OSError) as e:
+        # A timeout means the gateway took the request and is still working, so
+        # it is up but busy, not gone. A refused connection keeps the
+        # not-running remedy.
+        if _deadline_expired(e):
+            print(
+                f"❌ Gateway on port {port} is up but did not answer in time "
+                "(busy) — try again in a moment."
+            )
+        else:
+            print(
+                "❌ Gateway is not running — start it, then re-run: "
+                "kirocrew file-delivery approve"
+            )
         sys.exit(1)
     grant = body.get("grant") if isinstance(body, dict) else None
     dest = grant.get("destination_class") if isinstance(grant, dict) else pending.destination_class
@@ -3420,7 +3456,7 @@ def _status(args: argparse.Namespace) -> None:
     port = resolve_client_port(getattr(args, "port", None))
     url = f"http://127.0.0.1:{port}/api/status"
     try:
-        with loopback_urlopen(url, timeout=3) as resp:
+        with loopback_urlopen(url, timeout=_STATUS_REQUEST_TIMEOUT) as resp:
             data = json.loads(resp.read())
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
@@ -3429,9 +3465,21 @@ def _status(args: argparse.Namespace) -> None:
         else:
             print(f"Kiro Crew gateway is running but returned HTTP {e.code}.")
         return
-    except (urllib.error.URLError, OSError):
-        print("Kiro Crew gateway is not running.")
-        print("  Start it with: kirocrew gateway")
+    except (urllib.error.URLError, OSError) as e:
+        # A timeout means something took the request, so a gateway IS listening
+        # -- it is up but busy (a loop thread starved of the GIL), not gone.
+        # Saying "not running" here would send the operator to restart a
+        # healthy gateway; the widened timeout above keeps a brief stall from
+        # reaching this branch at all.
+        if _deadline_expired(e):
+            print(
+                f"Kiro Crew gateway is running on port {port} but did not answer "
+                f"within {_STATUS_REQUEST_TIMEOUT:g} s (busy)."
+            )
+            print("  It may be under load; try again in a moment.")
+        else:
+            print("Kiro Crew gateway is not running.")
+            print("  Start it with: kirocrew gateway")
         return
     except Exception:
         print("Kiro Crew gateway is running but returned an unexpected response.")
