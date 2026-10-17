@@ -275,7 +275,10 @@ _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
     "dashboard/file_api/outbox.py": 1,
     "dashboard/handlers/discover.py": 3,
     "dashboard/handlers/hooks.py": 1,
-    "dashboard/handlers/messaging.py": 12,
+    "dashboard/handlers/messaging.py": 2,
+    # The Slack pins, reactions and profile routes' sites, composed into
+    # dashboard/handlers/messaging.py: the gateway process, as the facade's two.
+    "dashboard/messaging_api/slack_workspace.py": 10,
     "dashboard/session_control_parts/target_authorization.py": 1,
     "dashboard/session_transfer.py": 1,
     "dashboard/state_parts/slot_turns.py": 1,

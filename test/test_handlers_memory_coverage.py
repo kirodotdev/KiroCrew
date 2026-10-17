@@ -834,12 +834,15 @@ class TestGetVectorStoreAsync:
         hop.assert_not_awaited()
 
     def test_no_async_handler_calls_sync_get_vector_store(self) -> None:
-        """Tripwire: every ``async def`` in the handler module must route
-        through ``_get_vector_store_async`` (the one place allowed to call the
+        """Tripwire: every ``async def`` in the handler module and its owners must
+        route through ``_get_vector_store_async`` (the one place allowed to call the
         sync helper, because it offloads the init-bearing path)."""
-        tree = ast.parse(inspect.getsource(mem_mod))
+        home = Path(mem_mod.__file__).parent
+        owners = [home / f"{name.split('.')[-1]}.py" for name in mem_mod._OWNERS]
+        trees = [ast.parse(inspect.getsource(mem_mod))]
+        trees += [ast.parse(path.read_text(encoding="utf-8")) for path in owners]
         offenders: list[str] = []
-        for node in ast.walk(tree):
+        for node in (node for tree in trees for node in ast.walk(tree)):
             if not isinstance(node, ast.AsyncFunctionDef):
                 continue
             if node.name == "_get_vector_store_async":

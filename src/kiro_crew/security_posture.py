@@ -30,8 +30,8 @@ Design contract:
   definition (a path pattern the agent is blocked from, a redaction sink's
   module, a credential FAMILY name) or a derived count. This endpoint never
   emits credential material, policy/profile rule CONTENTS (the governance
-  ceiling the agent is fenced from — see ``handlers/security.py``'s posture-only
-  snapshot), or user data. Sensitive-path entries are the *blocklist* itself,
+  ceiling the agent is fenced from — see the posture-only snapshot in
+  ``handlers/security_governance_policy.py``), or user data. Sensitive-path entries are the *blocklist* itself,
   which is already documented in ``docs/architecture/security-deep-dive.md`` and is not a
   secret: knowing ``~/.aws`` is blocked does not help reach it.
 - **One registry, two readers.** The dashboard renders it; ``test_security_posture``
@@ -2385,6 +2385,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/handlers/hooks.py",
         "dashboard/handlers/knowledge.py",
         "dashboard/handlers/memory.py",
+        "dashboard/handlers/memory_embeddings.py",
+        "dashboard/handlers/memory_graph.py",
         "dashboard/handlers/optimizer.py",
         "dashboard/handlers/prompts_authoring.py",
         "dashboard/handlers/prompts_reading.py",
@@ -2394,12 +2396,13 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/handlers/updates.py",
         "dashboard/handlers/webapp_preview.py",
         "dashboard/handlers_project.py",
-        # The spawn owners composed into ``dashboard/handlers/messaging.py``: they
-        # redact run text the facade's routes answer with, and that facade stays the
-        # registered sink for those REST responses, so they are not egress paths of
-        # their own. (The send owner posts to Slack and is a registered sink above.)
+        # The spawn and Slack workspace owners composed into ``dashboard/handlers/messaging.py``:
+        # they redact run text and Slack reads the facade's routes answer with, and that
+        # facade stays the registered sink for those REST responses, so they are not egress
+        # paths of their own. (The send owner posts to Slack and is a registered sink above.)
         "dashboard/messaging_api/run_control.py",
         "dashboard/messaging_api/run_views.py",
+        "dashboard/messaging_api/slack_workspace.py",
         "dashboard/messaging_api/spawn.py",
         "knowledge/agent_fetch.py",
         "knowledge/agent_source.py",

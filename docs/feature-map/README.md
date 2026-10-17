@@ -54,7 +54,7 @@ authoritative nav table (label, group, badge, preview gate). A surface marked
 `hiddenFromNav` there has a working route but no rail row — it is reached from
 somewhere else, noted per row below.
 
-A Handler cell that names a facade (`chat_handlers.py`, `handlers/agents.py`, `handlers/files.py`, `handlers/messaging.py`, `handlers/terminal.py`, `handlers/usage.py`) points at the route surface; the code that owns the behaviour sits behind it in `chat_api/`, `agent_admin/`, `file_api/`, `messaging_api/`, or the `handlers/terminal_*.py` and `handlers/usage_*.py` owners.
+A Handler cell that names a facade (`chat_handlers.py`, `handlers/agents.py`, `handlers/files.py`, `handlers/messaging.py`, `handlers/terminal.py`, `handlers/usage.py`, `handlers/security.py`, `handlers/memory.py`) points at the route surface; the code that owns the behaviour sits behind it in `chat_api/`, `agent_admin/`, `file_api/`, `messaging_api/`, the `handlers/terminal_*.py` and `handlers/usage_*.py` owners, or the sibling owners the security and memory facades import (`security_audit.py`, `security_trusted_apps.py`, `security_governance_policy.py`, `security_trusted_registries.py`; `memory_services.py`, `memory_embeddings.py`, `memory_graph.py`).
 
 `handlers/prompts.py` is such a facade too: the prompt and skill routes it names live in the `handlers/prompts_<role>.py` owners beside it.
 

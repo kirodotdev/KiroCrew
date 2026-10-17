@@ -27,7 +27,7 @@ one-module file was. Three consequences follow:
   ``module``, ``filename`` and ``lineno`` name the owner file. An owner's classes
   keep their own module, which is where ``inspect`` looks for a class's source.
 * State stays on the handlers module. Every module-level value (the constants, the
-  ``_LockedSectionWrite`` transaction, ``logger``) is a handlers global that owner
+  ``_ABSENT`` sentinel, ``logger``) is a handlers global that owner
   functions reach by name, so a test that rebinds it there is the binding every
   function sees.
 

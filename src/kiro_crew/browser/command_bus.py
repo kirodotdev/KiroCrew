@@ -4,7 +4,7 @@ The dashboard's Browser panel hosts a native embedded Chromium view owned by the
 Electron main process. The agent's ``browser`` MCP tool call originates in Python
 and needs a route into that native view. This module is the gateway-side half of
 that route: a tiny, framework-free command bus plus the three loopback HTTP
-endpoints wired in ``dashboard/handlers/messaging.py``.
+endpoints in ``dashboard/messaging_api/browser_routes.py``.
 
 Shape (why this design):
 - The ``browser`` MCP tool calls ``POST /api/browser/command`` to run one op. That maps to

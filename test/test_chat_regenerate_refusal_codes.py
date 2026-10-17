@@ -47,8 +47,8 @@ PAIR = re.compile(r'"error":\s*"(?P<sentence>[^"]+)"\s*,\s*"code":\s*"(?P<code>[
 #   be demanding a worse API.
 #
 # - "invalid JSON" is settled at 44 sites as `invalid_json` and diverges at
-#   exactly one: `handlers/security.py:1535` answers an UNPARSEABLE body with
-#   `invalid_value`, the code its own next guard uses for a parseable body whose
+#   exactly one: `handlers/security_trusted_apps.py` (allow-all) answers an UNPARSEABLE
+#   body with `invalid_value`, the code its own next guard uses for a parseable body whose
 #   `value` has the wrong type -- so that endpoint currently returns one code for
 #   two conditions, and its own audit line on the line above calls the branch
 #   `invalid_json`. It looks like a genuine bug, but fixing it changes a security
@@ -68,7 +68,7 @@ def test_settled_conditions_use_one_spelling_across_the_dashboard() -> None:
     # the tree's refusals (~60 `invalid_json` sites between them), so a
     # top-level-only scan would claim "across the dashboard" while never reading
     # the files where drift is most likely. It found a real one when widened:
-    # `handlers/security.py` answered an unparseable body with `invalid_value`
+    # `handlers/security_trusted_apps.py` answered an unparseable body with `invalid_value`
     # while its own audit line called the same branch `invalid_json`.
     for path in sorted(DASHBOARD.rglob("*.py")):
         text = path.read_text(encoding="utf-8")

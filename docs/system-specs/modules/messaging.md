@@ -1584,17 +1584,20 @@ the facade reaches moved code. New work goes to the owner of its responsibility:
 | `channel_delivery.py` | the channel legs: a channel owner's DM (`_deliver_channel_dm`), a configured target (`_send_to_channel_target`), the session's conversation (`_deliver_to_channel`) |
 | `spawn.py`, `run_control.py`, `run_views.py` | spawn admission and continue; the run controls and their session fence; the status and list views |
 | `notifications.py` | the notification feed and the per-channel notification settings |
+| `agent_push.py` | `POST /api/notifications/agent`, an agent session's `send_notification` push |
 | `*_settings.py`, one per channel | that channel's settings API |
+| `channel_config_writes.py` | the channel-config transaction every channel saver commits through: `_LockedSectionWrite`, and `_write_env_or_roll_back`, the one `.env` write, rollback and environment sync (its off-loop drain, `_write_env_off_loop`, stays in `handlers/messaging.py`); plus `_mask_secret`, `_clean_id_list` and `_threshold_pct_rejection` |
+| `slack_workspace.py` | the Slack pin, reaction, profile and manifest routes |
+| `channel_folder_backfill.py` | `POST /api/channel-folders/backfill`, filing a channel's existing sessions |
+| `browser_routes.py` | the browser routes: attach token, the native panel's command bus, the Playwright CLI install, the browser view and open |
 
 The facade keeps the code repository guards read there by path, and the shared
 pieces. That is `api_send_message` itself, which redacts and authorizes the Slack
 target and injects into an origin session between the read and the delivery. It
-also keeps the Slack pin, reaction, profile and manifest routes,
-`api_notification_agent_push`, `api_teams_activity`, the iMessage save entry, the
-channel-folder backfill, the browser routes, `_run_belongs_to_caller`,
-`parent_work_supported` and the shared channel-config transaction
-(`_LockedSectionWrite`, `_write_env_off_loop`, and `_write_env_or_roll_back`, the
-one `.env` write, rollback and environment sync every channel saver calls).
+also keeps `api_teams_activity`, the iMessage save entry, `_run_belongs_to_caller`,
+`parent_work_supported`, the module state every owner reads by name, the two
+finalizer exceptions the channel-config transaction raises, and that transaction's
+off-loop `.env` drain, `_write_env_off_loop`.
 
 ## Telegram dashboard-session resume
 

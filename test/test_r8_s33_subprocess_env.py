@@ -194,7 +194,7 @@ def _fake_proc(returncode: int) -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
-# memory.py -- the two pip spawns
+# memory_embeddings.py -- the two pip spawns
 # ---------------------------------------------------------------------------
 def test_pip_bootstrap_spawn_env_is_scrubbed(monkeypatch):
     """``memory._ensure_pip_available`` runs ``python -m ensurepip``."""

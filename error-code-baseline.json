@@ -195,10 +195,13 @@
     },
     "dashboard/handlers/memory.py": {
       "dynamic_status": 1,
-      "missing_code": 19
+      "missing_code": 13
+    },
+    "dashboard/handlers/memory_embeddings.py": {
+      "missing_code": 6
     },
     "dashboard/handlers/messaging.py": {
-      "missing_code": 39
+      "missing_code": 3
     },
     "dashboard/handlers/optimizer.py": {
       "missing_code": 1
@@ -268,6 +271,12 @@
     "dashboard/kiro_readiness.py": {
       "opaque_body": 1
     },
+    "dashboard/messaging_api/agent_push.py": {
+      "missing_code": 7
+    },
+    "dashboard/messaging_api/browser_routes.py": {
+      "missing_code": 2
+    },
     "dashboard/messaging_api/discord_settings.py": {
       "dynamic_status": 1
     },
@@ -285,6 +294,9 @@
     },
     "dashboard/messaging_api/slack_settings.py": {
       "dynamic_status": 1
+    },
+    "dashboard/messaging_api/slack_workspace.py": {
+      "missing_code": 27
     },
     "dashboard/messaging_api/spawn.py": {
       "missing_code": 7

@@ -588,7 +588,7 @@ prefix matches on the path boundary). Since `enable_state.save_state` deliberate
 bypasses `is_sensitive_path` — that is what lets the operator's own panel write a
 file the agent cannot — an agent able to author an app manifest could otherwise read
 its own `.app_secret`, mint a token, and flip `enabled: true` on its own desktop
-automation. Same guard as `handlers/kiro_prerequisite.py` and `messaging.py`'s
+automation. Same guard as `handlers/kiro_prerequisite.py` and `messaging_api/agent_push.py`'s
 notification push; the two machine routes are covered instead by their
 `request["internal_auth"]` assertion, which an app token can never satisfy.
 
