@@ -620,6 +620,24 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   `chmod`/`chown` deny rows: whether every occurrence of a permission verb is an
   ARGUMENT of a command that treats arguments as data. It sits above `argv_floor.py`,
   whose frame walk it reuses (see *Inert mentions of a permission verb* below).
+- `argv_row_floor.py` — the argv floor under the catalog rows that name a command
+  literal (`terraform destroy.*`, `pulumi destroy.*`, `cdk destroy.*`,
+  `kubectl delete namespace.*`, `git reset --hard.*`, `ncat -e.*`, the `nc -e` row,
+  `dd if=.*`). One table maps each rule id to the program that must run and a matcher
+  over that program's argv: a subcommand chain read past options, a subcommand plus an
+  option anywhere after it, or an option / `key=value` operand anywhere. Which options
+  take a value is never guessed: the word after an option is read both as its value
+  and as the subcommand, so the reading can only add a refusal. It is a UNION run after
+  the regex tier — a literal hit keeps its refusal, a row is checked only while it is in
+  the effective set, and each refusal reports the row's own pattern and rule id.
+  On top of the shared reader it splits at a lone background `&`, reads the `<>` and
+  `<&` redirections whole, resolves `$'…'` quoting, and pre-filters on the
+  quote-stripped program word (`g""it` is `git`); its matchers are one right-to-left
+  pass, linear on the 20 KB scan ceiling.
+  It fails closed: a command that names a row's program but whose shell syntax the
+  reader cannot turn into an argv is refused under that row, not left to the regex.
+  Aliases that are a different subcommand rather than an option spelling
+  (`kubectl delete ns`, `pulumi down`, `terraform apply -destroy`) are out of it.
 - `credential_sources.py` — where a redacted credential came from, recorded without
   keeping the credential: keyed per-process HMAC fingerprints of redacted values and
   bounded per-turn evidence naming the tool call that produced one (see the

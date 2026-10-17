@@ -499,7 +499,23 @@ def _url_payload_command(n: int) -> str:
 #: target) the way it steps over a ``VAR=val`` assignment, using the shared
 #: ``shell_normalizer._push_token_redirection`` recognizer. A redirect before
 #: ``rm`` cannot hide the program word.
-_PACKAGE_LINE_BUDGET = 32_518
+#:
+#: Raised again, from 32,518, for ``argv_row_floor.py``: one table that reads the
+#: command-literal deny rows (``terraform destroy.*``, ``git reset --hard.*``,
+#: ``dd if=.*`` and five more) off the argv so an option between the program and
+#: the anchored word cannot re-spell them, plus its hook in the evaluator. It reuses
+#: the shell reader to split commands and words (quotes, glued operators, subshells,
+#: redirections, nested payloads), resolves the program past shell keyword openers
+#: and the shared ``_PROGRAM_RUNNERS`` wrappers, folds line continuations and reads
+#: redirections quote-aware, resolves compound-opener conditions, and matches the
+#: program against the row. It splits at a lone background ``&``, reads ``<>`` and
+#: ``<&`` whole, resolves ``$'…'`` and pre-filters on the quote-stripped program
+#: word; its matchers are one right-to-left pass, linear on the 20 KB ceiling. A
+#: command the reader cannot read is refused when it names a row's program, rather
+#: than left to the literal regex. Text that runs nothing (comments, quoted
+#: newlines, message heredocs, single-quoted substitutions, known option values) is
+#: not read as a command. It only ADDS refusals; no row, pattern or pass moved.
+_PACKAGE_LINE_BUDGET = 33_787
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
