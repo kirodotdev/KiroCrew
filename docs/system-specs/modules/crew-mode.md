@@ -12,6 +12,12 @@ session's topics out to sub-sessions. It is retired — see
 (`/members`, served by `dashboard/handlers/members.py` and `members.py` in the
 table below), where each crew is a standing agent with its own thread.
 
+The name now belongs to something else: **Crew Mode** is the composer switch that
+runs a dashboard chat on the existing `kirocrew-conductor` (a UI over that agent,
+specified in [session](session.md) and [learn-cron-dashboard](learn-cron-dashboard.md)).
+It shares nothing with the retired slot mode: no `"crew"` mode value, no
+`crew_chat.py`, no queue or topic store.
+
 A crew is not a *Remote Crew* — that is another machine running its own Kiro Crew
 gateway, which this one reaches through a tunnel (see [instances.md](instances.md))
 — and not an Issue Radar *crew*, which is that app's own repository work crew

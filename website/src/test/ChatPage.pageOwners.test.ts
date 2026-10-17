@@ -128,6 +128,7 @@ describe('pages/chat/page owners', () => {
       'useComposerSend',
       'useAutoSendIntake',
       'useSessionChoices',
+      'useCrewModeSwitch',
       'useComposerSessionControls',
       'useAppPanelReveal',
       'useFileMentionActions',

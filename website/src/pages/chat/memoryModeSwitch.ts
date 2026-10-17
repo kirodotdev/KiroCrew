@@ -13,6 +13,7 @@ import { handOverComposerUploads, landComposerAttachments, takeComposerArrivals 
 import { errMessage } from '../../utils/thunkError'
 import { i18nT } from '../../i18n/t'
 import type { MemoryMode } from '../../components/MemoryModeChip'
+import { CREW_MODE_AGENT, memoryModeAllowsCrewMode } from '../../lib/crewMode'
 
 type Ref<T> = { current: T }
 
@@ -63,9 +64,14 @@ export async function runMemorySwitch(
   // sibling navigation. Carry agent/project/folder/color so
   // the recreated slot keeps its identity and placement.
   const old = c.slot
+  // Crew Mode needs a Persistent chat (an Incognito or Temporary session may
+  // not open sessions), so leaving Persistent also leaves the conductor: the
+  // replacement is created agent-less, on the default template.
+  const leavesCrewMode = old?.agent === CREW_MODE_AGENT && old?.agent_kind !== 'member' && !memoryModeAllowsCrewMode(newMode)
+  const agent = leavesCrewMode ? undefined : old?.agent || undefined
   const opts = {
-    agent: old?.agent || undefined,
-    agent_kind: old?.agent ? old?.agent_kind || undefined : undefined,
+    agent,
+    agent_kind: agent ? old?.agent_kind || undefined : undefined,
     model: old?.model || undefined,
     mode: c.mode,
     memory_mode: newMode,

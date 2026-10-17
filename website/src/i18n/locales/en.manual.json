@@ -4092,6 +4092,33 @@
     "runInTerminalBtn": {
       "copied_paste_into_terminal": "Copied — paste it into the terminal"
     },
+    "crewMode": {
+      "chip_off": "Crew Mode",
+      "chip_off_explained": "Crew Mode: split into tasks",
+      "chip_on": "Crew Mode on",
+      "chip_hint_off": "Turn on Crew Mode: each task runs in its own chat and reports back here.",
+      "chip_hint_on": "Turn off Crew Mode. This chat becomes a normal chat again; chats it already opened keep running.",
+      "chip_hint_busy": "Available after the reply.",
+      "chip_off_keeps_chats": "Turning off Crew Mode won't stop the chats it opened.",
+      "title": "Crew Mode",
+      "tagline_lead": "You set the goal.",
+      "tagline_strong": "Your crew does the work.",
+      "does_new_chat": "Opens chats",
+      "does_pass_notes": "Shares updates",
+      "does_take_asks": "Takes requests",
+      "does_check_in": "Shows progress",
+      "board_title": "Your crew",
+      "board_preview": "Example",
+      "sample_question": "Which day works for you?",
+      "sample_email": "Email",
+      "sample_layout": "Layout",
+      "sample_room": "Room",
+      "sample_screenshot": "Screenshot",
+      "state_done": "Done",
+      "state_working": "Working",
+      "state_needs_you": "Needs you",
+      "state_waiting": "Waiting"
+    },
     "guideLayer": {
       "region_label": "Guide",
       "close": "Close",

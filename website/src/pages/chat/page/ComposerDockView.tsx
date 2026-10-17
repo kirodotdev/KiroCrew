@@ -1,6 +1,7 @@
 import type { NavigateFunction } from 'react-router-dom'
-import type { RefObject, Dispatch, SetStateAction, MutableRefObject } from 'react'
+import { useId, type RefObject, type Dispatch, type SetStateAction, type MutableRefObject } from 'react'
 import { createPortal } from 'react-dom'
+import { motion } from 'framer-motion'
 import { Undo2 } from 'lucide-react'
 import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../../../chat-core/composer/Composer'
 import type { ComposerPasteSlice } from '../../../chat-core/composer/composerPastes'
@@ -10,6 +11,7 @@ import type { UseMessageQuote } from '../../../chat-core/composer/useMessageQuot
 import AgentDropdownList, { isCrewmateChat, DefaultAgentRow, defaultWriteKind, ManageAgentsFooter, type DefaultWriteFailure } from '../../../components/AgentDropdownList'
 import type { KiroCrewAgent } from '../../../components/AgentSelector'
 import { MemoryModeChip, type MemoryMode } from '../../../components/MemoryModeChip'
+import { CrewModeChip } from '../../../components/CrewModeChip'
 import type { PromptHistoryItem } from '../../../components/composerPromptHistory'
 import type { ResolvedSessionControl } from '../../../hooks/useSessionControls'
 import type { ProviderAdapter, ModelInfo } from '../../../providers/types'
@@ -248,10 +250,14 @@ interface ComposerDockViewProps {
   switchMemoryMode: (newMode: MemoryMode) => Promise<void>
   composerAbove: JSX.Element
   composerSessionControls: ReturnType<typeof useSessionControlChips>
+  /** The Crew Mode switch (crewModeSwitch): offered, on, and its toggle. */
+  crewModeEligible: boolean
+  crewModeOn: boolean
+  toggleCrewMode: () => void
 }
 
 /**
- * The floating composer dock, the next positioned sibling after the scroller (that DOM order is what paints it over the transcript), and its contents: the jump-to-bottom pill, the status stack (task, sub-agent and workflow bars, queued messages), the flying quote, and the input area (refused-press notice, history suggestions, knowledge picker, question and follow-up cards, memory-mode chip, the composer), and the composer toolbar's popovers (the agent and model dropdowns, the project picker, the open app session control).
+ * The floating composer dock, the next positioned sibling after the scroller (that DOM order is what paints it over the transcript), and its contents: the jump-to-bottom pill, the status stack (task, sub-agent and workflow bars, queued messages), the flying quote, and the input area (refused-press notice, history suggestions, knowledge picker, question and follow-up cards, memory-mode and Crew Mode chips, the composer), and the composer toolbar's popovers (the agent and model dropdowns, the project picker, the open app session control).
  *
  * Its body is not re-indented: `ChatPage.statusStackLayering.test.tsx` finds the status stack's end by its closing tag's depth (14 spaces).
  */
@@ -271,8 +277,11 @@ export default function ComposerDockView({
   effortSupported, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
   endQuoteFlight, flyingQuote, inputAreaRef, isAtBottom, answerQuestionCard, handleCancelQueued, handleEditQueued, handleInterruptQueued, handleReorderQueued, keepQuestionAnswer, queuedMessages,
   queuePendingIds, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove,
-  composerSessionControls,
+  composerSessionControls, crewModeEligible, crewModeOn, toggleCrewMode,
 }: ComposerDockViewProps) {
+  const crewModeNoteId = useId()
+  // Mid-chat, with the mode on, one line says what turning it off leaves alone.
+  const showCrewModeNote = crewModeEligible && crewModeOn && !showComposerMemoryChip
   return (
     <>
             {/* Composer dock. Floats over the bottom of the transcript scroller
@@ -434,12 +443,31 @@ export default function ComposerDockView({
                   />
                 </div>
               )}
-              {showComposerMemoryChip && (
+              {(showComposerMemoryChip || crewModeEligible) && (
                 // No backdrop: the chip is glass and whatever scrolls under it is meant to show.
                 // `w-fit`, not a full-width flex row: the box is a `dock-inert` child, so
-                // it catches input, and it should be no wider than the chip it holds.
-                <div className="relative z-10 mx-auto w-fit px-4 pt-2 pb-2" data-testid="composer-memory-chip">
-                  <MemoryModeChip memoryMode={currentSlot?.memory_mode ?? 'persistent'} onSwitchMode={switchMemoryMode} switching={memorySwitching} disabled={composerOptimizing} />
+                // it catches input, and it should be no wider than the chips it holds.
+                // The Crew Mode chip sits right of the memory chip. Once the chat has
+                // messages the memory chip leaves and the SAME Crew Mode chip glides to
+                // the centre (`layout`), so the mode can still be turned off.
+                // The row wraps, so on a phone the mid-chat note drops under the chip
+                // instead of overlapping it.
+                <div className="relative z-10 mx-auto w-fit max-w-full px-4 pt-2 pb-2 flex flex-wrap items-center justify-center gap-x-2 gap-y-1" data-testid="composer-memory-chip">
+                  {showComposerMemoryChip && <MemoryModeChip memoryMode={currentSlot?.memory_mode ?? 'persistent'} onSwitchMode={switchMemoryMode} switching={memorySwitching} disabled={composerOptimizing} />}
+                  {crewModeEligible && (
+                    // Disabled while a reply runs (the agent switch refuses mid-turn): the
+                    // composer's own turn state, which a send sets at once, as well as the
+                    // listed slot's, which follows the server. And while a memory-mode
+                    // switch is replacing this session.
+                    <motion.span layout="position" className="inline-flex">
+                      <CrewModeChip on={crewModeOn} onToggle={toggleCrewMode} busy={slotRunning || !!currentSlot?.running} disabled={memorySwitching} describedBy={showCrewModeNote ? crewModeNoteId : undefined} />
+                    </motion.span>
+                  )}
+                  {showCrewModeNote && (
+                    <span id={crewModeNoteId} data-testid="crew-mode-off-note" className="text-[12px] text-muted text-center">
+                      {i18nT('components.crewMode.chip_off_keeps_chats')}
+                    </span>
+                  )}
                 </div>
               )}
               {/* Announces why the composer is locked; in every session, as the user may move on mid-switch. */}
