@@ -84,7 +84,13 @@
     "pod_ls": "List pods",
     "issue_radar_crew_read": "Read crew progress",
     "issue_radar_crew_record": "Log crew progress",
-    "browser": "Drive browser"
+    "browser": "Drive browser",
+    "code_channel_set_view": "Publish code channel view",
+    "code_channel_publish_plan_canvas": "Publish plan canvas",
+    "code_channel_set_context_bar": "Set code channel context bar",
+    "code_channel_rename": "Rename code channel",
+    "code_channel_set_status": "Set code channel status",
+    "code_channel_wrap_up": "Post code channel wrap-up"
   },
   "kirocrew-dashboard": {
     "chat_folder_tree": "Read folder tree",

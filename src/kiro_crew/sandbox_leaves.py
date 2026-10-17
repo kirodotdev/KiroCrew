@@ -635,6 +635,11 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # only writer is the gateway. Paired with the file-edit floor in
     # ``security.paths._WRITE_PROTECTED_HOME_PATHS``.
     "slack-code-channels.json",
+    # Its companion, the code-channel agent surface (``code_channels.surface_store``):
+    # the agent's context-bar items, the plan canvas id and which message is the
+    # current wrap-up, all inputs the gateway acts on for a channel outside the
+    # sandbox. Same reasoning, same pairing.
+    "slack-code-channel-surface.json",
     # The crew webview template directory. A ceiling in exactly the sense above:
     # the whole value of splitting a panel into human-authored TEMPLATE and
     # agent-published DATA is that layout is authored by a person, so a crew must
@@ -918,6 +923,7 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     "apps/.dev-grants.json",
     "settings_seeds.json",
     "slack-code-channels.json",
+    "slack-code-channel-surface.json",
     "agent_model_state.json",
     "agent_model_state.json.lock",
     # Gateway-owned run records, read to restore app authorization on a cold
