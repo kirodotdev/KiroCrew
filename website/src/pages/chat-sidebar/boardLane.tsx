@@ -602,18 +602,35 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
                           <button key={m} role="radio" aria-checked={col.mode === m} className={`text-[11px] px-2 py-0.5 rounded cursor-pointer border transition-all ${col.mode === m ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text'}`} onClick={() => updateColumnMutation.mutate({ id: col.id, body: { mode: m } })}>{m}</button>
                         ))}
                       </div>
-                      <label htmlFor={`column-include-untagged-${col.id}`} className="flex items-center gap-2 px-1 py-1 mb-2 text-[11px] text-muted cursor-pointer select-none hover:text-text" title={i18nT('pages.chatSidebar.also_show_sessions_that_have_no_tags_at_all')}>
+                      {(() => {
+                        // On a column with no tag filter, ticking the box narrows to
+                        // untagged-only (the "Untagged" column), so the label and
+                        // tooltip say "only". With a tag filter, ticking it ADDS
+                        // untagged sessions, so they say "include". Keyed on the
+                        // filter fields alone — never the display name — so the
+                        // control's wording never depends on what the column is called.
+                        const untaggedOnly = !col.tag_ids || col.tag_ids.length === 0
+                        const label = untaggedOnly
+                          ? i18nT('pages.chatSidebar.untagged_only')
+                          : i18nT('pages.chatSidebar.include_untagged_sessions')
+                        const title = untaggedOnly
+                          ? i18nT('pages.chatSidebar.only_show_sessions_that_have_no_tags')
+                          : i18nT('pages.chatSidebar.also_show_sessions_that_have_no_tags_at_all')
+                        return (
+                      <label htmlFor={`column-include-untagged-${col.id}`} className="flex items-center gap-2 px-1 py-1 mb-2 text-[11px] text-muted cursor-pointer select-none hover:text-text" title={title}>
                         <input
                           type="checkbox"
                           id={`column-include-untagged-${col.id}`}
                           data-testid={`column-include-untagged-${col.id}`}
-                          aria-label={i18nT('pages.chatSidebar.include_untagged_sessions')}
+                          aria-label={label}
                           checked={!!col.include_untagged}
                           onChange={e => updateColumnMutation.mutate({ id: col.id, body: { include_untagged: e.target.checked } })}
                           className="cursor-pointer"
                         />
-                        {i18nT('pages.chatSidebar.include_untagged_sessions')}
+                        {label}
                       </label>
+                        )
+                      })()}
                       <TagManagerList
                         mode="column-filter"
                         selectedIds={col.tag_ids}

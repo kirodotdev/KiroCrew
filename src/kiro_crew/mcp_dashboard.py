@@ -2410,9 +2410,11 @@ def _chat_tag_column_label(col: dict, tag_names: dict[str, str]) -> str:
     raw_ids = col.get("tag_ids")
     tag_ids = [str(t) for t in raw_ids if isinstance(t, str)] if isinstance(raw_ids, list) else []
     if not tag_ids:
-        # An empty filter matches every session; ``include_untagged`` adds
-        # nothing to that (``columnMatches`` in the board UI).
-        return "all sessions"
+        # Mirrors ``columnMatches`` in the board UI: an empty filter with
+        # ``include_untagged`` on is the "Untagged" column (untagged sessions
+        # only); without the flag it is "all sessions". Keyed on the filter
+        # fields alone, never the display name.
+        return "untagged sessions only" if col.get("include_untagged") else "all sessions"
     names = ", ".join(f"`{tag_names.get(t, t)}`" for t in tag_ids)
     mode = str(col.get("mode") or "any")
     label = f"tags {names} (match {mode})"

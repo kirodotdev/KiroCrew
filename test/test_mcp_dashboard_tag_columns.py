@@ -102,13 +102,18 @@ class TestColumnList:
         assert "(unnamed)" in out
 
     def test_untagged_flag_is_labelled_as_what_it_adds(self) -> None:
-        """Mirrors the board UI's ``columnMatches``: empty filter = all sessions."""
+        """Mirrors the board UI's ``columnMatches``: an empty-tag column with the
+        flag on reads "untagged sessions only" regardless of a custom name (the
+        filter is keyed on the fields, not the display name); on top of a real
+        tag filter the flag is additive."""
         cols = [
-            {"id": "c1", "name": "A", "tag_ids": [], "include_untagged": True},
-            {"id": "c2", "name": "B", "tag_ids": ["aaaaaaaaaaaa"], "include_untagged": True},
+            {"id": "c1", "name": "", "tag_ids": [], "include_untagged": True},
+            {"id": "c2", "name": "Everything", "tag_ids": [], "include_untagged": True},
+            {"id": "c3", "name": "B", "tag_ids": ["aaaaaaaaaaaa"], "include_untagged": True},
         ]
         out, _ = _call("chat_tag_column_list", {}, _routes(columns=cols))
-        assert "`A`  id=c1  shows all sessions" in out
+        assert "id=c1  shows untagged sessions only" in out
+        assert "`Everything`  id=c2  shows untagged sessions only" in out
         assert "tags `Active` (match any) + untagged sessions" in out
 
     def test_a_hand_edited_non_list_tag_ids_renders_instead_of_crashing(self) -> None:
