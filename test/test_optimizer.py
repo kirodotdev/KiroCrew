@@ -625,6 +625,87 @@ class TestOptimizerPasteHandling:
         assert data["optimized"] == "whats wrong here [ Paste #1 · 5 lines ]"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "model_id_run",
+        ["", "\u2063\u200b\u200c\u2063", "\u2063\u200b\u200b\u200b\u2063"],
+        ids=["dropped", "garbled", "wrong-bits"],
+    )
+    async def test_visible_token_without_its_id_keeps_the_rewrite(self, model_id_run):
+        # The model returns the paste token it was shown, minus (or with
+        # a mangled copy of) the invisible stable-id run. The rewrite must be
+        # kept, and the token handed back must be the draft's own exact string so
+        # the frontend can still pair it to its paste block.
+        captured: list = []
+        token = f"[ Paste #1{_invisible_id('mg4kx2a7ab')} · 2 lines ]"
+        mock_state = _paste_mock_state(
+            captured, f"Diagnose the error in [ Paste #1{model_id_run} · 2 lines ] and fix it."
+        )
+        request = MagicMock()
+        request.json = AsyncMock(
+            return_value={
+                "prompt": f"whats wrong here {token}",
+                "context": "",
+                "pastes": [{"seq": 1, "content": "Traceback: boom"}],
+            }
+        )
+        request.app = _ready_app(mock_state)
+
+        resp = await handle_optimize(request)
+        data = json.loads(resp.body)
+        assert data["changed"] is True
+        assert data["optimized"] == f"Diagnose the error in {token} and fix it."
+
+    @pytest.mark.asyncio
+    async def test_id_restore_still_rejects_a_duplicated_token(self):
+        # Putting the id back never adds a token: a rewrite that repeats the
+        # visible placeholder is still caught by the multiset guard.
+        captured: list = []
+        token = f"[ Paste #1{_invisible_id('mg4kx2a7ab')} · 2 lines ]"
+        mock_state = _paste_mock_state(
+            captured, "Compare [ Paste #1 · 2 lines ] with [ Paste #1 · 2 lines ]."
+        )
+        request = MagicMock()
+        request.json = AsyncMock(
+            return_value={
+                "prompt": f"whats wrong here {token}",
+                "context": "",
+                "pastes": [{"seq": 1, "content": "Traceback: boom"}],
+            }
+        )
+        request.app = _ready_app(mock_state)
+
+        resp = await handle_optimize(request)
+        data = json.loads(resp.body)
+        assert data["changed"] is False
+        assert data["optimized"] == f"whats wrong here {token}"
+
+    @pytest.mark.asyncio
+    async def test_look_alike_tokens_with_different_ids_need_their_exact_ids(self):
+        # Two draft tokens with the same visible text but different ids cannot be
+        # told apart by sight, so they are not restored: a rewrite that drops
+        # their ids is rejected rather than risk pairing a token to the wrong block.
+        captured: list = []
+        a = f"[ Paste #1{_invisible_id('aaaaaaaaaa')} · 2 lines ]"
+        b = f"[ Paste #1{_invisible_id('bbbbbbbbbb')} · 2 lines ]"
+        mock_state = _paste_mock_state(
+            captured, "Compare [ Paste #1 · 2 lines ] with [ Paste #1 · 2 lines ] closely."
+        )
+        request = MagicMock()
+        request.json = AsyncMock(
+            return_value={
+                "prompt": f"diff {a} vs {b}",
+                "context": "",
+                "pastes": [{"seq": 1, "content": "x\ny"}],
+            }
+        )
+        request.app = _ready_app(mock_state)
+
+        resp = await handle_optimize(request)
+        data = json.loads(resp.body)
+        assert data["changed"] is False
+        assert data["optimized"] == f"diff {a} vs {b}"
+
+    @pytest.mark.asyncio
     async def test_injection_in_paste_content_returns_original(self):
         captured: list = []
         mock_state = _paste_mock_state(captured, "should never be reached")

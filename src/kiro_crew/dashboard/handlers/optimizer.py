@@ -129,6 +129,36 @@ def _paste_token_counts(text: str) -> Counter:
     return Counter(m.group(0) for m in PASTE_TOKEN_REGEX.finditer(text))
 
 
+# The zero-width stable-id run inside a paste token (see PASTE_TOKEN_REGEX).
+_PASTE_ID_RUN_REGEX = re.compile(r"\u2063[\u200b\u200c]+\u2063")
+
+
+def _restore_paste_ids(optimized: str, prompt: str) -> str:
+    """Put each paste token in *optimized* back to the exact string the draft used.
+
+    The stable id is an invisible bit run the model cannot be relied on to copy,
+    and a rewrite that drops or garbles it still names the same visible paste.
+    So every token the model wrote is matched by its VISIBLE form
+    (``[ Paste #N · M lines ]``) and replaced with the draft's own full token,
+    id run and all. Only a visible form that maps to exactly ONE full token in
+    the draft is rewritten; when two draft tokens look the same but carry
+    different ids, the model's spelling is kept untouched, so the exact-string
+    multiset guard still decides for them. This never adds or removes a token,
+    so a dropped, duplicated or re-counted placeholder is still rejected by
+    that guard."""
+    by_visible: dict[str, set[str]] = {}
+    for m in PASTE_TOKEN_REGEX.finditer(prompt):
+        by_visible.setdefault(_PASTE_ID_RUN_REGEX.sub("", m.group(0)), set()).add(m.group(0))
+
+    def _swap(m: re.Match[str]) -> str:
+        full = by_visible.get(_PASTE_ID_RUN_REGEX.sub("", m.group(0)))
+        if full is not None and len(full) == 1:
+            return next(iter(full))
+        return m.group(0)
+
+    return PASTE_TOKEN_REGEX.sub(_swap, optimized)
+
+
 def _build_pasted_content_block(pastes: object, referenced_seqs: set[str], nonce: str) -> str:
     """Build a ``<pasted_content-{nonce}>`` block for the referenced pastes.
 
@@ -408,7 +438,10 @@ async def handle_optimize(request: web.Request) -> web.Response:
     # its "· M lines" text (seq present but the exact string no longer matches,
     # so the token is left unexpanded) would pass yet corrupt the submitted
     # prompt. Require the full-token multiset to match exactly; otherwise discard
-    # the rewrite and keep the original.
+    # the rewrite and keep the original. The invisible stable-id run is not the
+    # model's to reproduce, so each token is first put back to the draft's own
+    # spelling by its visible form (_restore_paste_ids) and only then compared.
+    optimized = _restore_paste_ids(optimized, prompt)
     if prompt_paste_tokens != _paste_token_counts(optimized):
         logger.warning(
             "Optimizer altered paste placeholder(s) (expected %s, got %s) — "
