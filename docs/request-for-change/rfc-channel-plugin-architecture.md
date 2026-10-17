@@ -218,7 +218,7 @@ makes channel sessions unmanageable today.
    Segments are colon-free, enforced at build time. The `session_map.py`
    double-prefix repair moves into this parser and dies in one place.
 5. **The dispatch pipeline stays address-agnostic** — it passes keys through
-   verbatim and never parses them. Pinned in `messaging/dispatch.py`
+   verbatim and never parses them. Pinned in `messaging/dispatch_contract.py`
    docstrings by PR ①, contract-tested when the parser lands in PR ③.
 
 ### Accepted debts

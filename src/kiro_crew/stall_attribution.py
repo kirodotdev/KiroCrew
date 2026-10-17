@@ -74,7 +74,18 @@ _SURFACE_RULES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
     ("telegram", ("/kiro_crew/telegram/",), ()),
     ("teams", ("/kiro_crew/teams/",), ()),
     ("webex", ("/kiro_crew/webex/",), ()),
-    ("messaging", ("/kiro_crew/messaging/dispatch.py",), ()),
+    (
+        "messaging",
+        (
+            "/kiro_crew/messaging/dispatch.py",
+            "/kiro_crew/messaging/dispatch_contract.py",
+            "/kiro_crew/messaging/dispatch_tools.py",
+            "/kiro_crew/messaging/dispatch_admission.py",
+            "/kiro_crew/messaging/dispatch_crew_log.py",
+            "/kiro_crew/messaging/dispatch_recovery.py",
+        ),
+        (),
+    ),
     # Not an entry point but a loop: the per-turn event drain. Matched by
     # FUNCTION name alone -- a path fragment would label a stall in any other
     # function of those modules a queue drain, which is a worse answer than

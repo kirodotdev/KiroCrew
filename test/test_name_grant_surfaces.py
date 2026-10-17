@@ -706,6 +706,7 @@ class TestSpawnRungEventIdentity:
         discord_owners = [importlib.import_module(o) for o in discord_dispatch._OWNERS]
         for mod in (
             dispatch,
+            *(importlib.import_module(owner) for owner in dispatch._OWNERS),
             driver,
             slack_handler,
             slack_dispatch,

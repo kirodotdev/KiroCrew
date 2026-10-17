@@ -2372,7 +2372,7 @@ ALLOWED turn in the channel could otherwise pull it into agent context), the
 exemption** — a denied channel must still be able to halt a runaway session it
 previously started; `!restart` is NOT cancellation and stays gated.
 
-The exemption is **channel-neutral**, not Slack-only. `messaging/dispatch.py`'s
+The exemption is **channel-neutral**, not Slack-only. `messaging/dispatch_admission.py`'s
 `inbound_permitted(channel_type, *, text, has_attachments)` carries it for every
 channel on the shared pipeline, via `is_pure_cancel()`. Two properties make it
 safe to state that broadly. The match is whole-message, so `/stop the presses`
