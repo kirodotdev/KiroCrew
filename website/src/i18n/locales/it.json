@@ -7996,6 +7996,8 @@
         "continue_in_chat": "Continua nella chat",
         "could_not_open_the_chat_click_button_to_retry": "Impossibile aprire la chat. Fai clic su {{button}} per riprovare.",
         "could_not_open_the_result_in_chat_click_button_to_retry": "Impossibile aprire il risultato nella chat. Fai clic su {{button}} per riprovare.",
+        "fix_with_crew": "Correggi con Crew",
+        "fix_with_crew_ask": "Esamina la situazione e proponi i prossimi passi per risolvere il problema.",
         "go_to_chat": "Vai alla chat",
         "mark_read": "Segna come letto",
         "mark_unread": "Segna come non letto",

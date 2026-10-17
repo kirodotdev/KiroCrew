@@ -48,7 +48,7 @@ const UNTRUSTED_NOTE =
  * prose again — which would make the note above a promise the format does not
  * keep. Same widening rule CommonMark uses for nested fences.
  */
-function fenceFor(body: string): string {
+export function fenceFor(body: string): string {
   let longest = 0
   for (const run of body.match(/`+/g) ?? []) longest = Math.max(longest, run.length)
   return '`'.repeat(Math.max(3, longest + 1))

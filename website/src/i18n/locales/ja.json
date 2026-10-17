@@ -7746,6 +7746,8 @@
         "continue_in_chat": "チャットで続ける",
         "could_not_open_the_chat_click_button_to_retry": "チャットを開けませんでした。{{button}}をクリックしてやり直してください。",
         "could_not_open_the_result_in_chat_click_button_to_retry": "結果をチャットで開けませんでした。{{button}}をクリックしてやり直してください。",
+        "fix_with_crew": "Crew で修正",
+        "fix_with_crew_ask": "内容を確認し、問題に対処するための次のステップを提案してください。",
         "go_to_chat": "チャットに移動",
         "mark_read": "既読にする",
         "mark_unread": "未読にする",
