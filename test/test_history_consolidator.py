@@ -21,6 +21,17 @@ from consolidation_lease_helpers import lease_aware_log
 
 from kiro_crew.history import _CONSOLIDATION_THRESHOLD, ConversationLog, HistoryConsolidator
 
+
+def _initialize_skills_authority(loader) -> None:
+    """Model the gateway's startup-only private-authority initializer."""
+    from kiro_crew.skills import initialize_auto_skill_private_authority
+
+    initialize_auto_skill_private_authority(
+        skills_root=loader._dir,
+        data_home=loader._private_root().parents[1],
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tests for consolidation offset only advances on success
 # ---------------------------------------------------------------------------
@@ -362,6 +373,7 @@ class TestConsolidateSession:
         mem = MemoryStore(workspace=tmp_path / "memory")
         mem.init()
         skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        _initialize_skills_authority(skills)
 
         consolidator = HistoryConsolidator(
             log=conv_log,

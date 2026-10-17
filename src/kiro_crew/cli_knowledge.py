@@ -1,9 +1,10 @@
-"""The ``kirocrew knowledge`` and ``kirocrew consolidate`` handlers.
+"""The ``kirocrew knowledge``, ``kirocrew consolidate`` and ``kirocrew skills`` handlers.
 
-``kiro_crew.cli.main`` dispatches these two "Memory and knowledge" commands itself:
+``kiro_crew.cli.main`` dispatches these "Memory and knowledge" commands itself:
 ``_knowledge`` runs ``knowledge dedup`` and the read-only ``knowledge stats``
-(``_knowledge_stats``), and ``_consolidate_cmd`` forces history consolidation for one session
-or for every session with unconsolidated messages.
+(``_knowledge_stats``), ``_consolidate_cmd`` forces history consolidation for one session
+or for every session with unconsolidated messages, and ``_skills_cmd`` runs the operator's
+``skills authority-retire`` maintenance on the auto-skill authority.
 
 Split out of ``kiro_crew.cli``, which stays the import path and the patch target: every name
 here is reached as ``kiro_crew.cli.<name>``, and a patch through that facade reaches this
@@ -12,12 +13,15 @@ module (``kiro_crew._facade_mirror``). Nothing here imports the facade.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import logging
+import sys
 
 from kiro_crew.config import KiroCrewConfig, config_dir
 from kiro_crew.config.loader import build_provider_factory
+from kiro_crew.gateway_lock import GatewayLock, GatewayLockError
 from kiro_crew.history import ConversationLog, HistoryConsolidator
 from kiro_crew.knowledge import store as knowledge_store
 from kiro_crew.knowledge.dedup import dedup_sweep
@@ -25,7 +29,11 @@ from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.memory import MemoryStore
 from kiro_crew.sel import sel
 from kiro_crew.session import SessionManager
-from kiro_crew.skills import SkillsLoader
+from kiro_crew.skills import (
+    SkillsLoader,
+    initialize_gateway_auto_skill_private_authority,
+    retire_auto_skill_private_authority,
+)
 
 # The facade's logger, by name: records from here carry ``kiro_crew.cli``.
 logger = logging.getLogger("kiro_crew.cli")
@@ -170,6 +178,30 @@ def _knowledge(args) -> None:
         print(f"      keep: {r['winner']}   [{r['reason']}]")
 
 
+def _skills_cmd(args: argparse.Namespace) -> None:
+    """Run operator maintenance for the auto-skill authority."""
+    if getattr(args, "skills_action", None) != "authority-retire":
+        print("Usage: kirocrew skills authority-retire")
+        return
+    try:
+        with GatewayLock(config_dir()):
+            retired_root, retired_record, retired_history = retire_auto_skill_private_authority()
+    except (GatewayLockError, OSError, RuntimeError, ValueError) as exc:
+        print(f"Error: auto-skill authority was not retired: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
+    print("Auto-skill authority retired for inspection:")
+    print(f"  root: {retired_root}")
+    print(f"  record: {retired_record if retired_record is not None else '(none present)'}")
+    for quarantine in retired_history or ("(none present)",):
+        print(f"  quarantine: {quarantine}")
+    print(
+        "The public quarantines moved aside with the root, so a fresh authority starts "
+        "with no claim history; nothing was deleted. To requeue a candidate left in one, "
+        "move its <slug>--<token> directory back to skills/auto/.pending/<slug>."
+    )
+    print("By-name live mutations and pending dismissal can now resume on this data home.")
+
+
 def _consolidate_cmd(args) -> None:
     """Force history consolidation (and auto-skill extraction) for sessions."""
 
@@ -197,6 +229,19 @@ def _consolidate_cmd(args) -> None:
         print("\nRun with a session key or --all to consolidate.")
         return
 
+    # A standalone CLI process does not pass through gateway startup, so attempt
+    # the same certification here. As on the gateway, a refusal never stops the
+    # command: the initializer records the reason, every staging and promotion
+    # path refuses, and the consolidator skips skill detection for this run
+    # while memory consolidation proceeds.
+    try:
+        initialize_gateway_auto_skill_private_authority()
+    except Exception as exc:  # noqa: BLE001 -- auto-skills fail closed, consolidation does not
+        if cfg.skills.auto_create_from_sessions:
+            print(f"Auto-skill creation is off for this run: {exc}", file=sys.stderr)
+        else:
+            logger.debug("Auto-skill authority unavailable: %s", exc)
+
     # Heavy machinery only for actual consolidation
     mem = MemoryStore()
     mem.init()
@@ -215,6 +260,7 @@ def _consolidate_cmd(args) -> None:
         auto_min_tool_calls=cfg.skills.auto_min_tool_calls,
         auto_similarity_threshold=cfg.skills.auto_similarity_threshold,
         approval_required=cfg.skills.approval_required,
+        auto_apply_updates=cfg.skills.auto_apply_updates,
         max_auto_skills=cfg.skills.max_auto_skills,
         stale_after_days=cfg.skills.stale_after_days,
         archive_after_days=cfg.skills.archive_after_days,
