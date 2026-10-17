@@ -1,44 +1,50 @@
-import SlashCommandMenu from '../SlashCommandMenu'
-import FilePickerMenu from '../FilePickerMenu'
-import SkillPickerMenu from '../SkillPickerMenu'
-import ProjectSkillsTrustDialog from '../ProjectSkillsTrustDialog'
-import { PATH_TOKEN_RE } from '../composerTokens'
+import SlashCommandMenu from '../../components/SlashCommandMenu'
+import FilePickerMenu from '../../components/FilePickerMenu'
+import SkillPickerMenu from '../../components/SkillPickerMenu'
+import ProjectSkillsTrustDialog from '../../components/ProjectSkillsTrustDialog'
+import { PATH_TOKEN_RE } from '../../components/composerTokens'
 import type { SendMode } from '../../pages/chat/ChatSettings'
-import type { useComposerPickers } from './pickers'
-import type { ChatInputProps } from './props'
+import type { ComposerFileSelect, useComposerPickers } from './pickers'
+import { ComposerPickerSourceProvider, offers } from './pickerSource'
 
 /** The trigger menus anchored to the composer, and the consent dialog a
- *  project skill asks for before its token can be inserted. */
-export function ComposerPickerMenus({ pickers, value, onChange, composerAnchorRef, sendOnEnter, typedCommandMenus, hiddenCommands, project, agentName, onFileSelect, onFileOpen }: {
+ *  project skill asks for before its token can be inserted. Each menu reads
+ *  the source the pickers were built on, and a menu whose read that source
+ *  does not carry is not mounted at all. */
+export function ComposerPickerMenus({ pickers, value, onChange, composerAnchorRef, sendOnEnter, hiddenCommands, project, agentName, onFileSelect, onFileOpen, filePathTail }: {
   pickers: ReturnType<typeof useComposerPickers>
   value: string
   onChange: (v: string) => void
   composerAnchorRef: React.RefObject<HTMLElement>
   sendOnEnter: SendMode
-  typedCommandMenus: boolean
   hiddenCommands?: readonly string[]
   project?: string
   agentName?: string
-  onFileSelect: ChatInputProps['onFileSelect']
-  onFileOpen: ChatInputProps['onFileOpen']
+  onFileSelect?: ComposerFileSelect
+  onFileOpen?: (path: string) => void
+  /** `@` rows show their folder cut from the start (`FilePickerMenu.pathTail`),
+   *  for a host whose menu is narrow. */
+  filePathTail?: boolean
 }) {
   const {
+    source, slashOn, fileOn, skillOn, pathOn,
     slashMenuOpen, setSlashMenuOpen, filePickerOpen, setFilePickerOpen, fileQuery, setFileQuery,
     pathPickerOpen, setPathPickerOpen, pathQuery, setPathQuery, skillPickerOpen, setSkillPickerOpen, skillQuery, setSkillQuery,
     nextTrustRequestIdRef, activeTrustRequestIdRef, trustPrompt, setTrustPrompt, skillSlotKey, skillSlotKeyRef, skillProjectRef,
     applyPickedToken,
   } = pickers
   return (
-    <>
-      {typedCommandMenus && <SlashCommandMenu input={value} anchorRef={composerAnchorRef} open={slashMenuOpen} hidden={hiddenCommands} sendOnEnter={sendOnEnter} onSelect={cmd => { onChange(cmd); setSlashMenuOpen(false) }} onClose={() => setSlashMenuOpen(false)} />}
+    <ComposerPickerSourceProvider value={source}>
+      {slashOn && <SlashCommandMenu input={value} anchorRef={composerAnchorRef} open={slashMenuOpen} hidden={hiddenCommands} sendOnEnter={sendOnEnter} onSelect={cmd => { onChange(cmd); setSlashMenuOpen(false) }} onClose={() => setSlashMenuOpen(false)} />}
 
-      {onFileSelect && (
+      {fileOn && onFileSelect && (
         <FilePickerMenu
           query={fileQuery}
           anchorRef={composerAnchorRef}
           open={filePickerOpen}
           project={project}
           sendOnEnter={sendOnEnter}
+          pathTail={filePathTail}
           onFileOpen={onFileOpen}
           onSelect={({ path, relativePath, kind }) => {
             // relativePath already carries a trailing slash for directories
@@ -56,7 +62,7 @@ export function ComposerPickerMenus({ pickers, value, onChange, composerAnchorRe
           is text the user typed, not a staged attachment, so there is nothing to
           hand to the host. It IS gated on a project dir, which is the root every
           `./` resolves against. */}
-      <FilePickerMenu
+      {pathOn && <FilePickerMenu
         pathMode
         query={pathQuery}
         anchorRef={composerAnchorRef}
@@ -74,9 +80,9 @@ export function ComposerPickerMenus({ pickers, value, onChange, composerAnchorRe
           else { setPathPickerOpen(false); setPathQuery('') }
         }}
         onClose={() => { setPathPickerOpen(false); setPathQuery('') }}
-      />
+      />}
 
-      {typedCommandMenus && <SkillPickerMenu
+      {skillOn && <SkillPickerMenu
         query={skillQuery}
         anchorRef={composerAnchorRef}
         open={skillPickerOpen}
@@ -101,7 +107,10 @@ export function ComposerPickerMenus({ pickers, value, onChange, composerAnchorRe
         }}
         onClose={() => { setSkillPickerOpen(false); setSkillQuery('') }}
       />}
-      <ProjectSkillsTrustDialog
+      {/* Only a skill pick can ask for consent. A source with no skill read
+          (the embed) has nothing to ask about, so the dialog and its reads
+          stay unmounted; the dashboard keeps it mounted as before. */}
+      {offers(source, 'skills') && <ProjectSkillsTrustDialog
         key={trustPrompt?.requestId ?? 0}
         open={trustPrompt !== null}
         skillLeaf={trustPrompt?.leaf ?? ''}
@@ -134,7 +143,7 @@ export function ComposerPickerMenus({ pickers, value, onChange, composerAnchorRe
           // asked for this skill and has just consented to its directory.
           applyPickedToken(/(^|[\s])\$[a-z0-9/_-]*$/, `$${completedPrompt.leaf} `)
         }}
-      />
-    </>
+      />}
+    </ComposerPickerSourceProvider>
   )
 }

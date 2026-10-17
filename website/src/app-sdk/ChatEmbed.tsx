@@ -28,6 +28,10 @@
  * The composer is the chat-core `Composer` root with its Editor and Send atoms
  * (`chat-core/composer/atoms.tsx`), both store-free; Send queues while a turn
  * runs. The root's Voice atom is off for this surface (`EMBED_CAPABILITIES`).
+ * The `/` command and `@` file pickers are the dashboard composer's own
+ * (`chat-core/composer/pickers.ts`), reading through the app's scoped client
+ * and shown only when the host app declared their endpoints
+ * (`useEmbedPickers`).
  */
 import { useRef, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -52,6 +56,8 @@ import { appApiSendWire } from './appSendWire'
 import { sendTurn, mintSendId } from '../chat-core/transport/sendTurn'
 import { Composer, type ComposerCapabilities } from '../chat-core/composer/Composer'
 import { ComposerEditor, ComposerSend } from '../chat-core/composer/atoms'
+import { ComposerPickerMenus } from '../chat-core/composer/PickerMenus'
+import { EMBED_HIDDEN_COMMANDS, useEmbedPickers } from './useEmbedPickers'
 import { sendFailureCopy, deliveryUnconfirmedCopy } from '../chat-core/transport/receiptCopy'
 import { mergeRecoveredDraft } from '../utils/chatDrafts'
 import { drainEmbedRecovery, stashEmbedRecovery, subscribeEmbedRecovery, type PendingEmbedRecovery } from './embedSendRecovery'
@@ -549,6 +555,12 @@ function ChatEmbed({
   const [sendTails, setSendTails] = useState<SendTail[]>([])
   const attachments = useEmbedAttachments(api, slotKey)
   const { restore: restoreFiles, removeFile } = attachments
+  const { pickers, onFileSelect: onPickedFile, removeFile: removeChip, anchorRef: pickerAnchorRef } = useEmbedPickers({
+    api, appName, slotKey, agent, draft, setDraft, textareaRef, stage: attachments.stage, removeFile,
+  })
+  const { closePickers, openPickersForText } = pickers
+  // A menu open on one session's text must not stay open over the next one's.
+  useEffect(() => { closePickers() }, [slotKey, closePickers])
   const shownMessages = useMemo<ChatMessage[]>(
     () => sendTails.length === 0 ? messages : [...messages, ...sendTails.map(t => ({ role: t.role, content: t.content, cls: '' }))],
     [messages, sendTails],
@@ -813,6 +825,7 @@ function ChatEmbed({
     if (override == null) {
       setSendTails([])
       setDraft('')
+      closePickers()
     }
     // A fresh id and the slot the send belongs to: the yardstick for "did the
     // poll show THIS send", and the address a receipt is delivered to if this
@@ -841,7 +854,7 @@ function ChatEmbed({
       before: new Set(serverMessages.filter(m => m.role === 'user').map(userRowKey)),
     }])
     sendMutation.mutate({ msg, meta, files, draftText, override: override != null, sendId, slot: slotKey })
-  }, [draft, setDraft, sendMutation, slotKey, onSend, serverMessages, running, attachments])
+  }, [draft, setDraft, sendMutation, slotKey, onSend, serverMessages, running, attachments, closePickers])
 
   const pickerLabel = attachments.uploading
     ? i18nT('appSdk.chatEmbed.uploading_files')
@@ -1111,7 +1124,7 @@ function ChatEmbed({
       )}
       {attachments.files.length > 0 && (
         <div className="shrink-0">
-          <FilePreviewStrip files={attachments.files} resizedInfo={attachments.resizedInfo} onRemove={attachments.removeFile} />
+          <FilePreviewStrip files={attachments.files} resizedInfo={attachments.resizedInfo} onRemove={removeChip} />
         </div>
       )}
       {/* What is on its way, from the moment it is picked: a chip only exists
@@ -1189,6 +1202,7 @@ function ChatEmbed({
             aria-label={i18nT('appSdk.chatEmbed.chat_message')}
             className="flex-1 min-w-0 min-h-[38px] resize-none overflow-y-auto px-3 py-2 mc-message-font-text bg-bg-elevated border border-border rounded-md text-text outline-hidden focus-visible:border-accent transition-colors"
             onKeyDown={e => submitOnEnter(e, () => send())}
+            onEdit={(value, caret) => openPickersForText(value, value.slice(0, caret))}
             onPaste={attachments.onPaste}
             onDragOver={attachments.onDragOver}
             onDrop={attachments.onDrop}
@@ -1213,6 +1227,17 @@ function ChatEmbed({
             />
           )}
         </div>
+        <ComposerPickerMenus
+          pickers={pickers}
+          value={draft}
+          onChange={setDraft}
+          composerAnchorRef={pickerAnchorRef}
+          sendOnEnter="enter"
+          hiddenCommands={EMBED_HIDDEN_COMMANDS}
+          onFileSelect={onPickedFile}
+          filePathTail
+          onFileOpen={onFileOpen}
+        />
       </Composer>
     </div>
   )

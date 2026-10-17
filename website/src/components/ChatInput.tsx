@@ -54,8 +54,9 @@ import { LexicalComposerInput, ComposerLoadBoundary, useComposerEngine } from '.
 import { useTextareaListContinuation } from './chat-input/listContinuation'
 import { approvalBtnClass, useSpawnApprovals, useToolApproval } from './chat-input/approval'
 import { SpawnApprovalCard } from './chat-input/SpawnApprovalCard'
-import { useComposerPickers } from './chat-input/pickers'
-import { ComposerPickerMenus } from './chat-input/PickerMenus'
+import { useComposerPickers } from '../chat-core/composer/pickers'
+import { ComposerPickerMenus } from '../chat-core/composer/PickerMenus'
+import { usePickerSource } from './dashboardPickerSource'
 import { useDictationControls, useHoldToTalk } from './chat-input/voice'
 import { HoldToTalkBar, MicButton, VoiceCaptureStatus } from './chat-input/VoiceControls'
 import { AgentChip, ContextUsageControl, ModelChip, SessionControlChips, useContextPopover, useShelfMeasure } from './chat-input/ContextShelf'
@@ -427,7 +428,8 @@ function ChatInput({
     return () => ro.disconnect()
   }, [lexicalComposer, lexicalLoadFailed, lexicalControlRevision, lexicalControlRef])
   const queryClient = useQueryClient()
-  const pickers = useComposerPickers({ project, onFileSelect, typedCommandMenus, terminalCommands, value, onChange, composerControl, queryClient, slotId, agentName })
+  const pickerSource = usePickerSource()
+  const pickers = useComposerPickers({ source: pickerSource, project, onFileSelect, typedCommandMenus, terminalCommands, value, onChange, composerControl, queryClient, slotId, agentName })
   const { anyPickerOpenRef, closePickers, openPickersForText, prefetchSkills } = pickers
   const { publishLexicalSelection, recordCaret, showDictation, cancelVoiceDrain } = useDictationControls({
     composerControl, value, autoFocusKey, anyPickerOpenRef, voiceCaretRef, voicePendingCaretRef, voiceDictationPanel,
@@ -1116,7 +1118,7 @@ function ChatInput({
         <SketchDialog open={sketchOpen} onOpenChange={setSketchOpen} onInsert={onUploadFiles} returnFocusRef={composerAnchorRef} />
       )}
 
-      {!terminal.active && <ComposerPickerMenus pickers={pickers} value={value} onChange={onChange} composerAnchorRef={composerAnchorRef} sendOnEnter={sendOnEnter} typedCommandMenus={typedCommandMenus} hiddenCommands={hiddenCommands} project={project} agentName={agentName} onFileSelect={onFileSelect} onFileOpen={onFileOpen} />}
+      {!terminal.active && <ComposerPickerMenus pickers={pickers} value={value} onChange={onChange} composerAnchorRef={composerAnchorRef} sendOnEnter={sendOnEnter} hiddenCommands={hiddenCommands} project={project} agentName={agentName} onFileSelect={onFileSelect} onFileOpen={onFileOpen} />}
 
       {/* Unified input container — drag-to-resize targets the inner div. */}
       {/* The composer's SHOWN state is initial === animate ({opacity:1,height:auto}),

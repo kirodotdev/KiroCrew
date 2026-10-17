@@ -5,7 +5,8 @@
  * `disabled-when-empty` plumbing to either.
  *
  * Deliberately small: no mention, slash, paste or attach behaviour lives here.
- * Those are their own atoms; `ChatInput` keeps its own editor and send controls
+ * Those are their own atoms (the trigger pickers are `pickers.ts` and
+ * `PickerMenus.tsx`; the Editor only reports each edit to them); `ChatInput` keeps its own editor and send controls
  * until it is rebuilt as a composition of atoms. A Send input arrives with the
  * surface that writes it, not ahead of it: staged attachments arrived with
  * ChatEmbed's attach control (`hasAttachments`, `uploading`); a stop control
@@ -20,18 +21,27 @@ import { SendBtn } from '../../components/ui'
 import { i18nT } from '../../i18n/t'
 import { useComposerEditor } from './Composer'
 
-export type ComposerEditorProps = Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, 'value' | 'defaultValue' | 'onChange'>
+export type ComposerEditorProps = Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, 'value' | 'defaultValue' | 'onChange'> & {
+  /** A user edit, after the root has the new text: the whole value and the
+   *  caret. The trigger pickers (`useComposerPickers.openPickersForText`) read
+   *  the text up to the caret from it. */
+  onEdit?: (value: string, caret: number) => void
+}
 
 /** The composer's textarea. Its text is the root's; every other textarea prop
  *  (IME handlers, key handling, paste/drop, placeholder) is the host's. */
-export const ComposerEditor = forwardRef<HTMLTextAreaElement, ComposerEditorProps>(function ComposerEditor(props, ref) {
+export const ComposerEditor = forwardRef<HTMLTextAreaElement, ComposerEditorProps>(function ComposerEditor({ onEdit, ...props }, ref) {
   const { text, onChange } = useComposerEditor()
   return (
     <textarea
       ref={ref}
       {...props}
       value={text}
-      onChange={e => onChange(e.target.value)}
+      onChange={e => {
+        const value = e.target.value
+        onChange(value)
+        onEdit?.(value, e.target.selectionStart ?? value.length)
+      }}
       data-composer-editor=""
     />
   )

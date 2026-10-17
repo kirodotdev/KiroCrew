@@ -407,11 +407,14 @@ shows literally — the same trade-off inline file mentions make.
 | `website/src/pages/chat/FileBrowserRail.tsx` | Files tab: Name/Content toggle, result rows, status row |
 | `website/src/api/fileGrep.ts` | `/api/file-grep` client and result types |
 | `src/kiro_crew/dashboard/file_index.py` | `FileIndex`, `FileIndexRegistry` |
-| `website/src/components/FilePickerMenu.tsx` | Picker UI, `kind` propagation, trailing-slash insertion, `pathMode` |
+| `website/src/components/FilePickerMenu.tsx` | Picker UI, `kind` propagation, trailing-slash insertion, `pathMode`, `pathTail` (rows show their root-relative folder cut from the start, so same-named results stay distinguishable in a narrow menu; `ChatEmbed` opts in, the dashboard keeps the full path cut at the end) |
 | `website/src/components/composerTokens.ts` | Caret-relative `@` / `$` / `./` token matchers and the shared token replace |
 | `website/src/components/ChatInput.tsx` | Composer wiring: mounts the trigger pickers and the preview strip |
-| `website/src/components/chat-input/pickers.ts` | Which trigger picker the text at the caret opens (`@` / `$` / `./` / `/`), one rule for the textarea and the Lexical editor |
-| `website/src/components/chat-input/PickerMenus.tsx` | The `@` file picker, the `./` path picker (`pathMode`) and the `$` / `/` menus, anchored to the composer |
+| `website/src/chat-core/composer/pickers.ts` | Which trigger picker the text at the caret opens (`@` / `$` / `./` / `/`), one rule for the textarea and the Lexical editor; store-free, shared by `ChatInput` and `ChatEmbed` |
+| `website/src/chat-core/composer/PickerMenus.tsx` | The `@` file picker, the `./` path picker (`pathMode`) and the `$` / `/` menus, anchored to the composer |
+| `website/src/chat-core/composer/pickerSource.ts` | Where the menus read from; a read the host's source does not carry is a menu not mounted |
+| `website/src/components/dashboardPickerSource.ts` | The dashboard's source: its api client, under the query keys the dashboard already uses |
+| `website/src/app-sdk/embedPickerSource.ts` | `ChatEmbed`'s source: the app's scoped client, with a read only for an endpoint the app declared |
 | `website/src/components/chat-input/FilePreviewStrip.tsx` | Pending file/folder preview strip: basename-first folder labels, per-tile remove |
 | `website/src/utils/fileTokens.ts` | Attachment-marker owner: file AND dir token parse/serialize/resolve |
 | `website/src/utils/chatFileTokenDrafts.ts` | Per-slot persistence of file-chip aliases beside the staged-file drafts |

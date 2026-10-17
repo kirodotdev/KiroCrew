@@ -59,6 +59,10 @@ export interface ComposerAttachments {
   clear: () => void
   /** Put a failed send's files back in front of anything staged since. */
   restore: (paths: string[]) => void
+  /** Stage files that are already on the gateway's disk (an `@` mention),
+   *  after anything staged before. Nothing is uploaded, so this needs no
+   *  upload grant. */
+  stage: (paths: string[]) => void
   onPaste: (e: ClipboardEvent<HTMLTextAreaElement>) => void
   onDragOver: (e: DragEvent<HTMLElement>) => void
   onDrop: (e: DragEvent<HTMLElement>) => void
@@ -143,6 +147,9 @@ export function useComposerAttachments({ resetKey, granted, post, deniedNotice }
   const restore = useCallback((paths: string[]) => {
     setFiles(prev => [...paths, ...prev.filter(p => !paths.includes(p))])
   }, [])
+  const stage = useCallback((paths: string[]) => {
+    setFiles(prev => [...prev, ...paths.filter(p => !prev.includes(p))])
+  }, [])
   const dismissNotice = useCallback(() => setNotice(''), [])
 
   const onPaste = useCallback((e: ClipboardEvent<HTMLTextAreaElement>) => {
@@ -170,6 +177,6 @@ export function useComposerAttachments({ resetKey, granted, post, deniedNotice }
 
   return {
     granted, files, resizedInfo, uploading: inFlight.length > 0, uploadingNames, notice, dismissNotice,
-    addFiles, removeFile, clear, restore, onPaste, onDragOver, onDrop,
+    addFiles, removeFile, clear, restore, stage, onPaste, onDragOver, onDrop,
   }
 }

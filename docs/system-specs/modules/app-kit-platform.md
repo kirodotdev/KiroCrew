@@ -105,6 +105,38 @@ the composer, as it takes the text back, so they are not sent twice. A
 slot switch or unmount aborts in-flight
 uploads and drops their late results.
 
+`ChatEmbed`'s `/` command and `@` file pickers are the dashboard composer's own
+picker atom: `chat-core/composer/pickers.ts` (`useComposerPickers`, which
+decides from the text at the caret which menu opens) and
+`chat-core/composer/PickerMenus.tsx` (`ComposerPickerMenus`), both store-free
+and pinned by the same import-graph test. They read through a picker source
+(`chat-core/composer/pickerSource.ts`), one member per read. `ChatInput` passes
+the dashboard's (`components/dashboardPickerSource.ts`, with the query keys the
+dashboard already uses), so the main chat, the panes and the side chat behave
+as before. The embed passes `app-sdk/embedPickerSource.ts`, built over the
+scoped client: a read is a member only when the host's declared paths cover
+its endpoint (`/api/slash-commands`, `/api/file-search`), and a missing member
+is a menu the atom does not mount, so an ungranted picker never opens and
+never sends a request. The embed source has no `./` path read (no project to
+resolve against) and no `$` skill read (the listing is resolved against the
+chat's session key, which the scoped client does not let an app choose). Its
+query keys carry an `app:<name>` prefix, so an embed never reads the
+dashboard's cached lists. The Editor atom reports each edit with its caret
+(`onEdit`), which is how the atom sees the text before the caret. An accepted
+file is staged through the attach hook's `stage` (a gateway-side path: no
+upload, no upload grant), and removing its chip strips the `@token` that pick
+wrote (`useEmbedPickers.removeFile` → `stripPickedToken`, matched with the
+shared `mentionTokenRegex`), skipping any spot where a still-picked token
+that extends it begins (`@report final.pdf` survives removing `@report`); a
+folder's token stays text. The `/` menu leaves out
+the commands the main chat runs in the browser (`/side`, `/btw`,
+`/onboarding`, `/kb`). The embed's `@` rows use `FilePickerMenu`'s `pathTail`
+(`ComposerPickerMenus` `filePathTail`): each row shows its root-relative
+folder cut from the start, so same-named results stay apart in the narrow
+menu. Both menus are opt-in and fail closed per path: a host that declares
+only `/api/slash-commands` gets the `/` menu and an `@` that stays plain text,
+with no file search sent. Tests: `ChatEmbed.pickers.test.tsx`.
+
 The host owns session attribution. Chat hosts bind their session; routed app
 pages bind the established `dashboard:ui` page identity. A provided host key
 wins over caller headers; an unbound host rejects caller-selected session keys.

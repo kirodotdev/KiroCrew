@@ -141,6 +141,9 @@ API-path check for each of these calls:
 
 File attachments upload to `POST /api/upload/file`, which `/api/chat` does not
 cover: it is a separate, optional grant (see [Attachments](#attachments)).
+The `/` command menu and the `@` file menu read `GET /api/slash-commands` and
+`GET /api/file-search`; each is its own optional grant (see
+[Command and file pickers](#command-and-file-pickers)).
 
 Without the API-path grant the scoped client throws before any request is sent:
 the transcript shows its load error, and sending and approving fail. Supplying
@@ -328,6 +331,45 @@ A host that passes `onSend` receives the meta as a second argument on a send
 with non-image attachments, `onSend(message, { files })`, and forwards it as
 `meta` on its own chat POST. A send without attachments still calls
 `onSend(message)` alone.
+
+### Command and file pickers
+
+The composer offers the main chat's own `/` command menu and `@` file menu, the
+same components with the same keys: arrows move, Enter or Tab accepts, Escape
+closes. Each menu reads through the app's scoped client, and each is shown only
+when the manifest declares its endpoint; nothing grants either by default:
+
+```json
+"permissions": { "api": ["/api/chat", "/api/chat/slots", "/api/slash-commands", "/api/file-search"] }
+```
+
+| Menu | Opens on | Reads | Without the grant |
+|---|---|---|---|
+| Commands | a `/` at the start of the text | `GET /api/slash-commands` | no menu; `/text` sends as typed |
+| Files | an `@` token at the caret, two characters on | `GET /api/file-search?q=…` | no menu; `@text` sends as typed |
+
+Accepting a command puts it in the composer; the send runs it, as in the main
+chat. Each file row shows the folder it sits in, cut from the start, so files
+with the same name stay distinguishable in a narrow embed. The menu leaves out `/side`, `/btw`, `/onboarding` and `/kb`: the main
+chat runs those in the browser, and the embed has nothing to run them with.
+Accepting a file writes its `@path` token and stages the file like an
+attachment, so the send carries it in `meta.files`; removing the file's chip
+takes its `@path` token out of the text as well. A folder writes only its
+`@path/` token, which stays text (see [Attachments](#attachments)). Staging a
+picked file uploads nothing, so it needs no `/api/upload/file` grant.
+
+Both menus are opt-in: no host in this repository declares either path today,
+so they appear only in a host that does. The gateway answers the file search
+only for the dashboard owner's own requests. A builtin page mounted in the
+dashboard gets results. An installed app does not: declaring
+`/api/file-search` gives it no working `@` menu today, since its token is
+refused and the menu reports a failed search, so an installed app should not
+declare it.
+
+The main chat's `./` path completion and `$` skill menu are not offered: path
+completion resolves against a project directory the embed does not name, and
+the skill list is resolved against the chat's session key, which the scoped
+client does not let an app choose.
 
 ## Native Chat Panel
 

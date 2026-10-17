@@ -1,22 +1,33 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
-import { api } from '../../api/client'
 import { skillsCacheStaleTime } from '../../lib/skillsCache'
-import { matchFileToken, matchPathToken, matchSkillToken, replaceTokenAtCaret } from '../composerTokens'
-import type { ComposerControl } from '../composerControl'
-import type { ChatInputProps } from './props'
+import { matchFileToken, matchPathToken, matchSkillToken, replaceTokenAtCaret } from '../../components/composerTokens'
+import type { ComposerControl } from '../../components/composerControl'
+import type { FileKind } from '../../components/FilePickerMenu'
 import { terminalCommand } from '../../hooks/useTerminalCommand'
+import { offers, pickerQueryKey, type ComposerPickerSource } from './pickerSource'
 
-/* The in-input trigger pickers: `/` commands, `@` files, `$` skills and
-   shell-style `./` paths. One rule decides which menu the text at the caret
-   opens, for the textarea and the Lexical editor alike; the menus themselves
-   render in `PickerMenus.tsx`. */
+/* The in-input trigger pickers (chat-core RFC §3 layer 4): `/` commands, `@`
+   files, `$` skills and shell-style `./` paths. One rule decides which menu
+   the text at the caret opens, for the textarea and the Lexical editor alike;
+   the menus themselves render in `PickerMenus.tsx`.
 
-export function useComposerPickers({ project, onFileSelect, typedCommandMenus, terminalCommands, value, onChange, composerControl, queryClient, slotId, agentName }: {
+   Store-free, and with no api client of its own: every read goes through the
+   host's `source`, and a menu whose read the source does not carry is never
+   opened (see `pickerSource.ts`). */
+
+/** A file or folder the `@` picker accepted: its path, its kind, and the
+ *  token the picker wrote into the text. */
+export type ComposerFileSelect = (path: string, kind?: FileKind, token?: string) => void
+
+export function useComposerPickers({ source, project, onFileSelect, typedCommandMenus, terminalCommands, value, onChange, composerControl, queryClient, slotId, agentName }: {
+  /** Where every menu reads from; a missing read is a menu not offered. */
+  source: ComposerPickerSource
   project?: string
-  onFileSelect: ChatInputProps['onFileSelect']
+  onFileSelect?: ComposerFileSelect
   typedCommandMenus: boolean
-  terminalCommands?: ChatInputProps['terminalCommands']
+  /** The host runs `!`-prefixed terminal commands: while one is typed, no menu opens. */
+  terminalCommands?: string
   value: string
   onChange: (v: string) => void
   composerControl: () => ComposerControl | null
@@ -34,9 +45,10 @@ export function useComposerPickers({ project, onFileSelect, typedCommandMenus, t
   // The path token ending at the caret, or null. Gated on a project dir: `./`
   // names nothing without the root it resolves against, so with no project the
   // menu stays shut rather than opening on a listing that cannot be produced.
+  const pathOn = offers(source, 'pathComplete')
   const pathTokenAt = useCallback(
-    (before: string) => (project ? matchPathToken(before) : null),
-    [project],
+    (before: string) => (project && pathOn ? matchPathToken(before) : null),
+    [project, pathOn],
   )
   const [fileQuery, setFileQuery] = useState('')
   const [skillPickerOpen, setSkillPickerOpen] = useState(false)
@@ -66,26 +78,29 @@ export function useComposerPickers({ project, onFileSelect, typedCommandMenus, t
   useEffect(() => { if (terminalActive) closePickers() }, [terminalActive, closePickers])
   /** Open whichever picker the edited text calls for. `text` is the whole
    *  value; `before` is the text up to the caret. */
+  const fileOn = !!onFileSelect && offers(source, 'fileSearch')
+  const slashOn = typedCommandMenus && offers(source, 'slashCommands')
+  const skillOn = typedCommandMenus && offers(source, 'skills')
   const openPickersForText = useCallback((text: string, before: string) => {
     // This is the incoming edit, which can enter terminal mode before render.
     if (terminalCommands && terminalCommand(text) !== null) { closePickers(); return }
-    setSlashMenuOpen(typedCommandMenus && text.startsWith('/'))
+    setSlashMenuOpen(slashOn && text.startsWith('/'))
     // Anchor @/$ detection to the token being edited AT THE CARET, not the
     // end of the whole input. `before` ends at the caret, so a match means
     // "the token ends where my cursor is" — which makes both pickers fire
     // mid-sentence and when trailing text/newlines follow the token.
     // Matchers live in composerTokens.ts (unit-tested there).
-    const fileQ = onFileSelect ? matchFileToken(before) : null
+    const fileQ = fileOn ? matchFileToken(before) : null
     if (fileQ !== null) { setFilePickerOpen(true); setFileQuery(fileQ) }
     else { setFilePickerOpen(false); setFileQuery('') }
     // $ and @ are mutually exclusive (a token starts with one sigil); @ wins.
     const skillQ = fileQ === null ? matchSkillToken(before) : null
-    if (typedCommandMenus && skillQ !== null) { setSkillPickerOpen(true); setSkillQuery(skillQ) }
+    if (skillOn && skillQ !== null) { setSkillPickerOpen(true); setSkillQuery(skillQ) }
     else { setSkillPickerOpen(false); setSkillQuery('') }
     const pathQ = pathTokenAt(before)
     if (pathQ !== null) { setPathPickerOpen(true); setPathQuery(pathQ) }
     else { setPathPickerOpen(false); setPathQuery('') }
-  }, [typedCommandMenus, onFileSelect, pathTokenAt, terminalCommands, closePickers])
+  }, [slashOn, fileOn, skillOn, pathTokenAt, terminalCommands, closePickers])
   // Warm the per-slot-and-project skills cache when the input gains focus so the first
   // `$` trigger renders the picker instantly (the fetch is the only latency).
   // prefetchQuery is a no-op if the cache is already fresh (staleTime), so it's
@@ -100,12 +115,14 @@ export function useComposerPickers({ project, onFileSelect, typedCommandMenus, t
   const skillProjectRef = useRef(project)
   skillProjectRef.current = project
   const prefetchSkills = useCallback(() => {
+    const load = source.skills
+    if (!load) return
     queryClient.prefetchQuery({
-      queryKey: ['skills', skillSlotKey ?? null, project ?? null, agentName ?? null],
-      queryFn: ({ signal }) => api.skills(skillSlotKey, agentName, signal),
+      queryKey: pickerQueryKey(source, ['skills', skillSlotKey ?? null, project ?? null, agentName ?? null]),
+      queryFn: ({ signal }) => load(skillSlotKey, agentName, signal),
       staleTime: skillsCacheStaleTime(project),
     })
-  }, [queryClient, skillSlotKey, project, agentName])
+  }, [queryClient, source, skillSlotKey, project, agentName])
   // Shared caret-relative token insertion for the @/$ pickers: replace the
   // sigil-token ending at the caret with `token`, commit, and restore the caret
   // just after it. One copy keeps the two onSelect handlers duplication-free.
@@ -117,6 +134,7 @@ export function useComposerPickers({ project, onFileSelect, typedCommandMenus, t
   }, [value, onChange, composerControl])
 
   return {
+    source, slashOn, fileOn, skillOn, pathOn,
     slashMenuOpen, setSlashMenuOpen, filePickerOpen, setFilePickerOpen, fileQuery, setFileQuery,
     pathPickerOpen, setPathPickerOpen, pathQuery, setPathQuery, skillPickerOpen, setSkillPickerOpen, skillQuery, setSkillQuery,
     nextTrustRequestIdRef, activeTrustRequestIdRef, trustPrompt, setTrustPrompt, skillSlotKey, skillSlotKeyRef, skillProjectRef,

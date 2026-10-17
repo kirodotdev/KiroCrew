@@ -92,8 +92,15 @@ describe('ChatEmbed composer is store-free (static)', () => {
     expect(src).not.toMatch(/\buploadComposerFiles\b/)
   })
 
-  it.each(['Composer.tsx', 'atoms.tsx', 'useComposerAttachments.ts'])('nothing chat-core/composer/%s imports reaches the Redux store', (entry) => {
-    const g = importGraph(join(SRC, 'chat-core', 'composer', entry))
+  it.each([
+    'chat-core/composer/Composer.tsx',
+    'chat-core/composer/atoms.tsx',
+    'chat-core/composer/useComposerAttachments.ts',
+    'chat-core/composer/pickers.ts',
+    'chat-core/composer/PickerMenus.tsx',
+    'app-sdk/useEmbedPickers.ts',
+  ])('nothing %s imports reaches the Redux store', (entry) => {
+    const g = importGraph(join(SRC, ...entry.split('/')))
     const storeFiles = g.files.filter(f => relative(SRC, f).startsWith('store/') || relative(SRC, f) === 'store.ts')
     expect(storeFiles.map(g.chain)).toEqual([])
     const reduxPkgs = [...g.bare].filter(([pkg]) => REDUX.test(pkg)).map(([pkg, by]) => `${pkg} <- ${relative(SRC, by)}`)
