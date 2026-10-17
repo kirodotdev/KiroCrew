@@ -16,6 +16,7 @@ if TYPE_CHECKING:
         _MAX_SLOT_MESSAGES,
         _MAX_TURN_FULL_CONTENT_CHARS,
         _ChatSlot,
+        _last_reply_row,
         line_changes_from_file_changes,
         logger,
         redact,
@@ -1246,23 +1247,19 @@ def _flush_file_changes(
     file_meta: dict[str, Any] = {"file_changes": fc_list}
     if _dropped:
         file_meta["file_changes_omitted_files"] = _dropped
-    # Attach to the most recent reply row this runner appended this turn; if
-    # none exists (turn aborted before any text, or every assistant row in the
-    # turn was injected by another writer), create a synthetic message so the
-    # chips still surface without touching a row that is not this turn's reply.
-    reply_mids = getattr(slot, "_turn_reply_mids", None)
-    for m in reversed(_turn_rows(slot, turn_boundary, turn_start_mid)):
-        if m.get("role") != "assistant":
-            continue
-        if isinstance(reply_mids, list) and row_mid(m) not in reply_mids:
-            continue
-        meta = m.setdefault("meta", {})
+    # Attach to the most recent reply row this runner appended this turn
+    # (``_last_reply_row``, the one identity walk the footer uses too); if none
+    # exists (turn aborted before any text, or every assistant row in the turn
+    # was injected by another writer), create a synthetic message so the chips
+    # still surface without touching a row that is not this turn's reply.
+    reply_row = _last_reply_row(slot, turn_boundary, turn_start_mid)
+    if reply_row is not None:
+        meta = reply_row.setdefault("meta", {})
         meta.update(file_meta)
         # The count describes the file_changes written beside it, so a
         # flush that drops nothing leaves no earlier count behind.
         if not _dropped:
             meta.pop("file_changes_omitted_files", None)
-        break
     else:
         # broadcast=False: the synthetic message reaches the UI via the same
         # SSE/WS path the dashboard already drains for this slot. Default
@@ -1308,5 +1305,6 @@ def _flush_file_changes(
     # covers both branches and cannot be missed by a later edit.)
     slot._dirty = True
     slot._file_changes = []
+    reply_mids = getattr(slot, "_turn_reply_mids", None)
     if isinstance(reply_mids, list):
         reply_mids.clear()
