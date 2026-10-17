@@ -6980,6 +6980,7 @@
       "opening_new_chat": "正在打开聊天…",
       "failed_to_open_new_chat": "无法打开新聊天",
       "open_new_chat_in_project": "在 {{path}} 中打开新聊天，不创建工作树，因为它不是 git 仓库",
+      "open_new_chat_inside_repo": "在 {{path}} 中打开新聊天，不创建工作树，因为它位于 {{root}} 的 git 仓库内，但不是仓库根目录",
       "open_new_chat": "打开新聊天，不创建工作树，因为此会话没有项目目录",
       "new_chat_footer_same_project_directory": "两种操作都只是预填输入框 — 在你按下发送前不会发送任何内容。新聊天会在此会话的项目目录中打开。"
     },

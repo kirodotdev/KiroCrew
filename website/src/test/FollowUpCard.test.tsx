@@ -117,6 +117,32 @@ describe('FollowUpCard', () => {
     expect(screen.queryByText(/unavailable|worktree|git/i)).not.toBeInTheDocument()
   })
 
+  it('offers "Start in new chat" for a plain folder inside a repository rooted higher up', async () => {
+    // The probe says "in git", but the folder is not the work-tree root, so a
+    // worktree would branch the whole enclosing repository.
+    const { onStartInWorktree, onStartInNewChat } = setup({
+      projectDir: '/home/me/notes', projectIsRepo: true, enclosingRepoRoot: '/home/me',
+    })
+    expect(screen.queryByRole('button', { name: /start in new worktree/i })).not.toBeInTheDocument()
+    const newChat = screen.getByRole('button', { name: /start in new chat/i })
+    expect(newChat).not.toBeDisabled()
+    expect(newChat).toHaveAttribute(
+      'title',
+      'Open a new chat in /home/me/notes without a worktree, because it is inside the git repository at /home/me, not its root',
+    )
+    fireEvent.click(newChat)
+    await waitFor(() => expect(onStartInNewChat).toHaveBeenCalledWith(item()))
+    expect(onStartInWorktree).not.toHaveBeenCalled()
+    expect(screen.getByText(/the new chat opens in this session's project directory/i)).toBeInTheDocument()
+  })
+
+  it('ignores an enclosing repository root when the session has no project dir', () => {
+    setup({ projectDir: undefined, enclosingRepoRoot: '/home/me' })
+    expect(screen.getByRole('button', { name: /start in new chat/i })).toHaveAttribute(
+      'title', 'Open a new chat without a worktree, because this session has no project directory',
+    )
+  })
+
   it('renders a new-chat failure inline and lets the user retry', async () => {
     const onStartInNewChat = vi.fn().mockRejectedValue(new Error('The new chat could not be opened.'))
     setup({ projectIsRepo: false, onStartInNewChat })

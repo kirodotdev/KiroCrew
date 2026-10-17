@@ -2587,6 +2587,7 @@
       "opening_new_chat": "Opening chat…",
       "failed_to_open_new_chat": "Failed to open a new chat",
       "open_new_chat_in_project": "Open a new chat in {{path}} without a worktree, because it is not a git repository",
+      "open_new_chat_inside_repo": "Open a new chat in {{path}} without a worktree, because it is inside the git repository at {{root}}, not its root",
       "open_new_chat": "Open a new chat without a worktree, because this session has no project directory",
       "new_chat_footer_same_project_directory": "Both actions pre-fill the composer — nothing is sent until you press send. The new chat opens in this session's project directory."
     },

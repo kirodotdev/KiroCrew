@@ -7224,6 +7224,7 @@
       "opening_new_chat": "Ouverture du chat…",
       "failed_to_open_new_chat": "Impossible d’ouvrir un nouveau chat",
       "open_new_chat_in_project": "Ouvrir un nouveau chat dans {{path}} sans worktree, car ce n’est pas un dépôt git",
+      "open_new_chat_inside_repo": "Ouvrir un nouveau chat dans {{path}} sans worktree, car il se trouve dans le dépôt git de {{root}} sans en être la racine",
       "open_new_chat": "Ouvrir un nouveau chat sans worktree, car cette session n’a aucun répertoire de projet",
       "new_chat_footer_same_project_directory": "Les deux actions pré-remplissent le champ de saisie — rien n’est envoyé avant que tu appuies sur Envoyer. Le nouveau chat s’ouvre dans le répertoire de projet de cette session."
     },
