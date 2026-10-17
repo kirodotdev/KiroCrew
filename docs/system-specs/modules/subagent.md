@@ -2147,6 +2147,25 @@ then raises that failure; a row whose report raised was removed and counts as
 stopped. Pinned by
 `test_queue_depth_reconcile_reads.py::test_a_row_that_could_not_be_unqueued_fails_the_stop_and_reaps_nothing`.
 
+
+### Dashboard Stop and subagent UI state
+
+When the user presses Stop in the dashboard, `api_chat_slot_stop` broadcasts a
+`subagent_status` event with `running: 0` after `stop_slot_turn` returns. This
+tells the frontend to clear the subagent spinners ("Thinking…" indicators) for
+the stopped slot.
+
+The subagent **processes** are not cancelled — they continue to completion. Their
+`subagent_done` results are silently discarded because the parent turn is dead.
+This is deliberate: Stop ends the parent turn; Stop all (`cancel_for_parent`)
+ends the subagent processes. They are separate verbs.
+
+| Caller | Parent turn | Subagent processes | Subagent UI |
+|---|---|---|---|
+| Dashboard Stop button | stopped | continue running | cleared |
+| Messaging-API Stop all | stopped | cancelled | cleared |
+| Steer-containment stop | stopped | continue running | not cleared (not user-initiated) |
+
 ### `cancel_queued(agent_id, parent_session_key, *, stop_origin="") -> bool`
 The queued half of `cancel_for_parent` for ONE accepted, not-started spawn: the
 same writer-thread store phase (`_stop_queued`) under the same refill hold

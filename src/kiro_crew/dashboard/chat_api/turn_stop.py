@@ -790,7 +790,24 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     force = request.query.get("force", "").lower() == "true"
-    return web.json_response(await stop_slot_turn(state, slot, force=force, cancel_key=cancel_key))
+    result = await stop_slot_turn(state, slot, force=force, cancel_key=cancel_key)
+
+    # Tell the frontend to clear subagent spinners for this slot.
+    # The subagent processes keep running to completion (their results are
+    # silently discarded since the parent turn is dead), but the user should
+    # not see "Thinking..." indicators after pressing Stop.
+    try:
+        state.broadcast_ws("subagent_status", {
+            "running": 0,
+            "slot": name,
+            "event": "parent_stopped",
+            "id": "",
+            "agents": [],
+        })
+    except Exception:
+        logger.debug("subagent_status broadcast failed for %s", name, exc_info=True)
+
+    return web.json_response(result)
 
 
 async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
