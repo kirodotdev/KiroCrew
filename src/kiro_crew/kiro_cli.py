@@ -672,6 +672,22 @@ def resolve_kiro_cli(
     return candidates[0] if candidates else None
 
 
+def kiro_cli_installed() -> bool:
+    """Whether any kiro-cli is installed here, pinned or reachable only on ``PATH``.
+
+    A stat of the install directories (:func:`resolve_kiro_cli`), never a spawn.
+    Read by the spec ``permissions`` gate on the KAS bundle route and by
+    ``kirocrew doctor``'s row for it: an installed kiro-cli reads the same
+    ``~/.kiro/agents`` files, so its version gate still applies there. A lookup
+    that raises counts as installed, because the gate it then runs withholds on
+    an unknown version, the smaller loss.
+    """
+    try:
+        return resolve_kiro_cli() is not None
+    except Exception:  # noqa: BLE001 - an unanswerable lookup fails closed
+        return True
+
+
 #: Fixed wording for the one refusal worth reporting: an install that exists but
 #: only through ``PATH``. Named here so ``kirocrew update`` and the diagnostics
 #: bundle tell the operator the same thing, including the override that fixes it.

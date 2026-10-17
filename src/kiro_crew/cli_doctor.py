@@ -113,8 +113,10 @@ from kiro_crew.cli_doctor_parts.host_probes import (
 from kiro_crew.cli_doctor_parts.kas_relay import (
     _doctor_kas,
     _kas_relay_help,
+    _report_bundle_kiro_cli_refusal,
     _report_kas_backend,
     _report_kas_bundle,
+    _report_kas_bundle_spec_permissions,
     _report_kas_spec_permissions,
     _report_kas_tool_vocabulary,
 )
@@ -199,6 +201,7 @@ from kiro_crew.kiro_cli import (
     SPEC_PERMISSIONS_MIN_VERSION,
     installed_kiro_cli_version,
     kas_relay_help,
+    kiro_cli_installed,
     mcp_governance_may_apply,
     resolve_kiro_cli,
     spec_permissions_supported,

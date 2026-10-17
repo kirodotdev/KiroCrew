@@ -216,3 +216,38 @@ def test_permissions_removed_for_an_old_cli_is_vouched(editor, monkeypatch):  # 
     save(service)
 
     assert agent_state.get_capabilities(target)["materialized"] == _digest(spec)
+
+
+def test_permissions_removed_for_a_missing_bundled_engine_is_vouched(
+    editor, monkeypatch  # noqa: F811 -- fixture
+):
+    """On the bundle route the writer and the vouch read the SAME gate.
+
+    ``agent.kas_bundle`` on, no engine installed, an accepting kiro-cli: the
+    writer removes ``permissions`` because the engine cannot vouch for it, so the
+    missing key is Crew's output and a later save must not call it a hand edit.
+    """
+    from kiro_crew import kiro_cli
+    from kiro_crew.agent_sdk import kas_bundle
+    from kiro_crew.agent_sdk.drivers.acp import derived_agent_permissions
+
+    service, home, specs, parent = editor
+    parent["permissions"] = derived_agent_permissions(parent["allowedTools"], "parent")
+    (specs / "parent.json").write_text(json.dumps(parent), encoding="utf-8")
+    monkeypatch.setattr("kiro_crew.agent_sdk.backend_install._kas_bundle_route", lambda: True)
+    monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: None)
+    monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", lambda: "/opt/kiro/bin/kiro-cli")
+    monkeypatch.setattr(kiro_cli, "spec_permissions_supported", lambda _version: True)
+    save(service, enroll=True)
+    save(service, [{"section": "tools", "id": "read", "action": "remove"}])
+    spec = spec_for(home, specs)
+    target, path = spec["name"], specs / (spec["name"] + ".json")
+    assert "permissions" not in spec
+    spec["$schema"] = "https://example.invalid/agent-v1.json"
+    path.write_text(json.dumps(spec), encoding="utf-8")
+    with pytest.raises(CapabilityError, match="materialization_changed"):
+        prepare_member_capabilities("A")
+
+    save(service)
+
+    assert agent_state.get_capabilities(target)["materialized"] == _digest(spec)
