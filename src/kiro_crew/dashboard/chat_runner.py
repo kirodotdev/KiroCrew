@@ -65,6 +65,8 @@ from kiro_crew.acp.types import (
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TOOL_STALL,
     STOP_RECOVERY_MAX_RETRIES,
+    SUBAGENT_ACTIVITY_THINKING,
+    SUBAGENT_ACTIVITY_TOOL_RESULT,
     TERMINAL_TOOL_STATUSES,
     WAIT_REASON_INPUT,
     RefusalInfo,
@@ -269,8 +271,13 @@ from kiro_crew.dashboard.chat_turn.model_fallback import (  # noqa: F401
     _sync_served_model,
 )
 from kiro_crew.dashboard.chat_turn.native_cards import (
+    _NATIVE_NOT_APPLIED_NOTE,
+    _NATIVE_NOT_APPLIED_PAST_BOUND,
     _append_native_output,
+    _native_subagent_activity,
     _native_subagent_close_all,
+    _native_subagent_flat_call,
+    _native_subagent_flat_result,
     _native_subagent_sync,
     _post_native_question_card,
     _retain_terminal_native,
@@ -479,6 +486,14 @@ from kiro_crew.dashboard.handlers.usage import (
     read_effective_agent,
     read_turn_model,
 )
+from kiro_crew.dashboard.native_subagent_cards import (
+    _NATIVE_RUNNING_PREFIX,
+    NATIVE_SUBAGENT_INPUT_CHARS,
+    NATIVE_SUBAGENT_RESULT_CHARS,
+    NATIVE_SUBAGENT_UNNAMED_FEED_LINE,
+    _admit_native_call,
+    _native_output_is_new,
+)
 from kiro_crew.dashboard.poisoned_escalation import POISONED_SESSION_CYCLES  # noqa: F401
 from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
 from kiro_crew.dashboard.recovery_replays import SESSION_NOT_FOUND_CANCELLED_TEXT  # noqa: F401
@@ -518,6 +533,7 @@ from kiro_crew.dashboard.state import (  # noqa: F401
     HOOK_CONTINUATION_RECOVERY_PREFIX,
     HOOK_HALTED_RECOVERY_PREFIX,
     MONITOR_WAKE_PREFIX,
+    NATIVE_SUBAGENT_CALLS_OVERFLOW_FEED_LINE,
     NATIVE_SUBAGENT_DONE_RESULT_CAP,
     NATIVE_SUBAGENT_DONE_TRUNC_MARKER,
     NATIVE_SUBAGENT_OUTPUT_HARD,
@@ -5425,13 +5441,38 @@ async def _run_chat(
     # tool_call_ids whose output was already streamed to a native card — kiro
     # emits two tool_call_update frames per tool (content + rawOutput), so we
     # dedupe to avoid printing the same output twice.
-    _native_result_seen: set[str] = set()
+    # native call id -> digest of the last output printed for it (admitted
+    # calls only; see native_subagent_cards._native_output_is_new).
+    _native_result_seen: dict[str, int] = {}
+    # Set once a flat tool_call on THIS stream was a child's (an older kiro-cli
+    # copies a child's calls onto the parent stream). Only then can a call the
+    # bound refused -- which holds no row to attribute it by -- be a child's in
+    # disguise, and the directive gate below fails closed for it.
+    _native_flat_copies_seen = False
+
+    def _native_owned(tcid: str) -> bool:
+        """Whether a flat frame's call is a native child's: attributed, or past
+        the turn's call bound on a wire that copies child calls here, where an
+        unattributed id cannot be told from a child's and must be refused.
+        The refusal count is read off every record, closed children's
+        included -- a record leaves the tracker only when the turn ends
+        (``_retain_terminal_native``), so a refusal anywhere in the turn
+        keeps this gate closed for the rest of it."""
+        if tcid in _native_tc_card:
+            return True
+        return _native_flat_copies_seen and any(
+            _i.get("calls_refused") for _i in _native_tracker.values()
+        )
+
     # native card id -> accumulated activity feed (tool calls + outputs). The
     # published frontend replaces a card's live `streaming` text with `result`
     # on done, so we persist the feed here and send it as the done `result`.
     _native_card_output: dict[str, list[str]] = {}
     slot._native_subagent_output = _native_card_output
     _native_card_output_len: dict[str, int] = {}
+    # native child session_id -> its two rolling redactors (reasoning, text), so
+    # a credential split across streamed chunks is withheld, as the parent's is.
+    _native_streams_red: dict[str, dict[str, StreamRedactor]] = {}
     needs_session_reset = False
     # Poisoned-conversation escalation: unlike needs_session_reset (which
     # preserves the resume sid so the next turn session/loads the same native
@@ -8769,21 +8810,13 @@ async def _run_chat(
                             event.tool_name or "",
                         )
                 # If this tool call belongs to a native sub-agent (mapped via
-                # _kiro.dev/session/update), stream it onto that sub-agent's card.
-                _nat_card = _native_tc_card.get(event.tool_call_id) if event.tool_call_id else None
-                if _nat_card:
-                    _ntool, _ = redact_exfiltration_urls(_raw or event.title or "")
-                    _ntool, _ = redact_credentials(_ntool)
-                    _ntool = _ntool[:80]
-                    _native_card_output_len[_nat_card] = _append_native_output(
-                        _native_card_output.setdefault(_nat_card, []),
-                        f"\u2192 {_ntool}\n",
-                        _native_card_output_len.get(_nat_card, 0),
-                    )
-                    state.broadcast_ws(
-                        "subagent_chunk",
-                        {"id": _nat_card, "slot": slot.key, "text": f"\u2192 {_ntool}\n"},
-                    )
+                # _kiro.dev/session/update), it is the parent-tagged copy of a
+                # call the activity path admitted: a refinement of that call's
+                # row, not a second call and not a feed line (the result row
+                # names the call in the feed, once).
+                if event.tool_call_id and event.tool_call_id in _native_tc_card:
+                    _native_flat_copies_seen = True
+                    _native_subagent_flat_call(state, slot, event, _native_tracker, _native_tc_card)
                 # Where Crew fires the spec's hooks, every call a PreToolUse hook
                 # covers comes back as a permission request (the projection
                 # withholds its auto-approval) and KAS sends this frame first, so
@@ -9328,7 +9361,7 @@ async def _run_chat(
                     # ordering the check first also keeps a legitimate parent
                     # directive from being consumed by a child's frame.
                     _in_digest = _pending_input_digest.get(event.tool_call_id, "")
-                    if event.tool_call_id in _native_tc_card:
+                    if _native_owned(event.tool_call_id):
                         # The identity gate files an identified call under
                         # _pending_dir_tool, not _seen_tool_identity, so the
                         # directive name for the audit row is _dir_tool.
@@ -9350,8 +9383,9 @@ async def _run_chat(
                         _out = _redact_tool_field(
                             session_directive.strip_marker(_out)
                             + (
-                                "\n\n[Not applied: a session-bound tool called "
-                                "from a sub-agent has no session to act on.]"
+                                _NATIVE_NOT_APPLIED_PAST_BOUND
+                                if event.tool_call_id not in _native_tc_card
+                                else _NATIVE_NOT_APPLIED_NOTE
                             )
                         )
                         _dir_consumed_out[event.tool_call_id] = _out
@@ -9500,7 +9534,7 @@ async def _run_chat(
                     # text overwrite the applied outcome in the transcript.
                     _out = _dir_consumed_out[event.tool_call_id]
                 elif _dir_tool:
-                    if event.tool_call_id in _native_tc_card:
+                    if _native_owned(event.tool_call_id):
                         # SINGLE-CONSUME: one tool call can surface MORE THAN ONE
                         # result frame (a mid-stream content frame and the final
                         # status=completed rawOutput frame — the same reason the
@@ -9525,8 +9559,9 @@ async def _run_chat(
                         _out = _redact_tool_field(
                             session_directive.strip_marker(_out)
                             + (
-                                "\n\n[Not applied: a session-bound tool called "
-                                "from a sub-agent has no session to act on.]"
+                                _NATIVE_NOT_APPLIED_PAST_BOUND
+                                if event.tool_call_id not in _native_tc_card
+                                else _NATIVE_NOT_APPLIED_NOTE
                             )
                         )
                         _dir_consumed_out[event.tool_call_id] = _out
@@ -9658,39 +9693,30 @@ async def _run_chat(
                         "final": bool(_tool_terminal),
                     },
                 )
-                # If this tool result belongs to a native sub-agent, stream its
-                # real output onto that sub-agent's card so the OUTPUT section
-                # shows actual results (git log, file contents, summaries) —
-                # not just tool names. Mirrors spawn_sub_agents' subagent_chunk.
-                _nat_card_r = (
-                    _native_tc_card.get(event.tool_call_id) if event.tool_call_id else None
-                )
-                # Redact the FULL output once, then bound each consumer's copy
-                # (the native card's 4000 and the PostToolUse hook's 2000):
-                # bounding first can cut a credential at the boundary into
-                # fragments no redaction regex matches, and sharing the pass
-                # keeps the full-text cost single.
+                # A result whose id the activity path attributed to a native
+                # sub-agent is a parent-tagged copy of the child's (a wire that
+                # copies a child's calls onto the parent stream). It takes the
+                # child path's terminal rule and per-call rolling redactor: a
+                # fragment redacted alone and published here would send a
+                # credential split across two fragments over the wire in halves
+                # that neither redaction sees.
+                if event.tool_call_id and event.tool_call_id in _native_tc_card:
+                    _native_subagent_flat_result(
+                        state,
+                        slot,
+                        event,
+                        _native_tracker,
+                        _native_card_output,
+                        _native_card_output_len,
+                        _native_tc_card,
+                        _native_result_seen,
+                        _native_streams_red,
+                    )
+                # Redact the FULL output once, then bound the PostToolUse
+                # hook's copy (2000): bounding first can cut a credential at
+                # the boundary into fragments no redaction regex matches.
                 _redacted_out, _ = redact_exfiltration_urls(_out)
                 _redacted_out, _ = redact_credentials(_redacted_out)
-                if (
-                    _nat_card_r
-                    and event.tool_output
-                    and event.tool_call_id not in _native_result_seen
-                ):
-                    _native_result_seen.add(event.tool_call_id)
-                    _native_card_output_len[_nat_card_r] = _append_native_output(
-                        _native_card_output.setdefault(_nat_card_r, []),
-                        f"{_redacted_out[:4000]}\n",
-                        _native_card_output_len.get(_nat_card_r, 0),
-                    )
-                    state.broadcast_ws(
-                        "subagent_chunk",
-                        {
-                            "id": _nat_card_r,
-                            "slot": slot.key,
-                            "text": f"{_redacted_out[:4000]}\n",
-                        },
-                    )
                 # Mark the matching tool message as done so completion state
                 # survives page reload (persisted in message meta, replayed via SSE).
                 # Also persist the redacted output here so the inline detail panel
@@ -11911,18 +11937,23 @@ async def _run_chat(
                     slot.key,
                 )
                 _native_subagent_sync(
-                    state, slot, event.subagents, _native_tracker, _native_card_output
+                    state,
+                    slot,
+                    event.subagents,
+                    _native_tracker,
+                    _native_card_output,
+                    _native_card_output_len,
+                    _native_streams_red,
                 )
             elif event.kind == EVENT_SUBAGENT_ACTIVITY:
-                # kiro-cli's _kiro.dev/session/update tags a sub-agent's inner
-                # tool call with its sessionId. This ALWAYS arrives before the
-                # corresponding flat tool_call/tool_call_update, so building the
-                # toolCallId->card map here lets those flat events (which carry
-                # the full tool title AND the real output) attribute to the
-                # right sub-agent card.
+                # A native child's frame, re-tagged by the handle with the
+                # child's sessionId. Its tool calls, results, reasoning and
+                # text are projected onto the child's card by
+                # ``_native_subagent_activity`` -- which also fills the
+                # toolCallId->card map the flat tool_call/tool_result arms
+                # read, for a wire that tags a child's frames with the
+                # parent's sessionId.
                 _sid = event.sub_session_id
-                if _sid in _native_tracker and event.tool_call_id:
-                    _native_tc_card[event.tool_call_id] = f"native:{_redact_tool_field(_sid)}"
                 # Permission-rejection notices (the handle's own "⛔ …" lines,
                 # e.g. drain-time rejects yielded at turn start) arrive BEFORE
                 # any subagent_list populates the per-turn tracker — dropping
@@ -11933,21 +11964,17 @@ async def _run_chat(
                     _txt, _ = redact_exfiltration_urls(event.text)
                     _txt, _ = redact_credentials(_txt)
                     slot.append("notice", _txt, "msg msg-info")
-                # Some kiro-cli builds also stream the sub-agent's own text via
-                # agent_message_chunk on this channel — surface it on the card.
-                if _sid in _native_tracker and event.text:
-                    _card_id = f"native:{_redact_tool_field(_sid)}"
-                    _txt, _ = redact_exfiltration_urls(event.text)
-                    _txt, _ = redact_credentials(_txt)
-                    _native_card_output_len[_card_id] = _append_native_output(
-                        _native_card_output.setdefault(_card_id, []),
-                        _txt,
-                        _native_card_output_len.get(_card_id, 0),
-                    )
-                    state.broadcast_ws(
-                        "subagent_chunk",
-                        {"id": _card_id, "slot": slot.key, "text": _txt},
-                    )
+                _native_subagent_activity(
+                    state,
+                    slot,
+                    event,
+                    _native_tracker,
+                    _native_card_output,
+                    _native_card_output_len,
+                    _native_tc_card,
+                    _native_result_seen,
+                    _native_streams_red,
+                )
             elif event.kind == EVENT_COMPLETE:
                 # Latch the terminal reason the INSTANT the completion arrives,
                 # before any cancellable await in this arm runs. The full
@@ -12066,7 +12093,14 @@ async def _run_chat(
                 # Safety net: complete any native subagent cards still marked
                 # running at turn end (in case a terminal status was missed),
                 # so cards don't stay stuck "running".
-                _native_subagent_close_all(state, slot, _native_tracker, _native_card_output)
+                _native_subagent_close_all(
+                    state,
+                    slot,
+                    _native_tracker,
+                    _native_card_output,
+                    card_output_len=_native_card_output_len,
+                    streams=_native_streams_red,
+                )
                 _u = event.usage
                 if monitor_completion is not None and is_monitor_completion_evidence(
                     event.stop_reason,
@@ -16073,7 +16107,14 @@ async def _run_chat(
         # long-completed children for a later ceiling timeout.
         _children_unfinished_final = any(not _i.get("done") for _i in _native_tracker.values())
         try:
-            _native_subagent_close_all(state, slot, _native_tracker, _native_card_output)
+            _native_subagent_close_all(
+                state,
+                slot,
+                _native_tracker,
+                _native_card_output,
+                card_output_len=_native_card_output_len,
+                streams=_native_streams_red,
+            )
         finally:
             slot._native_subagent_tracker = _retain_terminal_native(_native_tracker)
             slot._native_subagent_output = {}

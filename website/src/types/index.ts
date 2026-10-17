@@ -1609,6 +1609,32 @@ export interface ChatSlotDetailResponse extends TurnIdentityFields {
   context_window_tokens?: number
 }
 
+/** One row of a sub-agent card's live mini-transcript (`SubagentActivity.transcript`):
+ *  what the agent did, in arrival order. A `tool` row is keyed by the call's
+ *  `tool_call_id` so its refinement (the command-bearing title, the full
+ *  input) and its result land on the row the call opened; `thinking` and
+ *  `text` rows absorb consecutive chunks of their kind. Every row carries
+ *  `seq`, one past the newest row's when it was created: the React key, stable
+ *  while the cap drops rows off the front (a position key would hand an
+ *  expanded row's state to its successor on every drop). */
+export type SubagentTranscriptItem =
+  | { kind: 'thinking'; seq: number; text: string }
+  | { kind: 'text'; seq: number; text: string }
+  | {
+      kind: 'tool'
+      seq: number
+      /** The call's `tool_call_id`, when the frame carried one. */
+      id?: string
+      /** The call's title; '' for a call first seen through its result, until
+       *  the refinement that follows names it. */
+      tool: string
+      input?: string
+      output?: string
+      /** The backend's own terminal status (`completed`, `failed`, ...). Absent
+       *  while the call runs. */
+      status?: string
+    }
+
 export interface SubagentActivity {
   id: string; task: string; agent: string
   /** The wave this agent belongs to, absent for a solo spawn. Folded from the
@@ -1644,12 +1670,17 @@ export interface SubagentActivity {
    *  `started`, and `subagent_done` carries `elapsed`. */
   startedAtAssumed?: boolean
   toolCount?: number      // observed tool calls (incl. auto-approved) — running-card progress
-  /** Recent tool calls in arrival order, newest last, capped at
-   *  `SUBAGENT_TOOL_CALLS_CAP` (#13628). Live frames only: a card restored from
-   *  disk after its run has no timeline. `toolCount` may exceed its length when
-   *  the cap dropped old calls or the scale coalescer merged frames. */
-  /** `id` is the call's `tool_call_id` when the frame carried one. */
-  toolCalls?: { tool: string; id?: string }[]
+  /** The card's live mini-transcript: reasoning, tool calls with their input
+   *  and output, and streamed text, in arrival order and newest last. Fed by
+   *  the `subagent_thinking` / `subagent_tool` / `subagent_tool_result` frames
+   *  and the text chunks; client-side and live, so a reconnect restarts it from
+   *  the snapshot's feed and latest tool, and a card read back from disk has
+   *  none. `toolCount` may exceed its tool rows when the cap dropped old rows
+   *  or the scale coalescer merged frames (#13628). Capped at
+   *  `SUBAGENT_TRANSCRIPT_CAP` rows; `transcriptOmitted` counts what the cap
+   *  dropped so the card can say so. */
+  transcript?: SubagentTranscriptItem[]
+  transcriptOmitted?: number
   stalled?: boolean       // reaper flagged this subagent as idle/stalled
   /** Seconds of no stream activity measured when the reaper raised `stalled`
    *  (the `idle_secs` the backend already sends with `subagent_stalled`).

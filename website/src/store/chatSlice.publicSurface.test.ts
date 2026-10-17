@@ -50,7 +50,7 @@ const ACTION_CREATORS = [
   'sseMcpAppRender', 'sseSideQueue', 'sseSideResult', 'sseSubagentBatchChunks',
   'sseSubagentBatchUpdate', 'sseSubagentDone', 'sseSubagentPending', 'sseSubagentQueued',
   'sseSubagentRetrying', 'sseSubagentSnapshot', 'sseSubagentSpawn', 'sseSubagentStalled',
-  'sseSubagentTool', 'sseThinkingChunk', 'sseToolActivity', 'sseToolResult', 'sseWorkflowEvent',
+  'sseSubagentTool', 'sseSubagentToolResult', 'sseThinkingChunk', 'sseToolActivity', 'sseToolResult', 'sseWorkflowEvent',
   'stageToMainComposer', 'startLocalTurn', 'startServerTurn', 'syncSlotRunningFromServer', 'toggleActivity', 'truncateAfterIndex',
   'updateStreamingMessage',
 ]

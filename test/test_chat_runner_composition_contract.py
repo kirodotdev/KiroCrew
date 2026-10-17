@@ -1252,7 +1252,7 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
         "dashboard/chat_turn/turn_spec_hooks.py",
         "dashboard/chat_turn/turn_stats.py",
     ),
-    r"StreamRedactor": (_RUNNER_HOME,),
+    r"StreamRedactor": (_RUNNER_HOME, "dashboard/chat_turn/native_cards.py"),
     r"\.reject_tool\(": ("dashboard/chat_turn/deny_chokepoints.py",),
     r"_reject_attributed\(": (_RUNNER_HOME, "dashboard/chat_turn/deny_chokepoints.py"),
     r"\.approve_tool\(": (_RUNNER_HOME,),

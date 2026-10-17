@@ -408,6 +408,9 @@ const FRAME_CASES: Array<[string, Frame[], Frame[]]> = [
     { type: 'subagent_queued', data: { slot: ACTIVE, queued: 2, reason: 'memory' } },
     { type: 'subagent_chunk', data: { slot: ACTIVE, id: 'sa-1', text: 'partial' } },
     { type: 'subagent_tool', data: { slot: ACTIVE, id: 'sa-1', tool: 'read', turns: 1 } },
+    { type: 'subagent_tool_result', data: { slot: ACTIVE, id: 'sa-1', tool_call_id: 'tc-1', output: 'body', status: 'completed' } },
+    { type: 'subagent_chunk', data: { slot: ACTIVE, id: 'sa-1', text: 'mid' } },
+    { type: 'subagent_thinking', data: { slot: ACTIVE, id: 'sa-1', text: 'hmm' } },
     { type: 'subagent_stalled', data: { slot: ACTIVE, id: 'sa-1', stalled: true } },
     { type: 'subagent_chunk', data: { slot: ACTIVE, id: 'sa-1', text: 'more' } },
     { type: 'subagent_retrying', data: { slot: ACTIVE, id: 'sa-1', attempt: 2 } },
@@ -1261,15 +1264,26 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
   "subagent lifecycle": [
     'action chat/sseSubagentSpawn {"slot":"slot-a","id":"sa-1","task":"t","agent":"a"}',
     'action chat/sseSubagentQueued {"slot":"slot-a","queued":2,"reason":"memory"}',
-    'action chat/sseSubagentTool {"slot":"slot-a","id":"sa-1","tool":"read","turns":1}',
-    'action chat/sseSubagentStalled {"slot":"slot-a","id":"sa-1","stalled":true}',
+    // A tool or thinking frame lands the text buffered before it first, so the
+    // card's transcript keeps the order the agent produced.
     'cancel-frame 1',
-    'action chat/sseSubagentBatchChunks {"chunks":[{"id":"sa-1","slot":"slot-a","text":"partialmore"}]}',
-    'action chat/sseSubagentRetrying {"slot":"slot-a","id":"sa-1","attempt":2}',
+    'action chat/sseSubagentBatchChunks {"chunks":[{"id":"sa-1","slot":"slot-a","text":"partial"}]}',
+    'action chat/sseSubagentTool {"slot":"slot-a","id":"sa-1","tool":"read","turns":1}',
+    'action chat/sseSubagentToolResult {"slot":"slot-a","id":"sa-1","tool_call_id":"tc-1","output":"body","status":"completed"}',
+    // Reasoning rides the same coalesced buffer as the answer text. A run of
+    // the other kind is landed the moment the kind changes (no frame to cancel:
+    // the pending flush stays armed for the new run), so "mid" lands when the
+    // reasoning starts and "hmm" when the text resumes -- the wire's order.
+    'action chat/sseSubagentBatchChunks {"chunks":[{"id":"sa-1","slot":"slot-a","text":"mid"}]}',
+    'action chat/sseSubagentStalled {"slot":"slot-a","id":"sa-1","stalled":true}',
+    'action chat/sseSubagentBatchChunks {"chunks":[{"id":"sa-1","slot":"slot-a","text":"hmm","kind":"thinking"}]}',
     'cancel-frame 2',
+    'action chat/sseSubagentBatchChunks {"chunks":[{"id":"sa-1","slot":"slot-a","text":"more"}]}',
+    'action chat/sseSubagentRetrying {"slot":"slot-a","id":"sa-1","attempt":2}',
+    'cancel-frame 3',
     'action chat/sseSubagentBatchChunks {"chunks":[{"id":"sa-1","slot":"slot-a","text":"again"}]}',
     'action chat/sseSubagentRetrying {"slot":"slot-a","id":"sa-1"}',
-    'cancel-frame 3',
+    'cancel-frame 4',
     'action chat/sseSubagentBatchChunks {"chunks":[{"id":"sa-1","slot":"slot-a","text":"last"}]}',
     'action chat/sseSubagentDone {"slot":"slot-a","id":"sa-1","elapsed":3,"credits":1.5}',
   ],

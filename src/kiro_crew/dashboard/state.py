@@ -2132,11 +2132,17 @@ class DashboardState:
                         }
                     )
                 else:
+                    # A run past the call bound says so once per snapshot, as
+                    # the finished card's result does: a truncated tail otherwise
+                    # reads like a run that never named those calls.
+                    tail = native_subagent_output_tail(output.get(card_id, []))
+                    if info.get("calls_refused"):
+                        tail += NATIVE_SUBAGENT_CALLS_OVERFLOW_FEED_LINE
                     running.append(
                         {
                             **base,
                             "done": False,
-                            "streaming": native_subagent_output_tail(output.get(card_id, [])),
+                            "streaming": tail,
                             "last_tool": str(info.get("last_tool") or ""),
                             "started": float(info.get("started") or now),
                         }
@@ -5251,6 +5257,7 @@ from kiro_crew.dashboard.state_parts.slot_directory import (  # noqa: E402,F401 
     _SLOT_KEY_MAX_CHARS,
     MAX_LIVE_SLOTS,
     MAX_SLOTS_PER_CREATOR,
+    NATIVE_SUBAGENT_CALLS_OVERFLOW_FEED_LINE,
     NATIVE_SUBAGENT_DONE_RESULT_CAP,
     NATIVE_SUBAGENT_DONE_TRUNC_MARKER,
     NATIVE_SUBAGENT_OUTPUT_HARD,

@@ -50,6 +50,17 @@ def _is_genuine_slack_link(thread_ts: str | None, channel_id: str | None) -> boo
 NATIVE_SUBAGENT_OUTPUT_TAIL = 40_000
 
 
+#: Said once per snapshot of a native card whose run crossed the call bound
+#: (``native_subagent_cards.NATIVE_SUBAGENT_CALLS_MAX``) -- on the running
+#: snapshot's tail here and on the finished card's result in the runner -- as
+#: the roster names its overflow: a truncated tail otherwise reads exactly like
+#: a run that never named those calls.
+NATIVE_SUBAGENT_CALLS_OVERFLOW_FEED_LINE = (
+    "\u2026(this run made more tool calls than the card keeps names for; "
+    "later outputs are filed under \u2192 Unnamed tool call)\n"
+)
+
+
 NATIVE_SUBAGENT_OUTPUT_HARD = 80_000
 
 

@@ -95,6 +95,7 @@ const WS_SLOT_SCOPED_EVENTS = new Set([
   'approval', 'approval_resolved', 'question_card',
   // Subagent lifecycle
   'subagent_spawn', 'subagent_done', 'subagent_tool', 'subagent_chunk',
+  'subagent_tool_result', 'subagent_thinking',
   'subagent_snapshot', 'subagent_status', 'subagent_queued',
   'subagent_stalled', 'subagent_retrying', 'subagent_recovering',
   'subagent_waiting', 'subagent_resumed',
@@ -111,6 +112,7 @@ const WS_SLOT_SCOPED_EVENTS = new Set([
  */
 const WS_SUBAGENT_EVENTS = new Set([
   'subagent_spawn', 'subagent_done', 'subagent_tool', 'subagent_chunk',
+  'subagent_tool_result', 'subagent_thinking',
   'subagent_snapshot', 'subagent_status', 'subagent_queued',
   'subagent_stalled', 'subagent_retrying', 'subagent_recovering',
   'subagent_waiting', 'subagent_resumed',

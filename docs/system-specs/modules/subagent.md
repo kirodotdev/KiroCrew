@@ -2528,7 +2528,7 @@ The slow-command record (`record_slow_command`, `subagent_persistence.py`) is ap
 
 An incremental progress frame **creates** the panel entry when the client holds none for the id it names, rather than being discarded. The store's incremental reducers (`sseSubagentTool`, `sseSubagentStalled`, `sseSubagentRetrying`, `sseSubagentBatchUpdate`, `sseSubagentBatchChunks`) resolve through `upsertSlotSub` (`website/src/store/chat/subagents.ts`, the sub-agent reducer family the `website/src/store/chatSlice.ts` facade composes into the chat slice), which returns the existing entry or mints a minimal one (`status: 'running'`, empty `task`/`agent`, filled in by any later frame that carries them). This is required because these frames are the only evidence the panel receives between one `subagent_spawn` and one `subagent_done`, and `clearSubagentsForSnapshot` keeps only `pending` entries across a reconnect — so an agent already running at that moment has its entry discarded while every frame it has left is an incremental one, and a reducer that refused to create would leave it invisible for the rest of its run. The prototype-pollution contract is unchanged: `upsertSlotSub` refuses a poisoned slot or id via `isUnsafeKey` and routes any write through `safeKey`, so such a frame creates nothing. Reducers whose frame only decorates an existing card (`markSubagentApproving`) keep the read-only `getSlotSub` and still require one.
 
-**Tool-call timeline (#13628).** `sseSubagentTool` and `sseSubagentBatchUpdate` also append each frame's `tool` to the card's `toolCalls` list (`recordToolCall`, newest last, capped at `SUBAGENT_TOOL_CALLS_CAP` = 50), and the Subagents panel renders it as a "Tool calls" list beside the output instead of the single overwritten `lastTool` line. Both `subagent_tool` fire sites in `subagent_manager/run.py` carry the call's redacted `tool_call_id`. A gated call fires twice with the same id (once from `EVENT_TOOL_CALL`, once from the permission request), so a frame naming the newest entry's id replaces that entry rather than listing the call twice; a frame with a different id is a new call even when `tool_count` did not move, which is the case for a backend child's permission request (counted only at approval). A frame with an id that follows an entry with none (the row a replay seeds from `last_tool`) is likewise a new call. A frame with no id falls back to the count (an unmoved count is the newest call's second frame). The list is client-side and live only: it holds what this browser saw since its last connect: a reconnect runs `clearSubagentsForSnapshot` before the replay, so a running card's timeline restarts from the snapshot's `last_tool`, and a card read back from disk after the run has none. A frame with neither id nor `tool_count` (native kiro-cli cards, which `_native_subagent_sync` re-broadcasts on every `list_update`) whose title equals the newest entry is the same activity and is not listed again. It can also be incomplete, because the cap drops old calls and the scale coalescer (`subagent_scale.py`) merges frames latest-wins above its threshold; the card states `toolCount − toolCalls.length` as "N earlier calls not shown" rather than implying the list is the whole run. That count sits in the "Tool calls" heading, outside the scrolling list, because the list follows the newest call and a row at its top would scroll out of view on exactly the long, capped runs it describes; the key is a registered plural (`pluralKeys.json`), so languages that inflect for one take their singular form. Every row drops kiro-cli's `Running: ` title prefix: it is false on a finished call, and the live row is already marked by its spinner, accent colour and `aria-current`. Once rows sit above the scroll box the inner scroller's top edge fades (a `mask-image` gradient on the bare `<ol>`, inside the solid box, so the box itself never fades) and the clipped row reads as more content rather than a fault. Persisting the timeline, expandable per-call input/result, and per-card token figures are not part of this; the Usage page's exclusion of subagent rows is the metrics spec's recorded rule.
+**Tool-call timeline (#13628).** The card keeps its recent tool calls in order as the tool rows of its live transcript (`SubagentActivity.transcript`, below; the separate `toolCalls` list and its "Tool calls" box were folded into it, since the transcript carried every one of its rows). `sseSubagentTool` and `sseSubagentBatchUpdate` record each frame with `recordTranscriptTool`, newest last, instead of only overwriting `lastTool`. Both `subagent_tool` fire sites in `subagent_manager/run.py` carry the call's redacted `tool_call_id`. A gated call fires twice with the same id (once from `EVENT_TOOL_CALL`, once from the permission request), so a frame naming an existing row's id refines that row rather than listing the call twice; a frame with a different id is a new call even when `tool_count` did not move, which is the case for a backend child's permission request (counted only at approval). A frame with no id falls back to the count (an unmoved count is the newest call's second frame), and a frame with neither id nor `tool_count` (native kiro-cli cards, which `_native_subagent_sync` re-broadcasts on every `list_update`) whose title equals the newest tool row is the same activity and is not listed again. The rows are client-side and live: a reconnect runs `clearSubagentsForSnapshot` before the replay, so a running card's transcript restarts from the snapshot (`seedTranscript`: the feed so far as one text row, then the call in flight as an id-less tool row that the first id-bearing frame with its title, or the first result for a call this browser never saw open, claims), and a card read back from disk after the run has none. The rows can also be incomplete, because the cap drops old rows (`transcriptOmitted`, stated as "N earlier steps not shown") and the scale coalescer (`subagent_scale.py`) merges frames latest-wins above its threshold; when no row was dropped the card states `toolCount − tool rows` as "N earlier calls not shown" rather than implying the rows are the whole run. Either count sits in the "Live activity" heading, outside the scrolling list, because the list follows the newest row and a line at its top would scroll out of view on exactly the long, capped runs it describes; the calls key is a registered plural (`pluralKeys.json`), so languages that inflect for one take their singular form. Every row drops kiro-cli's `Running: ` title prefix: it is false on a finished call, and the live row is already marked by its spinner, accent colour and `aria-current`. Rows beyond either edge of the scroll box fade that edge (a `mask-image` gradient on the bare `<ol>`, inside the solid box, so the box itself never fades), and a row clipped at the top or the bottom reads as more content rather than a fault. Per-card token figures are not part of this; the Usage page's exclusion of subagent rows is the metrics spec's recorded rule.
 
 A dashboard approval refusal and process liveness are separate facts. A terminal
 approval response (expired/already decided) immediately removes decision controls,
@@ -2668,7 +2668,7 @@ The REST listing's app bound gates on the presence of the caller's app CLAIM, ne
 
 The record lives in its own top-level `panel-dismissals/` leaf of the data home, OUTSIDE the run folder, and deliberately NOT under `trust/`. A dismissal is an OWNER decision about what the panel hides, which makes it the same class of record as `crew-panels`, `crew-teams` and `tag-grants` — and each of those is its own top-level leaf precisely because `trust/` is a declared sandbox READ-WRITE exception (in-sandbox `verify_session_pid` reads `trust/sel_hmac.key` and the in-sandbox MCP servers append to the audit log). A record under `trust/` stays writable by a sandboxed command that builds the path at runtime, which command matching cannot catch because it has no literal path to match; the cleanup identities that live there are not a precedent for adding records to it. So the leaf is registered in four places, and because nothing in the code fails when one is missing, each is pinned by name in `TestTheDismissalStoreIsRegisteredEverywhereItMustBe`: `paths._CREW_SECRET_LEAVES` for the file gate, `sandbox._CREW_HIDDEN_LEAVES` for the bind mask, `_CREW_PRECREATE_HIDDEN_DIR_LEAVES` because the directory is created on the first dismissal and the mask loop SKIPS a name that does not exist, and `_CREW_NO_ALIAS_LEAVES` because a symlink would attach the mask to the target and leave the name writable. `state.json` and `tombstone.json`, by contrast, are agent-writable, so a marker kept in there would let a run hide its own card from every later rebuild. The write goes through `atomic_write(..., restrict_to_owner=True)` so the lockdown lands on the temp file before the payload and before the rename. The run FOLDER is deliberately left in place rather than deleted — `spawn_continue` reseeds its session map from that folder's `state.json`, so removing it to hide a card would also destroy a conversation the user can still continue, and would take the result text and the prune bookkeeping with it. The reader fails OPEN: an unreadable record yields no id, so a filesystem fault resurrects a dismissed card, which the user can dismiss again, rather than hiding a run nobody dismissed. Records are reclaimed with their folder at both removal sites (`delete_agent_folder` and `prune_stale_tombstones`), and `prune_orphan_panel_dismissals` sweeps once per prune cycle for a folder that left by some other route.
 
-Native kiro-cli subagents run inside the parent ACP turn and are owned by the parent dashboard slot. `DashboardState.native_subagent_snapshots()` replays running native cards as `subagent_snapshot` and recent terminal cards as `subagent_done`. A native `subagent_done` payload may include optional `task`, `agent`, and `result` fields. `result` is a redacted output tail bounded to 8,000 characters, with an explicit truncation marker when earlier output was dropped. Running output retained for replay is bounded to 40,000 characters, with an 80,000-character hard accumulation ceiling. Terminal native records are retained globally up to 50 cards for at most one hour. The client treats `done` and `error` as monotonic terminal states, so a stale running snapshot interleaved after a live completion cannot demote the card.
+Native kiro-cli subagents run inside the parent ACP turn and are owned by the parent dashboard slot. `DashboardState.native_subagent_snapshots()` replays running native cards as `subagent_snapshot` and recent terminal cards as `subagent_done`. A native `subagent_done` payload may include optional `task`, `agent` and `result` fields. `result` is a redacted output tail bounded to 8,000 characters, with an explicit truncation marker when earlier output was dropped. Running output retained for replay is bounded to 40,000 characters, with an 80,000-character hard accumulation ceiling. Terminal native records are retained globally up to 50 cards for at most one hour. The client treats `done` and `error` as monotonic terminal states, so a stale running snapshot interleaved after a live completion cannot demote the card.
 
 **Redaction**: All subagent event payloads (running snapshots and done events) have the `agent` field redacted before sending to the dashboard. Task text is redacted before truncation to prevent credential patterns spanning the boundary.
 
@@ -3652,6 +3652,221 @@ kiro-cli process rather than as Kiro Crew-owned sessions. Kiro Crew surfaces
 those in the Activity tab too, by observing kiro-cli's sub-agent
 notifications — one card per sub-agent, with each inner tool call and its
 output attributed to the right card.
+
+**How a native child's work reaches its card.** kiro-cli announces the crew's
+roster on `_kiro.dev/subagent/list_update` (one entry per child: session id,
+agent, task, a status whose message is the generic `Running`), and the card is
+spawned and closed from that roster alone (`_native_subagent_sync`). Everything
+the child DOES arrives as ordinary `session/update` frames tagged with the
+CHILD's session id — its `tool_call` (title, `rawInput`, `_meta.kiro.toolName`),
+two `tool_call_update`s per call (a content block, then `status: completed` with
+`rawOutput` carrying the same output), its `agent_thought_chunk`s and its
+`agent_message_chunk`s — plus an extension-spelling `tool_call_chunk` naming the
+bare tool before the titled call. `AcpSessionHandle._handle_update` runs every
+child frame through the shared parser for its security caches and re-tags the
+parsed events as `EVENT_SUBAGENT_ACTIVITY` (never parent transcript), with the
+`activity` field telling the shapes apart: a tool call or its refinement
+(`tool_call_id` + title, kind, purpose, input), `SUBAGENT_ACTIVITY_TOOL_RESULT`
+(the parser's redacted, bounded output and the terminal status),
+`SUBAGENT_ACTIVITY_THINKING`, and plain text. `_native_subagent_activity` in
+`dashboard/chat_turn/native_cards.py` -- an owner module composed into the
+runner, with its own row in the redaction census -- projects each onto the card,
+with the per-child stream redactors, their flushes and the whole-text redaction
+beside it; like every composed owner it reads the backend's event tags and the
+redactors through the runner's namespace. The part that touches neither lives in
+`dashboard/native_subagent_cards.py`: the card's bounds, the call admission and
+the once-per-call output rule. That module holds no state and never imports the
+runner or the owner; both import its names, and the tests patch the bounds on
+it, the module that reads them. The frames: `subagent_tool` `{tool, tool_call_id,
+tool_count, input?}` (a refinement for the same id refines the row;
+the count moves once per call; the card draws nothing from the call's kind, so the
+frame carries none), `subagent_tool_result` `{tool_call_id, output?,
+status?}` (a call's output prints from its TERMINAL frame, which carries the
+whole of it; a frame in progress carries its status alone, since a fragment
+broadcast on its own is redacted on its own and a credential split across two
+fragments would cross the wire in halves. The fragments are kept in order, each
+fed to one rolling `StreamRedactor` per admitted call (`streams[sid]["call:<id>"]`,
+beside the child's `thinking` and `text` redactors) whose committed output --
+never ending inside a credential-class run -- accumulates, bounded to the
+output's own cap, as the call's pending text (`info["call_pending"]`, a slot
+per admitted id, so bounded by the same admission). They print if the terminal
+frame carries no text, or at the child's close if no terminal frame comes, as
+the committed text plus the redactor's flush: a bearer header whose prefix and
+token arrived in separate frames is redacted whole, where the last fragment on
+its own would have been a bare token. A refused call keeps nothing. A repeated
+terminal frame prints nothing again: `_native_output_is_new` deduplicates by
+content per admitted call, so a terminal output that differs from the last
+printed one still prints. A PARENT-tagged result whose id the activity path
+attributed -- a wire that copies a child's calls onto the parent stream -- takes
+the same route (`_native_subagent_flat_result` finds the call's record by its
+card and hands the frame to the shared `_native_project_result`), so no path
+publishes a fragment around the terminal rule and the per-call redactor, and a
+result both deliver prints once. On that wire the PARENT-tagged `tool_call` of an
+attributed call is a REFINEMENT of the call the activity frame admitted (the child
+channel announces the bare tool name, the copy carries the command-bearing title),
+not a second call: `_native_subagent_flat_call` refines the kept title slot and
+re-sends the `subagent_tool` frame the client keyed on the id with the count where
+admission left it, and writes no feed line -- the result row names the call in the
+feed, once, under the refined title; the output also joins the card's feed under the
+call's title,
+which is the done-time `result`; that `→ title` line drops kiro-cli's `Running: `
+prefix the way the card's rows do, since the feed is read on the finished card
+where the word is false), `subagent_thinking` `{text}` (kept out of the
+feed) and `subagent_chunk` as before. A call is counted and its title slot
+decided on its FIRST frame of any shape (`_admit_native_call`), and that frame
+is often the result: a child starts working at once, so its opening `tool_call`
+can predate the roster frame that admits the child to the tracker and is
+dropped, and kiro-cli's parser then emits the terminal `tool_call_update` as a
+result event followed by a refinement. Admitting on the result keeps the
+counter set ahead of every read of it (before this a result-first call reached
+the refinement's `info["tool_count"]` read with no counter and the `KeyError`
+aborted the parent's turn), lets the refinement that follows title the slot
+the admission opened, and counts the call once however many frames it sends; a
+result ends no redaction segment either way, being the host's frame about a
+call made before the chunks the redactors hold. Every string is redacted at that boundary
+and the input/output are bounded (`NATIVE_SUBAGENT_INPUT_CHARS`,
+`NATIVE_SUBAGENT_RESULT_CHARS`). The reasoning and text streams go through the
+child's own rolling redactors (`StreamRedactor`, one pair per child in the turn's
+`_native_streams_red`): a chunk's trailing credential-class run is withheld
+until a terminator, the child's own next output of another kind (text after
+reasoning, reasoning after text, a NEW tool call — its first frame), or the
+child's end (`_close_native_card_streams` runs before the done-time feed is
+built, so the text tail is part of the `result`), so a credential kiro-cli
+streams as two chunks never crosses the wire whole — the protection the
+parent's own `chat_thinking`/`chat_chunk` streams have. A tool's result frame
+or a title refinement of a call already announced is the host reporting on that
+call, not the child moving on, and ends no segment: flushing on one would hand
+the withheld head of a key split across the reasoning chunks either side of it
+to the wire bare, with a tail that is no credential on its own, and the two
+would reassemble on the card. Every path in this module that
+ends a child runs that flush: the roster-driven done, the staleness close, and
+the turn-end safety net `_native_subagent_close_all` (a user cancel, a turn
+failure or a missed terminal roster frame while the child is mid-stream — both
+call sites hand it the turn's output-length and stream maps, keyword-only and
+required), so a chunk the redactor was still holding reaches the card and its
+terminal `result` rather than being lost with the per-run state. The one path
+outside it, the dashboard's stop (`DELETE /api/spawn`, `run_control.py`), marks
+the record done itself and emits nothing further for the child, whose later
+frames are discarded; the turn-end close then sheds that record's title map and
+stream pair without a frame. Every store keyed on a child's call id — the
+turn's call-to-card attribution map (`_native_tc_card`), each card's call-title
+map and the record of outputs already printed (`_native_result_seen`) — is
+bounded by ONE admission and one constant: `_admit_native_call` admits a call
+into the attribution map on its first frame of any shape, refusing an over-long
+id (`NATIVE_SUBAGENT_CALL_ID_CHARS`) or a turn already holding
+`NATIVE_SUBAGENT_CALLS_MAX` calls, and the other two stores take rows only for
+admitted ids, so none can outgrow the map. An admitted call counts once however
+many frames it sends (kiro-cli sends two per call) and its later frames refine
+its slot; a refused call gets no row anywhere — it cannot be told from a new
+call, so each of its frames is counted in the record's `calls_refused` (as the
+roster counts its overflow) -- on EVERY record, a closed child's included: a
+child the roster already closed, or one announced with an empty task and done
+at once, still makes calls, and its refused call is a child's all the same --
+the card's `tool_count` stays where the bound left it, and the call still
+streams to its card. What a refused call loses: the
+`→ title` line over its output in the done-time `result` (the feed files it
+under `NATIVE_SUBAGENT_UNNAMED_FEED_LINE`, "→ Unnamed tool call", so the
+reader sees a name is missing rather than an output filed under nothing),
+duplicate-output suppression (each of its outputs prints), and attribution. The
+bound is said out loud once per snapshot: a running snapshot's `streaming` tail
+and a finished card's `result` each end with `NATIVE_SUBAGENT_CALLS_OVERFLOW_FEED_LINE`
+(defined in `state.py`, which builds the snapshots) when the record counts a
+refused call -- a truncated tail otherwise reads exactly like a run that never
+named those calls. Attribution past the bound fails CLOSED: on a wire that copies a child's
+calls onto the parent stream (an older kiro-cli; `_native_flat_copies_seen` is
+set when a flat `tool_call` was found in the map), a flat frame whose id holds
+no row cannot be told from a child's, so once any record in the turn counts a
+refused call the directive gate (`_native_owned`) refuses its session-bound
+directive as it would a child's -- the gate reads the count off every record,
+and a record leaves the tracker only when the turn ends
+(`_retain_terminal_native`), so the signal outlives the child -- and the
+not-applied note names the bound
+(`_NATIVE_NOT_APPLIED_PAST_BOUND`) rather than claiming the call was never a
+child's; kiro-cli 2.31 sends no such copies, so on it the parent's own
+directives are untouched. The maps are per-turn working state dropped at the
+child's end, so the terminal record `_retain_terminal_native` keeps for reconnect
+replay carries only the bounded fields the snapshot reads; nothing about the
+bound crosses the wire. (An earlier revision published a count on every frame
+that named the card, through ten sites and a per-locale plural key; the feed's
+two lines say the same thing where it is read.)
+Before this projection the activity arm only
+filled the toolCallId→card map for parent-tagged frames that this wire never
+sends, so a child that worked through tools for an hour left its card on
+"Starting…" over "Waiting for output…" until it finished. The map is filled for
+every tracked child's call BEFORE the projection is gated on the record being
+done: the flat tool_call/tool_result arms read it to refuse a child's
+session-bound directive (`test_native_subagent_directive_is_refused`), and a
+child the roster already closed — or one announced with an empty
+`initialQuery`/`sessionName`, which the sync records done at once and never
+cards — still makes calls; gating the map with the projection would hand such a
+child's parked directive to the parent.
+
+**The card's live transcript.** The client folds those frames into
+`SubagentActivity.transcript` (`store/chat/subagents.ts`): reasoning and answer
+chunks of one kind merge into a row, a tool frame opens a row keyed on its
+`tool_call_id` that its refinement and its `subagent_tool_result` land on, and a
+tool call between two text bursts splits them, so the rows read in the chat's
+order. A result for a call this browser never saw open first claims the id-less
+row a snapshot seeded for the call in flight (when that is still the newest
+call and unresolved) and otherwise opens an untitled row under the call's id —
+the result-first case above, or a call opened before this browser's reconnect —
+which the refinement that follows names; until then the row reads "Tool call".
+Every row carries a `seq`, one past the newest row's when it was created, and
+the component keys rows by it: past the cap every new row shifts the positions
+down by one, so a position key would carry an expanded row's open state onto
+the row that slid into its place. The `sseSubagentBatchUpdate` reducer reads
+only the fields the scale coalescer can forward (`tool`, `tool_call_id`,
+`tool_count`, the stall and retry fields): native cards' frames bypass the
+coalescer, so the field only they carry (`input`) never arrives on a batch
+frame. Reasoning streams token by token like the answer, so `subagent_thinking`
+rides the same rAF-coalesced buffer as `subagent_chunk` in the WS hook
+(`bufferSubagentChunk` with `kind: 'thinking'`; a kind change lands the buffered
+run first, and a tool frame flushes the buffer), reaching the store as one
+`sseSubagentBatchChunks` dispatch per flush rather than one per token. The list
+is capped at `SUBAGENT_TRANSCRIPT_CAP` (200 rows) with `transcriptOmitted`
+counting what fell off; it is client-side and live, so a reconnect restarts it
+from the snapshot's feed and latest tool (`seedTranscript`, above) and a card
+read back from disk has none. `pages/chat/SubagentTranscript.tsx` renders it
+inside the card — folded reasoning rows labelled Thinking while live and Thought
+process after, each folded row carrying a truncated first line of its reasoning
+beside the label (content, `aria-hidden`: several folded rows read alike, and
+the preview is what tells them apart without opening each; it goes when the row
+opens), tool rows that drop kiro-cli's `Running: ` prefix and open on
+their input and output with a running / completed / failed mark — a failure is
+a TERMINAL non-completed status (`failed`, `cancelled`, `canceled`, `refused`);
+a result frame can carry a non-terminal `pending` / `in_progress` from kiro-cli's
+content update for a call still running, and such a row stays live while the
+agent runs, wherever it sits in the list — and markdown
+answer text — in place of the single Output box while the card has rows. A
+failed row's colour follows the CARD: muted while the card runs (an ordinary
+non-zero exit the agent is handling — a reviewer's failing test) and still muted
+once the card has COMPLETED (the agent finished with it handled; "Complete" over
+red rows read as a contradiction), red only when the card ended in failure or
+was stopped before it could finish with it; the glyph is a circled X in every
+state, so the card's end changes the emphasis, not what the row says. A
+failed call's output is its diagnostics, so the opened row renders it through
+`ErrorNotice` (title "Tool call failed", the raw output as the scrolling mono
+message, the hand-off on under a scoped label — the card is a status panel
+holding no draft) rather than as a plain Output box, which a completed call
+keeps. A failure reported by status alone — kiro-cli's terminal frame can carry
+a failed status and no output — still opens on that surface, with "This call
+failed and returned no output." in place of the output it does not have: a
+failed row always has details, so the failure is never only a red glyph. The hand-off's label names where it goes — "Ask in a new chat about this
+failure" — because `ErrorNotice`'s hand-off opens a NEW chat with the error
+attached, and inside a card headed by a sub-agent "ask the agent" read as
+messaging that sub-agent. The reasoning, tool-row and Full-result disclosures are the shared `Btn`
+styled as text-link toggles, not raw buttons. The
+rows sit under a "Live activity" heading while the card can still grow and
+under "Activity" once it is finished, so a completed run never reads as still
+live. On a finished card the Output box comes back for the `result` below the
+rows, folded behind an `aria-expanded` "Full result" toggle: the rows already
+carry every tool output and the answer, and the done-time result repeats them
+under the calls' titles as the one block the parent received, so the box is
+named for what it holds rather than offered as a second "Output". The status
+label's "Starting…" is reserved for a running card nothing
+has been heard from: a transcript row, a `lastTool` or streamed text reads
+Running. Managed (`spawn_run`) children feed the same transcript through the
+`subagent_tool` and chunk frames they already emit.
 
 ```python
 spawn_sub_agents(agents=[

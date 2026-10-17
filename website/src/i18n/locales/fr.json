@@ -11383,7 +11383,6 @@
         "model_label": "Modèle : {{model}}",
         "model_downgraded": "Demandé {{requested}}, servi {{resolved}}",
         "model_effective": "Exécution sur {{model}} (le backend sélectionne le modèle)",
-        "tool_calls": "Appels d’outils",
         "tool_calls_not_listed_many": "{{count}} appels précédents non affichés",
         "tool_calls_not_listed_one": "{{count}} appel précédent non affiché",
         "tool_calls_not_listed_other": "{{count}} appels précédents non affichés",
@@ -11401,7 +11400,18 @@
         "artifacts_load_failed": "Impossible de charger les artefacts de cette session",
         "library_load_failed": "Impossible de charger la bibliothèque d’artefacts",
         "artifact_save_failed": "Impossible d’enregistrer l’artefact",
-        "workflow_runs_load_failed": "Impossible de charger les exécutions de workflow"
+        "workflow_runs_load_failed": "Impossible de charger les exécutions de workflow",
+        "live_activity": "Activité en direct",
+        "show_call_details": "Afficher l'entrée et la sortie de cet appel",
+        "full_result": "Résultat complet",
+        "tool_call_failed": "L’appel de l’outil a échoué",
+        "tool_call_failed_no_output": "Cet appel a échoué et n’a renvoyé aucune sortie.",
+        "ask_agent_about_failed_call": "Demander dans une nouvelle conversation à propos de cet échec",
+        "untitled_call": "Appel d’outil sans nom",
+        "hide_call_details": "Masquer l'entrée et la sortie de cet appel",
+        "transcript_steps_not_listed_one": "{{count}} étape précédente non affichée",
+        "transcript_steps_not_listed_many": "{{count}} étapes précédentes non affichées",
+        "transcript_steps_not_listed_other": "{{count}} étapes précédentes non affichées"
       },
       "assistantMessage": {
         "applied_to_tasks": "Appliqué aux tâches",

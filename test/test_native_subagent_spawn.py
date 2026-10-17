@@ -269,7 +269,7 @@ class TestNativeSubagentCloseAll:
             "s1": {"started": 0.0, "done": False, "agent": "w", "task": "t1"},
             "s2": {"started": 0.0, "done": True, "agent": "w", "task": "t2"},
         }
-        _native_subagent_close_all(state, slot, tracker)
+        _native_subagent_close_all(state, slot, tracker, card_output_len={}, streams={})
         dones = _ws_calls(state).get("subagent_done", [])
         # Only the still-open card (s1) gets a done.
         assert len(dones) == 1
@@ -281,7 +281,9 @@ class TestNativeSubagentCloseAll:
         slot = _make_slot()
         tracker = {"s1": {"started": 0.0, "done": False, "agent": "w", "task": "t1"}}
         card_output = {"native:s1": ["\u2192 read foo.py\n", "print('hi')\n"]}
-        _native_subagent_close_all(state, slot, tracker, card_output)
+        _native_subagent_close_all(
+            state, slot, tracker, card_output, card_output_len={}, streams={}
+        )
         result = _ws_calls(state)["subagent_done"][0]["result"]
         assert "read foo.py" in result
         assert "print('hi')" in result
@@ -290,7 +292,7 @@ class TestNativeSubagentCloseAll:
         state = _make_state()
         slot = _make_slot()
         tracker = {"s1": {"started": 0.0, "done": False, "agent": "w", "task": "t1"}}
-        _native_subagent_close_all(state, slot, tracker)
+        _native_subagent_close_all(state, slot, tracker, card_output_len={}, streams={})
         assert _ws_calls(state)["subagent_done"][0]["result"] == "(output in chat)"
 
 
@@ -461,7 +463,7 @@ class TestNativeCardRegistry:
         state = _make_state()
         state._native_cards = {"native:s1": {"slot": "slot-1", "session_id": "s1", "started": 0}}
         tracker = {"s1": {"started": 0.0, "done": False, "agent": "w", "task": "t"}}
-        _native_subagent_close_all(state, _make_slot(), tracker)
+        _native_subagent_close_all(state, _make_slot(), tracker, card_output_len={}, streams={})
         assert "native:s1" not in state._native_cards
 
 
