@@ -8872,7 +8872,6 @@
     },
     "startupVideoModal": {
       "close": "Fermer",
-      "feature_intro": "Présentation de la fonctionnalité",
       "got_it": "J'ai compris",
       "media_failed": "Impossible de charger la vidéo de la fonctionnalité",
       "share": "Partager",

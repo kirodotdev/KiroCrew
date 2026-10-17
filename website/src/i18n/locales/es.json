@@ -8872,7 +8872,6 @@
     },
     "startupVideoModal": {
       "close": "Cerrar",
-      "feature_intro": "Introducción a la función",
       "got_it": "Entendido",
       "media_failed": "No se pudo cargar el vídeo de la función",
       "share": "Compartir",
