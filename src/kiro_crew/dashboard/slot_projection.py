@@ -259,11 +259,17 @@ class SlotProjection:
         prompt_preview = ""
         last_conv_role = ""
         last_activity_ts = ""
+        # The newest non-notice, non-transient row of any kind: the timestamp of
+        # the most recent real activity regardless of role.  Tracked in the same
+        # loop so it is ready as soon as the early-exit fires.
+        last_non_notice_durable_ts = ""
         found_conv = False
         for message in reversed(rows):
             role = message.get("role")
             msg_meta = message.get("meta") or {}
             notice = is_system_notice(role, msg_meta)
+            if not last_non_notice_durable_ts and role not in transient_roles and not notice:
+                last_non_notice_durable_ts = message.get("ts") or ""
             if (
                 not last_activity_ts
                 and role in ("tool_call", "tool_result", "assistant")
@@ -292,6 +298,19 @@ class SlotProjection:
                         last_msg = redacted[:80] + "…" if len(redacted) > 80 else redacted
             if found_conv and last_msg and last_activity_ts:
                 break
+
+        # Normalize last_activity_ts to represent "when did this session last
+        # move": promote it to the newest non-notice, non-transient row of any
+        # role when that row is more recent.  One boundary write here retires
+        # per-consumer derivations; excluding notice and transient rows preserves
+        # the original field semantics (system reload cards do not count as
+        # user activity).  String comparison is safe within a session: all rows
+        # share one writer and therefore one timestamp format, so a later row
+        # is always the lexicographically greater string.
+        if last_non_notice_durable_ts and (
+            not last_activity_ts or last_non_notice_durable_ts > last_activity_ts
+        ):
+            last_activity_ts = last_non_notice_durable_ts
 
         slot_pending = any(not future.done() for future in slot._approval_futures.values())
         pending_approval = slot_pending or bool(coordinator_pending)

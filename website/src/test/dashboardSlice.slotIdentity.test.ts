@@ -95,8 +95,10 @@ describe('dashboard.slots referential stability', () => {
     const patched = reducer(loaded, touchSlotActivity({ key: 'b', ts, settled: true }))
     expect(patched.slots).not.toBe(loaded.slots)
 
+    // The backend normalizes last_activity_ts to the newest non-notice durable row,
+    // so after a settled prompt the SSE frame carries last_activity_ts = ts too.
     const confirmed = reducer(patched, sseSlots(frame(
-      mk('a'), mk('b', { last_ts: ts, last_turn_ts: ts }), mk('c'),
+      mk('a'), mk('b', { last_ts: ts, last_turn_ts: ts, last_activity_ts: ts }), mk('c'),
     )))
     expect(confirmed.slots).toBe(patched.slots)
   })

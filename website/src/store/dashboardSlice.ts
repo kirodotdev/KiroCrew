@@ -1014,8 +1014,19 @@ const dashboardSlice = createSlice({
       patchSlotRow(state, key, slot => {
         const t = Date.parse(ts)
         let moved = false
-        if (!slot.last_ts || Date.parse(slot.last_ts) <= t) { slot.last_ts = ts; moved = true }
+        const lastTsMoved = !slot.last_ts || Date.parse(slot.last_ts) <= t
+        if (lastTsMoved) { slot.last_ts = ts; moved = true }
         if (settled && (!slot.last_turn_ts || Date.parse(slot.last_turn_ts) <= t)) { slot.last_turn_ts = ts; moved = true }
+        // Advance last_activity_ts only for settled events (user-sent prompts):
+        // unsettled bumps are streamed tool calls on a running session, and
+        // advancing on every one would re-rank running sessions mid-turn in the
+        // session grid — the same problem that last_turn_ts avoids.
+        if (settled && lastTsMoved) {
+          const prevActivity = slot.last_activity_ts ? Date.parse(slot.last_activity_ts) : NaN
+          if (!slot.last_activity_ts || !Number.isFinite(prevActivity) || t > prevActivity) {
+            slot.last_activity_ts = ts
+          }
+        }
         // A bump both guards rejected changed nothing, so it is not a write and
         // must not outrank a reply: stamping it would withhold a server row on
         // the strength of a no-op.

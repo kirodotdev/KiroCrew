@@ -126,6 +126,69 @@ def test_last_activity_ts_from_tool_call():
     assert d["last_activity_ts"] == "t4"
 
 
+# ── last_activity_ts normalization (store boundary) ──
+# last_activity_ts is normalized to be the later of the assistant/tool row
+# timestamp and the newest row of any kind (last_ts). This retires per-consumer
+# max(last_activity_ts, last_ts) derivations: one store-boundary write is cheaper
+# and less error-prone than having each consumer re-derive the field.
+
+
+def test_last_activity_ts_advances_to_last_ts_when_user_prompt_is_newer():
+    # A user message AFTER the last assistant turn leaves last_activity_ts stuck
+    # at the assistant row on the raw scan; the normalizer must take last_ts.
+    # Two consumers disagreed on the pre-fix behavior: byRecentActivity sorted
+    # by last_activity_ts ("t1"), while slotRecency() correctly returned "t2".
+    s = _slot(
+        {"role": "assistant", "content": "done", "ts": "t1"},
+        {"role": "user", "content": "follow-up", "ts": "t2"},
+    )
+    d = s.to_dict()
+    assert d["last_ts"] == "t2"
+    assert d["last_activity_ts"] == "t2"  # normalized to last_ts, not stale "t1"
+
+
+def test_last_activity_ts_unchanged_when_assistant_is_already_newest():
+    # When the latest row is an assistant/tool row, last_activity_ts is already
+    # the correct value; the normalizer must leave it alone.
+    s = _slot(
+        {"role": "user", "content": "do it", "ts": "t1"},
+        {"role": "assistant", "content": "done", "ts": "t2"},
+    )
+    d = s.to_dict()
+    assert d["last_activity_ts"] == "t2"
+    assert d["last_ts"] == "t2"
+
+
+def test_last_activity_ts_takes_last_ts_when_no_assistant_row():
+    # A session where only user rows exist has last_activity_ts == "" on the raw
+    # scan; the normalizer promotes the latest non-notice durable row so the
+    # slot sorts correctly.
+    s = _slot(
+        {"role": "user", "content": "hello", "ts": "t1"},
+    )
+    d = s.to_dict()
+    assert d["last_ts"] == "t1"
+    assert d["last_activity_ts"] == "t1"
+
+
+def test_last_activity_ts_does_not_advance_for_notice_rows():
+    # System-notice rows (e.g. session-reload cards) are excluded from the
+    # non-notice durable scan, so they do not count as user activity and the
+    # session is not incorrectly ranked above ones a person actually used.
+    s = _slot(
+        {"role": "assistant", "content": "done", "ts": "t1"},
+        {
+            "role": "assistant",
+            "content": "Session reloaded.",
+            "meta": {"kind": "session_reload"},
+            "ts": "t2",
+        },
+    )
+    d = s.to_dict()
+    assert d["last_ts"] == "t2"  # last_ts includes the notice row
+    assert d["last_activity_ts"] == "t1"  # notice row does not advance this
+
+
 # ── last_turn_ts ──
 # The instant the session list is ORDERED by: the last prompt or turn
 # completion, never a mid-turn row. `last_ts` (newest row of any role) advances
