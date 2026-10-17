@@ -47,6 +47,13 @@ _DATA_IS_A_FILE = (
     "that path and cannot install beside it."
 )
 _DATA_IS_A_LINK = _DATA_IS_A_FILE.replace("is a file", "is a link")
+#: The update's refusal for an installed `.app_secret` that is a symlink (item 3
+#: the test pins the full sentence so a wording change is visible.
+_APP_SECRET_IS_A_LINK = (
+    "`.app_secret` in the app directory is a link; moving it aside for "
+    "the update places it outside its tree where a relative target does not "
+    "resolve and the secret is lost. Remove the link and retry the update."
+)
 
 
 def _folds_by_a_direct_look(directory: Path) -> bool:
@@ -2529,6 +2536,44 @@ class TestCopyAppTree:
         else:
             assert not os.path.lexists(secret)
         assert (dest / "ui" / "leak.js").read_text(encoding="utf-8") == "export const leak = 1;\n"
+
+    @requires_symlinks
+    def test_an_installed_app_secret_link_refuses_the_update_before_the_transaction(
+        self, tmp_path, app_home
+    ):
+        """An installed `.app_secret` that is a relative in-tree symlink (e.g.
+        `.app_secret -> state/secret`) cannot be preserved on update: the move
+        relocates the link to `.<name>-secret-tmp` beside the app directory where
+        the relative target does not resolve, so `tmp_secret.is_file()` fails
+        and the secret is silently lost.  Refused before the transaction opens:
+        the link, its target, the rest of the tree and the record are untouched."""
+        from kiro_crew.apps.manager import app_dir, update_app
+
+        src = _make_app_source(tmp_path)
+        assert install_app(src).ok
+        dest = app_dir("test-app")
+
+        # Replace the gateway-written regular file with a relative in-tree symlink.
+        (dest / "state").mkdir()
+        (dest / "state" / "secret").write_text("s3cret", encoding="utf-8")
+        secret = dest / ".app_secret"
+        secret.unlink(missing_ok=True)
+        secret.symlink_to(Path("state") / "secret")
+        assert secret.is_file()  # resolves through the link inside its tree
+        before = _read_installed("test-app")
+
+        v2 = _make_app_source(tmp_path / "v2", version="2.0.0")
+        result = update_app(v2)
+
+        assert not result.ok
+        assert result.error == _APP_SECRET_IS_A_LINK, result.error
+        assert os.path.islink(secret)
+        assert secret.read_text(encoding="utf-8") == "s3cret"  # still reachable
+        assert _read_installed("test-app") == before  # version 1.0.0, untouched
+        assert not (dest.parent / ".test-app-secret-tmp").exists()
+        # No retired tree: the transaction was never opened.
+        assert [p.name for p in dest.parent.iterdir()
+                if p.name.startswith(".test-app-update-old-")] == []
 
     def test_an_update_shipping_a_root_data_file_where_none_is_preserved_rolls_back(
         self, tmp_path, app_home
