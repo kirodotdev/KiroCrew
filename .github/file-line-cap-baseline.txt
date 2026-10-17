@@ -188,7 +188,6 @@
 2215 test/test_publish_sync.py
 2016 test/test_push_branch_gate.py
 2147 test/test_recovery_l1_chat_runner.py
-5775 test/test_remote_crew_chaining.py
 3193 test/test_sandbox_absent_ceiling_seal.py
 12647 test/test_security.py
 5509 test/test_sel.py
