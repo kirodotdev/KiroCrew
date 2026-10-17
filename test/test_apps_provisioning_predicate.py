@@ -4,8 +4,8 @@
 ``requirements.txt`` out of process?": the module-style entry-point test, the
 stdio-server test, and their union. Two provisioners (``backend.py`` at spawn,
 ``bridges.py`` at registration) and the install-time desktop gate in
-``registry_pipeline/install.py`` all decide from those same names. The cross-pin tests below fail
-the moment any of the three re-spells a condition inline, because a copy that
+``registry_pipeline/install_desktop_gate.py`` all decide from those same names. The cross-pin
+tests below fail the moment any of the three re-spells a condition inline, because a copy that
 drifts is exactly how a gate ends up waiving what the runtime does not provision.
 """
 

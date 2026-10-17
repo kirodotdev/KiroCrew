@@ -39,7 +39,6 @@
 2212 src/kiro_crew/apps/job_sdk.py
 4665 src/kiro_crew/apps/manager.py
 3455 src/kiro_crew/apps/manifest.py
-2721 src/kiro_crew/apps/registry_pipeline/install.py
 5184 src/kiro_crew/apps/routes.py
 2093 src/kiro_crew/autonudge.py
 2317 src/kiro_crew/browser_cli/install.py
