@@ -89,6 +89,7 @@ __all__ = [
     "maintenance_executor",
     "subprocess_executor",
     "cron_executor",
+    "cron_queue_depth",
     "discovery_executor",
     "embed_executor",
     "image_executor",
@@ -550,6 +551,16 @@ def cron_executor() -> ThreadPoolExecutor:
                 )
                 atexit.register(shutdown_maintenance_executor)
     return _cron_pool
+
+
+def cron_queue_depth() -> int:
+    pool = _cron_pool
+    if pool is None:
+        return 0
+    try:
+        return max(0, int(pool._work_queue.qsize()))
+    except (AttributeError, NotImplementedError, TypeError, ValueError):
+        return -1
 
 
 def discovery_executor() -> ThreadPoolExecutor:

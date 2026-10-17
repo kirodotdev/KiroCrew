@@ -67,7 +67,7 @@ from .policy import (
     PolicyParams,
     params_from_config,
 )
-from .signals import Sample, SpawnGateStats
+from .signals import HealthThresholds, Sample, SpawnGateStats, health_telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +156,7 @@ class HostSample:
     #: ``controller_sample_secs`` a few hundred milliseconds of it is a
     #: double-digit-percent error published as a measured value.
     cpu_clock: float = -1.0
+    observed_at: float = -1.0
 
 
 def probe_host() -> HostSample:
@@ -165,6 +166,7 @@ def probe_host() -> HostSample:
     its platform equivalent) stays off the event loop.
     """
     out = HostSample()
+    out.observed_at = time.monotonic()
     try:
         from kiro_crew.resource_status import _read_available_gb
 
@@ -244,6 +246,8 @@ class AdaptiveController:
         set_gate_capacity: Optional[GateSetter] = None,
         read_gate_stats: Optional[StatsReader] = None,
         read_runner_lane: Optional[LaneReader] = None,
+        read_active_sessions: Optional[Callable[[], int]] = None,
+        read_cron_queue: Optional[Callable[[], int]] = None,
         host_probe: Optional[Callable[[], HostSample]] = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
@@ -256,6 +260,8 @@ class AdaptiveController:
         self._set_gate_capacity = set_gate_capacity
         self._read_gate_stats = read_gate_stats
         self._read_runner_lane = read_runner_lane
+        self._read_active_sessions = read_active_sessions
+        self._read_cron_queue = read_cron_queue
         self._host_probe = host_probe
         self._clock = clock
         self._sleep = sleep
@@ -448,7 +454,7 @@ class AdaptiveController:
 
     # -- one cycle -----------------------------------------------------------
 
-    def _emit_process_histograms(self, host: HostSample) -> None:
+    def _emit_process_histograms(self, host: HostSample) -> float | None:
         """Publish this tick's resident-set and CPU-share distributions.
 
         Recorded from this loop rather than from the instrument module that owns
@@ -487,9 +493,9 @@ class AdaptiveController:
             self._prev_cpu_seconds = host.cpu_seconds
             self._prev_cpu_clock = host.cpu_clock
         if prev_seconds <= 0.0 or prev_clock < 0.0:
-            return  # first measured tick of this process: no predecessor to difference
+            return None  # first measured tick of this process: no predecessor to difference
         if host.cpu_clock < 0.0:
-            return  # a total with no instant of its own is not a measurement
+            return None  # a total with no instant of its own is not a measurement
         if self._cores is None:
             self._cores = read_logical_cores()
         share = cpu_utilization(
@@ -499,13 +505,14 @@ class AdaptiveController:
             cores=self._cores,
         )
         if share is None:
-            return  # a gap in the series, never a fake zero
+            return None  # a gap in the series, never a fake zero
         emit_histogram(
             PROCESS_CPU_UTILIZATION,
             share,
             {"process": _PROCESS},
             unit=NON_MS_HISTOGRAM_UNITS[PROCESS_CPU_UTILIZATION],
         )
+        return share
 
     async def tick(self, *, loop_lag_ms: float = 0.0) -> Decision:
         """Sample, decide, apply. Public so tests drive one cycle at a time."""
@@ -516,7 +523,10 @@ class AdaptiveController:
             host = await asyncio.to_thread(probe_host)
         else:
             host = await asyncio.to_thread(self._host_probe)
-        self._emit_process_histograms(host)
+        share = self._emit_process_histograms(host)
+        cpu_pressure = -1.0
+        if share is not None and self._cores:
+            cpu_pressure = share * self._cores
         gate_snap: dict[str, Any] = {}
         budget_snap: dict[str, Any] = {}
         if self._read_gate_stats is not None:
@@ -530,7 +540,11 @@ class AdaptiveController:
                 gate_snap = admission.get("spawn_gate") or {}
                 budget_snap = admission.get("host_budget") or {}
         sample = self.build_sample(
-            loop_lag_ms=loop_lag_ms, host=host, gate_snap=gate_snap, budget_snap=budget_snap
+            loop_lag_ms=loop_lag_ms,
+            host=host,
+            gate_snap=gate_snap,
+            budget_snap=budget_snap,
+            cpu_pressure=cpu_pressure,
         )
         return await self.step(sample)
 
@@ -541,6 +555,7 @@ class AdaptiveController:
         host: HostSample,
         gate_snap: dict[str, Any],
         budget_snap: dict[str, Any],
+        cpu_pressure: float = -1.0,
     ) -> Sample:
         now = self._clock()
         progressing = self._ingest_manager_runs(now)
@@ -582,6 +597,18 @@ class AdaptiveController:
         mgr_running = int(getattr(self._manager, "running_count", 0) or 0)
         mgr_queued = len(getattr(self._manager, "_queue", ()) or ())
         healthy = max(0, mgr_running - self._stalled_running())
+        active_sessions = -1
+        if self._read_active_sessions is not None:
+            try:
+                active_sessions = int(self._read_active_sessions())
+            except Exception:
+                active_sessions = -1
+        cron_queue_depth = -1
+        if self._read_cron_queue is not None:
+            try:
+                cron_queue_depth = int(self._read_cron_queue())
+            except Exception:
+                cron_queue_depth = -1
 
         # The runner lane is a second admission point on the same effective
         # cap: its occupancy is demand and its committed completions earn an
@@ -635,6 +662,10 @@ class AdaptiveController:
             progressing=progressing,
             saturating=saturating,
             saturating_demand=saturating_demand,
+            active_sessions=active_sessions,
+            cron_queue_depth=cron_queue_depth,
+            cpu_pressure=cpu_pressure,
+            observed_at=host.observed_at,
         )
         self._samples.append(sample)
         return sample
@@ -845,6 +876,7 @@ class AdaptiveController:
 
     def state(self) -> dict[str, Any]:
         """Structured state for ``resource_status`` and the dashboard."""
+        now = self._clock()
         last = self._samples[-1] if self._samples else None
         snapshot = self._policy.snapshot()
         cut = snapshot.get("last_cut")
@@ -852,9 +884,13 @@ class AdaptiveController:
             # The policy stamps a cut with the SAMPLE clock (this controller's
             # ``_clock``, monotonic); a reader outside the process needs an age.
             try:
-                cut["age_secs"] = round(max(0.0, self._clock() - float(cut["t"])), 1)
+                cut["age_secs"] = round(max(0.0, now - float(cut["t"])), 1)
             except (KeyError, TypeError, ValueError):
                 pass
+        health = None
+        thresholds = HealthThresholds.for_cadence(self._sample_secs)
+        if last is not None:
+            health = health_telemetry(last, thresholds, now=now)
         return {
             "enabled": self._enabled,
             "sample_secs": self._sample_secs,
@@ -864,11 +900,27 @@ class AdaptiveController:
             "applied_gate_cap": self._applied_gate,
             "gate_pending": self._gate_pending,
             "last_error": self._last_error,
+            "health": (
+                {
+                    "signals": sorted(health.signals),
+                    "stale": health.stale,
+                    "age_secs": round(health.age_secs, 1),
+                    "max_age_secs": round(thresholds.sample_max_age_secs, 1),
+                    "cron_collision_suspected": health.cron_collision_suspected,
+                    "renderer_suspected": health.renderer_suspected,
+                }
+                if health is not None
+                else None
+            ),
             "last_sample": (
                 {
                     "loop_lag_ms": round(last.loop_lag_ms, 1),
                     "free_mem_mb": round(last.free_mem_mb, 1),
                     "rss_mb": round(last.rss_mb, 1),
+                    "active_sessions": last.active_sessions,
+                    "cron_queue_depth": last.cron_queue_depth,
+                    "cpu_pressure": round(last.cpu_pressure, 3),
+                    "sample_age_secs": round(health.age_secs, 1) if health is not None else 0.0,
                     "fd_count": last.fd_count,
                     "running": last.running,
                     "queued": last.queued,

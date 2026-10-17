@@ -411,6 +411,7 @@ class TestTick:
             "fd_limit",
             "cpu_seconds",
             "cpu_clock",
+            "observed_at",
         }
 
     @pytest.mark.asyncio

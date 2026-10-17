@@ -683,6 +683,7 @@ def adaptive_summary_lines(state: dict | None = None) -> list[str]:
             lines.append(
                 f"  Provider throttling (scoped, not a host signal): {', '.join(throttled)}"
             )
+    lines.extend(_health_lines(state.get("health"), state.get("last_sample")))
     recent = state.get("recent_decisions")
     if isinstance(recent, list) and recent:
         lines.append("  Recent cap changes (newest last):")
@@ -705,6 +706,43 @@ def adaptive_summary_lines(state: dict | None = None) -> list[str]:
     if counts:
         lines.append("  Decisions: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
     return lines
+
+
+def _health_reading(value: object, digits: int | None = None) -> str:
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+        return "-"
+    return f"{value:.{digits}f}" if digits is not None else f"{value}"
+
+
+def _health_lines(health: object, last_sample: object) -> list[str]:
+    if not isinstance(health, dict):
+        return []
+    sample = last_sample if isinstance(last_sample, dict) else {}
+    age = health.get("age_secs")
+    age_text = f"{age:.0f}s old" if isinstance(age, (int, float)) else "age unknown"
+    if health.get("stale"):
+        limit = health.get("max_age_secs")
+        limit_text = f", limit {limit:.0f}s" if isinstance(limit, (int, float)) else ""
+        return [f"  Health (advisory): sample stale ({age_text}{limit_text}); readings withheld"]
+    readings = (
+        f"sessions {_health_reading(sample.get('active_sessions'))}   "
+        f"cron queue {_health_reading(sample.get('cron_queue_depth'))}   "
+        f"cpu/core {_health_reading(sample.get('cpu_pressure'), 2)}   "
+        f"loop lag {_health_reading(sample.get('loop_lag_ms'), 0)}ms"
+    )
+    signals = ",".join(health.get("signals") or []) or "none"
+    suspected = [
+        name
+        for flag, name in (
+            (health.get("cron_collision_suspected"), "cron collision"),
+            (health.get("renderer_suspected"), "renderer"),
+        )
+        if flag
+    ]
+    return [
+        f"  Health (advisory, sample {age_text}): {readings}",
+        f"  Health signals: {signals}; suspected: {', '.join(suspected) or 'none'}",
+    ]
 
 
 def _resolve_thresholds(cfg: object | None) -> tuple[float, float]:
