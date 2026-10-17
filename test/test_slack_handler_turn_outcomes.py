@@ -1278,3 +1278,90 @@ class TestStreamingLoopPresentationGuards:
         assert "Something went wrong" not in all_text, slack.actions
         assert "The answer is 42" in all_text, slack.actions
         assert sessions.record_success_calls == 1
+
+
+class TestWorkingIndicatorCleanup:
+    """Working indicators cleared on every turn exit, including CancelledError."""
+
+    class _CancellingProvider(FakeProvider):
+        """Yields one text chunk then raises CancelledError to simulate mid-stream cancel."""
+
+        async def stream(self, message, timeout=120.0):
+            yield LLMEvent(kind="text_chunk", text="partial")
+            raise asyncio.CancelledError()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_turn_clears_thread_status(self):
+        """A CancelledError mid-stream clears the native thread status."""
+        slack = MockSlackClient()
+        sessions = FakeSessionManager(self._CancellingProvider())
+        with pytest.raises(asyncio.CancelledError):
+            await handle_message(slack, sessions, "C1", "hi", None, "msg1", "U1")
+        # Let the background cleanup task run.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        status_clears = [
+            a for a in slack.actions if a[0] == "set_thread_status" and a[1]["status"] == ""
+        ]
+        assert (
+            status_clears
+        ), f"Thread status was never cleared after CancelledError; actions={slack.actions}"
+
+    @pytest.mark.asyncio
+    async def test_cancelled_turn_deletes_working_block(self):
+        """A CancelledError mid-stream deletes the inline Stop block."""
+        slack = MockSlackClient()
+        sessions = FakeSessionManager(self._CancellingProvider())
+        # thread_ts is required for the Stop block to be posted.
+        with pytest.raises(asyncio.CancelledError):
+            await handle_message(slack, sessions, "C1", "hi", "thread1", "msg1", "U1")
+        # Let the background cleanup task run.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        # The Stop block is posted via post_blocks (action tag "blocks").
+        block_posts = [a for a in slack.actions if a[0] == "blocks"]
+        assert block_posts, "Expected at least one blocks post (the Stop block)"
+        working_ts = block_posts[0][1]["ts"]
+        deletes = [a for a in slack.actions if a[0] == "delete" and a[1]["ts"] == working_ts]
+        assert deletes, (
+            f"Working block {working_ts!r} was never deleted after CancelledError; "
+            f"actions={slack.actions}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_cancelled_turn_propagates_cancelled_error(self):
+        """CancelledError propagates out of handle_message (not swallowed)."""
+        slack = MockSlackClient()
+        sessions = FakeSessionManager(self._CancellingProvider())
+        with pytest.raises(asyncio.CancelledError):
+            await handle_message(slack, sessions, "C1", "hi", None, "msg1", "U1")
+
+    @pytest.mark.asyncio
+    async def test_normal_turn_end_still_clears_thread_status(self):
+        """Regression: a successful (non-cancelled) turn still clears the status."""
+        slack = MockSlackClient()
+        sessions = FakeSessionManager(FakeProvider())
+        await handle_message(slack, sessions, "C1", "hi", None, "msg1", "U1")
+        status_clears = [
+            a for a in slack.actions if a[0] == "set_thread_status" and a[1]["status"] == ""
+        ]
+        assert status_clears, f"Thread status not cleared on normal exit; actions={slack.actions}"
+
+    @pytest.mark.asyncio
+    async def test_slack_error_during_cleanup_does_not_swallow_cancellation(self):
+        """A Slack API failure inside cleanup does not suppress CancelledError."""
+
+        class _ErroringSlack(MockSlackClient):
+            async def set_thread_status(self, channel, thread_ts, status):
+                if status == "":
+                    raise RuntimeError("Slack API down")
+                await super().set_thread_status(channel, thread_ts, status)
+
+        slack = _ErroringSlack()
+        sessions = FakeSessionManager(self._CancellingProvider())
+        # CancelledError must still propagate even when the cleanup call raises.
+        with pytest.raises(asyncio.CancelledError):
+            await handle_message(slack, sessions, "C1", "hi", None, "msg1", "U1")
+        # Drain the event loop so the background task that raised does not leak.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)

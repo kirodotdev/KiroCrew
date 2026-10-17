@@ -1606,6 +1606,27 @@ async def handle_message(
             # there); a waiter admitted now finds an idle session.
             sessions.close_replay_gap(session_key)
 
+    async def _clear_working_indicators() -> None:
+        """Best-effort cleanup of the two working indicators on every turn exit.
+
+        Clears the native …is working thread-status label and the inline Stop
+        block.  Each Slack call is individually guarded; a failure on one does
+        not skip the other.  Called from the ``CancelledError`` handler so both
+        indicators are torn down even when the turn coroutine is cancelled
+        mid-stream (``asyncio.CancelledError`` is a ``BaseException`` and bypasses
+        the ``except Exception`` arms where the normal delivery-region clear lives).
+        """
+        try:
+            await slack.set_thread_status(channel, reply_ts, "")
+        except Exception:
+            logger.debug("Failed to clear thread status during cleanup", exc_info=True)
+        _ts = _working_ts
+        if _ts:
+            try:
+                await slack.delete_message(channel, _ts)
+            except Exception:
+                logger.debug("Failed to delete working block during cleanup", exc_info=True)
+
     try:
         task.start()
         while True:
@@ -2487,6 +2508,18 @@ async def handle_message(
         answer.accumulated = redact_local_paths(redact(str(exc)))[0][:1000]
         task.fail("memory_unavailable")
         Stats().inc_message_failed()
+    except asyncio.CancelledError:
+        # CancelledError is a BaseException, not an Exception — none of the
+        # specific handlers above catch it.  The delivery region below the outer
+        # ``finally`` is never reached, so both working indicators (the native
+        # "…is working" thread status and the inline Stop block) stay stuck after
+        # a mid-stream cancellation (warm-pool reclaim, gateway shutdown, or a
+        # Stop enforced by task cancellation).  Schedule the teardown as a
+        # strongly-referenced background task so it completes even after this
+        # coroutine exits; no ``await`` here keeps CancelledError re-raising
+        # cleanly through the ``finally``.
+        track_background_task(asyncio.create_task(_clear_working_indicators()))
+        raise
     except Exception:
         _had_error = True
         logger.exception("Unexpected error handling message")
