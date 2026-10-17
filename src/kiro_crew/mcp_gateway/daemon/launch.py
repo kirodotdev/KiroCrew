@@ -27,7 +27,7 @@ from kiro_crew.mcp_gateway.hashing import hash_command, hash_effective_env, non_
 from kiro_crew.mcp_gateway.manager import _scrub_sensitive_env, is_credential_env_key
 from kiro_crew.mcp_gateway.pool import PoolKey
 from kiro_crew.mcp_gateway.rewriter import env_sidecar_dir, env_sidecar_name, resolve_overlay_dir
-from kiro_crew.sandbox import _PYTHON_ENV_PREFIXES
+from kiro_crew.sandbox import without_python_env
 
 if TYPE_CHECKING:
     from kiro_crew.mcp_gateway import gatewayd as facade
@@ -518,14 +518,12 @@ def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dic
     # launcher-injection namespace is gone. Third-party backends never receive
     # that token and keep settings outside the four Python interpreter roots
     # that can make them load Kiro Crew's packages instead of their own.
-    denied_env_prefixes = (
-        _SPEC_ENV_DENIED_PREFIXES
-        if pool_key.server_name in CONTROL_PLANE_BACKENDS
-        else tuple(_PYTHON_ENV_PREFIXES)
-    )
-    for key in tuple(env):
-        if any(key.upper().startswith(prefix) for prefix in denied_env_prefixes):
-            env.pop(key, None)
+    if pool_key.server_name in CONTROL_PLANE_BACKENDS:
+        for key in tuple(env):
+            if any(key.upper().startswith(prefix) for prefix in _SPEC_ENV_DENIED_PREFIXES):
+                env.pop(key, None)
+    else:
+        env = without_python_env(env)
     # No KIROCREW_CHANNEL_ID is exported into the backend env. Copying it from
     # PoolKey.channel_id would only make sense while a backend was owned by one
     # channel. A pooled backend serves several channels, so a

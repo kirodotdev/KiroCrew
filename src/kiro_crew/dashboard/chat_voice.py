@@ -33,7 +33,7 @@ from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.piper_runtime import PiperRuntime
-from kiro_crew.sandbox import _PYTHON_ENV_PREFIXES, SandboxUnavailableError
+from kiro_crew.sandbox import SandboxUnavailableError, without_python_env
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.slack.handler import _vc
 from kiro_crew.voice_reply import (
@@ -770,11 +770,7 @@ async def api_voice_voices(request: web.Request) -> web.Response:
     try:
         # A Python-based `aws` (aws-cli v1) must not import the gateway's own
         # interpreter packages, so the launcher's Python settings stay behind.
-        env = {
-            key: value
-            for key, value in os.environ.items()
-            if not any(key.startswith(prefix) for prefix in _PYTHON_ENV_PREFIXES)
-        }
+        env = without_python_env()
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env
         )

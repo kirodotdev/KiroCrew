@@ -1548,4 +1548,4 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.config.loader import config_path, read_config_text  # noqa: F401
     from kiro_crew.hooks import validate_file_path  # noqa: F401
     from kiro_crew.notifications.bus import NotificationPayload  # noqa: F401
-    from kiro_crew.sandbox import _PYTHON_ENV_PREFIXES  # noqa: F401
+    from kiro_crew.sandbox import without_python_env  # noqa: F401
