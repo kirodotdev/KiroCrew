@@ -3278,6 +3278,11 @@
       "saving": "Saving…",
       "tap_to_comment": "Tap to write a comment…"
     },
+    "lessonSaved": {
+      "saved": "Lesson saved: {{rule}}",
+      "updated": "Lesson updated: {{rule}}",
+      "review": "Review lessons"
+    },
     "selfChange": {
       "changed_display_name": "{{name}} changed its name",
       "changed_description": "{{name}} updated its description",

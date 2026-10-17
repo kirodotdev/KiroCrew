@@ -8573,6 +8573,11 @@
       "quote": "Citer",
       "quote_hint": "Cite la sélection dans le composeur de cette discussion — ta réponse part dans la discussion principale"
     },
+    "lessonSaved": {
+      "saved": "Leçon enregistrée\u202f: {{rule}}",
+      "updated": "Leçon mise à jour\u202f: {{rule}}",
+      "review": "Voir les leçons"
+    },
     "selfChange": {
       "changed_display_name": "{{name}} a changé de nom",
       "changed_description": "{{name}} a mis à jour sa description",

@@ -8573,6 +8573,11 @@
       "quote": "Citar",
       "quote_hint": "Cita a seleção no compositor desta conversa: sua resposta vai para o chat principal"
     },
+    "lessonSaved": {
+      "saved": "Lição salva: {{rule}}",
+      "updated": "Lição atualizada: {{rule}}",
+      "review": "Revisar lições"
+    },
     "selfChange": {
       "changed_display_name": "{{name}} mudou de nome",
       "changed_description": "{{name}} atualizou a descrição",
