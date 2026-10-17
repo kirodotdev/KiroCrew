@@ -1793,7 +1793,7 @@ async def api_member_fresh_start(request: web.Request) -> web.Response:
         or slot.agent != binding.get("member")
         or getattr(slot, "executor", "") == "remote"
     ):
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        return ch.slot_not_found()
     name = slot.key
     key = effective_session_key(slot)
     from kiro_crew.dashboard.warm_task_brief import cancel_warm_task_brief

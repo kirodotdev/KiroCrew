@@ -29,6 +29,7 @@ from kiro_crew.dashboard.handlers.source_providers import (
     api_pull_request_unresolve,
 )
 from kiro_crew.dashboard.handlers.worktree import api_worktree_create
+from kiro_crew.dashboard.slot_ownership import slot_not_found
 
 
 async def api_dashboard_card(request: web.Request) -> web.Response:
@@ -39,7 +40,7 @@ async def api_dashboard_card(request: web.Request) -> web.Response:
     state = request.app["state"]
     slot = state._slots.get(request.match_info["slot"])
     if slot is None:
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        return slot_not_found()
     lifecycle = getattr(state, "_dynamic_cards", None)
     if lifecycle is None:
         return web.json_response(

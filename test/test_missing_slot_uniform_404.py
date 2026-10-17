@@ -18,6 +18,7 @@ from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew.dashboard import chat_folders, chat_slack
 from kiro_crew.dashboard.handlers import side
+from kiro_crew.dashboard.routes import chat as routes_chat
 from kiro_crew.dashboard.slot_ownership import slot_not_found
 
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
@@ -48,4 +49,15 @@ async def test_an_unknown_slot_gets_the_shared_not_found(
     handler: Handler, method: str, path: str
 ) -> None:
     resp = await handler(_request(method, path))
+    assert _shape(resp) == _shape(slot_not_found())
+
+
+@pytest.mark.asyncio
+async def test_the_owner_card_read_gets_the_shared_not_found() -> None:
+    # The card read refuses anyone but the dashboard owner before it looks
+    # the slot up, so only the owner's request reaches the lookup.
+    request = _request("GET", "/api/chat/slots/nope/dashboard-card")
+    request["app"] = ""
+    request["user"] = "local-app"
+    resp = await routes_chat.api_dashboard_card(request)
     assert _shape(resp) == _shape(slot_not_found())

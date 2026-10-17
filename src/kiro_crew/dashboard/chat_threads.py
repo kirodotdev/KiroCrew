@@ -40,7 +40,7 @@ from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.request_priority import owner_start_priority
 from kiro_crew.dashboard.side_readonly_spec import ReadOnlySpecError, publish_readonly_spec
-from kiro_crew.dashboard.slot_ownership import deny_app_slot_access
+from kiro_crew.dashboard.slot_ownership import deny_app_slot_access, slot_not_found
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.dashboard.ws import broadcast_thread_reply
 from kiro_crew.history import (
@@ -422,7 +422,7 @@ def _feature_off() -> web.Response:
     # The same shape the app-isolation refusal answers with, so a caller cannot
     # tell "threads are off" from "no such slot": the feature's presence is not
     # enumerable.
-    return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    return slot_not_found()
 
 
 def _resolve_slot(
@@ -435,7 +435,7 @@ def _resolve_slot(
         )
     slot = state.get_slot(slot_key)
     if slot is None:
-        return None, web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        return None, slot_not_found()
     denied = _deny_foreign_app(request, slot, operation)
     if denied is not None:
         return None, denied
