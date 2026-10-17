@@ -467,7 +467,7 @@ Five tools ship, all mounted on one opt-in MCP server, `kirocrew-work`: `work_br
 
 Caller: worker. Input schema: `{}`. No arguments, following `session_ledger_read` and `issue_radar_crew_read`.
 
-**As implemented (Phase 2, [#9152](https://github.com/kirodotdev/KiroCrew/pull/9152)):** returns the item's `item_id`, `title`, `acceptance`, `round`, the conductor's latest `decision`, and the worker's own last `status`/`summary` — `read_work_brief` in [`src/kiro_crew/work_ledger.py`](../../src/kiro_crew/work_ledger.py) composes exactly those seven keys, and the route re-checks channel-mirror containment *after* its thread hop, because a brief carries a private dispatch's acceptance bar.
+**As implemented (Phase 2, [#9152](https://github.com/kirodotdev/KiroCrew/pull/9152)):** returns the item's `item_id`, `title`, `acceptance`, `round`, the conductor's latest `decision`, and the worker's own last `status`/`summary` — `read_work_brief` in [`src/kiro_crew/work_ledger_writes.py`](../../src/kiro_crew/work_ledger_writes.py) composes exactly those seven keys, and the route re-checks channel-mirror containment *after* its thread hop, because a brief carries a private dispatch's acceptance bar.
 
 **Phase 3b adds `siblings`**, a list over the same conductor's other **open** items:
 
@@ -879,7 +879,7 @@ Two mechanics are worth stating outright, because both are easy to get wrong and
 
 **An omitted `agent` inherits the CALLER's agent, not the global default.** `create_session` in [`src/kiro_crew/dashboard/session_control.py`](../../src/kiro_crew/dashboard/session_control.py) falls back to the caller slot's own agent, and the comment above that fallback gives the reason: the caller is already running in this workspace, so its agent is the one bound here, and dropping to the global default would put the child on another workspace's memory store the moment that default is bound elsewhere. For a conductor, an omitted `agent` therefore produces a *second conductor* — which has no `fs_write` and cannot do the work. That is what `goal-conductor/SKILL.md` warns about, and it is why this design makes the value explicit per item instead of leaning on any default.
 
-`session_create`'s own MCP parameter description in [`src/kiro_crew/mcp_dashboard.py`](../../src/kiro_crew/mcp_dashboard.py) says the agent may be omitted "to use the default agent", which is wrong about the one mechanism a conductor most depends on. Phase 2 corrects it.
+`session_create`'s own MCP parameter description in [`src/kiro_crew/mcp_dashboard_session_tools.py`](../../src/kiro_crew/mcp_dashboard_session_tools.py) says the agent may be omitted "to use the default agent", which is wrong about the one mechanism a conductor most depends on. Phase 2 corrects it.
 
 ### Scope: conductors outside `kirocrew-conductor`
 
@@ -916,8 +916,8 @@ the per-quiet-tick turn as the accepted cost rather than as a blocker.
 
 ### Phase 1 — the store, with no tools (done, [#8855](https://github.com/kirodotdev/KiroCrew/pull/8855))
 
-As implemented, [`src/kiro_crew/work_ledger.py`](../../src/kiro_crew/work_ledger.py)
-carries the record dataclasses, the five vocabularies as `frozenset` constants, every cap
+As implemented, [`src/kiro_crew/work_ledger.py`](../../src/kiro_crew/work_ledger.py) and its `work_ledger_*` owners
+carry the record dataclasses, the five vocabularies as `frozenset` constants, every cap
 as a module constant, path resolution, the lock helpers, the derived list and derived
 flags, content-addressed event ids with merge-on-read dedupe, and the depth cap. Two
 details differ from what this section proposed and both are the design catching up with
@@ -951,7 +951,7 @@ audit on every branch, and the channel-agent re-check after the read. `agent.py`
 the `kirocrew-work` opt-in entry, `_install_worker_agent`, and — originally — the two
 conductor mounts that Phase 2.5 then retracted.
 
-Scope: `work_brief`, `work_report`, `work_ledger_read`, `work_ledger_record`; their input schemas in the validation module; the dashboard routes; strict identity resolution and dispatch by resolved caller; the binding file; SEL audit; the `kirocrew-work` opt-in server in `_MANAGED_MCP_SERVERS`; the `kirocrew-worker` agent and its prompt constant; the conductor and pipeline-conductor mounts and per-tool grants; the channel-agent block extended to cover `kirocrew-work`; and the corrected `agent` parameter description in `mcp_dashboard.py`.
+Scope: `work_brief`, `work_report`, `work_ledger_read`, `work_ledger_record`; their input schemas in the validation module; the dashboard routes; strict identity resolution and dispatch by resolved caller; the binding file; SEL audit; the `kirocrew-work` opt-in server in `_MANAGED_MCP_SERVERS`; the `kirocrew-worker` agent and its prompt constant; the conductor and pipeline-conductor mounts and per-tool grants; the channel-agent block extended to cover `kirocrew-work`; and the corrected `agent` parameter description in `mcp_dashboard_session_tools.py`.
 
 Exit criteria:
 - A worker's `work_report` reaches its own item and no other, asserted against a two-conductor two-worker fixture.
@@ -965,7 +965,7 @@ Exit criteria:
 - A default-agent spec carries neither a `kirocrew-work` entry nor an `@kirocrew-work` reference, asserted on the output of both loops that write specs.
 - `kirocrew-work` carries no `autoApprove` key, asserted so it cannot be added later without a failing test.
 - Each of the four caller states in the dispatch table resolves as tabulated, asserted against both tool halves.
-- `mcp_dashboard.py`'s `agent` parameter description states the caller-inheritance rule, asserted against the string so it cannot silently revert.
+- `mcp_dashboard_session_tools.py`'s `agent` parameter description states the caller-inheritance rule, asserted against the string so it cannot silently revert.
 - `<data_home>/work-ledger/**` is on the sensitive-path floor and the sandbox mask (§Security considerations, "A worker edits the ledger files directly"), asserted two ways: by spelling under both crew data-home prefixes, and end to end through `hooks.on_tool_call` against the real item, binding and conductor files of a dispatched worker under a `KIROCREW_HOME` override — an edit and a read are both refused, and the worker's route and the conductor's store action still write the very file the tool was refused. Deferred from the Phase 1 design review as [#9083](https://github.com/kirodotdev/KiroCrew/issues/9083); the fence itself shipped in #9152.
 
 ### Phase 2.5 — isolation (done, [#9277](https://github.com/kirodotdev/KiroCrew/pull/9277))
@@ -1015,7 +1015,7 @@ Exit criteria:
 
 ### Phase 3b — visibility (proposed — not implemented)
 
-Scope: the `siblings` list on `work_brief`, composed in `work_ledger.py` beside
+Scope: the `siblings` list on `work_brief`, composed in `work_ledger_writes.py` beside
 `read_work_brief` so the mask lives with the store rather than in the route.
 
 Exit criteria:
@@ -1229,7 +1229,7 @@ recording each dispatched item while keeping their own skills' stores as detail.
 
 **Q5. Is `depth` 2 the right cap?** Two levels is a guess informed by session multiplication and summary fidelity, not by measurement. A conductor of conductors has not been run, so the number should be re-examined once one has.
 
-**Q6 — closed in Phase 1. Consecutive `progress` reports coalesce.** `_coalesce_progress` in `work_ledger.py` keeps only the newest of a run of `progress` events on an item, following the rule Issue Radar applies to consecutive sweeps. A rate limit was the alternative and is not needed: coalescing bounds the history cost without refusing a write, so a chatty worker loses nothing it said that still mattered. The rule deliberately does not extend to `message` — see §Security considerations.
+**Q6 — closed in Phase 1. Consecutive `progress` reports coalesce.** `_coalesce_progress` in `work_ledger_store.py` keeps only the newest of a run of `progress` events on an item, following the rule Issue Radar applies to consecutive sweeps. A rate limit was the alternative and is not needed: coalescing bounds the history cost without refusing a write, so a chatty worker loses nothing it said that still mattered. The rule deliberately does not extend to `message` — see §Security considerations.
 
 **Q7. Should a worker see a sibling's `summary`?** v3 says no, and the sibling digest carries only pointers and enumerations. The case *for* is that a summary is often the cheapest way for B to learn what A actually did, and the conductor relaying it by hand is the cost this design otherwise removes. The case against is that it puts one agent's free text in front of another with no gate in between, which is the objection that keeps `session_send` away from workers. The channel path exists so the answer can stay "no" without the need going unmet: a conductor that wants A's prose to reach B opens a channel and lets A say it deliberately.
 

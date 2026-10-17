@@ -143,7 +143,7 @@ exists to stop. Then give the capacity back: `work_ledger_record`
 real ceiling, and a count in your head is a second ceiling that disagrees with
 it.
 
-**What refuses a third conducting level is `MAX_DEPTH` in `work_ledger.py`.**
+**What refuses a third conducting level is `MAX_DEPTH` in `work_ledger_records.py`.**
 The one-level rule is above; this is the mechanism that enforces it, and it
 refuses at the child's first ledger call: a conductor dispatched by your
 conductor is turned away the moment it tries to open a ledger, before any

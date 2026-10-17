@@ -2431,11 +2431,15 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # crosses, not this module.
         "mcp_debug.py",
         "mcp_cron.py",
-        # Same class as mcp_core.py: an MCP stdio server redacts tool RESULTS and
-        # agent-authored names before they are persisted or returned, but the
-        # egress boundary itself is the transport the result crosses, not this
-        # module.
-        "mcp_dashboard.py",
+        # Same class as mcp_core.py: the kirocrew-dashboard stdio server's owner
+        # modules -- its reference resolvers and its tool bodies -- redact tool
+        # RESULTS and agent-authored names before they are persisted or returned,
+        # but the egress boundary itself is the transport the result crosses, not
+        # these modules.
+        "mcp_dashboard_folder_runs.py",
+        "mcp_dashboard_references.py",
+        "mcp_dashboard_session_runs.py",
+        "mcp_dashboard_tag_runs.py",
         # Same class again: this stdio server redacts the ledger's own
         # worker-authored prose before returning it, but the egress boundary is
         # the transport the result crosses, not this module.
@@ -2456,7 +2460,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         #
         # It is the second flow that matches the call-site scan, and its consumer
         # is the MODEL over the stdio transport -- the boundary is that transport,
-        # not this module, exactly as for `mcp_dashboard.py` above.
+        # not this module, exactly as for the `mcp_dashboard_*.py` owners above.
         "mcp_panel.py",
         # Same class as `mcp_panel.py`: the guide shim relays gateway results and
         # redacts only the refusal prose it hands back to the model; the boundary

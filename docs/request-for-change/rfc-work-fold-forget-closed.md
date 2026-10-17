@@ -25,7 +25,7 @@ so that one is not edited.
 ## 1. Problem
 
 A conductor board refuses its 257th `create` for good, even when only one item on it
-is still open. `_create_item` (`src/kiro_crew/work_ledger.py`) refuses with
+is still open. `_create_item` (`src/kiro_crew/work_ledger_writes.py`) refuses with
 `item_store_full` once `created_total >= MAX_STORED_ITEMS_PER_CONDUCTOR` (256,
 `work_vocab.WORK_STORED_ITEM_LIMIT`). The counter only climbs; closing an item gives
 nothing back. The only way out is `kirocrew ledger-sweep --purge`, run by a person,
@@ -86,7 +86,7 @@ the crew log; append-only is untouched.
 ### 4.1 Late entries for a closed item
 
 The writer refuses every action on a terminal item (`CODE_ITEM_CLOSED` in
-`work_ledger.py`; no reopen path exists in the writer). So no entry is **written**
+`work_ledger_records.py`; no reopen path exists in the writer). So no entry is **written**
 after a close. But entries are **folded** per unit, not in global time: a worker's
 `report` lives in the worker's own log, and the fold may reach that unit after the
 conductor's unit that holds the `close`. The fold already handles the reverse order
