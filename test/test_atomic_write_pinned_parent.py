@@ -197,6 +197,30 @@ def test_parent_dir_fd_none_preserves_the_by_name_behaviour(tmp_path):
     assert list(tmp_path.glob("*.tmp")) == []
 
 
+@pytest.mark.parametrize("pinned", [False, True], ids=["by-name", "parent-dir-fd"])
+def test_requested_mtime_is_carried_by_the_published_inode(tmp_path, pinned):
+    """The staged inode receives the requested mtime before either rename path."""
+    target = tmp_path / "doc.md"
+    requested_mtime_ns = 1_700_000_000 * 1_000_000_000
+    dir_fd = None
+    if pinned:
+        _needs_pinned_parent()
+        dir_fd = _pin(tmp_path)
+    try:
+        atomic_write(
+            target,
+            "timestamped body",
+            parent_dir_fd=dir_fd,
+            mtime_ns=requested_mtime_ns,
+        )
+    finally:
+        if dir_fd is not None:
+            os.close(dir_fd)
+
+    assert target.read_text(encoding="utf-8") == "timestamped body"
+    assert target.stat().st_mtime_ns == requested_mtime_ns
+
+
 def test_a_pinned_write_stages_through_the_descriptor_not_mkstemp(tmp_path, monkeypatch):
     """With a parent_dir_fd the temp is created via _mkstemp_at, never tempfile.mkstemp.
 

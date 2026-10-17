@@ -30,6 +30,7 @@ from conftest import requires_symlinks
 from kiro_crew import session_pid, session_work_dir
 from kiro_crew.acp.types import ACP_BACKEND_KIRO
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.providers.acp import _KIROCREW_EFFORT_OWNED_KEY, _write_cli_overlay
 from kiro_crew.workspace_cli_settings import CLI_SETTINGS_LOCK_NAME
 
 OTHER_HOME = "f" * 24
@@ -273,6 +274,16 @@ class TestMarker:
 class TestReclaimRule:
     def test_a_residue_only_directory_is_removed(self, tmp_path: Path) -> None:
         work_dir = _residue_dir(tmp_path, "subagent_deadbeef")
+        assert session_work_dir.reclaim_session_work_dir(work_dir) is True
+        assert not work_dir.exists()
+
+    def test_a_directory_holding_an_effort_projection_is_removed(self, tmp_path: Path) -> None:
+        """An effort projection and its in-file record remain ordinary cli.json residue."""
+        work_dir = tmp_path / "subagent_0badc0de"
+        assert session_work_dir.mark_run_dir(work_dir) is True
+        _write_cli_overlay(work_dir, "claude-opus-4.7", "max")
+        cli_json = work_dir / ".kiro" / "settings" / "cli.json"
+        assert _KIROCREW_EFFORT_OWNED_KEY in json.loads(cli_json.read_text(encoding="utf-8"))
         assert session_work_dir.reclaim_session_work_dir(work_dir) is True
         assert not work_dir.exists()
 

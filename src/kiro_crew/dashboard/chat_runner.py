@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import difflib  # noqa: F401
 import functools  # noqa: F401
 import hashlib
@@ -768,6 +769,57 @@ from kiro_crew.wakatime.heartbeats import (  # noqa: F401
 from kiro_crew.widget_artifacts import register_widgets_off_loop
 
 logger = logging.getLogger(__name__)
+
+
+async def _apply_pending_model_pick_at_turn_start(
+    state: Any, slot: Any, apply_pending_model_pick: Callable[[Any, Any], bool]
+) -> bool:
+    """Commit a pending pick only when its explicit-Default clear is durable.
+
+    A failed or cancelled save restores the pick, the slot's values and the flag;
+    this turn keeps its prior values and the next turn tries the pick again.
+    """
+    if slot._pending_model_pick is None:
+        return False
+    session_key = effective_session_key(slot)
+    explicit_default_was_pending = state.sessions.explicit_effort_default_pending(session_key)
+    if not explicit_default_was_pending:
+        return apply_pending_model_pick(state, slot)
+
+    # circular import: session_control imports this package's modules at module level.
+    from kiro_crew.dashboard.session_control import (
+        capture_pending_model_pick_commit,
+        restore_pending_model_pick_commit,
+    )
+
+    snapshot = capture_pending_model_pick_commit(slot)
+    with (
+        state.sessions.effort_intent_write(session_key),
+        state.sessions.hold_explicit_effort_default(session_key),
+    ):
+        reset_needed = apply_pending_model_pick(state, slot)
+        if state.sessions.explicit_effort_default_pending(session_key):
+            return reset_needed
+        try:
+            await state.sessions.aflush()
+        except asyncio.CancelledError:
+            restore_pending_model_pick_commit(slot, snapshot)
+            state.sessions.set_explicit_effort_default(session_key, True)
+            with contextlib.suppress(Exception):
+                await state.sessions.aflush()
+            raise
+        except Exception:
+            restore_pending_model_pick_commit(slot, snapshot)
+            state.sessions.set_explicit_effort_default(session_key, True)
+            logger.warning(
+                "Could not save the explicit effort Default clear for %s; "
+                "the pending pick waits for the next turn",
+                session_key,
+                exc_info=True,
+            )
+            return False
+    return reset_needed
+
 
 #: Shown once when a live backend lost this chat's session and a fresh
 #: runtime re-loads it; the turn is retried once behind it.
@@ -1827,8 +1879,24 @@ async def _spawn_admitted_prefetch(
         # which case the speculative session/load runs here and the
         # resumed=True observation is armed for the real turn. See
         # get_or_create's docstring.
-        _requested_model = slot.model or agent_model or default_model or ""
+        # Effort switches save under this lock; it covers the effort read until the
+        # key's reservation (then ``effort_basis_locked`` refuses a racing pick) and
+        # is handed off at gate entry so a queued start never stalls a first turn.
+        switch_lock = slot_switch_session_lock(session_key)
+        await switch_lock.acquire()
+        switch_lock_held = True
+
+        def _hand_off_switch_lock(*_queue: object) -> None:
+            # Released at most once; the provider's start queues fire it again.
+            nonlocal switch_lock_held
+            if switch_lock_held:
+                switch_lock_held = False
+                switch_lock.release()
+
         try:
+            if _slot_binding(slot) != _bound:
+                return
+            _requested_model = slot.model or agent_model or default_model or ""
             _, is_new, resumed = await sessions.get_or_create(
                 session_key,
                 agent=kiro_agent or slot.agent or None,
@@ -1843,9 +1911,19 @@ async def _spawn_admitted_prefetch(
                 speculative=True,
                 speculative_resume=allow_resume,
                 reasoning_effort_override=slot.reasoning_effort or None,
+                # A real turn can register while this prefetch is waiting for
+                # the switch lock. Never wait for its lease while holding the
+                # lock that its refusal fallback may need.
+                wait_if_busy=False,
                 start_priority=start_priority,
+                on_gate_queued=_hand_off_switch_lock,
             )
-        except (SpeculativeResumeRefused, SessionClosingError, SessionEndingError):
+        except (
+            SpeculativeResumeRefused,
+            SessionBusyError,
+            SessionClosingError,
+            SessionEndingError,
+        ):
             # A refusal, a gateway shutdown, or a key being ended: no agent
             # start was attempted and failed, so none of them is counted.
             raise
@@ -1858,6 +1936,13 @@ async def _spawn_admitted_prefetch(
             if not _is_pre_spawn_refusal(exc):
                 _note_eager_spawn_failure(slot, exc)
             raise
+        finally:
+            # Every exit that never reached the gate: a binding that changed,
+            # a warm-pool claim, a refusal or failure ahead of the gate.
+            _hand_off_switch_lock()
+    except SessionBusyError:
+        logger.info("Eager spawn: %s left to active turn (busy)", session_key)
+        return
     except SpeculativeResumeRefused:
         # Two sources: the entry gate (resumable key, resume not
         # opted in — fresh eager spawn leaves it to the first turn)
@@ -6453,7 +6538,7 @@ async def _run_chat(
             # Warms the config the pick's fence re-check reads, so the
             # synchronous gate below does no file IO on the loop.
             await prewarm_enabled_check()
-        if apply_pending_model_pick(state, slot):
+        if await _apply_pending_model_pick_at_turn_start(state, slot, apply_pending_model_pick):
             arm_model_switch_reset(state, slot)
             # The commit above is memory-only; persist it before the provider is
             # acquired, so a gateway exit mid-turn does not restore the old pin.

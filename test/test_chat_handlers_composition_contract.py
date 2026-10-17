@@ -787,6 +787,8 @@ slot_approval | _grant_deadline | function | (ttl: 'int | None') -> 'GrantDeadli
 slot_approval | _deny_trust_pattern | function | (name: 'str', request_id: 'str', action: 'str', code: 'str') -> 'web.Response'
 slot_approval | api_chat_slot_approve | async function | (request: 'web.Request') -> 'web.Response'
 slot_effort | _configured_backend_for_slot | async function | (slot: '_ChatSlot') -> 'str'
+slot_effort | _effort_intent_unsaved | function | (slot: '_ChatSlot', effort: 'str', *, normalized_model: 'str | None' = None, rebind_warning: 'str | None' = None) -> 'web.Response'
+slot_effort | _bump_session_effort_intent_slots | function | (state: 'DashboardState', session_key: 'str') -> 'None'
 slot_effort | api_chat_slot_selection_capabilities | async function | (request: 'web.Request') -> 'web.Response'
 slot_effort | api_chat_slot_reasoning_effort | async function | (request: 'web.Request') -> 'web.Response'
 slot_guards | _record_explicit_agent_selection | async function | (session_key: 'str', agent_name: 'str | None', bindings: 'ResolvedBindings', *, config: 'KiroCrewConfig', memory_mode: 'str' = 'persistent', app: 'str' = '') -> 'SelectionChange | None'
