@@ -1,4 +1,4 @@
-import { ChevronRight, Folder, FolderOpen } from 'lucide-react'
+import { ChevronRight, Folder, FolderKanban, FolderOpen } from 'lucide-react'
 import { folderColorStroke, folderColorWash, folderDisclosureNotch } from './folderColorPaint'
 
 // Default classes carry the stroke color: the icon paints via currentColor, so
@@ -28,9 +28,12 @@ const _FOLDER_GLYPH_CLASS = 'shrink-0 text-muted/70 group-hover:text-muted trans
  *  crowds the name. Callers that render the glyph outside a
  *  collapse context (modal preview, menus, drag ghost) omit `open` and get
  *  the bare glyph.
+ *  `project` draws a Project's own glyph (lucide FolderKanban, open or shut), so a
+ *  project never reads as an ordinary folder; colour, emoji and the disclosure
+ *  chevron apply to it exactly as they do to a folder.
  *  Shared by the sidebar rows and the folder-settings modal's live preview. */
-export default function FolderGlyph({ color, icon, size = 20, open, className = _FOLDER_GLYPH_CLASS, testId }: { color?: string; icon?: string; size?: number; open?: boolean; className?: string; testId?: string }) {
-  const Icon = open ? FolderOpen : Folder
+export default function FolderGlyph({ color, icon, size = 20, open, project = false, className = _FOLDER_GLYPH_CLASS, testId }: { color?: string; icon?: string; size?: number; open?: boolean; project?: boolean; className?: string; testId?: string }) {
+  const Icon = project ? FolderKanban : open ? FolderOpen : Folder
   const hasDisclosure = open !== undefined
   const notch = folderDisclosureNotch(size)
   const disclosure = hasDisclosure && (

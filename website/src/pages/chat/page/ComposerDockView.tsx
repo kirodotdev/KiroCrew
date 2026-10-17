@@ -183,6 +183,9 @@ interface ComposerDockViewProps {
   switchAgent: (agentName: string, kind?: 'member' | 'template') => Promise<void>
   currentSlot: ChatSlot | undefined
   activeFolderName: string
+  /** The active chat sits in a Project: its agent is locked to the conductor
+   *  server-side, so the composer offers no agent picker. */
+  agentLocked?: boolean
   anchorSessionControl: (rect: DOMRect, trigger?: HTMLElement | null) => void
   openSessionControl: { key: string; slot: string; } | null
   refreshSessionControlStatuses: () => void
@@ -265,7 +268,7 @@ export default function ComposerDockView({
   projectPickerOpen, setProjectPickerOpen, anchorProjectBtn, projectBtnRect, pendingDirs, composerRef, composerVoiceOptions, isMac, cancelUpload, composerUploadFiles, dropTargetProps, handleCapture,
   handleFileOpen, handleOptimizeResult, search, tabsCtl, uploadCount, sendHeld, composerBandRef, scrollBottom, handleResumeSession, composerRootChange, composerUserEdit, followUpMulti,
   followUpOptions, followUpPicked, followUpPickedRef, followUpSourceKey, toggleFollowUpOption, dashCfg, jevAutoConsented, refusedPress, setRefusedPress, send, pickModel, setProject, switchAgent,
-  currentSlot, activeFolderName, anchorSessionControl, openSessionControl, refreshSessionControlStatuses, sessionControlKey, sessionControlRect, sessionControls, setOpenSessionControl,
+  currentSlot, activeFolderName, agentLocked, anchorSessionControl, openSessionControl, refreshSessionControlStatuses, sessionControlKey, sessionControlRect, sessionControls, setOpenSessionControl,
   activeAgentName, attachmentAnnouncement, clampOutOfTokens, handleAddToContext, mentionKeyEdit, optimizerMentionGuard, removeDirChip, removeFileChip, selectPickedFile, followupAddToSession,
   followupStartInNewChat, followupStartInWorktree, displayMode, _modelPinActive, _modelPinAgent, _modelPinPinned, _pinShownModel, _slotProject, defaultEffort, effectiveEffort, effortLevelsOverride,
   effortSupported, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
@@ -536,7 +539,7 @@ export default function ComposerDockView({
               // would hide every routed turn. Same `jevRouteOn` the picker's row is
               // drawn from, so chip, menu and gate cannot disagree.
               modelIsJevRouted={jevRouteOn && isUnpinnedModel(currentSlot?.model)}
-              onAgentClick={provider.capabilities.agentTemplates ? (rect, trigger) => { anchorAgentBtn(rect, trigger); setAgentDropdown(!agentDropdown) } : undefined}
+              onAgentClick={!agentLocked && provider.capabilities.agentTemplates ? (rect, trigger) => { anchorAgentBtn(rect, trigger); setAgentDropdown(!agentDropdown) } : undefined}
               onModelClick={(rect, trigger, composerHadFocus) => {
                 modelPickerReturnsFocusRef.current = !!composerHadFocus
                 anchorModelBtn(rect, trigger); setModelDropdown(!modelDropdown)

@@ -374,7 +374,7 @@ export function useFolderMutations({ queryClient, setFolderActionError, setFolde
 }) {
   // Folder mutations
   const createFolderMutation = useMutation({
-    mutationFn: (v: { name: string; parentId?: string; projectDir?: string; defaultAgent?: string; color?: string; icon?: string; tags?: string[]; steeringDirs?: string[] }) =>
+    mutationFn: (v: { name: string; parentId?: string; projectDir?: string; defaultAgent?: string; color?: string; icon?: string; tags?: string[]; steeringDirs?: string[]; kind?: 'project' }) =>
       api.createChatFolder(v.name.trim(), v.parentId, {
         project_dir: v.projectDir || undefined,
         default_agent: v.defaultAgent || undefined,
@@ -382,6 +382,7 @@ export function useFolderMutations({ queryClient, setFolderActionError, setFolde
         icon: v.icon || undefined,
         tags: v.tags && v.tags.length > 0 ? v.tags : undefined,
         steering_dirs: v.steeringDirs && v.steeringDirs.length > 0 ? v.steeringDirs : undefined,
+        kind: v.kind,
       }),
     // Through the idle gate, not a direct invalidate: a refetch here would
     // land inside a still-pending update's optimistic window.
@@ -507,7 +508,12 @@ export function useFolderTree({ folders, updateFolderMutation, clearBoardCollaps
   return { folderSubtrees, expandFolderAncestors }
 }
 
-/** The tree lane's root folders. Its ungrouped rows are the row model's (`./rows`). */
+/** The tree lane's root folders. Its ungrouped rows are the row model's (`./rows`).
+ *
+ *  Projects (`kind: 'project'`) are split out into their own list: the tree lane
+ *  draws them as the sidebar's Projects section, above the ordinary folders,
+ *  and each list is its own reorder ring. `rootFolders` stays the whole top
+ *  level, which is what "is anything filed at all" reads. */
 export function useRootFolderLanes({ folders, folderCompare, isFolderHidden, isFolderFilteredOut }: {
   folders: ChatFolder[]
   folderCompare: (a: ChatFolder, b: ChatFolder) => number
@@ -515,7 +521,10 @@ export function useRootFolderLanes({ folders, folderCompare, isFolderHidden, isF
   isFolderFilteredOut: (f: ChatFolder) => boolean
 }) {
   const rootFolders = useMemo(() => folders.filter(f => !f.parent_id).sort(folderCompare), [folders, folderCompare])
-  const visibleRootFolders = useMemo(() => rootFolders.filter(f => !isFolderHidden(f) && !isFolderFilteredOut(f)), [rootFolders, isFolderHidden, isFolderFilteredOut])
+  const visibleRoots = useMemo(() => rootFolders.filter(f => !isFolderHidden(f) && !isFolderFilteredOut(f)), [rootFolders, isFolderHidden, isFolderFilteredOut])
+  const visibleRootProjects = useMemo(() => visibleRoots.filter(f => f.kind === 'project'), [visibleRoots])
+  const visibleRootFolders = useMemo(() => visibleRoots.filter(f => f.kind !== 'project'), [visibleRoots])
+  const rootProjectIds = useMemo(() => visibleRootProjects.map(f => f.id), [visibleRootProjects])
   const rootFolderIds = useMemo(() => visibleRootFolders.map(f => f.id), [visibleRootFolders])
-  return { rootFolders, visibleRootFolders, rootFolderIds }
+  return { rootFolders, visibleRootFolders, rootFolderIds, visibleRootProjects, rootProjectIds }
 }

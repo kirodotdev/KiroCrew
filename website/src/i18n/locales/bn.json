@@ -7058,7 +7058,15 @@
       "tags_loading_hint": "ট্যাগ লোড হচ্ছে…",
       "tags_error_hint": "ট্যাগ লোড করা যায়নি।",
       "tags_retry": "আবার চেষ্টা করুন",
-      "top_level": "সর্বোচ্চ স্তর"
+      "top_level": "সর্বোচ্চ স্তর",
+      "new_project": "নতুন প্রজেক্ট",
+      "create_project": "প্রজেক্ট তৈরি করো",
+      "new_project_leaf": "নতুন প্রজেক্ট",
+      "project_settings": "প্রজেক্ট সেটিংস",
+      "project_create_hint": "একটি কন্ডাক্টর ({{agent}}) এই প্রজেক্টের পরিকল্পনা করে এবং সহায়ক চ্যাটে কাজ ভাগ করে দেয়, যেগুলি এর নিচে দেখায়।",
+      "project_agent_locked_hint": "এই প্রজেক্টের চ্যাটগুলি {{agent}}-এ চলে, তাই কোনো এজেন্ট বেছে নিতে হয় না।",
+      "project_dir_hint_project": "বিদ্যমান কোনো ডিরেক্টরির পূর্ণ পথ। এই প্রজেক্টের প্রতিটি চ্যাটের জন্য ফাইল সার্চ, @-মেনশন এবং স্টিয়ারিং ফাইলের পরিসর নির্ধারণ করে।",
+      "steering_dirs_hint_project": "এই প্রজেক্টের প্রতিটি চ্যাটের জন্য লোড করা অতিরিক্ত স্টিয়ারিং ডিরেক্টরি।"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "ফোল্ডার প্রস্তাব",
@@ -12833,7 +12841,9 @@
       "broadcast_col_result": "ফলাফল",
       "broadcast_open_unknown": "নিশ্চিত নয় · খোলো",
       "broadcast_delivery_hint": "চলমান কাজ থামে না: চালু টার্ন বর্তমান টুল কলের পরে এটি পড়ে; অলস সেশন নতুন টার্ন শুরু করে।",
-      "broadcast_retry": "ব্যর্থ {{n}}টি আবার পাঠাও"
+      "broadcast_retry": "ব্যর্থ {{n}}টি আবার পাঠাও",
+      "new_project": "নতুন প্রজেক্ট",
+      "projects_section": "প্রজেক্ট"
     },
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",

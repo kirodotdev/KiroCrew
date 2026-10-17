@@ -19,6 +19,7 @@ import { boardColumnFromDroppableId } from '../../../utils/boardFolderCollapse'
 import { CHAT_PANE_DROP_TYPE } from './collision'
 import type { FolderSortModeRead } from '../../../hooks/useFolderSortMode'
 import type { FolderMutations } from '../folders'
+import { projectNestingRefused } from '../../../utils/folderAgent'
 
 /** The two folder drop writes: sibling renumber and re-parent. */
 export function useFolderDropOps({ folderReorderable, queryClient, setFolderActionError, setFolderOfflineNotice, updateFolderMutation, connected }: {
@@ -119,6 +120,7 @@ export function useFolderDropOps({ folderReorderable, queryClient, setFolderActi
     const target = parentId ?? ''
     if ((folder.parent_id || '') === target) return
     if (target && collectFolderSubtreeIds(current, folderId).has(target)) return
+    if (projectNestingRefused(current, folder, target)) return
     updateFolderMutation.mutate({ id: folderId, body: { parent_id: target }, onCommitted: opts?.onCommitted })
   }, [queryClient, updateFolderMutation, connected, setFolderOfflineNotice])
   return { reorderFolders, moveFolderTo }
@@ -207,6 +209,7 @@ export function useSidebarMoveUndo({ localSlots, folders, moveFolderTo, queryCli
     const target = parentId ?? ''
     if ((folder.parent_id || '') === target) return
     if (target && collectFolderSubtreeIds(current, folderId).has(target)) return
+    if (projectNestingRefused(current, folder, target)) return
     haptic('light')
     const dest = parentId ? current.find(f => f.id === parentId) : undefined
     dismissDragMove()

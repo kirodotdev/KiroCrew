@@ -33,6 +33,7 @@ import type { FolderBlocks } from './folderBlocks'
 import type { SidebarScope } from './scope'
 import OfflineMenuReason from '../../components/OfflineMenuReason'
 import { offlineMenuRow, offlineProps } from '../../utils/offline'
+import { projectNestingRefused } from '../../utils/folderAgent'
 
 /** The board lane renderer for one shell render. */
 export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
@@ -78,9 +79,9 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
     const emptyBody = hideEmptyFolderBody && deepChildren.length === 0 && childSlots.length === 0
     const collapsed = boardFolderCollapsed(columnId, folder)
     // Valid "Move folder to" destinations: everything outside this folder's
-    // own subtree (cycle guard). One O(1) lookup, computed once per row.
+    // own subtree (cycle guard), and nothing the Projects rule refuses.
     const subtreeIds = folderSubtrees.get(folder.id) ?? collectFolderSubtreeIds(folders, folder.id)
-    const reparentTargets = folders.filter(f => !subtreeIds.has(f.id))
+    const reparentTargets = folders.filter(f => !subtreeIds.has(f.id) && !projectNestingRefused(folders, folder, f.id))
     // The board lane's answer to a reveal. A column has no folder HEADER row, so the
     // tree's `folderFlash` has nothing to attach to here and a board reveal used to
     // scroll to the column and then sit there unmarked -- the scroll alone is not the
@@ -222,7 +223,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="min-w-[180px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
                 <DropdownMenuItem {...offlineMenuRow(connected, i18nT('utils.offline.rename_folders'), i18nT('pages.chatSidebar.rename'), () => { suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope(columnId); setEditName(folder.name) })}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</DropdownMenuItem>
-                <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-new-sub`} {...offlineMenuRow(connected, i18nT('utils.offline.create_folders'), i18nT('pages.chatSidebar.new_subfolder'), () => { setFolderModal({ mode: 'create', parentId: folder.id }) })}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</DropdownMenuItem>
+                {folder.kind !== 'project' && <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-new-sub`} {...offlineMenuRow(connected, i18nT('utils.offline.create_folders'), i18nT('pages.chatSidebar.new_subfolder'), () => { setFolderModal({ mode: 'create', parentId: folder.id }) })}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</DropdownMenuItem>}
                 {/* Menu create entries take NO open-in-tab gesture (#10575,
                  *  scoped out): a menu closes on select, and Radix keyboard
                  *  activation synthesizes a modifier-free click, so the
@@ -232,13 +233,14 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
                 <DropdownMenuItem className="items-start" data-testid={`col-${columnId}-folder-${folder.id}-new-incognito`} {...offlineMenuRow(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_incognito_chat'), () => { createChatInFolder(folder.id, { columnId, memoryMode: 'incognito' }) })}><PrivateChatRow kind="incognito" /></DropdownMenuItem>
                 <DropdownMenuItem className="items-start" data-testid={`col-${columnId}-folder-${folder.id}-new-temporary`} {...offlineMenuRow(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_temporary_chat'), () => { createChatInFolder(folder.id, { columnId, memoryMode: 'temporary' }) })}><PrivateChatRow kind="temporary" /></DropdownMenuItem>
                 <DropdownMenuSeparator />
-                {/* Re-parent: board-view parity with the list-view folder menu. */}
-                <FolderMoveSubmenu variant="dropdown" label={i18nT('pages.chatSidebar.move_folder_to')} sortMode={folderSortMode}
+                {/* Re-parent: board-view parity with the list-view folder menu. A
+                 *  Project stays at the top level, so it offers no move. */}
+                {folder.kind !== 'project' && <FolderMoveSubmenu variant="dropdown" label={i18nT('pages.chatSidebar.move_folder_to')} sortMode={folderSortMode}
                   folders={reparentTargets}
                   currentFolderId={folder.parent_id || null}
                   offline={!connected}
                   offlineTitle={i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.move_folders') })}
-                  onPick={pid => moveFolderTo(folder.id, pid)} />
+                  onPick={pid => moveFolderTo(folder.id, pid)} />}
                 <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-settings`} {...offlineMenuRow(connected, i18nT('utils.offline.change_folder_settings'), i18nT('components.folderConfigModal.folder_settings'), () => { setFolderModal({ mode: 'edit', folderId: folder.id }) })}><Settings size={13} /> {i18nT('components.folderConfigModal.folder_settings')}</DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem className="text-danger focus:text-danger" {...offlineMenuRow(connected, i18nT('utils.offline.delete_folders'), i18nT('pages.chatSidebar.delete_folder'), () => { deleteFolderWithConfirm(folder) })}><X size={13} /> {i18nT('pages.chatSidebar.delete_folder')}</DropdownMenuItem>

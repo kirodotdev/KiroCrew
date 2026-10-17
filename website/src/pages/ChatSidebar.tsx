@@ -72,7 +72,7 @@ import { useHoldPinnedHeaderOnCollapse } from './chat-sidebar/stickyCollapse'
 import { useFolderChatCreate, useSessionCreate } from './chat-sidebar/create'
 export { FOLDER_BODY_INSET_PX, FOLDER_BODY_CLS, BOARD_FOLDER_BODY_CLS, SIDEBAR_TEXT_CONTROL_CLS, STALE_TOGGLE_CLS } from './chat-sidebar/chrome'
 export { connectedChannelLinks } from './chat-sidebar/SessionRow'
-import type { ChatSidebarProps, SidebarScope } from './chat-sidebar/scope'
+import type { ChatSidebarProps, FolderModalTarget, SidebarScope } from './chat-sidebar/scope'
 import { createLaneRows } from './chat-sidebar/laneRows'
 export { SIDEBAR_DISPLACEMENT_WINDOW } from './chat-sidebar/laneRows'
 import { createFolderBlocks } from './chat-sidebar/folderBlocks'
@@ -258,9 +258,7 @@ function ChatSidebar({
   // sidebar root, so — unlike the inline inputs it replaced — it needs no column
   // scope: a folder rendered in several board columns can only have one modal.
   // `parentId` is the fixed destination for 'create' ('' = top level).
-  const [folderModal, setFolderModal] = useState<
-    { mode: 'create'; parentId: string } | { mode: 'edit'; folderId: string } | null
-  >(null)
+  const [folderModal, setFolderModal] = useState<FolderModalTarget | null>(null)
   // The session sort lives in the gateway config (dashboard.session_sort), so a
   // pick follows the person to every browser.
   const { sortKey, setSortKey, sortError, dismissSortError } = useSessionSort({ queryClient })
@@ -740,7 +738,7 @@ function ChatSidebar({
   const isActiveRow = rowViews.isActive
 
   const {
-    rootFolders, visibleRootFolders, rootFolderIds,
+    rootFolders, visibleRootFolders, rootFolderIds, visibleRootProjects, rootProjectIds,
   } = useRootFolderLanes({ folders, folderCompare, isFolderHidden, isFolderFilteredOut })
 
   // The Older Sessions pane's guide scope (`open:chat.older-sessions`).
@@ -784,7 +782,7 @@ function ChatSidebar({
     recentAmountDraft, recentUnitDraft, recentWindowMs, refetchColumns, refetchFolders, refetchTags,
     remoteCrewChatPreview, remoteCrewError, remoteCrewErrorId, remoteSessionsError, renameCommit,
     renameError, reorderColumnsMutation, reportDndActive, restorePreBoardWidth, revealedContainers,
-    revealFlash, rootFolderIds, rootFolders, rowActions, rowAnimEnabled, rowMotionHeld: !rowAnimSettled, rowViews, searchRanked, seedError,
+    revealFlash, rootFolderIds, rootFolders, rootProjectIds, rowActions, rowAnimEnabled, rowMotionHeld: !rowAnimSettled, rowViews, searchRanked, seedError,
     seedStateLanesMutation, selectInstance, selectRecentPreset, sessionCleanup, setAllFiltersPaused,
     setAutoTitleError, setBoardError, setCleanupOpen, setCollapsedHistoryGroups, setColumnEditId,
     setDerivedHintCol, setEditingId, setEditName, setEditScope, setFilterSortOpen, setFlatView,
@@ -798,7 +796,7 @@ function ChatSidebar({
     tagsQueryFailed, tintAgents, toggleCollapse, toggleColumnCollapse, toggleCrewCollapsed, toggleFilter,
     toggleFolderFilter, toggleFoldersShelved, toggleHideFilter, toggleModelFilter, toggleReveal,
     toggleSaveFailed, toggleSpaceCollapsed, toggleTagFilter, ungroupedSlots, unreadSet, updateColumnMutation,
-    updateFolderMutation, visibleRootFolders, warmCrews }
+    updateFolderMutation, visibleRootFolders, visibleRootProjects, warmCrews }
   const laneRows = createLaneRows(scope)
   const folderBlocks = createFolderBlocks({ ...scope, ...laneRows })
   const lanes = createListLanes({ ...scope, ...laneRows, ...folderBlocks })

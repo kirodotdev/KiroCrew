@@ -436,6 +436,7 @@ from kiro_crew.dashboard.handlers.usage import (
 )
 from kiro_crew.dashboard.poisoned_escalation import POISONED_SESSION_CYCLES  # noqa: F401
 from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
+from kiro_crew.dashboard.project_folders import project_pins_agent
 from kiro_crew.dashboard.recovery_replays import SESSION_NOT_FOUND_CANCELLED_TEXT  # noqa: F401
 from kiro_crew.dashboard.recovery_replays import (
     ReplayFamily,
@@ -14012,34 +14013,34 @@ async def _run_chat(
                 new_agent, _ = redact_credentials(event.text)
                 new_agent, _ = redact_exfiltration_urls(new_agent)
                 if new_agent and (
-                    private_member or (slot.mode == "member" and new_agent != slot.agent)
+                    private_member
+                    or (slot.mode == "member" and new_agent != slot.agent)
+                    or project_pins_agent(state, slot, new_agent)
                 ):
                     pinned_member = private_member or slot.agent
-                    # V2 turns are pinned in every slot mode. Any provider-side
-                    # switch ends the turn, including a template whose spelling
-                    # happens to equal the member alias. HTTP guards cannot
-                    # reach this writer: kiro-cli has
+                    # V2 turns are pinned in every slot mode, and so is a chat in a
+                    # Project. Any provider-side switch ends the turn, including a
+                    # template whose spelling happens to equal the member alias.
+                    # HTTP guards cannot reach this writer: kiro-cli has
                     # ALREADY switched its own session's agent by the time this
                     # event arrives. Veto by keeping slot.agent (no broadcast —
                     # nothing changed for the UI) and forcing a session reset,
                     # so the next turn cold-starts from the slot's bindings on
                     # the pinned crew instead of continuing on the switched one.
                     logger.warning(
-                        "agent switch to %r vetoed on member thread %s (pinned to %r)",
+                        "agent switch to %r vetoed on pinned thread %s (pinned to %r)",
                         new_agent,
                         slot.key,
                         pinned_member,
                     )
-                    # SEL: this veto is a permission denial — the one pin
-                    # enforcement site the HTTP guards cannot reach (kiro-cli
-                    # already switched) — so it must land in the immutable
-                    # audit chain like every other member-pin refusal, not
-                    # only in the mutable process log above.
+                    # SEL: a permission denial at the one pin site HTTP guards cannot reach
+                    # (kiro-cli already switched): the immutable audit chain, not only the log.
+                    member_pin = bool(private_member) or slot.mode == "member"
                     sel().log_api_access(
                         caller=f"slot={slot.key}",
                         operation="chat_runner.agent_switch",
                         outcome="denied",
-                        source="member_pin",
+                        source="member_pin" if member_pin else "project_lock",
                         resources=f"slot={slot.key} agent={new_agent}",
                         error=f"member thread pinned to {pinned_member}",
                     )
@@ -14057,12 +14058,10 @@ async def _run_chat(
                         "msg msg-info",
                     )
                     needs_session_reset = True
-                    # The vetoed turn DID produce visible output (the notice
-                    # above) — and more importantly, tool calls completed
-                    # BEFORE the switch event may have had real side effects.
-                    # Without this flag the empty-response recovery would
-                    # requeue the prompt and replay those non-idempotent
-                    # actions on the reset session.
+                    # The vetoed turn DID produce visible output (the notice above),
+                    # and tool calls completed BEFORE the switch event may have had
+                    # real side effects. Without this flag the empty-response recovery
+                    # would requeue the prompt and replay them on the reset session.
                     turn._produced_visible_output = True
                     # Terminate the stream NOW: kiro-cli has already switched,
                     # so every further event of this turn — text and tool

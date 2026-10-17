@@ -31,6 +31,7 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.project_folders import project_admits_agent
 from kiro_crew.dashboard.relay_archive import is_relay_archive
 from kiro_crew.dashboard.slot_ownership import deny_app_slot_access
 from kiro_crew.dashboard.state import (
@@ -1073,8 +1074,16 @@ async def fork_slot(
     # Keep the app-owned agent binding with the agent it binds: the fork runs as
     # the same app agent, so the per-turn shadow check must still apply to it.
     new_slot.app_agent_owner = slot.app_agent_owner
-    # Inherit the sidebar folder so the fork appears next to its parent in the UI.
-    new_slot.folder_id = slot.folder_id
+    # And the namespace the agent was picked in: a bare name resolves to a
+    # same-named crewmate first, so a fork of a template chat must stay a template.
+    new_slot.agent_kind = slot.agent_kind
+    # Inherit the sidebar folder so the fork appears next to its parent in the UI,
+    # unless that folder is a Project the fork's agent may not start a chat in.
+    new_slot.folder_id = (
+        slot.folder_id
+        if project_admits_agent(state._folders, slot.folder_id, slot.agent, slot.agent_kind)
+        else ""
+    )
     # Inherit tags (copied, so later edits to either slot's list stay independent).
     new_slot.tags = list(slot.tags)
     # "tags changed => revision changed": the slot was constructed with an empty

@@ -76,7 +76,6 @@ from __future__ import annotations
 
 import logging
 import re as _re
-import time
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote
@@ -89,7 +88,9 @@ from kiro_crew.dashboard.folder_ownership import (
     _folder_owner_app,
     _subtree_holds_foreign_folder,
 )
+from kiro_crew.dashboard.project_folders import conductor_home_folder
 from kiro_crew.mcp_shared import run_mcp_stdio_loop
+from kiro_crew.mcp_tools._display_time import _closed_at_display, _summary_time
 
 # The authenticated loopback client to the gateway is ``mcp_core``'s request
 # helpers, reached through the ``DashboardClient`` port. Importing them costs
@@ -2764,6 +2765,7 @@ def _resolve_folder_for_new_session(
     folder_ref: str,
     verb: str,
     preflight: Callable[[str], str | None] | None = None,
+    nest_in_project: bool = False,
 ) -> tuple[str, str, str, str | None]:
     """``(folder_id, folder_label, made_note, error)`` for filing a NEW session.
 
@@ -2818,6 +2820,10 @@ def _resolve_folder_for_new_session(
     chat_folders, folders_err = _get_rows(ctx.client, "/api/chat/folders")
     if folders_err:
         return "", "", "", redact(f"Error: {folders_err}")
+    if nest_in_project and (home := conductor_home_folder(gate_key, scope_rows, chat_folders)):
+        # A project conductor's worker is filed beside it by the create route
+        # (dashboard/project_folders.py), so no path segment is made for it.
+        return "", _chat_folder_paths(chat_folders).get(home, home), "", None
     fld_id, created_segments, fld_err = _ensure_chat_folder_path(
         folder_ref, chat_folders, client=ctx.client, session_key=gate_key, before_create=preflight
     )
@@ -2831,28 +2837,6 @@ def _resolve_folder_for_new_session(
         # DO persist and are reported in `made_note`.
         return "", "", made_note, redact(f"Error: {fld_err}{made_note}")
     return fld_id, _chat_folder_paths(chat_folders).get(fld_id, fld_id), made_note, None
-
-
-def _summary_time(value: object) -> str:
-    """The sidecar's ``generated_at`` (a ``time.time()`` float) as UTC ISO-8601."""
-    try:
-        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(value)))  # type: ignore[arg-type]
-    except (TypeError, ValueError, OverflowError, OSError):
-        return "at an unknown time"
-
-
-def _closed_at_display(value: object) -> str:
-    """A gone row's ``closed_at`` (crew-log epoch MILLISECONDS) as UTC ISO-8601.
-
-    The close edge stamps ``entry.time`` from ``now_ms()``, so the value is in
-    milliseconds; render it human-readable rather than as a raw epoch number. Falls
-    back to the value's own string form when it is not a finite millisecond count,
-    so a malformed stamp still shows something rather than raising in the renderer.
-    """
-    try:
-        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(value) / 1000.0))  # type: ignore[arg-type]
-    except (TypeError, ValueError, OverflowError, OSError):
-        return str(value)
 
 
 def _render_session_summary(resp: dict[str, Any]) -> str:
@@ -2956,6 +2940,7 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
         str(args.get("folder") or ""),
         "filing a new session at creation",
         preflight=_preflight_create,
+        nest_in_project=True,
     )
     if fld_err:
         return fld_err

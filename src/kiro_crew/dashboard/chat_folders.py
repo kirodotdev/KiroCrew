@@ -7,7 +7,6 @@ import asyncio
 import logging
 import os
 import time
-import unicodedata
 import uuid
 import weakref
 from pathlib import Path
@@ -21,12 +20,22 @@ from kiro_crew.dashboard.chat_persistence import _coerce_requested_mode, save_sl
 from kiro_crew.dashboard.chat_tags import tags_write_lock, validate_folder_tag_ids
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 from kiro_crew.dashboard.create_rate_limit import FOLDER_CREATE, allow_create
+from kiro_crew.dashboard.folder_emoji import is_single_emoji as _is_single_emoji
 from kiro_crew.dashboard.folder_ownership import (  # re-exported: callers import them here
     _folder_owner_app,
     _is_descendant,
     _subtree_holds_foreign_folder,
 )
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.project_folders import (
+    PROJECT_NESTING_ERRORS,
+    PROJECT_TOP_LEVEL,
+    bind_unstarted_slot_for_project,
+    is_project_folder,
+    project_nesting_error,
+    project_nesting_refusal,
+    validate_folder_kind,
+)
 from kiro_crew.dashboard.slot_ownership import (
     audit_app_slot_denial,
     deny_app_slot_access,
@@ -68,52 +77,6 @@ logger = logging.getLogger(__name__)
 MAX_CHAT_FOLDERS = 500
 
 _folder_icon_lock = LoopBoundLock()
-
-
-def _is_single_emoji(s: str) -> bool:
-    """True if `s` is exactly one emoji grapheme (no letters/digits/text).
-
-    Accepts simple emoji, variation-selector / skin-tone modified emoji, ZWJ
-    sequences (families, professions), and two-codepoint flag pairs. Rejects
-    empty strings, plain text, and multiple emoji.
-    """
-    if not s or len(s) > 16:
-        return False
-    modifiers = {0xFE0F, 0x200D}  # variation selector-16, zero-width joiner
-
-    def _emoji_char(c: str) -> bool:
-        o = ord(c)
-        return (
-            unicodedata.category(c).startswith("So")  # symbol, other
-            or o > 0x1F000  # supplementary emoji planes
-            or o in modifiers
-            or 0x1F3FB <= o <= 0x1F3FF  # skin-tone modifiers
-            or 0x1F1E6 <= o <= 0x1F1FF  # regional indicators (flags)
-        )
-
-    if not all(_emoji_char(c) for c in s):
-        return False
-    # Count grapheme clusters; must be exactly one.
-    cps = [ord(c) for c in s]
-    n = len(cps)
-    clusters = 0
-    i = 0
-    while i < n:
-        if 0x1F1E6 <= cps[i] <= 0x1F1FF:  # flag = pair of regional indicators
-            clusters += 1
-            i += 2 if (i + 1 < n and 0x1F1E6 <= cps[i + 1] <= 0x1F1FF) else 1
-        else:
-            clusters += 1  # base emoji, then absorb modifiers / ZWJ-joined emoji
-            i += 1
-            while i < n and (cps[i] == 0xFE0F or 0x1F3FB <= cps[i] <= 0x1F3FF):
-                i += 1
-            while i < n and cps[i] == 0x200D:  # ZWJ joins the following emoji
-                i += 2 if i + 1 < n else 1
-                while i < n and (cps[i] == 0xFE0F or 0x1F3FB <= cps[i] <= 0x1F3FF):
-                    i += 1
-        if clusters > 1:
-            return False
-    return clusters == 1
 
 
 # "auto" = inherit the session's governed default (run_bg_oneliner skips the
@@ -1207,6 +1170,7 @@ async def create_folder_record(
     home_slot: Any = None,
     created_by_session: str = "",
     claim_parent_for_person: bool = False,
+    kind: str = "",
 ) -> dict[str, Any]:
     """Validate one folder and append it to the store under the folders lock.
 
@@ -1360,6 +1324,8 @@ async def create_folder_record(
     }
     if color:
         folder["color"] = color
+    if kind:  # ``validate_folder_kind``'s output: absent, or "project"
+        folder["kind"] = kind
     if icon:
         folder["icon"] = icon
     if resolved_steering:
@@ -1387,6 +1353,8 @@ async def create_folder_record(
         # already full.
         if len(folders) >= MAX_CHAT_FOLDERS:
             return False, "folder_cap_reached"
+        if nested := project_nesting_error(folders, bool(kind), parent_id):
+            return False, nested  # top-level-only Projects, read with the parent above
         # Nesting into a folder writes to THAT folder's child list, so an app may
         # only nest under one of its own. The top level is not a folder row and
         # so has no owner to violate — that is where an app's own tree starts.
@@ -1445,6 +1413,8 @@ async def create_folder_record(
         raise FolderCreateError("parent folder not found", "folder_parent_not_found")
     if create_err == "forbidden_parent":
         raise FolderOwnershipError()
+    if create_err in PROJECT_NESTING_ERRORS:
+        raise FolderCreateError(PROJECT_NESTING_ERRORS[create_err], PROJECT_TOP_LEVEL)
     if create_err == "project_dir_exists":
         raise FolderCreateError(
             "a folder for this directory already exists", "folder_project_dir_exists"
@@ -1550,11 +1520,15 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
     if refused is not None:
         return refused
     parent_id = str(body.get("parent_id") or "")
+    folder_kind, kind_err = validate_folder_kind(body.get("kind"))
+    if kind_err:
+        return web.json_response({"error": kind_err, "code": "folder_kind_invalid"}, status=400)
     try:
         folder = await create_folder_record(
             state,
             name=str(body.get("name") or ""),
             parent_id=parent_id,
+            kind=folder_kind,
             project_dir=str(body.get("project_dir") or ""),
             default_agent=str(body.get("default_agent") or "").strip(),
             color=str(body.get("color") or ""),
@@ -1698,6 +1672,13 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     # stamped once at create from the authenticated caller and is not a field a
     # request can hand over, take, or clear.
     changes: dict[str, object] = {}
+    if "kind" in body:
+        # A Project is made by New > Project and stays one: no request turns a
+        # folder into a project or a project back into a folder.
+        return web.json_response(
+            {"error": "a folder's kind is set at creation", "code": "folder_kind_immutable"},
+            status=400,
+        )
     if "name" in body:
         new_name = str(body["name"]).strip()[:100]
         if not new_name:
@@ -1928,6 +1909,8 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
                 return False, "parent_not_found"
             if _is_descendant(folders, ancestor_id=fid, folder_id=new_parent):
                 return False, "cycle"
+            if nested := project_nesting_error(folders, is_project_folder(target), new_parent):
+                return False, nested
             dest = next((f for f in folders if f["id"] == new_parent), None)
             if request_app and dest is not None and _folder_owner_app(dest) != request_app:
                 return False, "forbidden_parent"
@@ -2082,6 +2065,8 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             },
             status=409,
         )
+    if err in PROJECT_NESTING_ERRORS:
+        return project_nesting_refusal(err)
     if regenerate_icon:
         # "Reset to auto" — re-run the emoji generator in the background.
         # Runs only after _apply succeeded, so app ownership has already been
@@ -2751,6 +2736,18 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
     # per slot object and persisted, so echoing it back is the caller's proof
     # that the slot it is filing is the one it resolved.
     expected_created = str(body.get("expected_created") or "")
+    # A move into a Project first puts a never-run chat on the project agent.
+    # Only for the slot this request resolved: a replaced one is refused by the
+    # locked re-check below, and switching it first would change a chat the
+    # move then refuses to file.
+    if (
+        state._slots.get(name) is slot
+        and not (expected_created and slot.created_at != expected_created)
+        and (
+            refused := await bind_unstarted_slot_for_project(state, request, slot, name, folder_id)
+        )
+    ):
+        return refused
     # Filing into a hidden folder unhides it, which changes the folder tree the
     # full slots frame carries; only a placement that left the tree alone can
     # travel as a one-row patch.

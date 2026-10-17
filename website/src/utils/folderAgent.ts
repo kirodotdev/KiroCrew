@@ -27,10 +27,40 @@ function nearestFolderValue(
   return undefined
 }
 
+/** The one agent a chat in a Project runs on. Mirrors `PROJECT_AGENT` in
+ *  `src/kiro_crew/dashboard/project_folders.py`, which enforces it on every
+ *  create path; the sidebar names it so the new chat shows the right agent
+ *  from its first frame. */
+export const PROJECT_AGENT = 'kirocrew-conductor'
+
+/**
+ * The id of the Project `folderId` sits in (the folder itself or its nearest
+ * ancestor with `kind: 'project'`), or `undefined`. Same cycle guard as
+ * `nearestFolderValue`, and the same rule as the backend's `project_root_id`.
+ */
+export function projectRootId(folders: ChatFolder[], folderId: string | undefined | null): string | undefined {
+  if (!folderId) return undefined
+  return nearestFolderValue(folders, folderId, f => (f.kind === 'project' ? f.id : undefined))
+}
+
+/**
+ * Whether placing `folder` under `parentId` ('' / null = the top level) breaks
+ * the Projects rule: a Project sits at the top level, in the sidebar's own
+ * Projects section, and holds chats, not folders. Mirrors
+ * `project_nesting_error` in `src/kiro_crew/dashboard/project_folders.py`, which
+ * refuses the same moves; asked here so a drag or a menu pick the gateway would
+ * refuse is a silent no-op rather than a round-trip that snaps back.
+ */
+export function projectNestingRefused(folders: ChatFolder[], folder: Pick<ChatFolder, 'kind'>, parentId: string | null | undefined): boolean {
+  if (!parentId) return false
+  return folder.kind === 'project' || !!projectRootId(folders, parentId)
+}
+
 /**
  * Resolve which agent to use when creating a session in a folder, walking up
  * the folder hierarchy the same way `resolveFolderProjectDir` does.
- * Priority: nearest ancestor's default_agent → globalDefaultAgent → undefined
+ * Priority: the project agent inside a Project → nearest ancestor's
+ * default_agent → globalDefaultAgent → undefined
  *
  * An empty `default_agent` on a subfolder means "inherit", not "use the global
  * default": a subfolder of an agent-pinned folder would otherwise silently run
@@ -41,6 +71,7 @@ export function resolveFolderAgent(
   folderId: string,
   globalDefaultAgent: string
 ): string | undefined {
+  if (projectRootId(folders, folderId)) return PROJECT_AGENT
   return nearestFolderValue(folders, folderId, f => f.default_agent)
     || globalDefaultAgent
     || undefined

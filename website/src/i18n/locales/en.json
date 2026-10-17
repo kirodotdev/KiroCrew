@@ -7105,7 +7105,9 @@
       "broadcast_col_result": "Result",
       "broadcast_open_unknown": "Not confirmed · open",
       "broadcast_delivery_hint": "No running work is interrupted: a running turn reads it after its current tool call; an idle session starts a new turn.",
-      "broadcast_retry": "Retry {{n}} failed"
+      "broadcast_retry": "Retry {{n}} failed",
+      "new_project": "New project",
+      "projects_section": "Projects"
     },
     "contextBreakdown": {
       "axis_turn_n": "Turn {{n}}",

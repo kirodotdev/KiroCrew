@@ -42,6 +42,8 @@ if TYPE_CHECKING:
         members_mod,
         person_priority,
         pin_private_agent_store,
+        project_agent_switch_refusal,
+        project_switch_kind,
         read_bounded_json,
         redact_credentials,
         redact_exfiltration_urls,
@@ -283,6 +285,15 @@ async def switch_slot_agent(
             status=409,
         )
     refusal = relay_archive_refusal(slot)
+    if refusal is not None:
+        return refusal
+    # A chat in a Project stays on the project agent: refused before any state
+    # is touched, for the picker, `/agent` and every other caller of this path.
+    # A bare project-agent name binds as the template, never a same-named member.
+    agent_kind = project_switch_kind(state, slot, agent_name, agent_kind)
+    refusal = project_agent_switch_refusal(
+        state, slot, agent_name, agent_kind, caller=caller.remote
+    )
     if refusal is not None:
         return refusal
 

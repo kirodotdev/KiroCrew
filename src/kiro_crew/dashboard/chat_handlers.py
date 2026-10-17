@@ -415,6 +415,15 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     read_bounded_json,
 )
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request  # noqa: F401
+from kiro_crew.dashboard.project_folders import (  # noqa: F401
+    PROJECT_AGENT,
+    PROJECT_AGENT_KIND,
+    bind_unstarted_slot_for_project,
+    is_project_agent,
+    project_agent_switch_refusal,
+    project_root_id,
+    project_switch_kind,
+)
 from kiro_crew.dashboard.relay_archive import relay_archive_refusal  # noqa: F401
 from kiro_crew.dashboard.request_priority import owner_start_priority  # noqa: F401
 from kiro_crew.dashboard.session_folders import (  # noqa: F401

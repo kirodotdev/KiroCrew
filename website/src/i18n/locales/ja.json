@@ -6937,7 +6937,15 @@
       "tags_loading_hint": "タグを読み込んでいます…",
       "tags_error_hint": "タグを読み込めませんでした。",
       "tags_retry": "再試行",
-      "top_level": "トップレベル"
+      "top_level": "トップレベル",
+      "new_project": "新しいプロジェクト",
+      "create_project": "プロジェクトを作成",
+      "new_project_leaf": "新しいプロジェクト",
+      "project_settings": "プロジェクト設定",
+      "project_create_hint": "コンダクター（{{agent}}）がこのプロジェクトを計画し、補助チャットに作業を割り振ります。補助チャットはその下に表示されます。",
+      "project_agent_locked_hint": "このプロジェクトのチャットは {{agent}} で動作するため、エージェントを選ぶ必要はありません。",
+      "project_dir_hint_project": "既存のディレクトリへの絶対パス。このプロジェクト内のすべてのチャットのファイル検索、@-メンションおよびスティアリングファイルのスコープを設定します。",
+      "steering_dirs_hint_project": "このプロジェクト内のすべてのチャットで読み込まれる追加のステアリングディレクトリ。"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "フォルダーの提案",
@@ -12620,7 +12628,9 @@
       "broadcast_col_result": "結果",
       "broadcast_open_unknown": "未確認・開く",
       "broadcast_delivery_hint": "実行中の作業は中断されません。実行中のターンは現在のツール呼び出しの後に読み、待機中のセッションは新しいターンを始めます。",
-      "broadcast_retry": "失敗した {{n}} 件を再試行"
+      "broadcast_retry": "失敗した {{n}} 件を再試行",
+      "new_project": "新しいプロジェクト",
+      "projects_section": "プロジェクト"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",

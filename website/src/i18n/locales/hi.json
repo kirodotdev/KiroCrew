@@ -7058,7 +7058,15 @@
       "tags_loading_hint": "टैग लोड हो रहे हैं…",
       "tags_error_hint": "टैग लोड नहीं हो सके।",
       "tags_retry": "पुनः प्रयास करें",
-      "top_level": "सर्वोच्च स्तर"
+      "top_level": "सर्वोच्च स्तर",
+      "new_project": "नया प्रोजेक्ट",
+      "create_project": "प्रोजेक्ट बनाओ",
+      "new_project_leaf": "नया प्रोजेक्ट",
+      "project_settings": "प्रोजेक्ट सेटिंग्स",
+      "project_create_hint": "एक कंडक्टर ({{agent}}) इस प्रोजेक्ट की योजना बनाता है और काम सहायक चैट को सौंपता है, जो इसके नीचे दिखती हैं।",
+      "project_agent_locked_hint": "इस प्रोजेक्ट की चैट {{agent}} पर चलती हैं, इसलिए कोई एजेंट चुनना नहीं है।",
+      "project_dir_hint_project": "किसी मौजूदा डायरेक्टरी का पूर्ण पथ। इस प्रोजेक्ट की हर चैट के लिए फ़ाइल खोज, @-मेंशन और स्टीयरिंग फ़ाइलों का दायरा तय करता है।",
+      "steering_dirs_hint_project": "इस प्रोजेक्ट की हर चैट के लिए लोड की जाने वाली अतिरिक्त स्टीयरिंग डायरेक्टरी।"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "फ़ोल्डर सुझाव",
@@ -12833,7 +12841,9 @@
       "broadcast_col_result": "नतीजा",
       "broadcast_open_unknown": "पुष्टि नहीं · खोलो",
       "broadcast_delivery_hint": "चल रहा काम नहीं रुकता: चालू टर्न इसे मौजूदा टूल कॉल के बाद पढ़ता है; खाली सेशन नया टर्न शुरू करता है।",
-      "broadcast_retry": "{{n}} विफल फिर से भेजो"
+      "broadcast_retry": "{{n}} विफल फिर से भेजो",
+      "new_project": "नया प्रोजेक्ट",
+      "projects_section": "प्रोजेक्ट"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",

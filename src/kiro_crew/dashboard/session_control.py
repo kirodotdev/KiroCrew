@@ -376,6 +376,10 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.dashboard.create_rate_limit import allow_create  # noqa: F401
     from kiro_crew.dashboard.create_rate_limit import has_create_budget  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import _scrub_text  # noqa: F401
+    from kiro_crew.dashboard.project_folders import PROJECT_AGENT  # noqa: F401
+    from kiro_crew.dashboard.project_folders import PROJECT_AGENT_LOCKED  # noqa: F401
+    from kiro_crew.dashboard.project_folders import project_admits_agent  # noqa: F401
+    from kiro_crew.dashboard.project_folders import project_session_target  # noqa: F401
     from kiro_crew.dashboard.relay_archive import RELAY_ARCHIVE_CODE  # noqa: F401
     from kiro_crew.dashboard.relay_archive import RELAY_ARCHIVE_ERROR  # noqa: F401
     from kiro_crew.dashboard.relay_archive import is_relay_archive  # noqa: F401

@@ -2,26 +2,13 @@
  *  the member creators this page does not list), and which conductors are open. */
 import { useMemo, useEffect, useState, useCallback, useRef } from 'react'
 import type { Slot } from './types'
-import { buildLineage, ancestorsOf } from '../../lib/sessionLineage'
+import { ancestorsOf } from '../../lib/sessionLineage'
 import { safeSetItem } from '../../utils/safeStorage'
 import { isPeerRow, sessionRowIdentity } from './rowIdentity'
 import { readConductorExpanded, CONDUCTOR_EXPANDED_LS_KEY } from './persistence'
 import type { ChatSlot } from '../../types'
-
-/**
- * The creator a row cites, as the (origin, slot key) pair the lane resolves it in, or
- * null when the row cites nobody it could nest under.
- *
- * `parent.key` is a bare slot key in the key space of the row's OWN gateway, so it is
- * resolved among rows of the same `peer_id`. Every reader that asks "does this creator
- * exist" or "which row is it" goes through this, so no two readers resolve it in
- * different spaces.
- */
-export function citedCreatorOf(row: Pick<Slot, 'parent' | 'peer_id'>): { origin: string | undefined; key: string } | null {
-  const cited = row.parent?.key
-  if (cited == null || cited === '') return null
-  return { origin: row.peer_id, key: cited }
-}
+import { rowLineage } from './conductorTree'
+export { citedCreatorOf } from './citedCreator'
 
 /** Whether any row has a creator.
  *
@@ -198,36 +185,9 @@ export function useConductorLane({ conductorLaneActive, allRows, allLiveSlots, i
    */
   const lineage = useMemo(() => {
     if (!conductorLaneActive) return null
-    // The tree is keyed by `sessionRowIdentity`, not by raw slot key: this list mixes
-    // local rows with rows federated from a peer, and the two namespaces collide on
-    // deterministic keys. Keyed raw, one of a colliding pair replaces the other -- a
-    // session disappears and its twin renders twice.
-    //
-    // A citation needs the same care from the other direction. `parent.key` is a bare
-    // slot key in the key space of the CHILD's own gateway, so the creator is the row
-    // carrying that key with the SAME origin. Resolving through this index rather than
-    // composing the qualified form keeps that format the server's alone, and makes a
-    // peer row unable to nest under a local row whose key merely matches.
-    //
-    // Nested by origin rather than keyed on one joined string: there is then no
-    // separator, so no peer id or slot key containing it can be read as the wrong pair.
-    const byOrigin = new Map<string | undefined, Map<string, string>>()
-    for (const s of conductorRows) {
-      let inOrigin = byOrigin.get(s.peer_id)
-      if (inOrigin === undefined) {
-        inOrigin = new Map<string, string>()
-        byOrigin.set(s.peer_id, inOrigin)
-      }
-      inOrigin.set(s.key, sessionRowIdentity(s))
-    }
-    return buildLineage(conductorRows, {
-      identityOf: sessionRowIdentity,
-      parentIdentityOf: s => {
-        const cited = citedCreatorOf(s)
-        if (cited === null) return null
-        return byOrigin.get(cited.origin)?.get(cited.key) ?? null
-      },
-    })
+    // Keyed by `sessionRowIdentity`, with citations resolved within each row's own
+    // origin: see `rowLineage`, which a Project's body builds its tree with too.
+    return rowLineage(conductorRows)
   }, [conductorLaneActive, conductorRows])
 
   /**

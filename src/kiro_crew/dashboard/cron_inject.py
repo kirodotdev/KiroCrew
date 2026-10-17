@@ -16,6 +16,7 @@ from kiro_crew.dashboard.chat_persistence import (
     _validate_turn_timeout_secs,
 )
 from kiro_crew.dashboard.chat_utils import redact_display_content
+from kiro_crew.dashboard.project_folders import is_project_agent, project_admits_agent
 from kiro_crew.dashboard.slot_ownership import app_holds_gateway_key
 from kiro_crew.dashboard.state import (
     DashboardState,
@@ -441,11 +442,22 @@ def chat_folder_for_minted_tab(state: DashboardState, job: "CronJob") -> str:
         except Exception:
             logger.debug("SEL logging failed for a missing cron chat folder", exc_info=True)
         return ""
+    if not _cron_admitted(state, job, target):
+        # A Project's chats run on its conductor; a scheduled run on another
+        # agent is not one of them, so its tab lands unfiled.
+        logger.info("Cron '%s': chat folder %s is a project; tab lands unfiled", job.name, target)
+        return ""
     return target
 
 
 async def _commit_cron_tab_placement(
-    state: DashboardState, job: "CronJob", slot: Any, *, placed: str, restore_to: str
+    state: DashboardState,
+    job: "CronJob",
+    slot: Any,
+    *,
+    placed: str,
+    restore_to: str,
+    only_from: str | None = None,
 ) -> bool:
     """Assign ``slot.folder_id``, commit it to disk, or roll it back; then publish.
 
@@ -466,12 +478,16 @@ async def _commit_cron_tab_placement(
     lock the sidebar's folder endpoint takes. That lock is what makes the cron
     writer and that endpoint take turns: neither one's rollback can undo the
     other's write, and a save from this side cannot land over a newer manual
-    move a person made while it was in flight.
+    move a person made while it was in flight. *only_from*, when given, is the
+    folder the decision to move was read in: re-checked under the lock, so a
+    manual move that committed while this waited for it stands.
     """
     from kiro_crew.dashboard.chat_folders import _slot_meta_txn_lock
     from kiro_crew.dashboard.chat_utils import slot_history_key
 
     async with _slot_meta_txn_lock(state):
+        if only_from is not None and getattr(slot, "folder_id", "") != only_from:
+            return False
         slot.folder_id = placed
         authorized_history_key = slot_history_key(slot)
         committed = False
@@ -511,8 +527,29 @@ def persist_cron_chat_folder(state: DashboardState, job: "CronJob", slot: Any) -
     target = chat_folder_for_minted_tab(state, job)
     if not target:
         return
+    _schedule_cron_tab_placement(state, job, slot, placed=target, restore_to="")
+
+
+def _cron_admitted(state: DashboardState, job: "CronJob", folder_id: str) -> bool:
+    """Whether the job's agent may have its tab in *folder_id* (see project_folders)."""
+    agent, kind = (job.member_id, "member") if job.member_id else (job.agent_id, "")
+    return project_admits_agent(state._folders, folder_id, agent, kind)
+
+
+def _schedule_cron_tab_placement(
+    state: DashboardState,
+    job: "CronJob",
+    slot: Any,
+    *,
+    placed: str,
+    restore_to: str,
+    only_from: str | None = None,
+) -> None:
+    """Run :func:`_commit_cron_tab_placement` on a tracked background task."""
     task = asyncio.create_task(
-        _commit_cron_tab_placement(state, job, slot, placed=target, restore_to="")
+        _commit_cron_tab_placement(
+            state, job, slot, placed=placed, restore_to=restore_to, only_from=only_from
+        )
     )
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
@@ -534,6 +571,10 @@ async def move_cron_job_tab(
         return
     slot = state.get_slot(f"cron-{job.id}")
     if slot is None or getattr(slot, "folder_id", "") != previous_folder_id:
+        return
+    if not _cron_admitted(state, job, new_folder_id):
+        # As at mint (`chat_folder_for_minted_tab`): a run on another agent is
+        # not a Project chat, so its tab is not moved into one.
         return
     await _commit_cron_tab_placement(
         state, job, slot, placed=new_folder_id, restore_to=previous_folder_id
@@ -628,6 +669,19 @@ def _bind_cron_slot(
     _sync_dashboard_slots(state)
     if minted:
         persist_cron_chat_folder(state, job, slot)
+    elif (
+        getattr(slot, "folder_id", "")
+        and not _cron_admitted(state, job, slot.folder_id)
+        and is_project_agent(getattr(slot, "agent", ""), getattr(slot, "agent_kind", ""))
+    ):
+        # The tab was filed in a Project while the job ran on the conductor, and
+        # the job's agent has changed since: runs on the new agent are not Project
+        # chats, so the tab leaves it. A tab a person dragged in as an existing
+        # chat on its own agent stays where they put it, and so does one a person
+        # moves while this placement waits for the metadata lock (`only_from`).
+        _schedule_cron_tab_placement(
+            state, job, slot, placed="", restore_to=slot.folder_id, only_from=slot.folder_id
+        )
     return slot
 
 

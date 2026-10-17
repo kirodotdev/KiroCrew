@@ -7179,7 +7179,15 @@
       "tags_loading_hint": "Chargement des étiquettes…",
       "tags_error_hint": "Impossible de charger les étiquettes.",
       "tags_retry": "Réessayer",
-      "top_level": "Niveau supérieur"
+      "top_level": "Niveau supérieur",
+      "new_project": "Nouveau projet",
+      "create_project": "Créer le projet",
+      "new_project_leaf": "nouveau projet",
+      "project_settings": "Paramètres du projet",
+      "project_create_hint": "Un chef d'orchestre ({{agent}}) planifie ce projet et confie le travail à des conversations d'appoint, affichées en dessous.",
+      "project_agent_locked_hint": "Les conversations de ce projet s'exécutent sur {{agent}} : il n'y a pas d'agent à choisir.",
+      "project_dir_hint_project": "Chemin absolu vers un répertoire existant. Limite la recherche de fichiers, les mentions @ et les fichiers de steering pour chaque conversation de ce projet.",
+      "steering_dirs_hint_project": "Répertoires de steering supplémentaires chargés pour chaque conversation de ce projet."
     },
     "folderSuggestionCard": {
       "folder_suggestion": "Suggestion de dossier",
@@ -13046,7 +13054,9 @@
       "broadcast_col_result": "Résultat",
       "broadcast_open_unknown": "Non confirmé · ouvrir",
       "broadcast_delivery_hint": "Aucun travail en cours n’est interrompu : un tour actif le lit après l’appel d’outil en cours ; une session inactive commence un nouveau tour.",
-      "broadcast_retry": "Réessayer {{n}} en échec"
+      "broadcast_retry": "Réessayer {{n}} en échec",
+      "new_project": "Nouveau projet",
+      "projects_section": "Projets"
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",

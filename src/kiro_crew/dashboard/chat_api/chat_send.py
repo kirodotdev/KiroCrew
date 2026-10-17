@@ -60,6 +60,8 @@ if TYPE_CHECKING:
         normalize_send_id,
         normalize_theme_consent_sha,
         pin_private_agent_store,
+        project_agent_switch_refusal,
+        project_switch_kind,
         queue_for_next_turn,
         queued_text_for_display,
         quote_meta,
@@ -666,6 +668,11 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         else:
             logger.debug("agent match for slot=%s agent=%s", slot.key, agent)
     elif _send_binds_agent(agent, slot):
+        # A chat in a Project runs on the project agent: a send cannot bind any
+        # other onto an agent-less one (dashboard/project_folders.py).
+        refusal = project_agent_switch_refusal(state, slot, agent, "", caller=request.remote or "")
+        if refusal is not None:
+            return refusal
         # Slot has no agent — set it if not running
         if slot.running:
             _emit_agent_assignment(slot.key, agent, outcome="denied_running")
@@ -674,6 +681,8 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 status=409,
             )
         slot.agent = agent
+        # In a Project the conductor binds as the template, never a same-named crewmate.
+        slot.agent_kind = project_switch_kind(state, slot, agent, slot.agent_kind)
         _emit_agent_assignment(slot.key, agent)
     else:
         # No agent on slot, no agent in request — nothing to enforce.

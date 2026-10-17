@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { X } from 'lucide-react'
 import { SplitGlyph } from './SplitGlyph'
 import { useQuery } from '@tanstack/react-query'
+import { useProjectAgentLocked } from '../hooks/useProjectAgentLocked'
 import ChatMessageList from '../app-sdk/ChatMessageList'
 import type { VirtualTranscriptHandle } from '../app-sdk/ChatMessageList'
 import { EdgeFade, JumpToBottomButton } from '../app-sdk/ChatScrollChrome'
@@ -171,6 +172,11 @@ export default function ChatPane({
   // has_more freezes at mount while a later bounded warm can truncate the cache.
   const warmHasMore = useAppSelector((s) => s.chat.slotPaneHasMore?.[slotKey])
   const paneSlot = useAppSelector((s) => s.dashboard.slots.find((x) => x.key === slotKey))
+  // A chat in a Project runs on the conductor and its agent cannot change
+  // (refused server-side), so the pane locks its picker exactly as a caller's
+  // `agentLocked` does.
+  const { locked: projectAgentLocked, error: projectLockError } = useProjectAgentLocked(paneSlot?.folder_id)
+  const agentPickerLocked = !!agentLocked || projectAgentLocked
   // Older history for the ACTIVE slot. That slot reads the store's main list,
   // which `switchSlot` loads one bounded page of; the full chat page walks the
   // rest with `loadOlderMessages`, and a pane showing the active slot (the
@@ -461,7 +467,7 @@ export default function ChatPane({
 
 
   const { messageQuote, paneHiddenCommands, slashError, setSlashError, doSend, doSteer, onDirectQuestionSend } = useChatPaneSend({
-    slotKey, crewmate, dispatch, draft, composerRef, busy, running, paneSlot, scrollToBottom, openSideChat, agentLocked, paneAgentName, pendingQuestion, markCrewmateSent,
+    slotKey, crewmate, dispatch, draft, composerRef, busy, running, paneSlot, scrollToBottom, openSideChat, agentLocked: agentPickerLocked, paneAgentName, pendingQuestion, markCrewmateSent,
   })
   const { recoverInto: recoverQuoteInto } = messageQuote
 
@@ -885,6 +891,16 @@ export default function ChatPane({
           testId="chat-pane-model-default-error"
           message={chipDefault.failed ? i18nT('pages.settings.chatPanel.failed_to_load_config') : ''}
         />
+        {/* No hand-off: same unsent draft. Without the folder list the pane cannot
+            tell whether this chat is in a Project (whose agent is locked); the
+            read retries in place and the gateway refuses a locked change. */}
+        <ErrorNotice
+          variant="inline"
+          className="mx-4 mt-2"
+          testId="chat-pane-folders-error"
+          title={projectLockError ? i18nT('pages.chatSidebar.folders_load_failed') : undefined}
+          message={projectLockError?.message}
+        />
         {/* No hand-off: the composer draft is untouched by a failed stop; the
             turn is still running, so the Stop button stays for a retry. */}
         {/* No hand-off: a refused command leaves its text in the composer, and
@@ -999,7 +1015,7 @@ export default function ChatPane({
           contextPct={contextPct}
           contextUsedTokens={contextTokens?.used}
           contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}
-          onAgentClick={!agentLocked && provider.capabilities.agentTemplates ? (rect, trigger) => { anchorAgentBtn(rect, trigger); agentDD.setOpen(!agentDD.open) } : undefined}
+          onAgentClick={!agentPickerLocked && provider.capabilities.agentTemplates ? (rect, trigger) => { anchorAgentBtn(rect, trigger); agentDD.setOpen(!agentDD.open) } : undefined}
           onModelClick={(rect, trigger) => { anchorModelBtn(rect, trigger); modelDD.setOpen(!modelDD.open) }}
           approvalMode={displayMode}
           followUpOptions={followUpOptions}

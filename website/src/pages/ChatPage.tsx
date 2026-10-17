@@ -650,7 +650,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const sessionControlState = useComposerSessionControls({ activeSlot, currentSlot, queryClient })
   const {
     sessionControls, openSessionControl, setOpenSessionControl, sessionControlRect, anchorSessionControl,
-    refreshSessionControlStatuses, activeFolderName, sessionControlKey, sessionControlStatuses, chatFolders,
+    refreshSessionControlStatuses, activeFolderName, activeAgentLocked, sessionControlKey, sessionControlStatuses, chatFolders,
     chatFoldersError, chatFoldersLoaded, mobileNewSessionInFlightRef, mobileNewSessionBusy, setMobileNewSessionBusy,
   } = sessionControlState
   // One source for both same-meaning markers in the agent pop-up: the row's check and
@@ -1054,7 +1054,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               composerRootChange={composerRootChange} composerUserEdit={composerUserEdit} followUpMulti={followUpMulti} followUpOptions={followUpOptions} followUpPicked={followUpPicked}
               followUpPickedRef={followUpPickedRef} followUpSourceKey={followUpSourceKey} toggleFollowUpOption={toggleFollowUpOption} dashCfg={dashCfg} jevAutoConsented={jevAutoConsented}
               refusedPress={refusedPress} setRefusedPress={setRefusedPress} send={send} pickModel={pickModel} setProject={setProject} switchAgent={switchAgent} currentSlot={currentSlot}
-              activeFolderName={activeFolderName} anchorSessionControl={anchorSessionControl} openSessionControl={openSessionControl} refreshSessionControlStatuses={refreshSessionControlStatuses}
+              activeFolderName={activeFolderName} agentLocked={activeAgentLocked} anchorSessionControl={anchorSessionControl} openSessionControl={openSessionControl} refreshSessionControlStatuses={refreshSessionControlStatuses}
               sessionControlKey={sessionControlKey} sessionControlRect={sessionControlRect} sessionControls={sessionControls} setOpenSessionControl={setOpenSessionControl}
               activeAgentName={activeAgentName} attachmentAnnouncement={attachmentAnnouncement} clampOutOfTokens={clampOutOfTokens} handleAddToContext={handleAddToContext}
               mentionKeyEdit={mentionKeyEdit} optimizerMentionGuard={optimizerMentionGuard} removeDirChip={removeDirChip} removeFileChip={removeFileChip} selectPickedFile={selectPickedFile}

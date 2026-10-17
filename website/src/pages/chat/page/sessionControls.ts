@@ -6,6 +6,7 @@ import { useAnchoredTriggerRect } from '../../../hooks/useAnchoredTriggerRect'
 import { useFolderSortMode } from '../../../hooks/useFolderSortMode'
 import { dashboardSessionKey, SESSION_CONTROL_STATUS_KEY, useSessionControls, useSessionControlStatuses } from '../../../hooks/useSessionControls'
 import type { ChatFolder, ChatSlot } from '../../../types'
+import { projectRootId } from '../../../utils/folderAgent'
 
 /** One shared empty list, so an absent folder cache keeps a stable identity. */
 const NO_CHAT_FOLDERS: ChatFolder[] = []
@@ -79,6 +80,9 @@ export function useComposerSessionControls({ activeSlot, currentSlot, queryClien
   const { mode: folderSortMode, error: folderSortError } = useFolderSortMode()
   const activeFolderName =
     chatFolders.find(f => f.id === currentSlot?.folder_id)?.name || ''
+  // In a Project the agent is locked to the conductor (enforced server-side),
+  // so the composer hides its agent picker.
+  const activeAgentLocked = !!projectRootId(chatFolders, currentSlot?.folder_id)
   // The session IDENTITY, not the display slot. `activeSlot` is the slot id
   // (`chat-2`); the key the rest of the system stores session-scoped state under
   // is `dashboard:<slot>` — the same derivation MobileConnectModal, ChatInput's
@@ -97,7 +101,7 @@ export function useComposerSessionControls({ activeSlot, currentSlot, queryClien
     sessionControls, sessionControlsError,
     openSessionControl, setOpenSessionControl, sessionControlRect, anchorSessionControl,
     refreshSessionControlStatuses,
-    chatFolders, chatFoldersError, chatFoldersLoaded, folderSortMode, folderSortError, activeFolderName,
+    chatFolders, chatFoldersError, chatFoldersLoaded, folderSortMode, folderSortError, activeFolderName, activeAgentLocked,
     mobileNewSessionInFlightRef, mobileNewSessionBusy, setMobileNewSessionBusy,
     sessionControlKey, sessionControlStatuses, sessionControlStatusError,
   }

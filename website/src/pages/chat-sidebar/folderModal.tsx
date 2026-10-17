@@ -2,19 +2,22 @@
  *  write and closes only on success, and an edit sends only the fields the
  *  person touched. */
 import FolderConfigModal from '../../components/FolderConfigModal'
+import type { ChatFolder } from '../../types'
 import { safeSetItem } from '../../utils/safeStorage'
 import { FLAT_VIEW_LS_KEY } from './persistence'
 import type { FolderModalTarget, SidebarScope } from './scope'
 
 /** The modal for the folder the sidebar targets. */
 export function renderFolderModal(shell: SidebarScope, folderModal: FolderModalTarget): React.ReactNode {
-  const { createFolderMutation, defaultAgent, flatView, folders, installedAgents, refetchTags, setFlatView,
-    setFolderModal, tagsData, tagsQueryFailed, updateFolderMutation } = shell
+  const { createChatInFolder, createFolderMutation, defaultAgent, flatView, folders, installedAgents, refetchTags,
+    setFlatView, setFolderModal, tagsData, tagsQueryFailed, updateFolderMutation } = shell
+  const kind = folderModal.mode === 'create' ? folderModal.kind : undefined
   return (
         <FolderConfigModal
           open={true}
           mode={folderModal.mode}
           parentId={folderModal.mode === 'create' ? folderModal.parentId : undefined}
+          kind={kind}
           folder={folderModal.mode === 'edit' ? folders.find(f => f.id === folderModal.folderId) : undefined}
           folders={folders}
           installedAgents={installedAgents}
@@ -29,7 +32,21 @@ export function renderFolderModal(shell: SidebarScope, folderModal: FolderModalT
             // sensitive) and a multi-emoji icon with a 400; closing optimistically
             // discarded the whole draft with no feedback. Rethrowing lets the modal
             // stay open and render the reason.
-            if (folderModal.mode === 'create') {
+            if (folderModal.mode === 'create' && kind === 'project') {
+              // New > Project: a name and an optional directory, then the
+              // project's first chat. That chat's agent is bound server-side
+              // (dashboard/project_folders.py), so nothing here names one.
+              const project = await createFolderMutation.mutateAsync({
+                name: draft.name,
+                projectDir: draft.projectDir,
+                kind: 'project',
+              }) as ChatFolder
+              if (flatView) {
+                setFlatView(false)
+                safeSetItem(FLAT_VIEW_LS_KEY, '0')
+              }
+              if (project?.id) createChatInFolder(project.id, { focus: true })
+            } else if (folderModal.mode === 'create') {
               await createFolderMutation.mutateAsync({
                 name: draft.name,
                 parentId: folderModal.parentId || undefined,

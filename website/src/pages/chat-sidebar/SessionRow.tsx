@@ -1331,7 +1331,10 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 *  every sidebar commit for a crossfade that fires only on the
                 *  rare agent switch, and the repo's animation invariant is
                 *  framer-only (no new CSS @keyframes). */}
-              <span key={agentName || 'empty'} title={agentDisplay || undefined} className={`truncate shrink-0 ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentDisplay || '\u00A0'}</span>
+              {/* Shrinks (and ellipsizes) before the trailing meta does: a conductor's
+                *  count badges plus a long agent name overflow a narrow row, and the
+                *  clipped side was the timestamp. A name that fits is unchanged. */}
+              <span key={agentName || 'empty'} title={agentDisplay || undefined} className={`truncate min-w-0 ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentDisplay || '\u00A0'}</span>
               {/* WHY this card is sitting above its folder's other rows, in a
                 *  word, beside the agent name that is the card's own first line.
                 *  The accent bar down its left edge groups the card with the

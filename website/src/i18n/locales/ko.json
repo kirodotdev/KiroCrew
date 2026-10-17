@@ -6937,7 +6937,15 @@
       "tags_loading_hint": "태그를 불러오는 중…",
       "tags_error_hint": "태그를 불러오지 못했습니다.",
       "tags_retry": "다시 시도",
-      "top_level": "최상위"
+      "top_level": "최상위",
+      "new_project": "새 프로젝트",
+      "create_project": "프로젝트 만들기",
+      "new_project_leaf": "새 프로젝트",
+      "project_settings": "프로젝트 설정",
+      "project_create_hint": "컨덕터({{agent}})가 이 프로젝트를 계획하고 보조 채팅에 작업을 나눠 줍니다. 보조 채팅은 그 아래에 표시됩니다.",
+      "project_agent_locked_hint": "이 프로젝트의 채팅은 {{agent}}에서 실행되므로 선택할 에이전트가 없습니다.",
+      "project_dir_hint_project": "기존 디렉터리의 절대 경로입니다. 이 프로젝트의 모든 채팅에 대해 파일 검색, @-멘션, 스티어링 파일의 범위를 정합니다.",
+      "steering_dirs_hint_project": "이 프로젝트의 모든 채팅에 대해 로드되는 추가 스티어링 디렉터리입니다."
     },
     "folderSuggestionCard": {
       "folder_suggestion": "폴더 제안",
@@ -12620,7 +12628,9 @@
       "broadcast_col_result": "결과",
       "broadcast_open_unknown": "확인 안 됨 · 열기",
       "broadcast_delivery_hint": "진행 중인 작업은 중단되지 않아요. 실행 중인 턴은 현재 도구 호출이 끝난 뒤 읽고, 쉬는 세션은 새 턴을 시작해요.",
-      "broadcast_retry": "실패한 {{n}}개 다시 보내기"
+      "broadcast_retry": "실패한 {{n}}개 다시 보내기",
+      "new_project": "새 프로젝트",
+      "projects_section": "프로젝트"
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",

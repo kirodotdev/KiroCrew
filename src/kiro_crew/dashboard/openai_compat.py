@@ -28,6 +28,12 @@ from kiro_crew.context import _neutralize_structural_markers
 from kiro_crew.dashboard.chat_handlers import write_sse_or_abort
 from kiro_crew.dashboard.chat_runner import TURN_FAILED_META, _run_chat
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
+from kiro_crew.dashboard.project_folders import (
+    PROJECT_AGENT,
+    PROJECT_AGENT_LOCKED,
+    project_pins_agent,
+    project_switch_kind,
+)
 from kiro_crew.dashboard.relay_archive import (
     RELAY_ARCHIVE_CODE,
     RELAY_ARCHIVE_ERROR,
@@ -585,7 +591,30 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                 },
                 status=409,
             )
+        if project_pins_agent(state, slot, agent, ""):
+            # A chat in a Project runs on the project agent (project_folders.py).
+            sel().log_api_access(
+                caller=request.remote or "",
+                operation="openai_compat.chat",
+                outcome="denied",
+                source="project_lock",
+                resources=f"slot={slot.key} agent={agent}",
+                error="chats in a project run on the project agent",
+            )
+            return web.json_response(
+                {
+                    "error": {
+                        "message": f"chats in a project run on {PROJECT_AGENT}",
+                        "type": "invalid_request_error",
+                        "code": PROJECT_AGENT_LOCKED,
+                    },
+                    "code": PROJECT_AGENT_LOCKED,
+                },
+                status=409,
+            )
         slot.agent = agent
+        # In a Project the conductor binds as the template, never a same-named crewmate.
+        slot.agent_kind = project_switch_kind(state, slot, agent, slot.agent_kind)
     slot.append("user", prompt, "msg msg-u")
 
     # SEL audit for tool invocation visibility

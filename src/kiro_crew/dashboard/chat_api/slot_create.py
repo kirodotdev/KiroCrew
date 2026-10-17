@@ -16,6 +16,8 @@ if TYPE_CHECKING:
         _CREATABLE_MODES,
         _DEFERRED_PLAIN_CREATE_KNOWN_KEYS,
         ARTIFACT_SLUG_RE,
+        PROJECT_AGENT,
+        PROJECT_AGENT_KIND,
         DashboardState,
         KiroCrewConfig,
         MemoryStartupUnavailable,
@@ -36,6 +38,7 @@ if TYPE_CHECKING:
         _sync_dashboard_slots,
         _unhide_folder,
         _workspace_name_for_dir,
+        bind_unstarted_slot_for_project,
         create_session_folder,
         cron_creator_admission,
         cron_slot_creator,
@@ -47,11 +50,13 @@ if TYPE_CHECKING:
         effective_session_key,
         folder_principal,
         is_owner_dashboard_request,
+        is_project_agent,
         is_sensitive_path,
         logger,
         members_mod,
         owner_start_priority,
         pin_private_agent_store,
+        project_root_id,
         read_bounded_json,
         redact_credentials,
         redact_exfiltration_urls,
@@ -201,6 +206,11 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             status=409,
         )
     folder_project = ""
+    if existing_slot is None and project_root_id(state._folders, folder_id):
+        # A new chat in a Project runs on the project agent, whatever the
+        # request named: the lock is decided here, server-side, not by the
+        # client hiding its picker (see dashboard/project_folders.py).
+        agent, agent_kind, app_agent_owner = PROJECT_AGENT, PROJECT_AGENT_KIND, ""
     if folder_id and (existing_slot is None or not existing_slot.project):
         folder_snapshot = await state.read_folders(
             lambda folders: [dict(folder) for folder in folders]
@@ -218,6 +228,14 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 },
                 status=400,
             )
+    if existing_slot is not None and folder_id:
+        # Naming an existing chat files it here (below): a never-run one moving
+        # INTO a Project goes on the project agent first, as the folder PATCH does.
+        # After the folder's own validation, so a refused request switches nothing.
+        if refused := await bind_unstarted_slot_for_project(
+            state, request, existing_slot, str(name), folder_id
+        ):
+            return refused
     # Binding resolution checks memory readiness. A fresh conversation gets
     # the same bounded recovery grace as its first turn, before any slot or
     # protected assignment is published.
@@ -442,6 +460,18 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                     exc,
                 )
             return web.json_response({"error": str(exc)}, status=409)
+        if (
+            slot is not existing_slot
+            and project_root_id(state._folders, folder_id)
+            and not is_project_agent(slot.agent, slot.agent_kind)
+        ):
+            # The top of this request decided how to treat this name, but the chat
+            # under it changed during the awaits (made, or replaced): a chat this
+            # request did not bind is not its to file into a Project.
+            return web.json_response(
+                {"error": "session was created meanwhile", "code": "session_rebound"},
+                status=409,
+            )
         if is_new_slot and agent_kind and not slot.agent_kind:
             # The namespace the name was stated (or stamped) in travels with the
             # slot from birth, for every caller: the owner branch below re-records

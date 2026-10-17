@@ -33,6 +33,7 @@ from kiro_crew.dashboard.chat_folders import (
 )
 from kiro_crew.dashboard.chat_utils import _normalize_model, drained_to_thread, slot_history_key
 from kiro_crew.dashboard.create_rate_limit import SESSION_CREATE, allow_create, has_create_budget
+from kiro_crew.dashboard.project_folders import project_session_target
 from kiro_crew.dashboard.session_control_parts.caller_access import (
     UNATTENDED_SLOT_PREFIXES,
     SessionControlError,
@@ -249,6 +250,13 @@ async def create_session(
     # cross-workspace target, so a child left in "default" would be a boundary
     # crossing its own creator could not then read or stop.
     workspace = getattr(caller_slot, "workspace", "default") or "default"
+
+    # Projects (dashboard/project_folders.py): a project conductor's worker is
+    # filed beside it with the agent it asked for; any other create into a
+    # project is bound to the project agent, server-side.
+    folder_id, agent, agent_kind = project_session_target(
+        state, caller_slot, folder_id, agent, agent_kind
+    )
 
     # Match dashboard-native creation: filing a dispatched session in a
     # project-linked folder gives the child that folder's nearest inherited

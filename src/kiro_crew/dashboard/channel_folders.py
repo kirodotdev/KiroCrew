@@ -50,6 +50,7 @@ from kiro_crew.config.loader import (
     _coerce_session_folder,
 )
 from kiro_crew.config.schema import requires_restart
+from kiro_crew.dashboard.project_folders import project_root_id
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -209,7 +210,14 @@ async def folder_id_for_name(state: "DashboardState", namespace: str, name: str)
     ns = (namespace or "").lower()
 
     def _find(folders: list[dict]) -> dict | None:
-        return _find_folder(folders, name, ns)
+        found = _find_folder(folders, name, ns)
+        # A Project's chats run on its conductor, and a channel arrival is not
+        # one of them: a channel folder inside a Project files nothing, on every
+        # path that resolves it here (the reconcile pass, an inbound message, the
+        # backfill), so no placement is ever persisted into one.
+        if found is not None and project_root_id(folders, str(found.get("id") or "")):
+            return None
+        return found
 
     existing = await state.read_folders(_find)
     if existing is None:

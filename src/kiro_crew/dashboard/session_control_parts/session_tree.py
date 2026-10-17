@@ -20,6 +20,11 @@ from kiro_crew.dashboard.chat_fork import (
     resolve_fork_source,
 )
 from kiro_crew.dashboard.create_rate_limit import SESSION_CREATE, allow_create
+from kiro_crew.dashboard.project_folders import (
+    PROJECT_AGENT,
+    PROJECT_AGENT_LOCKED,
+    project_admits_agent,
+)
 from kiro_crew.dashboard.session_control_parts.caller_access import (
     UNATTENDED_SLOT_PREFIXES,
     SessionControlError,
@@ -204,6 +209,14 @@ async def fork_session(
 
         if not await state.read_folders(_exists):
             raise SessionControlError("folder not found", code="folder_not_found")
+        if not project_admits_agent(
+            state._folders, folder_id, source_slot.agent, source_slot.agent_kind
+        ):
+            raise SessionControlError(
+                f"a fork filed in a project must run on {PROJECT_AGENT}",
+                code=PROJECT_AGENT_LOCKED,
+                status=409,
+            )
 
     # Re-gate adjacent to the allocation, as `create_session` does: every input
     # above was read before this coroutine suspended (the folder confirmation),

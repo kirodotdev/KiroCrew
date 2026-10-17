@@ -8,7 +8,7 @@ import { motion } from 'framer-motion'
 import { DndContext, DragOverlay, MeasuringStrategy, type Modifier } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { sessionRefBlockReason } from '../../utils/sessionRefs'
-import { ancestorsOf, closedCreatorCitation, descendantsOf, orphanCitation } from '../../lib/sessionLineage'
+import { ancestorsOf } from '../../lib/sessionLineage'
 import { LIST_BODY_CLS } from '../../components/listShell'
 import { DndActiveProbe, DndDroppable } from '../../components/dnd'
 import { collectFolderSubtreeIds } from '../../utils/folderTree'
@@ -19,8 +19,9 @@ import { sidebarCollision } from './dnd/collision'
 import { ChatPaneDropZone, RootDropHint, SortableFolderBlock, FolderDragGhost, SessionDragGhost } from './dnd/targets'
 import type { Slot } from './types'
 import { sessionRowIdentity } from './rowIdentity'
-import { citedCreatorOf } from './conductor'
+import { conductorTreeRows, flattenedTreeRows, wantsUserOf } from './conductorTree'
 import { COLLAPSE_FLOOR_ATTR } from './collapseFloor'
+import { ProjectsSection } from './ProjectsSection'
 import { PinnedSessionDivider, dateSegment } from './chrome'
 import type { LaneRows } from './laneRows'
 import type { FolderBlocks } from './folderBlocks'
@@ -74,7 +75,7 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
     renderOlderSessionsHint, renderSessionRow, renderStaleSection, reportDndActive, rootFolderIds,
     rootFolders, rowAnimEnabled, searchRanked, setLaneScrollEl, shownCrewGroups, shownCrewRowCount,
     sidebarRows, slotFilter, slotFolders, sortKey, splitStale, staleExpanded, startsAutomaticSection,
-    subagentApprovalCounts, ungroupedSlots, unreadSet, visibleRootFolders } = shell
+    subagentApprovalCounts, ungroupedSlots, unreadSet, visibleRootFolders, visibleRootProjects, rootProjectIds } = shell
   // True while actively dragging a session that currently lives in a folder.
   // Used to reveal the empty-state drop placeholder inside the "No folder"
   // group so there's always a reachable ungroup target.
@@ -165,89 +166,17 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                 kept.add(id)
                 for (const up of ancestorsOf(id, tree.parentOf)) kept.add(up)
               }
-              const keptKids = (key: string) =>
-                (tree.children.get(key) ?? []).filter(k => kept.has(k))
-              const rows: Array<{ id: string; slot: Slot; depth: number; childCount: number; expanded: boolean; orphanOf: string | null; citesParent?: string | null; anchorOnly: boolean; aggregate: { needsYou: number; running: number } | null }> = []
-
-              /** Does this row want the user? The same two signals the row itself
-               *  renders as a dot or a subtitle, so a collapsed conductor's badge and
-               *  its children's badges can never disagree. */
-              // Both predicates are derived from the state the CHILD ROWS themselves
-              // render from, because the collapsed aggregate claims to be the same fact
-              // at a coarser zoom: a count that disagrees with the glyphs it stands for
-              // is worse than no count. `runningSet` is the widened signal -- own turn,
-              // a live workflow, or a loop -- so a workflow-active child is counted the
-              // way its own row is drawn, and a subagent awaiting approval is an ask
-              // even though the slot itself carries no `pending_approval`.
+              // The walk itself is shared with a Project's body (./conductorTree).
               const isRunning = sidebarRows.isRunning
-              const wantsUser = (s: Slot) =>
-                !!(
-                  s.pending_approval
-                  || s.needs_input
-                  || (subagentApprovalCounts[s.key] || 0) > 0
-                  || (unreadSet.has(s.key) && !isRunning(s))
-                )
-
-              const emit = (key: string, depth: number) => {
-                const slot = byKey.get(key)
-                if (!slot) return
-                const kids = keptKids(key)
-                const expanded = conductorExpanded.has(key)
-                const subtree = kids.length > 0 && !expanded
-                  ? descendantsOf(key, tree.children).filter(k => kept.has(k))
-                  : []
-                // Which of the two citation glyphs this row earns. `orphanCitation` only
-                // knows the row was placed under nothing; whether that is because the
-                // creator closed or because the folder filter conceals it is decided
-                // against the unfiltered population. A creator that is still there is
-                // open and running, so saying it closed would be false.
-                //
-                // `closedCreatorCitation` is the row the backend re-parented: it IS
-                // placed, under the nearest ancestor still open, and its own creator
-                // closed. Same fact as an orphan's, so the same glyph, and the backend
-                // said so outright -- which is why `ancestor` settles the reading here
-                // rather than the population being consulted for it.
-                const placedUnder = tree.parentOf.get(key) ?? null
-                const cited = orphanCitation(slot, placedUnder)
-                  ?? closedCreatorCitation(slot, placedUnder)
-                const creator = citedCreatorOf(slot)
-                const creatorStillOpen = cited != null && slot.parent?.ancestor !== true
-                  && creator !== null
-                  && (citedCreatorExists.get(creator.origin)?.has(creator.key) ?? false)
-                rows.push({
-                  id: key,
-                  slot,
-                  depth,
-                  childCount: kids.length,
-                  expanded,
-                  orphanOf: creatorStillOpen ? null : cited,
-                  citesParent: creatorStillOpen ? cited : null,
-                  anchorOnly: !conductorMatching.has(key),
-                  // Only a COLLAPSED conductor aggregates: while it is open its
-                  // children show their own badges, and showing both would count the
-                  // same session twice on one screen.
-                  aggregate: subtree.length > 0
-                    ? {
-                      needsYou: subtree.filter(k => { const c = byKey.get(k); return c ? wantsUser(c) : false }).length,
-                      running: subtree.filter(k => { const c = byKey.get(k); return c ? isRunning(c) : false }).length,
-                    }
-                    : null,
-                })
-                if (!expanded) return
-                for (const kid of kids) emit(kid, depth + 1)
-              }
-
-              if (searching) {
+              const rows = searching
                 // Flattened: every match at depth 0, in the lane's order, with no
                 // chevrons. Matches the flat lane's answer to the same question.
-                for (const s of flatSlots) {
-                  // The cited creator rides along even though the lane is not nesting:
-                  // flattened, a child is otherwise indistinguishable from a root.
-                  rows.push({ id: sessionRowIdentity(s), slot: s, depth: 0, childCount: 0, expanded: false, orphanOf: null, citesParent: s.parent?.slot ?? null, anchorOnly: false, aggregate: null })
-                }
-              } else {
-                for (const key of tree.roots) if (kept.has(key)) emit(key, 0)
-              }
+                ? flattenedTreeRows(flatSlots)
+                : conductorTreeRows({
+                  tree, byKey, kept, matching: conductorMatching, expanded: conductorExpanded,
+                  citedCreatorExists, isRunning,
+                  wantsUser: wantsUserOf({ subagentApprovalCounts, unreadSet, isRunning }),
+                })
 
               return rows.map((row, i) => {
                 const next = i < rows.length - 1 ? rows[i + 1] : null
@@ -437,6 +366,9 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                 {({ setNodeRef }) => (
                   <div ref={setNodeRef} className="flex flex-col flex-1 min-h-0">
                     {localGroupHeader}
+                    <ProjectsSection ids={rootProjectIds}>
+                      {visibleRootProjects.map(f => <SortableFolderBlock key={f.id} folder={f} subtree={[...(folderSubtrees.get(f.id) ?? collectFolderSubtreeIds(folders, f.id))]} siblings={rootProjectIds} reorderable={folderReorderable} dragWithheld={folderDragWithheld} renderFolderBlock={renderFolderBlock} />)}
+                    </ProjectsSection>
                     <SortableContext items={rootFolderIds} strategy={verticalListSortingStrategy}>
                       {visibleRootFolders.map(f => <SortableFolderBlock key={f.id} folder={f} subtree={[...(folderSubtrees.get(f.id) ?? collectFolderSubtreeIds(folders, f.id))]} siblings={rootFolderIds} reorderable={folderReorderable} dragWithheld={folderDragWithheld} renderFolderBlock={renderFolderBlock} />)}
                     </SortableContext>

@@ -2545,7 +2545,15 @@
       "tags_loading_hint": "Loading tags…",
       "tags_error_hint": "Tags couldn't load.",
       "tags_retry": "Retry",
-      "top_level": "Top level"
+      "top_level": "Top level",
+      "new_project": "New project",
+      "create_project": "Create project",
+      "new_project_leaf": "new project",
+      "project_settings": "Project settings",
+      "project_create_hint": "A conductor ({{agent}}) plans this project and hands work to helper chats, which show under it.",
+      "project_agent_locked_hint": "Chats in this project run on {{agent}}, so there is no agent to choose.",
+      "project_dir_hint_project": "Absolute path to an existing directory. Scopes file search, @-mentions and steering files for every chat in this project.",
+      "steering_dirs_hint_project": "Extra steering directories loaded for every chat in this project."
     },
     "folderColorNames": {
       "amber": "Amber",

@@ -137,8 +137,9 @@ export interface ChatSidebarProps {
 /** A setter from `useState`. */
 type SetState<T> = React.Dispatch<React.SetStateAction<T>>
 
-/** The folder the create / settings modal is open for. */
-export type FolderModalTarget = { mode: 'create'; parentId: string } | { mode: 'edit'; folderId: string }
+/** The folder the create / settings modal is open for. `kind: 'project'` is
+ *  New > Project: the created folder is a Project and its first chat opens. */
+export type FolderModalTarget = { mode: 'create'; parentId: string; kind?: 'project' } | { mode: 'edit'; folderId: string }
 
 /** What the sidebar shell hands its render owners (./laneRows, ./folderBlocks,
  *  ./listLanes, ./boardLane, ./SidebarHeader, ./SearchDock,
@@ -526,4 +527,6 @@ export interface SidebarScope {
   rootFolders: ReturnType<typeof useRootFolderLanes>['rootFolders']
   visibleRootFolders: ReturnType<typeof useRootFolderLanes>['visibleRootFolders']
   rootFolderIds: ReturnType<typeof useRootFolderLanes>['rootFolderIds']
+  visibleRootProjects: ReturnType<typeof useRootFolderLanes>['visibleRootProjects']
+  rootProjectIds: ReturnType<typeof useRootFolderLanes>['rootProjectIds']
 }

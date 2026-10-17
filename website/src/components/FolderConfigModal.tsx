@@ -10,7 +10,7 @@ import { FOLDER_COLOR_PALETTE } from './folderColorCatalog'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { ApiError } from '../api/apiError'
 import { parseErrorCode } from '../utils/errorReport'
-import { resolveFolderAgent, resolveFolderProjectDir, resolveFolderSteeringDirs } from '../utils/folderAgent'
+import { PROJECT_AGENT, projectRootId, resolveFolderAgent, resolveFolderProjectDir, resolveFolderSteeringDirs } from '../utils/folderAgent'
 import { ChatFolder, ChatTag } from '../types'
 import { i18nT } from '../i18n/t'
 
@@ -51,6 +51,11 @@ interface Props {
   mode: 'create' | 'edit'
   /** create: parent folder id ('' = top level). Ignored when mode='edit'. */
   parentId?: string
+  /** create: `'project'` collects a new Project (New > Project): only a name
+   *  and an optional project directory, since a project's chats all run on
+   *  the project agent. Ignored when mode='edit' (the folder's own `kind`
+   *  decides there). */
+  kind?: 'project'
   /** edit: the folder being amended. Required when mode='edit'. */
   folder?: ChatFolder
   /** Every folder — powers the read-only destination breadcrumb. */
@@ -118,8 +123,15 @@ function sameDirs(a: string[], b: string[]): boolean {
  * spatial cue the inline input got for free from its own indentation.
  */
 export default function FolderConfigModal({
-  open, onClose, mode, parentId, folder, folders, installedAgents, globalDefaultAgent, availableTags, availableTagsFailed, onRetryTags, onSubmit,
+  open, onClose, mode, parentId, kind, folder, folders, installedAgents, globalDefaultAgent, availableTags, availableTagsFailed, onRetryTags, onSubmit,
 }: Props) {
+  // A Project being created, or the settings of a Project itself.
+  const isProject = mode === 'create' ? kind === 'project' : folder?.kind === 'project'
+  // Any folder whose chats run on the project agent: the project, or a folder
+  // inside one. Its agent is not a choice, so the default-agent field is not shown.
+  const agentLocked = isProject || !!projectRootId(folders, mode === 'edit' ? folder?.id : parentId)
+  // Creating a project asks for its name and directory only.
+  const projectCreate = mode === 'create' && isProject
   const [draft, setDraft] = useState<FolderConfigDraft>(EMPTY)
   const [pickerOpen, setPickerOpen] = useState(false)
   // Which field the shared ProjectPicker is currently feeding: 'project'
@@ -344,13 +356,19 @@ export default function FolderConfigModal({
         onClose={onClose}
         guardAccidentalDismiss={isDirty || saving}
         maxWidth={480}
-        title={mode === 'create' ? i18nT('components.folderConfigModal.new_folder') : i18nT('components.folderConfigModal.folder_settings')}
+        title={projectCreate
+          ? i18nT('components.folderConfigModal.new_project')
+          : isProject
+            ? i18nT('components.folderConfigModal.project_settings')
+            : mode === 'create' ? i18nT('components.folderConfigModal.new_folder') : i18nT('components.folderConfigModal.folder_settings')}
         footer={
           <>
             <span className="mr-auto text-[11px] text-muted-strong">{i18nT('components.folderConfigModal.enter_to_submit')}</span>
             <Btn onClick={onClose} disabled={saving}>{i18nT('components.folderConfigModal.cancel')}</Btn>
             <Btn primary disabled={!canSubmit || saving} data-testid="folder-config-submit" onClick={submit}>
-              {mode === 'create' ? i18nT('components.folderConfigModal.create_folder') : i18nT('components.folderConfigModal.save_changes')}
+              {projectCreate
+                ? i18nT('components.folderConfigModal.create_project')
+                : mode === 'create' ? i18nT('components.folderConfigModal.create_folder') : i18nT('components.folderConfigModal.save_changes')}
             </Btn>
           </>
         }
@@ -373,7 +391,7 @@ export default function FolderConfigModal({
             <ChevronRight size={11} className="text-muted-strong shrink-0" />
             <span className="text-accent font-semibold truncate max-w-[160px]">
               {trimmedName || (mode === 'create'
-                ? i18nT('components.folderConfigModal.new_folder_leaf')
+                ? projectCreate ? i18nT('components.folderConfigModal.new_project_leaf') : i18nT('components.folderConfigModal.new_folder_leaf')
                 : folder?.name)}
             </span>
           </div>
@@ -396,6 +414,7 @@ export default function FolderConfigModal({
             />
           </label>
 
+          {!projectCreate && (<>
           {/* Color — always visible, compact. Leading "no color" swatch
            *  doubles as the remove affordance, so there is no separate reset
            *  control. */}
@@ -450,6 +469,7 @@ export default function FolderConfigModal({
                 size={20}
                 className="shrink-0 text-muted"
                 testId="folder-config-icon-preview"
+                project={isProject}
               />
               <Input
                 id="folder-config-icon-input"
@@ -593,6 +613,8 @@ export default function FolderConfigModal({
             </div>
           )}
 
+          </>)}
+
           {/* Project directory */}
           <div className="flex flex-col gap-1.5">
             <span className="text-[11.5px] font-semibold text-muted">{i18nT('components.folderConfigModal.project_directory')}</span>
@@ -616,10 +638,11 @@ export default function FolderConfigModal({
             {!draft.projectDir && inheritedDir ? (
               <span className="text-[11px] text-muted-strong">{i18nT('components.folderConfigModal.inherited_dir')}</span>
             ) : (
-              <span className="text-[11px] text-muted-strong">{i18nT('components.folderConfigModal.project_dir_hint')}</span>
+              <span className="text-[11px] text-muted-strong">{i18nT(isProject ? 'components.folderConfigModal.project_dir_hint_project' : 'components.folderConfigModal.project_dir_hint')}</span>
             )}
           </div>
 
+          {!projectCreate && (<>
           {/* Extra steering directories — an ordered list of directory rows the
            *  user builds with the SAME ProjectPicker the project-dir field uses
            *  (routed through pickerTarget='steering'). Ancestor dirs accumulate
@@ -666,9 +689,20 @@ export default function FolderConfigModal({
                 ))}
               </div>
             )}
-            <span className="text-[11px] text-muted-strong">{i18nT('components.folderConfigModal.steering_dirs_hint')}</span>
+            <span className="text-[11px] text-muted-strong">{i18nT(isProject ? 'components.folderConfigModal.steering_dirs_hint_project' : 'components.folderConfigModal.steering_dirs_hint')}</span>
           </div>
 
+          </>)}
+
+          {agentLocked ? (
+            // The server binds every new chat here to the project agent, so there
+            // is nothing to pick: say what runs instead of offering a dead control.
+            <span data-testid="folder-config-project-agent" className="text-[11px] text-muted-strong">
+              {projectCreate
+                ? i18nT('components.folderConfigModal.project_create_hint', { agent: PROJECT_AGENT })
+                : i18nT('components.folderConfigModal.project_agent_locked_hint', { agent: PROJECT_AGENT })}
+            </span>
+          ) : (<>
           {/* Default agent. SearchableSelect renders a <button>, not a <select>,
            *  so this block is a plain div like the project-directory one above
            *  and the heading's own key doubles as the control's aria-label — an
@@ -712,6 +746,7 @@ export default function FolderConfigModal({
               <span className="text-[11px] text-muted-strong">{i18nT('components.folderConfigModal.default_agent_hint')}</span>
             )}
           </div>
+          </>)}
         </div>
       </Modal>
 

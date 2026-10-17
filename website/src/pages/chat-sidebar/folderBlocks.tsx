@@ -25,6 +25,9 @@ import { PrivateChatRow } from './PrivateChatRow'
 import { ParentFolderDropTarget, SortableSubfolderBlock } from './dnd/targets'
 import type { Slot } from './types'
 import { detectFolderConductor } from './folderConductor'
+import { conductorTreeRows, flattenedTreeRows, rowLineage, topThreadFirst, wantsUserOf } from './conductorTree'
+import { sessionRowIdentity } from './rowIdentity'
+import { projectNestingRefused, projectRootId } from '../../utils/folderAgent'
 import { DisclosureChevron, FOLDER_BODY_CLS, FOLDER_BODY_OPEN_PADDING, FOLDER_ROW_STICKY_Z, PinnedSessionDivider, isOpenInTabModifierClick } from './chrome'
 import type { LaneRows } from './laneRows'
 import type { SidebarScope } from './scope'
@@ -33,7 +36,7 @@ import { offlineMenuRow, offlineProps } from '../../utils/offline'
 
 /** The folder block renderers for one shell render. */
 export function createFolderBlocks(shell: SidebarScope & LaneRows) {
-  const { activeDrag, armHold, boardLaneActive, connected, createChatInFolder, deleteFolderWithConfirm,
+  const { activeDrag, armHold, boardLaneActive, citedCreatorExists, conductorExpanded, connected, createChatInFolder, deleteFolderWithConfirm,
     disarmHold, dispatch, editName, editScope, editingId, filterHiddenFolders, folderCompare,
     folderConductorPin, folderCreateError, folderDragWithheld, folderEditInputRef, folderNameMatchIds,
     folderReorderable, folderSortMode, folderSubtrees, folders, foldersWithActiveSubtree, heldLane,
@@ -41,7 +44,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     isFolderHidden, listNarrowed, moveFolderTo, onMenuCloseAutoFocus, onOpenSlotInNewTab, onSelectSlot,
     pinned, renameCommit, renderSessionRow, renderStaleSection, revealFlash, revealedContainers,
     searchRanked, setEditName, setEditScope, setEditingId, setFolderCreateError, setFolderModal, setFolderOfflineNotice, sidebarRows,
-    slotFilter, slotFolders, splitStale, staleExpanded, startsAutomaticSection, suppressMenuRestoreRef,
+    slotFilter, slotFolders, splitStale, staleExpanded, startsAutomaticSection, subagentApprovalCounts, suppressMenuRestoreRef,
     toggleCollapse, toggleFolderFilter, toggleReveal, unreadSet, updateFolderMutation } = shell
   /**
    * The session CONDUCTING a folder, derived from the folder's own rows.
@@ -275,6 +278,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     // necessarily seen, and reading one in a menu hung off a different name made
     // the item look like it belonged to something else.
     const conductor = folderConductorOf(folder.id)
+    const isProject = folder.kind === 'project'
     return (
       <>
         {conductor && (
@@ -295,7 +299,9 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
           </Item>
         )}
         <Item data-testid={tid('rename')} {...offlineMenuRow(connected, i18nT('utils.offline.rename_folders'), i18nT('pages.chatSidebar.rename'), () => { suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope('list'); setEditName(folder.name) })}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</Item>
-        <Item data-testid={tid('new-subfolder')} {...offlineMenuRow(connected, i18nT('utils.offline.create_folders'), i18nT('pages.chatSidebar.new_subfolder'), () => { setFolderModal({ mode: 'create', parentId: folder.id }) })}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</Item>
+        {/* A Project holds chats only and sits at the top level (utils/folderAgent
+         *  projectNestingRefused), so it offers neither a subfolder nor a move. */}
+        {!isProject && <Item data-testid={tid('new-subfolder')} {...offlineMenuRow(connected, i18nT('utils.offline.create_folders'), i18nT('pages.chatSidebar.new_subfolder'), () => { setFolderModal({ mode: 'create', parentId: folder.id }) })}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</Item>}
         {/* The two private modes are listed flat, each naming its own action
          *  and what it does with memory. A grouping caption read as a button
          *  at phone width and named the pair with a word no other surface
@@ -306,13 +312,13 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
         <Separator />
         {/* Re-parent: move this folder under another folder or back to the
          *  top level. Self + descendants are excluded (cycle guard). */}
-        <FolderMoveSubmenu variant={variant} label={i18nT('pages.chatSidebar.move_folder_to')} sortMode={folderSortMode}
+        {!isProject && <FolderMoveSubmenu variant={variant} label={i18nT('pages.chatSidebar.move_folder_to')} sortMode={folderSortMode}
           folders={reparentTargets}
           currentFolderId={folder.parent_id || null}
           // Dimmed with its siblings; `moveFolderTo` refuses the pick at the sink.
           offline={!connected}
           offlineTitle={i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.move_folders') })}
-          onPick={pid => moveFolderTo(folder.id, pid)} />
+          onPick={pid => moveFolderTo(folder.id, pid)} />}
         <Item data-testid={tid('settings')} {...offlineMenuRow(connected, i18nT('utils.offline.change_folder_settings'), i18nT('components.folderConfigModal.folder_settings'), () => { setFolderModal({ mode: 'edit', folderId: folder.id }) })}><Settings size={13} /> {i18nT('components.folderConfigModal.folder_settings')}</Item>
         {/* Hide this folder from the session lists (flat lane + tree).
          *  Same state the filter menu's checkboxes drive, reached from the
@@ -364,9 +370,9 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     const hasUnread = folderTreeHasUnread(folder.id)
     const draggable = !!dragHandleProps && editingId !== folder.id
     // Valid "Move folder to" destinations: everything outside this folder's
-    // own subtree (cycle guard). One O(1) lookup, computed once per row.
+    // own subtree (cycle guard), and nothing the Projects rule refuses.
     const subtreeIds = folderSubtrees.get(folder.id) ?? collectFolderSubtreeIds(folders, folder.id)
-    const reparentTargets = folders.filter(f => !subtreeIds.has(f.id))
+    const reparentTargets = folders.filter(f => !subtreeIds.has(f.id) && !projectNestingRefused(folders, folder, f.id))
     // Reveal confirmation for THIS folder. The `kind` check is what keeps a
     // session reveal from lighting up a folder whose id equals that slot key.
     const folderFlash = revealFlash?.kind === 'folder' && revealFlash.key === folder.id
@@ -464,7 +470,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
         className={`folder-row folder-row-sticky group sticky flex items-center gap-2 px-3.5 py-1.5 rounded-md text-sm text-muted transition-all${emptyRow ? '' : ' hover:text-text hover:bg-bg-hover'} ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}${folderFlash ? ` session-reveal-flash${folderFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}>
         {editingId === folder.id && editScope === 'list' ? (
           <>
-            <FolderGlyph color={folder.color} icon={folder.icon} size={14} open={!collapsed} />
+            <FolderGlyph color={folder.color} icon={folder.icon} size={14} open={!collapsed} project={folder.kind === 'project'} />
             <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[13px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => renameCommit(folder.id, editName), onEscape: () => setEditingId(null), onBlur: () => renameCommit(folder.id, editName) })} />
             <span className="text-[11px] text-muted tabular-nums shrink-0">{count}</span>
           </>
@@ -517,6 +523,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
                *  inert row - this product's "click to expand" affordance on a row
                *  that cannot expand. An inert row is always drawn open. */}
               <FolderGlyph color={folder.color} icon={folder.icon} size={14} open={!collapsed || emptyRow}
+                project={folder.kind === 'project'}
                 className={emptyRow ? 'shrink-0 text-muted/40 transition-colors' : undefined}
                 testId={`folder-collapse-${folder.id}`} />
               {/* Double-click rename is a mouse-only power shortcut; the accessible
@@ -778,7 +785,10 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
      * this folder draws. Null while a filter conceals the root, which is also
      * why the row it returns is always one of `allChildSlots` below.
      */
-    const folderConductorSlot = folderConductorPin ? folderConductorOf(folder.id) : null
+    // Inside a Project the body is drawn as the lineage tree instead (below), which
+    // already puts each conductor above the workers it opened, so the pin stands down.
+    const inProject = !!projectRootId(folders, folder.id)
+    const folderConductorSlot = folderConductorPin && !inProject ? folderConductorOf(folder.id) : null
     // What the body draws: every row in the folder except the pinned one. The
     // folder HEADER's count still reads `rowsIn` and so still counts the
     // conductor -- it says how many sessions are filed here, and that is still
@@ -870,17 +880,44 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
         {renderSessionRow(folderConductorSlot, depth + 1, false, treeChildScope, treeChildScope, treeChildContainer, undefined, true)}
       </div>
     )
-    freshChildSlots.forEach((s, i) => {
-      const isActive = isActiveRow(s)
-      const nextIsActive = isActiveRow(freshChildSlots[i + 1])
-      const showDivider = i < freshChildSlots.length - 1 && !isActive && !nextIsActive
-        && !startsAutomaticSection(freshChildSlots, i + 1)
-      if (startsAutomaticSection(freshChildSlots, i)) {
-        childNodes.push(<PinnedSessionDivider key={`pinned-divider-${folder.id}`} />)
-      }
-      childNodes.push(renderSessionRow(s, depth + 1, showDivider, treeChildScope, treeChildScope, treeChildContainer))
-    })
-    if (!searchRanked && staleExpanded.has(folder.id)
+    if (inProject) {
+      // A Project draws its rows as the conductor lane's session tree, built by the
+      // same walk (./conductorTree): the chat the person started first, then -- while
+      // its chevron is open -- the workers it opened, each sub-conductor above its
+      // own workers. Same row view, indent, chevron, counts and open set
+      // (`mc-sidebar-conductor-expanded`) as that lane, and the same answer to a
+      // search: flattened, each match citing its creator. No pinned section: the
+      // order is who opened whom, which a pin does not change.
+      const byKey = new Map(freshChildSlots.map(s => [sessionRowIdentity(s), s] as const))
+      const tree = rowLineage(freshChildSlots)
+      const ids = new Set(byKey.keys())
+      const isRunning = sidebarRows.isRunning
+      const treeRows = searchRanked
+        ? flattenedTreeRows(freshChildSlots)
+        : conductorTreeRows({
+          tree, byKey, kept: ids, matching: ids, expanded: conductorExpanded, citedCreatorExists, isRunning,
+          wantsUser: wantsUserOf({ subagentApprovalCounts, unreadSet, isRunning }),
+          roots: topThreadFirst(tree, byKey),
+        })
+      treeRows.forEach((row, i) => {
+        const next = treeRows[i + 1]
+        const showDivider = next != null && !isActiveRow(row.slot) && !isActiveRow(next.slot)
+        const view = { depth: row.depth, childCount: row.childCount, expanded: row.expanded, aggregate: row.aggregate, orphanOf: row.orphanOf, citesParent: row.citesParent, anchorOnly: row.anchorOnly }
+        childNodes.push(renderSessionRow(row.slot, depth + 1, showDivider, treeChildScope, treeChildScope, treeChildContainer, view))
+      })
+    } else {
+      freshChildSlots.forEach((s, i) => {
+        const isActive = isActiveRow(s)
+        const nextIsActive = isActiveRow(freshChildSlots[i + 1])
+        const showDivider = i < freshChildSlots.length - 1 && !isActive && !nextIsActive
+          && !startsAutomaticSection(freshChildSlots, i + 1)
+        if (startsAutomaticSection(freshChildSlots, i)) {
+          childNodes.push(<PinnedSessionDivider key={`pinned-divider-${folder.id}`} />)
+        }
+        childNodes.push(renderSessionRow(s, depth + 1, showDivider, treeChildScope, treeChildScope, treeChildContainer))
+      })
+    }
+    if (!inProject && !searchRanked && staleExpanded.has(folder.id)
       && staleChildSlots.length > 0 && freshChildSlots.length > 0
       && pinned.has(freshChildSlots[freshChildSlots.length - 1].key)) {
       childNodes.push(<PinnedSessionDivider key={`pinned-divider-stale-${folder.id}`} />)
