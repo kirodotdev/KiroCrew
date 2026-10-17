@@ -1677,10 +1677,10 @@ def _format_acp_error_worded(
             # The retry verdict stays hard-coded -- that is this arm's own finding
             # about the error, not sign-in advice.
             formatted = (
-                "Your session has expired. "
+                "Your sign-in has expired. "
                 f"{host_auth.signed_out_message(backend)} "
-                "Retrying or switching models will not help — this is a "
-                "sign-in issue, not a backend error."
+                "Switching models will not help — this is a sign-in issue, not "
+                "a backend error."
                 f"{req_id_suffix}"
             )
         elif _RE_CONNECTION.search(haystack):
