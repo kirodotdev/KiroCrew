@@ -11,6 +11,8 @@ import { errMessage } from '../utils/thunkError'
 import { useConfirm } from './ConfirmDialog'
 import Clickable from './Clickable'
 import { formatCommentsMessage, type InlineComment } from './CommentOverlay'
+import { ImageCommentComposer } from './ImageCommentComposer'
+import { IMAGE_BOX_DRAFT_SLOT, ImageCommentCtx, boxBelongsToImage, boxRectOf, imageAnchorOf, imageDraftKeyOf, imageUseAt, parseImageBoxDraft, popoverBesideBox, serializeImageBoxDraft, type ImageCommentHost, type ImageBoxPlacement, type ImageUse, type PlainRect } from '../utils/imageComments'
 import SelectionToolbar, { type SelectionAction, type SelectionComposer } from './SelectionToolbar'
 import MarkdownOutlineRail from './MarkdownToc'
 import { usePersistedBool } from '../hooks/usePersistedBool'
@@ -532,6 +534,9 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // guard (a chat-slot switch replaces the side panel wholesale). Per file,
   // per passage; see `composerDraftStoreFor`.
   const composerDraftStore = useMemo(() => composerDraftStoreFor(`mc-comment-composer-draft:${filePath}`), [filePath])
+  // The same for an image box comment: one box per file, kept as its
+  // placement and typed text, so a slot switch brings the box and its text back.
+  const imageBoxDraftStore = useMemo(() => composerDraftStoreFor(`mc-image-box-draft:${filePath}`), [filePath])
 
   // An unsaved comment draft makes this tab NOT clean for the navigate/close
   // guards below: a rail click must open the next file beside it rather than
@@ -542,6 +547,36 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // the panel's own guards clears that slot alone — a draft saved for another
   // passage of this file stays where it is.
   const composerDraftPassageRef = useRef<{ anchor: string; start: number } | null>(null)
+  // The image box being commented on (see "Image box comments" below), declared
+  // here because the draft guards discard it, and the text typed into its box.
+  // The text lives on the host, keyed by the box, so a composer remount (the tab
+  // suspended, a view switch and back) brings it back, and while it holds
+  // anything the tab is not clean, exactly as for a text draft.
+  const [imageBoxDraft, setImageBoxDraft] = useState<(ImageBoxPlacement & Partial<ImageUse> & { filePath: string; fullscreen: boolean }) | null>(null)
+  const imageDraftTextRef = useRef<{ key: string; text: string } | null>(null)
+  const hasCommentDraft = useCallback(() => composerDraftRef.current || !!imageDraftTextRef.current?.text.trim(), [])
+  const discardImageDraft = useCallback(() => {
+    imageDraftTextRef.current = null
+    // A read-only panel never touches the per-path store: the box saved there
+    // belongs to the file tab that drew it.
+    if (!readOnly) imageBoxDraftStore.clear(IMAGE_BOX_DRAFT_SLOT, 0)
+    setImageBoxDraft(null)
+  }, [imageBoxDraftStore, readOnly])
+  // A box with typed text that the panel was torn down under (a chat-slot
+  // switch) comes back on the next mount, its composer placed by its image.
+  // A read-only diff tab for the same path shows no composer, so it leaves it.
+  useEffect(() => {
+    if (readOnly) return
+    const saved = parseImageBoxDraft(imageBoxDraftStore.read(IMAGE_BOX_DRAFT_SLOT, 0))
+    if (!saved) return
+    setImageBoxDraft(prev => {
+      if (prev) return prev
+      const { text, ...placement } = saved
+      const restored = { ...placement, clientX: Number.NaN, clientY: Number.NaN, filePath, fullscreen: false }
+      imageDraftTextRef.current = { key: imageDraftKeyOf(restored), text }
+      return restored
+    })
+  }, [imageBoxDraftStore, filePath, readOnly])
   const handleComposerDraftChange = useCallback((hasDraft: boolean, passage: { anchor: string; start: number } | null) => {
     composerDraftRef.current = hasDraft
     composerDraftPassageRef.current = hasDraft ? passage : null
@@ -550,12 +585,13 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     const p = composerDraftPassageRef.current
     if (p) composerDraftStore.clear(p.anchor, p.start)
     composerDraftPassageRef.current = null
-  }, [composerDraftStore])
+    if (imageDraftTextRef.current?.text.trim()) discardImageDraft()
+  }, [composerDraftStore, discardImageDraft])
   /** Run `proceed` unless an unsaved comment draft would be lost, in which case
    *  ask first — in the draft's own words, since "unsaved changes" would read as
    *  file edits at risk. */
   const guardDraft = useCallback(async (proceed: () => void) => {
-    if (composerDraftRef.current) {
+    if (hasCommentDraft()) {
       if (!(await confirm({
         title: i18nT('components.markdownPanel.discard_unsaved_comment'),
         confirmLabel: i18nT('components.markdownPanel.discard_comment_button'),
@@ -564,7 +600,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       clearActiveDraftSlot()
     }
     proceed()
-  }, [confirm, clearActiveDraftSlot])
+  }, [confirm, clearActiveDraftSlot, hasCommentDraft])
 
   const handleComposerOpen = useCallback((text: string) => {
     composerOpenRef.current = true
@@ -645,6 +681,15 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
    * pending survives. Bails while the gateway is offline; the Submit All
    * button is disabled offline too — this is the behavioral backstop.
    */
+  // Every image rendered now, by where it sits in the source, loaded or not. A
+  // saved box finds its image by `src` among these, the way a text comment finds
+  // its passage by its text, so an edit above the image does not detach it.
+  const [imageSpots, setImageSpots] = useState<readonly { src: string; line?: number; column?: number }[]>([])
+  const registerImageSpot = useCallback((src: string, line: number | undefined, column: number | undefined) => {
+    const entry = { src, line, column }
+    setImageSpots(prev => [...prev, entry])
+    return () => setImageSpots(prev => prev.filter(e => e !== entry))
+  }, [])
   const submitInFlightRef = useRef(false)
   // Rows with an inline edit open: their typed text lives only in the row
   // until it is saved, so delivery must not remove them.
@@ -663,7 +708,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     }
     let verdict: void | boolean | Promise<void | boolean>
     try {
-      verdict = onSubmitComments(formatCommentsMessage(filePath, comments, displayContent, extraPrompt), comments.length)
+      verdict = onSubmitComments(formatCommentsMessage(sentFile, comments, displayContent, extraPrompt), comments.length)
     } catch {
       verdict = false
     }
@@ -713,6 +758,33 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     commentTooltipRef.current?.remove()
     commentTooltipRef.current = null
   }, [])
+  /** Show a comment's text in the hover popover: beside `box` when one is given
+   *  and there's room, so it doesn't cover what the comment is about; else
+   *  beside the pointer. */
+  const showCommentTooltip = useCallback((text: string, clientX: number, clientY: number, box?: PlainRect) => {
+    let tip = commentTooltipRef.current
+    if (!tip) {
+      tip = document.createElement('div')
+      tip.className = 'mc-comment-tooltip'
+      document.body.appendChild(tip)
+      commentTooltipRef.current = tip
+    }
+    tip.textContent = text
+    const w = tip.offsetWidth
+    const beside = box ? popoverBesideBox(box, { width: w, height: tip.offsetHeight }, { width: window.innerWidth, height: window.innerHeight }) : null
+    if (beside) {
+      tip.style.left = beside.left + 'px'
+      tip.style.top = beside.top + 'px'
+      return
+    }
+    // Follow the pointer.
+    let left = clientX + 12
+    if (left + w > window.innerWidth - 6) left = clientX - w - 12
+    let top = clientY - tip.offsetHeight - 12
+    if (top < 6) top = clientY + 16
+    tip.style.left = left + 'px'
+    tip.style.top = top + 'px'
+  }, [])
   // Tracks the currently-flashing sidebar comment row so a new click cancels
   // the previous flash immediately (instead of leaving two rows highlighted
   // until the first one's timeout fires).
@@ -731,6 +803,90 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     const t2 = window.setTimeout(() => { row.style.transition = ''; commentFlashRef.current = null }, 3100)
     commentFlashRef.current = { row, timers: [t1, t2] }
   }, [])
+
+  // ── Image box comments ───────────────────────────────────────────────────
+  // A box drawn on a rendered image opens the shared comment box where the drag
+  // ended, and submitting adds an ordinary pending comment that carries
+  // `image`, so it lists, persists and submits with the text comments. A click
+  // on a box flashes its row, as a click on highlighted text does. The draft
+  // remembers the file and view it was drawn in and goes inert when either
+  // changes, the editor or the diff view opens, or the tab goes to the
+  // background (the composer is portaled, so it would otherwise float over the
+  // tab in front), since the image it points at is no longer on screen.
+  const activeImageBoxDraft = imageBoxDraft && active && imageBoxDraft.filePath === filePath && imageBoxDraft.fullscreen === fullscreen && !editing && !diffViewShown ? imageBoxDraft : null
+  // The diff view unmounts the image, so a box draft comes back from it the way
+  // it comes back after a slot switch: unplaced, and placed again by its image
+  // once that renders, rather than at a spot on screen that may have moved.
+  useEffect(() => {
+    if (diffViewShown) setImageBoxDraft(d => (d && Number.isFinite(d.clientX) ? { ...d, clientX: Number.NaN, clientY: Number.NaN } : d))
+  }, [diffViewShown])
+  const imageCommentHost: ImageCommentHost | null = useMemo(() => onSubmitComments ? {
+    boxesFor: (src, line, column) => {
+      const spots = imageSpots.filter(s => s.src === src)
+      return comments.flatMap((c, i) => (c.image && boxBelongsToImage({ src: c.image.src, line: c.line, column: c.column, nth: c.image.nth, uses: c.image.uses }, src, { line, column }, spots)
+        ? [{ id: c.id, number: i + 1, ...boxRectOf(c.image), text: c.text }]
+        : []))
+    },
+    register: registerImageSpot,
+    draft: activeImageBoxDraft && !Number.isFinite(activeImageBoxDraft.clientX) ? { ...activeImageBoxDraft, unplaced: true } : activeImageBoxDraft,
+    ownsDraft: (src, line, column) => {
+      const d = activeImageBoxDraft
+      return !!d && boxBelongsToImage({ src: d.src, line: d.line, column: d.column, nth: d.nth, uses: d.uses }, src, { line, column }, imageSpots.filter(s => s.src === src))
+    },
+    placeDraft: (clientX, clientY) => setImageBoxDraft(d => (d && !Number.isFinite(d.clientX) ? { ...d, clientX, clientY } : d)),
+    onPlace: placement => {
+      // A typed comment keeps the box it was written for, as a typed text
+      // comment keeps its passage: a new drag does not re-target it.
+      if (imageDraftTextRef.current?.text.trim()) return
+      const use = imageUseAt({ line: placement.line, column: placement.column }, imageSpots.filter(s => s.src === placement.src))
+      setImageBoxDraft({ ...placement, ...(use ?? {}), filePath, fullscreen })
+    },
+    onActivate: id => {
+      removeCommentTooltip()
+      const row = document.querySelector(`[data-comment-id="${id}"]`) as HTMLElement | null
+      if (row) flashCommentRow(row)
+    },
+    onHover: (text, clientX, clientY, box) => {
+      if (text == null) removeCommentTooltip()
+      else showCommentTooltip(text, clientX, clientY, box)
+    },
+  } : null, [onSubmitComments, comments, imageSpots, registerImageSpot, activeImageBoxDraft, filePath, fullscreen, flashCommentRow, removeCommentTooltip, showCommentTooltip])
+  const submitImageBox = useCallback((text: string) => {
+    const d = activeImageBoxDraft
+    if (!d) return
+    const newComment: InlineComment = {
+      id: Math.random().toString(36).substring(2),
+      anchor: imageAnchorOf(d.alt, d.src),
+      text,
+      line: d.line,
+      column: d.column,
+      image: { src: d.src, ...(d.path ? { path: d.path } : {}), ...boxRectOf(d), ...(d.nth != null && d.uses != null ? { nth: d.nth, uses: d.uses } : {}) },
+    }
+    setComments(prev => [...prev, newComment])
+    discardImageDraft()
+  }, [activeImageBoxDraft, discardImageDraft])
+  // A new box is a new comment: its key remounts the composer, and only text
+  // kept for THIS box comes back into it.
+  const imageDraftKey = activeImageBoxDraft ? imageDraftKeyOf(activeImageBoxDraft) : null
+  const keepImageDraftText = useCallback((text: string) => {
+    if (!imageDraftKey || !activeImageBoxDraft) return
+    imageDraftTextRef.current = { key: imageDraftKey, text }
+    if (text.trim()) imageBoxDraftStore.write(serializeImageBoxDraft(activeImageBoxDraft, text), IMAGE_BOX_DRAFT_SLOT, 0)
+    else imageBoxDraftStore.clear(IMAGE_BOX_DRAFT_SLOT, 0)
+  }, [imageDraftKey, activeImageBoxDraft, imageBoxDraftStore])
+  const imageCommentPopover = activeImageBoxDraft && imageDraftKey && Number.isFinite(activeImageBoxDraft.clientX) ? (
+    <ImageCommentComposer
+      key={imageDraftKey}
+      x={activeImageBoxDraft.clientX}
+      y={activeImageBoxDraft.clientY}
+      scrollRef={fullscreen ? fullscreenBodyRef : sidePanelScrollRef}
+      onSubmit={submitImageBox}
+      onCancel={discardImageDraft}
+      initialText={imageDraftTextRef.current?.key === imageDraftKey ? imageDraftTextRef.current.text : ''}
+      onTextChange={keepImageDraftText}
+      confirmDiscard={confirmDiscardDraft}
+    />
+  ) : null
 
   /* ── Reveal a cited line (`…/_dispatch.py:447` chip) ────────────────────
    * The editor surface exposes an imperative jumpToLine; the effect below
@@ -817,7 +973,9 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       const ranges: Range[] = []
       const hits: { range: Range; comment: InlineComment }[] = []
       for (const comment of comments) {
-        if (!comment.anchor) continue
+        // An image comment's anchor is the image's alt text, which is not text
+        // in the document; its box is drawn by the image's overlay.
+        if (!comment.anchor || comment.image) continue
         const bestIdx = findBestOccurrence(fullText, comment.anchor, comment.startOffset)
         if (bestIdx < 0) continue
         const s = locate(bestIdx)
@@ -857,26 +1015,12 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     }
 
     const onMove = (ev: MouseEvent) => {
+      // A box on an image shows its own comment through the image layer.
+      if (ev.target instanceof Element && ev.target.closest('[data-image-box]')) return
       const hit = hitAt(ev.clientX, ev.clientY)
       if (!hit) { scrollRoot.style.cursor = ''; removeCommentTooltip(); return }
       scrollRoot.style.cursor = 'pointer'
-      let tip = commentTooltipRef.current
-      if (!tip) {
-        tip = document.createElement('div')
-        tip.className = 'mc-comment-tooltip'
-        tip.style.cssText = 'position:fixed;z-index:9999;background:var(--bg-elevated,#1e1e2e);color:var(--text,#e0e0e0);border:1px solid var(--border,#333);border-radius:6px;padding:6px 10px;font-size:12px;line-height:1.4;max-width:300px;word-wrap:break-word;box-shadow:0 4px 12px rgba(0,0,0,0.25);pointer-events:none;'
-        document.body.appendChild(tip)
-        commentTooltipRef.current = tip
-      }
-      tip.textContent = hit.comment.text
-      // Follow the pointer.
-      const w = tip.offsetWidth
-      let left = ev.clientX + 12
-      if (left + w > window.innerWidth - 6) left = ev.clientX - w - 12
-      let top = ev.clientY - tip.offsetHeight - 12
-      if (top < 6) top = ev.clientY + 16
-      tip.style.left = left + 'px'
-      tip.style.top = top + 'px'
+      showCommentTooltip(hit.comment.text, ev.clientX, ev.clientY)
     }
     const onLeave = () => { scrollRoot.style.cursor = ''; removeCommentTooltip() }
     const onClick = (ev: MouseEvent) => {
@@ -904,7 +1048,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       scrollRoot.removeEventListener('click', onClick)
       removeCommentTooltip()
     }
-  }, [comments, displayContent, editing, fullscreen, removeCommentTooltip, flashCommentRow])
+  }, [comments, displayContent, editing, fullscreen, removeCommentTooltip, showCommentTooltip, flashCommentRow])
 
   /** Bumped by every local edit (handleChange). A save clears `dirty` only if
    *  no edit landed while its write was in flight: the file holds `content` as
@@ -1012,7 +1156,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
         title: i18nT('components.markdownPanel.discard_unsaved_changes'),
         confirmLabel: i18nT('components.markdownPanel.discard_changes_button'),
       }))) return
-    } else if (composerDraftRef.current) {
+    } else if (hasCommentDraft()) {
       if (!(await confirm({
         title: i18nT('components.markdownPanel.discard_unsaved_comment'),
         confirmLabel: i18nT('components.markdownPanel.discard_comment_button'),
@@ -1020,7 +1164,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       clearActiveDraftSlot()
     }
     onClose()
-  }, [lastCopy, liveWatch, filePath, adoptDisk, bufferIsLastCopy, downloadLastCopy, onClose, confirm, clearActiveDraftSlot, partialCopyRef])
+  }, [lastCopy, liveWatch, filePath, adoptDisk, bufferIsLastCopy, downloadLastCopy, onClose, confirm, clearActiveDraftSlot, partialCopyRef, hasCommentDraft])
   // Mirrors `lastCopy` for the navigate predicate below, which the host asks
   // after its own await.
   const lastCopyRef = useRef(lastCopy)
@@ -1050,13 +1194,13 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     // re-asks it after its file read: the user can start typing during the read,
     // so an answer computed here would already be stale.
     let unsure = false
-    if (liveWatch && !dirtyRef.current && !composerDraftRef.current && !lastCopyRef.current) {
+    if (liveWatch && !dirtyRef.current && !hasCommentDraft() && !lastCopyRef.current) {
       const verdict = await adoptDisk({ quietFailure: true })
       unsure = verdict !== 'ok' && verdict !== 'missing'
       if (verdict === 'missing' && bufferIsLastCopy()) unsure = true
     }
-    nav(() => !unsure && !dirtyRef.current && !composerDraftRef.current && !lastCopyRef.current)
-  }, [liveWatch, adoptDisk, bufferIsLastCopy])
+    nav(() => !unsure && !dirtyRef.current && !hasCommentDraft() && !lastCopyRef.current)
+  }, [liveWatch, adoptDisk, bufferIsLastCopy, hasCommentDraft])
 
   // Expose the guarded close so an external control (e.g. the Files-tab inline
   // preview's "Back to files" bar) routes through the same dirty confirmation
@@ -1083,7 +1227,10 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       if (confirmOpen) return
       // An open annotation box owns Escape: the toolbar closes it (and hands the
       // selection back) on its own; the panel must not ALSO close or prompt.
-      if (e.key === 'Escape') { if (composerOpenRef.current) return; if (fullscreen) setFullscreen(false); else guardedClose() }
+      // Leaving full screen goes through the same draft guard as its exit
+      // button: a typed image box comment whose box lost focus would otherwise
+      // go inert with its text out of reach.
+      if (e.key === 'Escape') { if (composerOpenRef.current) return; if (fullscreen) void guardDraft(() => setFullscreen(false)); else guardedClose() }
       // Own the save chord whenever the editor is active, not only when dirty:
       // the editor-local capture handler in PierreEditorImpl exists only after
       // its lazy chunk resolves and only sees keydowns targeting its own
@@ -1101,7 +1248,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     }
     document.addEventListener('keydown', h)
     return () => document.removeEventListener('keydown', h)
-  }, [active, guardedClose, editing, dirty, fullscreen, confirmOpen])
+  }, [active, guardedClose, guardDraft, editing, dirty, fullscreen, confirmOpen])
 
   // The first edit of a clean buffer fences the disk. A read still in flight
   // describes a buffer the user has now typed into: if the user saves before it
@@ -1296,9 +1443,9 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             {!showBinaryCard && !zeroDiff && !diffUnavailable && !(diffChecking && diffData == null) && canTextDiff && (
               <DiffViewBlock flush sideBySide={diffSplit} diffMode={diffViewShown} fileName={fileName} originalContent={originalContent} content={comparedContent} gitPatch={gitPatch} lineNums={lineNums} wordWrap={wordWrap} collapseUnchanged={collapseUnchanged} />
             )}
-            {!showBinaryCard && !zeroDiff && (!diffUnavailable || editing) && !diffViewShown && <ContentRenderer flush isRichType={isRichType} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
+            {!showBinaryCard && !zeroDiff && (!diffUnavailable || editing) && !diffViewShown && <ImageCommentCtx.Provider value={imageCommentHost}><ContentRenderer flush isRichType={isRichType} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
               diffBase={diffMode && editing ? (originalContent || null) : undefined} diffSplit={diffSplit} diffExpandUnchanged={!collapseUnchanged}
-              previewRef={previewRef} displayContent={displayContent} isMarkdown={isMarkdown} markdownClassName="msg-content text-sm leading-relaxed" editorRef={setRevealEditor} />}
+              previewRef={previewRef} displayContent={displayContent} isMarkdown={isMarkdown} markdownClassName="msg-content text-sm leading-relaxed" editorRef={setRevealEditor} /></ImageCommentCtx.Provider>}
           </div>
           {isMarkdown && !editing && <MarkdownOutlineRail containerRef={sidePanelScrollRef} />}
         </div>}
@@ -1316,6 +1463,9 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
           carry an open composer — and the anchor it resolved against the OLD
           file — over to the new one. Remount drops it and fires onClose. */}
       {!fullscreen && !editing && <SelectionToolbar key={filePath} containerRef={sidePanelScrollRef} actions={selectionActions} composer={selectionComposer} suspended={!active} />}
+      {/* Portaled like the selection toolbar: the composer is viewport-fixed
+          where the drag ended, so no ancestor transform may re-base it. */}
+      {!fullscreen && imageCommentPopover && createPortal(imageCommentPopover, document.body)}
       {!fullscreen && <CommentOverlayBlock onSubmitComments={onSubmitComments} comments={comments} editComment={editComment} removeComment={removeComment} submitAllComments={submitAllComments} connected={connected} onEditingChange={trackRowEditing} />}
     </DetailPanel>
     {fullscreen && createPortal(
@@ -1382,13 +1532,15 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             )}
             {!showBinaryCard && diffNoBaselineText && !editing && <ZeroDiffNotice message={diffNoBaselineText} onExitDiff={readOnly ? undefined : toggleDiffMode} />}
             {!showBinaryCard && !zeroDiff && !diffUnavailable && !(diffChecking && diffData == null) && canTextDiff && <DiffViewBlock sideBySide={diffSplit} diffMode={diffViewShown} fileName={fileName} originalContent={originalContent} content={comparedContent} gitPatch={gitPatch} lineNums={lineNums} wordWrap={wordWrap} collapseUnchanged={collapseUnchanged} />}
-            {!showBinaryCard && !zeroDiff && (!diffUnavailable || editing) && !diffViewShown && <ContentRenderer isRichType={isRichType} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
+            {!showBinaryCard && !zeroDiff && (!diffUnavailable || editing) && !diffViewShown && <ImageCommentCtx.Provider value={imageCommentHost}><ContentRenderer isRichType={isRichType} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
               diffBase={diffMode && editing ? (originalContent || null) : undefined} diffSplit={diffSplit} diffExpandUnchanged={!collapseUnchanged}
-              previewRef={fullscreenPreviewRef} displayContent={displayContent} isMarkdown={isMarkdown} previewStyle={mdPreviewStyle} editorRef={setRevealEditor} />}
+              previewRef={fullscreenPreviewRef} displayContent={displayContent} isMarkdown={isMarkdown} previewStyle={mdPreviewStyle} editorRef={setRevealEditor} /></ImageCommentCtx.Provider>}
           </div>
           {isMarkdown && !editing && <MarkdownOutlineRail containerRef={fullscreenBodyRef} />}
         </div>
         {!editing && <SelectionToolbar key={filePath} containerRef={fullscreenBodyRef} actions={selectionActions} composer={selectionComposer} suspended={!active} />}
+        {/* Inside the dialog, so its focus trap and stacking context cover it. */}
+        {imageCommentPopover}
         <CommentOverlayBlock onSubmitComments={onSubmitComments} comments={comments} editComment={editComment} removeComment={removeComment} submitAllComments={submitAllComments} connected={connected} onEditingChange={trackRowEditing} />
         {/* Footer */}
         <Clickable className="shrink-0 flex items-center px-3 h-6 text-[11px] text-muted font-mono truncate cursor-pointer hover:text-text transition-colors" title={i18nT('components.markdownPanel.click_to_copy_path')} onClick={() => copyToClipboard(filePath)}>{filePath}</Clickable>

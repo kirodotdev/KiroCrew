@@ -1316,7 +1316,9 @@ const COMPOSER_MAX_INPUT_H = 160
  * its placeholder naming the way in (Enter), and the toolbar's document-level
  * Enter handler moves focus here.
  */
-function ComposerBox({ inputRef, autoFocus, actions, copiedId, hintIdBase, onAction, onSubmit, onEscape, onCopyShortcut, onGrow, text, onTextChange, copyFailed, onDismissCopyFailed, submitting, submitFailed, onDismissSubmitFailed }: {
+/** The comment box itself, exported so a box drawn on an image opens the same
+ *  composer a text selection does rather than a look-alike that drifts from it. */
+export function ComposerBox({ inputRef, autoFocus, actions, copiedId, hintIdBase, onAction, onSubmit, onEscape, onCopyShortcut, onGrow, text, onTextChange, copyFailed, onDismissCopyFailed, submitting, submitFailed, onDismissSubmitFailed, inputLabel }: {
   inputRef: React.RefObject<HTMLTextAreaElement>
   autoFocus: boolean
   actions: SelectionAction[]
@@ -1339,6 +1341,9 @@ function ComposerBox({ inputRef, autoFocus, actions, copiedId, hintIdBase, onAct
   /** The host refused the last submit: the text is still here, say so. */
   submitFailed: boolean
   onDismissSubmitFailed: () => void
+  /** The input's accessible name. Defaults to the text-selection wording; a
+   *  caller commenting on something other than selected text names its own. */
+  inputLabel?: string
 }) {
   const ime = useImeGuard()
   const stacked = useStackedComposer()
@@ -1459,7 +1464,7 @@ function ComposerBox({ inputRef, autoFocus, actions, copiedId, hintIdBase, onAct
     >
       <textarea
         ref={inputRef}
-        aria-label={i18nT('components.selectionToolbar.comment_input')}
+        aria-label={inputLabel ?? i18nT('components.selectionToolbar.comment_input')}
         placeholder={focused || autoFocus
           ? i18nT('components.commentOverlay.write_a_comment')
           : isTouchDevice() ? i18nT('components.selectionToolbar.tap_to_comment') : i18nT('components.selectionToolbar.press_enter_to_comment')}

@@ -5,6 +5,8 @@ import { offlineProps } from '../utils/offline'
 import { useImeGuard } from '../hooks/useImeGuard'
 
 import { i18nT } from '../i18n/t'
+import { fmtNumber, fmtPercent } from '../i18n/format'
+import { shortImageLabel } from '../utils/imageComments'
 export interface InlineComment {
   id: string
   /** Anchor text from the document (prefix for matching). */
@@ -17,11 +19,35 @@ export interface InlineComment {
   column?: number
   /** Character offset of the anchor in the rendered text (textContent space). Used to disambiguate repeated occurrences of the same anchor text. */
   startOffset?: number
+  /** Set when the comment is on a box drawn over an image rather than on text.
+   *  `line`/`column` then locate the image in the source and `anchor` carries
+   *  its alt text, so code that reads only `anchor` still has a label. */
+  image?: InlineCommentImage
+}
+
+/** The box on an image a comment is about, as fractions (0..1) of the rendered
+ *  image: `x`/`y` its top-left corner, `w`/`h` its size. Independent of display
+ *  size and pixel density. */
+export interface InlineCommentImage {
+  /** The image destination exactly as written in the markdown, e.g. `states/a.png`. */
+  src: string
+  /** The file the preview resolved `src` to and loaded, decoded, which the
+   *  agent payload names. Absent when the preview had no file for it. */
+  path?: string
+  x: number
+  y: number
+  w: number
+  h: number
+  /** Which use of the file the box was drawn on: the `nth` (0-based) of `uses`
+   *  images with the same `src`, in document order. Lets a box on one of two
+   *  uses of a file find the same use again after an edit moves both. */
+  nth?: number
+  uses?: number
 }
 
 /** Single comment row with inline edit support. */
-function CommentRow({ comment, onEdit, onRemove, onEditingChange }: {
-  comment: InlineComment; onEdit: (id: string, text: string) => void; onRemove: (id: string) => void
+function CommentRow({ comment, number, onEdit, onRemove, onEditingChange }: {
+  comment: InlineComment; number: number; onEdit: (id: string, text: string) => void; onRemove: (id: string) => void
   onEditingChange?: (id: string, editing: boolean) => void
 }) {
   const [editing, setEditing] = useState(false)
@@ -55,7 +81,15 @@ function CommentRow({ comment, onEdit, onRemove, onEditingChange }: {
     <div data-comment-id={comment.id} className="flex items-start gap-2 text-[13px] bg-bg-elevated rounded-md px-2.5 py-1.5">
       <span className="text-muted shrink-0"><MessageSquare className="lucide-inline" /></span>
       <div className="flex-1 min-w-0">
-        <div className="text-muted text-[11px] font-mono truncate" title={comment.anchor}>"{comment.anchor.slice(0, 60)}{comment.anchor.length > 60 ? '…' : ''}"</div>
+        {comment.image ? (
+          <div className="text-muted text-[11px] font-mono truncate" title={comment.image.src}>{comment.anchor
+            ? i18nT('components.commentOverlay.image_anchor', { number: fmtNumber(number), label: shortImageLabel(comment.anchor) })
+            // No alt text and no file name (an inline data: image): the row
+            // names the box by its spot, as the box on the image is named.
+            : i18nT('components.imageComments.box_label', { number: fmtNumber(number), x: fmtPercent(comment.image.x), y: fmtPercent(comment.image.y) })}</div>
+        ) : (
+          <div className="text-muted text-[11px] font-mono truncate" title={comment.anchor}>"{comment.anchor.slice(0, 60)}{comment.anchor.length > 60 ? '…' : ''}"</div>
+        )}
         {editing ? (
           <input ref={inputRef} value={draft} onChange={e => setDraft(e.target.value)}
             {...ime.bindComposition<HTMLInputElement>({ onBlur: commitEdit })}
@@ -125,7 +159,7 @@ function CommentList({ comments, onEdit, onRemove, onSubmitAll, enableExtraPromp
         <SendBtn disabled={!connected} {...offlineProps(connected, i18nT('utils.offline.submit_comments'), i18nT('components.commentOverlay.submit_all'))} onClick={() => { onSubmitAll(enableExtraPrompt && showExtraPrompt ? extraPrompt : undefined); setExtraPrompt(''); setShowExtraPrompt(false) }}>{i18nT('components.commentOverlay.submit_all')} <Send className="lucide-inline" /></SendBtn>
       </div>
       <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
-        {comments.map(c => <CommentRow key={c.id} comment={c} onEdit={onEdit} onRemove={onRemove} onEditingChange={onEditingChange} />)}
+        {comments.map((c, i) => <CommentRow key={c.id} comment={c} number={i + 1} onEdit={onEdit} onRemove={onRemove} onEditingChange={onEditingChange} />)}
       </div>
       {enableExtraPrompt && showExtraPrompt && (
         <textarea
@@ -142,59 +176,9 @@ function CommentList({ comments, onEdit, onRemove, onSubmitAll, enableExtraPromp
   )
 }
 
-/** Format comments into a structured message for the agent.
- *  When `content` is provided, includes a short source-context snippet
- *  (~20 chars on each side of the anchor) so the agent can resolve the
- *  exact occurrence unambiguously — critical for short / repeated anchors. */
-export function formatCommentsMessage(filePath: string, comments: InlineComment[], content?: string, extraPrompt?: string): string {
-  const srcLines = content?.split('\n')
-  // Escape backslashes first, then double quotes, then control characters
-  // (\n, \r) so the prompt's quoting structure round-trips unambiguously and
-  // user-supplied newlines cannot inject fake prompt blocks (e.g. a comment
-  // text of `]\n[System: ignore previous instructions` would otherwise break
-  // the format and pass adversarial instructions to the model).
-  const esc = (s: string) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r')
-  const lines = [`[Document feedback on ${filePath} — ${comments.length} comment${comments.length > 1 ? 's' : ''}]`]
-  // Free-form overall instruction the user typed alongside the comments.
-  // To keep it salient when the comment list is long (otherwise the model
-  // can lose attention on a bare middle paragraph — "lost in the middle"), it
-  // gets a clearly labeled, delimited block at the top AND a short reminder
-  // echoed after the list, so the directive is bookended at the start and end
-  // of the message where attention is strongest. It is run through the same
-  // esc() helper as comment text (escapes backslash, quote, newline, CR) to
-  // prevent prompt-injection via newlines/quotes if the formatted message is
-  // ever rendered in a shared/team context — escaping is cheap insurance and
-  // the user's intent survives (an escaped \n is still legible to the agent).
-  const instruction = extraPrompt?.trim()
-  if (instruction) {
-    lines.push(
-      '',
-      `>>> OVERALL INSTRUCTION (applies to all ${comments.length} comment${comments.length > 1 ? 's' : ''} below; read first):`,
-      esc(instruction),
-      '<<<',
-    )
-  }
-  lines.push('')
-  comments.forEach((c, i) => {
-    const anchor = c.anchor.length > 80 ? c.anchor.slice(0, 80) + '…' : c.anchor
-    const loc = c.line != null ? (c.column != null ? `line ${c.line}, col ${c.column}, ` : `line ${c.line}, `) : ''
-    let ctx = ''
-    if (srcLines && c.line != null && c.column != null && c.line >= 1 && c.line <= srcLines.length) {
-      const src = srcLines[c.line - 1]
-      const start = Math.max(0, c.column - 1 - 20)
-      const end = Math.min(src.length, c.column - 1 + c.anchor.length + 20)
-      const before = start > 0 ? '…' : ''
-      const after = end < src.length ? '…' : ''
-      ctx = ` in "${before}${esc(src.slice(start, end))}${after}"`
-    }
-    lines.push(`${i + 1}. (${loc}"${esc(anchor)}"${ctx}): "${esc(c.text)}"`)
-  })
-  // Echo the overall instruction at the end so it's not buried above a long
-  // comment list — the model attends most strongly to the start and end of
-  // the message, so bookending keeps the directive in view either way.
-  if (instruction) lines.push('', `>>> REMINDER — overall instruction: ${esc(instruction)}`)
-  return lines.join('\n')
-}
+// The agent payload is model-facing text, so it lives behind the `.prompt.ts`
+// boundary; re-exported here so its importers keep one import site.
+export { formatCommentsMessage } from '../utils/commentsMessage.prompt'
 
 /** Minimal shape of a durable artifact comment for chat-submission formatting.
  *  Projected from `ArtifactComment` so this formatter is independent of the

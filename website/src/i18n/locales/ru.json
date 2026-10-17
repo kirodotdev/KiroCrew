@@ -6896,7 +6896,13 @@
       "save": "Сохранить",
       "submit_all": "Отправить все",
       "toggle_additional_prompt": "Добавить общую инструкцию",
-      "write_a_comment": "Напишите комментарий…"
+      "write_a_comment": "Напишите комментарий…",
+      "comment_on_the_boxed_area": "Комментарий к выделенной области",
+      "image_anchor": "Рамка {{number}} на изображении «{{label}}»"
+    },
+    "imageComments": {
+      "comment_on_image": "Прокомментировать это изображение",
+      "box_label": "Рамка {{number}} в точке {{x}}, {{y}}"
     },
     "commentThreadPopover": {
       "close": "Закрыть",
@@ -7862,6 +7868,7 @@
       "save_this_file_as_an_artifact_versioned_persiste": "Сохранить этот файл как артефакт (с версиями, постоянный, с комментариями)",
       "saving": "Сохранение…",
       "select_any_text_to_add_inline_comments_then_subm": "Выделите любой текст, чтобы добавить встроенные комментарии, затем отправьте их все в чат.",
+      "select_any_text_or_drag_across_an_image_to_add_i": "Выдели любой текст или проведи по изображению, чтобы добавить встроенные комментарии, затем отправь их все в чат.",
       "show_changes": "Показать изменения",
       "show_full_file": "Показать весь файл",
       "show_in_file_manager": "Показать в файловом менеджере",

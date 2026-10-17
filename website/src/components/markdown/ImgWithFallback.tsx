@@ -1,7 +1,9 @@
-import React, { useContext, useEffect, useState } from 'react'
+import React, { useContext, useEffect, useRef, useState } from 'react'
 import type { ExtraProps } from 'react-markdown'
 import { Check, Copy, Image as ImageIcon, ImageOff } from 'lucide-react'
 import { getImageDims, rememberImageDims } from '../../utils/imageDims'
+import { ImageCommentCtx } from '../../utils/imageComments'
+import { ImageCommentLayer } from '../ImageCommentLayer'
 import { WINDOWS_ABS_PATH_RE, decodeLocalPath } from '../../utils/urlTransform'
 import { i18nT } from '../../i18n/t'
 import { BasePathCtx, CompactImagesCtx, ImageVersionCtx, MdSourceCtx } from './contexts'
@@ -163,6 +165,17 @@ export function ImgWithFallback({
   const compact = useContext(CompactImagesCtx)
   const version = useContext(ImageVersionCtx)
   const source = useContext(MdSourceCtx)
+  // Present only where the host collects box comments on images (the file
+  // viewer); everywhere else the image renders with no overlay.
+  const commentHost = useContext(ImageCommentCtx)
+  const commentImgRef = useRef<HTMLImageElement | null>(null)
+  // Tell the host where this image sits, loaded or not, so it can count every
+  // use of the same file (an offscreen lazy image included) when a saved box
+  // has to find its own use again after an edit.
+  const registerImage = commentHost?.register
+  const srcLine = node?.position?.start?.line
+  const srcColumn = node?.position?.start?.column
+  useEffect(() => (registerImage && src ? registerImage(src, srcLine, srcColumn) : undefined), [registerImage, src, srcLine, srcColumn])
   if (!src) return null
   // A Windows drive/UNC path (`C:/…` — urlTransform passes it through for
   // image src) is as local as a POSIX `/…` path and must route to
@@ -313,6 +326,7 @@ export function ImgWithFallback({
           preview is presentational here. */}
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions */}
       <img
+        ref={commentImgRef}
         src={url} alt={alt || ''} loading="lazy"
         // A remote image the user approved is fetched with NO referrer. The
         // approval binds the request this renderer initiates, but a server can
@@ -338,8 +352,8 @@ export function ImgWithFallback({
         // below the bubble's own cap at every width the app supports, so the
         // percentage guard was redundant.
         className={`${learned && !isSvg ? reservedImageClass(compact) + ' ' : ''}${compact
-          ? 'ms-auto max-w-[240px] max-h-[180px] object-contain rounded-md border border-border cursor-pointer hover:opacity-90 transition-opacity'
-          : 'max-w-[min(100%,760px)] max-h-[60vh] object-contain rounded-md border border-border cursor-pointer hover:opacity-90 transition-opacity'}`}
+          ? `ms-auto max-w-[240px] max-h-[180px] object-contain rounded-md border border-border ${commentHost ? 'cursor-crosshair' : 'cursor-pointer'} hover:opacity-90 transition-opacity`
+          : `max-w-[min(100%,760px)] max-h-[60vh] object-contain rounded-md border border-border ${commentHost ? 'cursor-crosshair' : 'cursor-pointer'} hover:opacity-90 transition-opacity`}`}
         style={imgStyle}
         onClick={(e) => dispatchLightbox(e.currentTarget)}
         data-lightbox-image=""
@@ -351,7 +365,25 @@ export function ImgWithFallback({
         }}
         onError={() => setErrored(true)}
         {...props}
+        // Where boxes can be drawn, a press-and-drag on the image draws one, so
+        // the browser must not take that drag to carry the image out as a file.
+        {...(commentHost ? { draggable: false } : {})}
       />
+      {/* Mounted once the bytes are in: before that the image is a placeholder,
+          and a box drawn on it would not cover anything in the picture. */}
+      {commentHost && loaded && (
+        <ImageCommentLayer
+          host={commentHost}
+          imgRef={commentImgRef}
+          src={src}
+          // The file this preview loaded, decoded, so the agent is named the
+          // file on disk rather than the percent-encoded destination.
+          path={diskPath}
+          alt={alt || undefined}
+          line={node?.position?.start?.line}
+          column={node?.position?.start?.column}
+        />
+      )}
       {/* Provenance survives the click. Once loaded, a remote image is pixel
           for pixel indistinguishable from a local one, so the only record of
           where it came from would be a chip that no longer exists — and a

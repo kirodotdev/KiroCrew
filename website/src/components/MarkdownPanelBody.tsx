@@ -1,4 +1,4 @@
-import { memo, useMemo } from 'react'
+import { memo, useMemo, useSyncExternalStore } from 'react'
 import { MessageSquare, X, FileDiff, TriangleAlert, CaseSensitive, ChevronUp, ChevronDown } from 'lucide-react'
 import { CommentList, type InlineComment } from './CommentOverlay'
 import { PierreFilePair, PierrePatch } from '../pierre'
@@ -15,8 +15,23 @@ import type { useMarkdownPanelFind } from './useMarkdownPanelFind'
  * them out in both the side-panel and the full-screen layouts.
  */
 
-/** Comment hint banner — shown once per session for markdown files */
+/** Whether any input can drag a box (a mouse, trackpad or pen), read
+ *  reactively so connecting or removing one while the tip shows repaints it. */
+const FINE_POINTER = '(any-pointer: fine)'
+const hasMatchMedia = () => typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+function subscribeFinePointer(cb: () => void) {
+  if (!hasMatchMedia()) return () => {}
+  const mql = window.matchMedia(FINE_POINTER)
+  mql.addEventListener?.('change', cb)
+  return () => mql.removeEventListener?.('change', cb)
+}
+const finePointerNow = () => !hasMatchMedia() || window.matchMedia(FINE_POINTER).matches
+
+/** Comment hint banner for markdown files, shown until the reader dismisses it.
+ *  The image clause shows only where a drag can draw a box: on touch a press
+ *  scrolls, so a touch-only reader is told about text selection alone. */
 export function CommentHint({ onDismiss }: { onDismiss: () => void }) {
+  const finePointer = useSyncExternalStore(subscribeFinePointer, finePointerNow, () => true)
   return (
     <div
       className="flex items-center gap-2.5 px-3 py-2.5 bg-bg-elevated border rounded-lg text-[12px] animate-scale-in mx-1 mb-2"
@@ -24,7 +39,9 @@ export function CommentHint({ onDismiss }: { onDismiss: () => void }) {
     >
       <span className="text-muted shrink-0"><MessageSquare className="lucide-inline" /></span>
       <span className="flex-1 text-text">
-        <strong className="text-text-strong font-semibold">{i18nT('components.markdownPanel.tip')}</strong> {i18nT('components.markdownPanel.select_any_text_to_add_inline_comments_then_subm')}
+        <strong className="text-text-strong font-semibold">{i18nT('components.markdownPanel.tip')}</strong> {finePointer
+          ? i18nT('components.markdownPanel.select_any_text_or_drag_across_an_image_to_add_i')
+          : i18nT('components.markdownPanel.select_any_text_to_add_inline_comments_then_subm')}
       </span>
       <button className="text-accent hover:text-accent-hover cursor-pointer bg-transparent border-none text-[11px] font-medium shrink-0" onClick={onDismiss}>{i18nT('components.markdownPanel.got_it')}</button>
     </div>
