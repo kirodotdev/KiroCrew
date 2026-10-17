@@ -55,9 +55,11 @@ def _fresh_reexec_environment(_floor_monkeypatch):
     ``platform_compat._KEPT_FOR_REEXEC`` for the gateway's own exec restart, and
     ``launched_as_managed_service`` reads it there; a value one test's launch
     consumed must not make a later test's gateway read as service-launched, nor
-    be written into the environment by a later test's stubbed exec.
+    be written into the environment by a later test's stubbed exec. The boot-time
+    ssh-agent socket a ``gateway`` launch records is reset for the same reason.
     """
     from kiro_crew import platform_compat, platform_compat_runtime
+    from kiro_crew.mcp_gateway import agent_socket
 
     # ONE fresh dict bound in both modules: ``keep_for_reexec`` and the
     # ``reexec_*`` seams resolve ``_KEPT_FOR_REEXEC`` in
@@ -68,6 +70,8 @@ def _fresh_reexec_environment(_floor_monkeypatch):
     fresh: dict[str, str] = {}
     _floor_monkeypatch.setattr(platform_compat, "_KEPT_FOR_REEXEC", fresh)
     _floor_monkeypatch.setattr(platform_compat_runtime, "_KEPT_FOR_REEXEC", fresh)
+    _floor_monkeypatch.setattr(agent_socket, "_recorded", False)
+    _floor_monkeypatch.setattr(agent_socket, "_boot_socket", None)
 
 
 @pytest.fixture(autouse=True)
