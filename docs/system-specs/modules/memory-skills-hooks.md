@@ -3833,7 +3833,14 @@ relative to the prior handle. Descendants are scanned by directory descriptor an
 opened relative to that same pinned handle, so a directory swapped for a link between
 enumeration and descent fails the open without resolving its target. Linked directories
 and linked `SKILL.md` files are excluded even when their targets remain inside the
-project. Traversal stops after 64 directories below `.kiro/skills`; files at that depth
+project — a link target can leave the project or, on Windows, be a UNC path whose
+descent would leak credentials, and following a symlinked skills directory is a
+maintainer decision this exclusion does not make. The exclusion is not silent: a
+linked top-level entry under a real `.kiro/skills` is named in a WARNING (the third
+observable case described under *Neither refusal is silent* below). A link deeper
+inside a real, loaded skill is that skill's own internal structure, not a lost
+top-level skill, so it is not named and the skill still loads.
+Traversal stops after 64 directories below `.kiro/skills`; files at that depth
 remain eligible, while deeper paths are ignored so hostile nesting cannot exhaust the
 Python call stack for a chat turn. Global provider trees retain link traversal for app
 registration.
@@ -3853,8 +3860,20 @@ grant"; the warning names no project, because checking whether `.kiro/skills` ex
 would be the path lookup the gate refuses to make. On POSIX, a component the no-follow
 chain refuses is logged as a WARNING naming that component (a symlinked directory and a
 file both read as "a symlink or not a directory", since Linux reports both with
-the same errno), once per (base, component, errno) per process; a missing component,
-the ordinary no-`.kiro/skills` case, stays at DEBUG.
+the same errno), once per (base, component, errno) per process, saying the component
+must be a real, readable directory. A missing component, the
+ordinary no-`.kiro/skills` case, stays at DEBUG. A linked entry directly under a real
+`.kiro/skills` is the third case: it is skipped by the same no-follow rule but produces
+no chain refusal, so the walk names it in a WARNING once per project root. That one line
+names EVERY skipped non-dot top-level link (not just the first), so an operator who
+replaces one link is not left with the others skipped silently. It fires for any non-dot
+TOP-level symlink child from that child's own `lstat`, resolving no link, so a link to
+an automount or network path is not reached; the message states the rule (a project
+skill loads only from a real directory holding `SKILL.md`) rather than guessing the
+entry's type, so a linked plain file is covered without a directory claim, and a
+dot-link, never a skill, stays quiet. A symlink deeper inside a loaded skill is that
+skill's own structure and is not named, and a nested skill directory whose own
+`SKILL.md` is a symlink is skipped silently — only a top-level linked child is named.
 
 **One enforcement point for every enumerated read.** Enumeration is cached, and now
 also PERSISTED across processes (see *The catalog snapshot*), so a path vetted while
