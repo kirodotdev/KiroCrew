@@ -1020,6 +1020,17 @@ export interface McpSessionReport {
   restart_to_load?: string[]
 }
 
+/** A Slack code channel a session runs in (`slack/code_channels/dashboard_view.py`).
+ *  Present only on a bound session's row, and only while code channels are on. */
+export interface CodeChannelInfo {
+  /** "" when the channel's name is not known. */
+  channel_name: string
+  status: 'active' | 'wrapped_up' | 'archived'
+  /** Slack's `app_redirect` URL (the app when installed, else the web client);
+   *  "" when the ids are malformed. */
+  web_url: string
+}
+
 export interface SessionLink {
   channel: string
   label: string
@@ -1243,6 +1254,8 @@ export interface ChatSlot extends TurnIdentityFields {
   linked_session_key?: string
   /** Prompts held for a later turn on this slot. */
   queue_depth?: number
+  /** Set when this session is a Slack code channel's (see `CodeChannelInfo`). */
+  code_channel?: CodeChannelInfo
   key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_turn_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_scope?: string; trust_reads?: boolean; folder_id?: string; pinned?: boolean; tags?: string[]; tags_revision?: string; links?: SessionLink[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; color_hex?: string | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; project?: string; forked_from?: string | null; source_links?: { provider: SourceProviderId; number: number; url: string; label?: string; repo?: string; ci?: 'running' | 'passed' | 'failed' | null; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string; kind?: 'change' | 'issue'; identity?: string }[]; source_links_total?: number
   /** Provenance bucket from the backend `SlotOrigin` ("user" | "app" | "cron"
    * | "system"; absent/"" for untagged background slots). The session-pulse

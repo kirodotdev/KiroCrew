@@ -3777,6 +3777,12 @@ class DashboardState:
         # the nesting and must cost the nesting rather than the whole sidebar.
         # ``getattr`` because a stub state in the suite may not carry the method at all.
         _attach_slot_parents(out, getattr(self, "spend_slot_by_session", None))
+        if dashboard_user or include_check_status:
+            # Slack code channel badge: a person's dashboard only, never the bare
+            # list (SSE, app tokens). See slack/code_channels/dashboard_view.py.
+            from kiro_crew.slack.code_channels.dashboard_view import with_code_channels
+
+            out = with_code_channels(out)
         return out
 
     def serialize_slot_views(
@@ -3807,10 +3813,20 @@ class DashboardState:
         tests, or a slot closed between the two loops) is carried over unchanged.
         """
         bare = self.serialize_slots()
+        from kiro_crew.slack.code_channels.dashboard_view import (
+            code_channel_views,
+            with_code_channels,
+        )
+
+        views = code_channel_views()
         return (
             bare,
-            self._reproject_slots(bare, dashboard_user=True),
-            self._reproject_slots(bare, include_check_status=True) if owner else None,
+            with_code_channels(self._reproject_slots(bare, dashboard_user=True), views),
+            (
+                with_code_channels(self._reproject_slots(bare, include_check_status=True), views)
+                if owner
+                else None
+            ),
         )
 
     def _reproject_slots(

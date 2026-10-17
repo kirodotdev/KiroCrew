@@ -99,6 +99,7 @@ from kiro_crew.slack.agent_sessions.session_events import AGENT_SESSION_EVENTS
 from kiro_crew.slack.agent_sessions.session_events import dispatch as dispatch_agent_session_event
 from kiro_crew.slack.allowlist import prompt_track_channel, send_dashboard_link
 from kiro_crew.slack.code_channels import install as install_code_channels
+from kiro_crew.slack.code_channels import lifecycle as code_channel_lifecycle
 from kiro_crew.slack.code_channels.routing import Gate as CodeChannelGate
 from kiro_crew.slack.code_channels.routing import dispatch as code_channel_dispatch
 from kiro_crew.slack.code_channels.routing import inbound_gate as code_channel_gate
@@ -1257,6 +1258,11 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
         # ── Agent sessions: native Stop and user renames (agent_sessions) ──
         if event_type in AGENT_SESSION_EVENTS:
             dispatch_agent_session_event(orch, req.payload or {}, event)
+            return
+
+        # ── Code channels: archive, unarchive, rename ──
+        if event_type in code_channel_lifecycle.LIFECYCLE_EVENTS:
+            code_channel_lifecycle.dispatch(req.payload or {}, event)
             return
 
         # ── Messages and mentions ──

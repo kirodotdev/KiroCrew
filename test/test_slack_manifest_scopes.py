@@ -70,8 +70,17 @@ _AGENT_SESSION_EVENTS = [
     "agent_session_title_changed",
     "app_context_changed",
 ]
-#: A code channel shows Slack's Stop button only when the app subscribes to it.
-_CODE_CHANNEL_EVENTS = ["agent_session_stopped"]
+#: A code channel shows Slack's Stop button only when the app subscribes to it,
+#: and its dashboard badge follows the channel's archive state and name.
+_CODE_CHANNEL_EVENTS = [
+    "agent_session_stopped",
+    "channel_archive",
+    "channel_rename",
+    "channel_unarchive",
+    "group_archive",
+    "group_rename",
+    "group_unarchive",
+]
 
 _COMBOS = slack_manifest.feature_sets()
 
