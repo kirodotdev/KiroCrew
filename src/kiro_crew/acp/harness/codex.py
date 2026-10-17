@@ -125,6 +125,7 @@ not the instrument that governs it.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -159,9 +160,38 @@ logger = logging.getLogger(__name__)
 #: downgrade of whichever harness moved first.
 PROTOCOL_VERSION_CODEX = 1
 
-
 #: Where ``codex`` keeps its SQLite databases; defaults to ``CODEX_HOME``.
 _SQLITE_HOME_ENV = SQLITE_HOME_ENV
+
+#: The whole codex configuration directory; MCP fleet is started from its config.toml.
+_CODEX_HOME_ENV = "CODEX_HOME"
+
+
+def _read_codex_mcp_server_names(config_file: Path) -> list[str]:
+    """Return ``mcp_servers`` names from a codex ``config.toml``, or ``[]``.
+
+    Tries ``tomllib`` (3.11+) / ``tomli`` for structural accuracy; falls back to
+    a regex scan so the function works on older interpreters without ``tomli``.
+    Server names are returned in config.toml order, deduplicated.
+    """
+    if not config_file.is_file():
+        return []
+    try:
+        text = config_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+
+    # Structural parse; tomllib is stdlib from 3.11+, required at >= 3.12.
+    try:
+        import tomllib
+        data = tomllib.loads(text)
+        servers = data.get("mcp_servers", {})
+        if isinstance(servers, dict):
+            return list(servers)
+    except Exception:
+        pass  # malformed TOML falls through to regex
+
+    return []
 
 
 def _sandbox_wrapper_generations(sandbox_mode: str) -> int:
@@ -222,6 +252,12 @@ async def resolve_spawn_masks(sandbox_mode: str) -> tuple[tuple[str, ...], tuple
 
 class CodexHarness(MembershipHarness):
     """The codex-acp host."""
+
+    #: ``CODEX_CONFIG`` disable-override built for the most recent background-runtime
+    #: spawn, or empty string when no override was computed.  Consumed by
+    #: :meth:`apply_spawn_env` which runs on the spawn worker after the full env
+    #: (including ``agent.env``) is assembled.
+    _bg_codex_config: str = ""
 
     backend = ACP_BACKEND_CODEX
 
@@ -291,12 +327,45 @@ class CodexHarness(MembershipHarness):
         # from a completed SQLite snapshot so a large rollout history does not
         # need rebuilding at every start. Each process still owns its database.
         # An operator-supplied location reaches the child without preparation.
+        #
+        # Background sessions (kirocrew-lite) additionally disable every
+        # configured MCP server via CODEX_CONFIG.  codex starts a per-session
+        # fleet (~44 processes) from config.toml for each session/new; session/close
+        # evicts the session but never terminates those children.  Injecting
+        # CODEX_CONFIG = {"mcp_servers": {<name>: {"enabled": false}, ...}} makes
+        # codex skip initializing every server (McpServerConfig.enabled, documented
+        # in codex-rs/config/src/mcp_types.rs:234).  The inject is done in the seed
+        # so that it runs on the spawn worker thread (disk read of config.toml) and
+        # so that CODEX_HOME stays shared and untouched.
+        sqlite_home_set = bool(ctx.environ.get(_SQLITE_HOME_ENV))
+        from kiro_crew.session import BACKGROUND_AGENT as _bg_agent  # circular at module scope
+        is_background = ctx.agent == _bg_agent
+
+        # For background sessions: read config.toml once (off-loop -- we are already
+        # on the spawn worker inside asyncio.to_thread) and build the CODEX_CONFIG
+        # override that disables every configured MCP server.  Stored in
+        # self._bg_codex_config and consumed by apply_spawn_env after the full env
+        # (including agent.env) is assembled, so it can check whether CODEX_CONFIG
+        #
+        # Known residual: names are read once from CODEX_HOME/config.toml at
+        # spawn.  Project-level .codex/config.toml overrides are not covered;
+        # servers they add would still start a fleet per background session.
+        self._bg_codex_config = ""
+        if is_background:
+            _codex_home = Path(ctx.environ.get(_CODEX_HOME_ENV) or str(ctx.home / ".codex"))
+            _names = _read_codex_mcp_server_names(_codex_home / "config.toml")
+            if _names:
+                self._bg_codex_config = json.dumps(
+                    {"mcp_servers": {n: {"enabled": False} for n in _names}},
+                    separators=(",", ":"),
+                )
+
         return SpawnPlan(
             argv=list(argv),
             rss_depth=self.CORE_RSS_DEPTH + wrapper_generations,
             extra_hidden_dirs=hidden,
             extra_expose_files=expose,
-            private_state_env=None if ctx.environ.get(_SQLITE_HOME_ENV) else _SQLITE_HOME_ENV,
+            private_state_env=None if sqlite_home_set else _SQLITE_HOME_ENV,
             private_state_seed=seed_private_state,
         )
 
@@ -354,6 +423,12 @@ class CodexHarness(MembershipHarness):
         # config. That keeps an unbound global dashboard server in place of the
         # gateway's verified mount, on both session/new and session/load.
         env["DISABLE_MCP_CONFIG_FILTERING"] = "true"
+        # Inject CODEX_CONFIG to disable the per-session MCP fleet for background
+        # sessions.  apply_spawn_env runs after agent.env is merged (launch.py:1014),
+        # so checking env.get here correctly sees operator/agent.env values and will
+        # not overwrite them.
+        if self._bg_codex_config and not env.get("CODEX_CONFIG"):
+            env["CODEX_CONFIG"] = self._bg_codex_config
 
     @property
     def verifies_agent_activation(self) -> bool:
