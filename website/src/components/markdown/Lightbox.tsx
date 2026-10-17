@@ -543,6 +543,12 @@ export function Lightbox() {
       if (e.key === 'Escape') {
         if (menuOpen) return
         e.preventDefault()
+        // Consume the event so it reaches no bubble-phase host handler. A host
+        // that checks `defaultPrevented` (the Modal family) is already spared by
+        // preventDefault, but the artifact panel's Escape handler
+        // (ArtifactPanel/MarkdownPanel) does not — so without this the Escape
+        // that closes this viewer also closes the underlying artifact (#20630).
+        e.stopPropagation()
         setState(null)
       } else if (e.key === 'ArrowLeft') {
         if (menuOpen) return

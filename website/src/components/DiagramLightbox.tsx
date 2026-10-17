@@ -203,12 +203,22 @@ export default function DiagramLightbox({ svg, onClose }: { svg: string; onClose
     setPan({ x: 0, y: 0 })
   }, [setZoom, setPan])
 
-  // While the viewer is open, claim Escape so an enclosing <Modal> does not also
-  // dismiss itself on the same keypress. Also handle zoom keyboard shortcuts (+, -, 0).
+  // While the viewer is open, claim Escape so an enclosing dismiss handler does
+  // not also close itself on the same keypress. `useDialogFocusTrap` closes the
+  // viewer from its own capture-phase listener (registered before this one, so
+  // it has already run); this listener then CONSUMES the event so it reaches no
+  // other handler. `preventDefault()` alone is not enough: a bubble-phase host
+  // listener that checks `defaultPrevented` (the Modal family) is spared by it,
+  // but the artifact panel's Escape handler (ArtifactPanel/MarkdownPanel) does
+  // not — so without `stopPropagation()` the same Escape that closes this viewer
+  // also closes the underlying artifact (#20630). Stopping propagation in the
+  // capture phase keeps the event off every bubble-phase document/window
+  // listener. Also handle zoom keyboard shortcuts (+, -, 0).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault()
+        e.stopPropagation()
       } else if (!fitted || isEditableTarget(e) || e.metaKey || e.ctrlKey || e.altKey) {
         return
       } else if (e.key === '+' || e.key === '=') {
