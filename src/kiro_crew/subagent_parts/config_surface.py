@@ -206,7 +206,7 @@ def _notify_cap_raised(self: SubagentManager) -> None:
     lane resolves its parked waiters' futures, which is loop-affine.
 
     The subagent queue drains through the staggered pump. The runner lane
-    (`taskq/adapters/runner.py`) reads this cap as its ceiling but parks its
+    (`taskq/adapters/runner_lane.py`) reads this cap as its ceiling but parks its
     waiters on a bare future, so a waiter parked while the cap was ``0``
     holds no slot and has no running holder whose release would wake it:
     this raise is its only edge. The lane keeps its own occupancy count, so
