@@ -37,6 +37,7 @@ from kiro_crew.agent_files import (
     LEDGER_CONDUCTOR_AGENT_FILENAME,
     OWNED_KIRO_AGENT_FILES,
     PIPELINE_CONDUCTOR_AGENT_FILENAME,
+    RESEARCH_AGENT_FILENAME,
     SECURITY_CONDUCTOR_AGENT_FILENAME,
     WORKER_AGENT_FILENAME,
 )
@@ -626,6 +627,22 @@ def test_the_worker_falls_back_to_the_template_with_no_default_spec_on_disk(tmp_
     template = agent.build_agent_config()
     assert set(template["tools"]) <= set(worker["tools"])
     assert "@kirocrew-work" in worker["tools"]
+
+
+def test_the_research_agent_does_not_mirror_the_default_spec_on_disk(tmp_path, monkeypatch):
+    """The worker mirror above is the worker's alone. ``kirocrew-research``
+    runs an unattended, auto-approved loop, so a server or model the user added to
+    ``kirocrew.json`` stays off it; widening that is a governance call, not drift."""
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+    (tmp_path / AGENT_FILENAME).write_text(json.dumps(_DEFAULT_SPEC_ON_DISK), encoding="utf-8")
+    agent._install_research_agent()
+    research = json.loads((tmp_path / RESEARCH_AGENT_FILENAME).read_text(encoding="utf-8"))
+    for name in ("builder-mcp", "pdf"):
+        assert name not in research["mcpServers"], name
+        assert f"@{name}" not in research["tools"], name
+        assert f"@{name}" not in research.get("allowedTools", []), name
+    assert research["model"] == agent.build_agent_config()["model"]
+    assert research["model"] != _DEFAULT_SPEC_ON_DISK["model"]
 
 
 # ── the one subtraction: cron scheduling ──────────────────────────────────

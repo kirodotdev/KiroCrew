@@ -146,10 +146,18 @@ def _without_guide_server(config: dict) -> dict:
 def _install_research_agent() -> None:
     """Generate and install the kirocrew-research agent config.
 
-    Derives from the kirocrew agent (MCP servers, security, tools) but swaps in a
-    lean research-worker prompt + identity, and leaves out the platform guide
-    server (:func:`_without_guide_server`). Used by the Research Lab app's
-    autonudge loop to run one research cycle per turn.
+    Built from :func:`build_agent_config` -- the shipped template, the operator's
+    ``~/.kiro/crew/agent.json`` and the managed servers -- with a lean
+    research-worker prompt + identity, and without the platform guide server
+    (:func:`_without_guide_server`). Used by the Research Lab app's autonudge loop
+    to run one research cycle per turn.
+
+    It deliberately does NOT read the installed ``kirocrew.json`` the way
+    ``_install_worker_agent`` does (``_installed_default_spec``): servers, app
+    registrations and the model a user added there stay off this spec. The loop
+    runs unattended with tool auto-approval, so widening what it can reach is a
+    governance decision, not a mirror to keep in sync. A campaign's own model
+    pick is pinned on its worker slot instead.
     """
     config = _without_guide_server(agent_mod.build_agent_config())
     config["name"] = "kirocrew-research"
