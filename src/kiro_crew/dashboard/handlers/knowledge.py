@@ -40,6 +40,7 @@ from kiro_crew.dashboard.handlers.files import (
 )
 from kiro_crew.dashboard.origin import is_direct_local_request
 from kiro_crew.dashboard.project_knowledge import session_project_namespace_route
+from kiro_crew.dashboard.project_notes_api import setup_project_notes_routes
 from kiro_crew.dashboard.upload_limits import bytes_to_mb_figure, knowledge_upload_max_bytes
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.knowledge.agent_fetch import fetch_url_content
@@ -3256,6 +3257,7 @@ def setup_knowledge_routes(app: web.Application) -> None:
     app.router.add_post("/api/knowledge/ingest", ingest_file)
     app.router.add_post("/api/knowledge/agent-document", add_agent_document_route)
     app.router.add_get("/api/knowledge/session-project-namespace", session_project_namespace_route)
+    setup_project_notes_routes(app)
     app.router.add_post("/api/knowledge/import", import_bundle)
     app.router.add_get("/api/knowledge/items/{id}", get_item)
     app.router.add_patch("/api/knowledge/items/{id}", update_item)

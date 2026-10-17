@@ -284,6 +284,28 @@ KNOWLEDGE_ADD_DOCUMENT_SCHEMA = ToolSchema(
     ],
 )
 
+# A project note is a SHORT learning, not a document; the store enforces the same
+# 2000-char ceiling (knowledge/project_notes.MAX_NOTE_LEN) and refuses an empty
+# text. The project is resolved server-side from the session key -- there is
+# deliberately no folder/project/namespace field a model could pass, so none is
+# accepted here. Tags are an optional free-text list, bounded and cleaned by the
+# store; no pattern (every entry is a parameterized SQL bind and a relevance
+# label, not a boundary).
+PROJECT_NOTE_ADD_SCHEMA = ToolSchema(
+    tool_name="project_note_add",
+    fields=[
+        FieldSpec("text", str, required=True, max_len=2000),
+        FieldSpec(
+            "tags",
+            list,
+            required=False,
+            item_type=str,
+            item_max_len=64,
+            max_items=8,
+        ),
+    ],
+)
+
 # ISO calendar date (YYYY-MM-DD) for the chat-history date filters.
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 

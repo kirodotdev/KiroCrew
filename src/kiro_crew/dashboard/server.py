@@ -724,6 +724,14 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # read that session's project namespace. It returns only the caller's own
         # derived namespace, never a folder id or another session's data.
         "/api/knowledge/session-project-namespace",
+        # MCP-only (the project_note_add tool records through it); no browser
+        # caller. STRICT for the same reason as the two knowledge routes above:
+        # the project a note lands in is derived from the X-Session-Key this
+        # secret backs, so a cookie fall-through would let a browser bearer name
+        # any session as itself and write a note into that session's project. The
+        # person's own list/delete/promote routes are NOT here -- they are
+        # browser/app routes behind the owner gate and the app-scope confinement.
+        "/api/knowledge/project-notes/record",
         "/api/mcp/servers",
         # Session control -- the three routes behind the session_create /
         # session_stop / session_read_message MCP tools.

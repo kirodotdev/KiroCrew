@@ -15,6 +15,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew.dashboard import project_notes_api as pna
 from kiro_crew.dashboard.handlers import knowledge as kh
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.knowledge.store import KnowledgeStore
@@ -41,6 +42,11 @@ MUTATING_ROUTES = [
     ("PATCH", "/api/knowledge/items/{id}", kh.update_item),
     ("DELETE", "/api/knowledge/items/{id}", kh.delete_item),
     ("POST", "/api/knowledge/embedding/generate", kh.batch_embed_items),
+    # Learned project notes. The record route owner-gates (app-aware, like
+    # agent-document); delete and promote are person-only (direct owner gate).
+    ("POST", "/api/knowledge/project-notes/record", pna.record_project_note_route),
+    ("DELETE", "/api/knowledge/project-notes/{note_id}", pna.delete_project_note_route),
+    ("POST", "/api/knowledge/project-notes/{note_id}/promote", pna.promote_project_note_route),
 ]
 
 
@@ -74,7 +80,7 @@ def _make_app(store, identity: dict, seen: list, pipeline=None):
 
 
 def _concrete(path: str) -> str:
-    return path.replace("{id}", "abc123")
+    return path.replace("{id}", "abc123").replace("{note_id}", "abc123")
 
 
 @pytest.fixture()

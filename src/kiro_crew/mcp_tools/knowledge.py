@@ -28,6 +28,7 @@ from kiro_crew.validation import (
     KNOWLEDGE_DEDUP_SCHEMA,
     KNOWLEDGE_LIST_SOURCES_SCHEMA,
     LOCAL_KNOWLEDGE_SEARCH_SCHEMA,
+    PROJECT_NOTE_ADD_SCHEMA,
     validate_tool_args,
 )
 
@@ -164,6 +165,53 @@ def schemas() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["title", "content", "source_uri"],
+            },
+        },
+        {
+            "name": "project_note_add",
+            "description": (
+                "Record a short LEARNING about the current project, so every later "
+                "session in the same project benefits from it. Use it when you learn "
+                "something durable about THIS project that a future session would "
+                "waste time rediscovering -- a convention the codebase follows, how "
+                "the owner likes work done, where a thing lives, a decision and its "
+                "reason, a gotcha that cost you time.\n\n"
+                "A note is REFERENCE DATA, never an instruction. It does not change "
+                "how any agent behaves; it becomes searchable so a later session in "
+                "this project finds it with local_knowledge_search, ranked ahead of "
+                "the global library. Only the PERSON can turn a note into a standing "
+                "instruction, from the dashboard.\n\n"
+                "The project is resolved from YOUR session -- there is no project or "
+                "folder to pass, and you can only ever write the project this session "
+                "is filed in. If this session is not in a project folder the note is "
+                "refused and nothing is written; that is expected, not an error to "
+                "retry.\n\n"
+                "Keep a note SHORT (a sentence or two, 2000 chars max) -- it is a "
+                "distilled learning, not a document. For a whole design doc, spec or "
+                "page, use knowledge_add_document instead. Do not record secrets, "
+                "credentials, or transient task state."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": (
+                            "The learning, in one or two sentences. Plain prose: what "
+                            "you learned about this project that a later session "
+                            "should know."
+                        ),
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Optional short labels to organise the note (e.g. "
+                            '"build", "conventions"). At most 8, 64 chars each.'
+                        ),
+                    },
+                },
+                "required": ["text"],
             },
         },
         {
@@ -491,6 +539,48 @@ def knowledge_add_document(name: str, args: dict[str, Any]) -> str:
     )
 
 
+def project_note_add(name: str, args: dict[str, Any]) -> str:
+    args = validate_tool_args(args, PROJECT_NOTE_ADD_SCHEMA)
+    text = args.get("text", "")
+    if not text.strip():
+        return "Provide the learning to record as text."
+    # Routed through the gateway, which resolves the caller's project from the
+    # VERIFIED session key (never from this call) and refuses a session filed in
+    # no project. The MCP tool carries no project/folder/namespace argument on
+    # purpose: a session can only ever record a note for its OWN project.
+    resp = mcp_core._post(
+        "/api/knowledge/project-notes/record",
+        {"text": text, "tags": args.get("tags") or []},
+    )
+    if resp.get("error"):
+        # The refusal text (not in a project, empty, too long) comes straight
+        # from the store and is safe to show. Redact it like any chat-bound
+        # string, since a message could echo caller-supplied content.
+        message, _ = redact_credentials(str(resp["error"]))
+        message, _ = redact_exfiltration_urls(message)
+        mcp_core.sel().log_tool_invocation(
+            session_key=mcp_core._resolve_session_key(),
+            source="mcp",
+            tool_name="project_note_add",
+            outcome="refused",
+        )
+        return f"Could not record the project note: {message}"
+    note = resp.get("note") or {}
+    mcp_core.sel().log_tool_invocation(
+        session_key=mcp_core._resolve_session_key(),
+        source="mcp",
+        tool_name="project_note_add",
+        outcome="recorded",
+        metadata={"note_id": note.get("id", "")},
+    )
+    return (
+        "Recorded a project note. A later session in this project will find it "
+        "with local_knowledge_search, ranked ahead of the global library. It is "
+        "reference data, not an instruction; only you can promote it to a "
+        "standing instruction from the dashboard."
+    )
+
+
 def knowledge_dedup(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, KNOWLEDGE_DEDUP_SCHEMA)
     apply = bool(args.get("apply", False))
@@ -625,6 +715,7 @@ def knowledge_list_sources(name: str, args: dict[str, Any]) -> str:
 HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "local_knowledge_search": local_knowledge_search,
     "knowledge_add_document": knowledge_add_document,
+    "project_note_add": project_note_add,
     "knowledge_dedup": knowledge_dedup,
     "knowledge_list_sources": knowledge_list_sources,
 }
