@@ -41,6 +41,13 @@ export interface ChannelFolderBackfillReport {
   failed: number
 }
 
+/** One write of the manual session order, as `POST /api/chat/manual-order` takes it. */
+export type ManualOrderWrite =
+  | { op: 'seed'; keys: string[] }
+  | { op: 'move'; key: string; after: string | null; seat?: string[]; expected_created?: string }
+  | { op: 'move'; key: string; before: string; seat?: string[]; expected_created?: string }
+  | { op: 'clear'; rev: number }
+
 export function createChatOrganizationEndpoints({ post, del, patch, j, jfetch: fetch, sessionKeyHeader: _sk }: ClientTransport) {
   const sidebar = {
     // Folders
@@ -109,6 +116,13 @@ export function createChatOrganizationEndpoints({ post, del, patch, j, jfetch: f
       ...(onlyIfUnset ? { only_if_unset: true } : {}),
       ...(expectedCreated && Object.keys(expectedCreated).length > 0 ? { expected_created: expectedCreated } : {}),
     }).then(j) as Promise<{ ok: boolean; order: string[] }>,
+    /** Write the manual session order (sort "Manual"), one operation per call:
+     *  a seed of the order on screen (only while nothing is saved, a 409
+     *  `manual_order_exists` otherwise), a move of ONE session next to another,
+     *  or a clear that lands only at the revision it names. Answers the stored
+     *  order and its revision. */
+    setManualOrder: (body: ManualOrderWrite) => post('/api/chat/manual-order', body)
+      .then(j) as Promise<{ ok: boolean; order: string[]; rev: number }>,
     // Tags
     chatTags: () => fetch('/api/chat/tags', { headers: { ..._sk } }).then(j),
     createChatTag: (name: string, color?: string, status?: boolean) => post('/api/chat/tags', { name, color: color || '', status: !!status }).then(j),

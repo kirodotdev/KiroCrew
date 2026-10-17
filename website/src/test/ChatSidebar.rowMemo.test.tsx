@@ -16,8 +16,9 @@
  *     row bodies, which is the whole-sidebar jank the boundary exists to stop.
  *
  * Render counts are unobservable from the DOM, so they are counted at the
- * row's own boundary: every SessionRow body renders exactly one pinned-session
- * `DndDroppable`, and a test-side wrapper around that real component records
+ * row's own boundary: every SessionRow body renders exactly one row-target
+ * `DndDroppable` (`pinned-session` on a pinned row, `manual-session` on any
+ * other), and a test-side wrapper around that real component records
  * each render by slot key. The wrapper re-renders only when the row body hands
  * it a new element, so its count is the row's body count. (A React `<Profiler>`
  * inside the row cannot stand in: dnd-kit's context re-runs the droppable's
@@ -125,7 +126,9 @@ vi.mock('../components/dnd', async (orig) => {
   const React = await import('react')
   const real = await orig<typeof import('../components/dnd')>()
   const DndDroppable = (props: React.ComponentProps<typeof real.DndDroppable>) => {
-    if (props.data?.type === 'pinned-session') {
+    // A row's own target: `pinned-session` on a pinned row, `manual-session` on
+    // every other row, so each row body renders exactly one of the two.
+    if (props.data?.type === 'pinned-session' || props.data?.type === 'manual-session') {
       const key = String(props.data.key)
       counts[key] = (counts[key] || 0) + 1
     }

@@ -213,6 +213,10 @@ class DashboardState:
     #: and each reorder answer carries it, so a browser can tell a frame
     #: serialized before a write from one serialized after it.
     _pinned_order_rev: int = 0
+    #: The person's manual order for every session (``dashboard.session_sort``
+    #: "manual"), made on first use by :attr:`manual_session_order`. ``None``
+    #: as a class default for the same reason as the pinned order's fields.
+    _manual_session_order: "pinned_session_order.ManualOrder | None" = None
     # The one loop this dashboard is served on. Every surface that hands work in
     # from a foreign thread -- the coalesced slots broadcast, an off-loop
     # websocket send, the log handler's fan-out -- resolves it through
@@ -2850,6 +2854,14 @@ class DashboardState:
         """Every live slot key mapped to its pinned flag."""
         return {key: bool(slot.pinned) for key, slot in self._slots.items()}
 
+    @property
+    def manual_session_order(self) -> pinned_session_order.ManualOrder:
+        """The manual order in memory; ``chat_manual_order`` reads and writes it."""
+        order = self._manual_session_order
+        if order is None:
+            order = self._manual_session_order = pinned_session_order.ManualOrder()
+        return order
+
     def pin_rank(self, slot: Any) -> int | None:
         """*slot*'s position in the pinned order, or ``None`` when it has none.
 
@@ -3797,10 +3809,13 @@ class DashboardState:
             include_check_status=include_check_status, dashboard_user=dashboard_user
         )
         links, slack_linked, slack_channel, slack_thread_ts = self._slot_links(slot)
+        manual = self.manual_session_order
         payload.update(
             {
                 "pin_rank": self.pin_rank(slot),
                 "pin_rev": self._pinned_order_rev,
+                "manual_rank": manual.rank(slot.key),
+                "manual_rev": manual.rev,
                 "links": links,
                 "slack_linked": slack_linked,
                 "slack_channel": slack_channel,

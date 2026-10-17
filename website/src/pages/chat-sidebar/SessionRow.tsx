@@ -4,7 +4,7 @@
  *  (./rows) and its one `actions` object; the row's memo compares both. */
 import { useRef, useEffect, memo, useMemo, useContext } from 'react'
 import { motion } from 'framer-motion'
-import { X, Pin, VolumeX, EyeOff, VenetianMask, MoreVertical, CornerDownRight, GitFork, Loader, Loader2, Bot, ExternalLink, Workflow, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Hourglass } from 'lucide-react'
+import { X, Pin, VolumeX, EyeOff, VenetianMask, MoreVertical, CornerDownRight, GitFork, Loader, Loader2, Bot, ExternalLink, Workflow, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Hourglass, GripHorizontal } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { shallowEqual } from 'react-redux'
 import { useAppDispatch, useAppSelector } from '../../store'
@@ -201,6 +201,8 @@ interface SessionRowActions {
    *  the browser's `dragend` lands on a detached node. */
   onNativeDragEnd: () => void
   onPinnedKeyboardReorder: (key: string, container: string, delta: -1 | 1, row: HTMLElement) => void
+  /** Alt+Arrow on an UNPINNED row: the manual order's move, as a drop makes it. */
+  onManualKeyboardReorder: (key: string, container: string, delta: -1 | 1, row: HTMLElement) => void
   /** Go where a row whose session belongs to another page lives
    *  (`view.opensElsewhere`): click and Enter land here instead of `switchSlot`. */
   openElsewhere: (path: string) => void
@@ -228,7 +230,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   const {
     slot: s, showDivider, scope, navScope, holdContainer, isActive, isOut, isPinned, isUnread, isRunning,
     recent, subagentCount, subagentApprovalCount, digitBadge,
-    isRenaming, renamingHere, renameValue, revealFlash, pinnedOrderIndex, pinnedReorderEnabled, rowAnimEnabled,
+    isRenaming, renamingHere, renameValue, revealFlash, pinnedOrderIndex, drawnOrderIndex, pinnedReorderEnabled, rowAnimEnabled,
     rowMotionHeld, opensElsewhere, peerId, peerName,
   } = view
   const conductor = view.conductor
@@ -270,10 +272,11 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     : conductor && conductor.childCount > 0 ? i18nT('pages.chatSidebar.close_keeps_children_hint') : undefined
   const {
     connected, mode, isMobile, colorMode, defaultAgent, installedAgents, memoryRows, tagById, paletteColors, boost, boostFor,
-    recentTintCount, dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, guideOnRowControl,
+    recentTintCount, dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, activeDraggedDrawnIndex, manualSort,
+    guideOnRowControl,
   } = view.shell
   const {
-    onNativeDragStart, onNativeDragEnd, onPinnedKeyboardReorder,
+    onNativeDragStart, onNativeDragEnd, onPinnedKeyboardReorder, onManualKeyboardReorder,
     renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel, onAutoTitle,
     onDuplicate, onCloseSession, onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab, onOpenSource, onOpenPeerSession,
     openElsewhere, toggleConductor,
@@ -441,6 +444,12 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     const nativeDragInFlight = useRef(false)
     useEffect(() => () => { if (nativeDragInFlight.current) onNativeDragEnd?.() }, [onNativeDragEnd])
     const reorderContainer = scope === 'flat' ? 'flat' : (s.folder_id || 'root')
+    // Shown on the rows a drag can place in the manual order.
+    const manualHandle = manualSort && !isPinned && dndRow && pinnedReorderEnabled
+    // Alt+ArrowUp/Down moves a pinned row in every sort, and an unpinned row
+    // only under Manual: in another sort the chord stays the page's (the
+    // transcript's turn step), and a keystroke never switches the sort.
+    const keyboardMovable = dndRow && pinnedReorderEnabled && (isPinned || manualSort)
     const agentName = s.agent || defaultAgent || ''
     // What the row SHOWS, kept separate from `agentName` on purpose. That value
     // is a resolution KEY — it feeds the source tint lookup, the divergence
@@ -1050,10 +1059,13 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
       </ContextMenuContent>
     ) : null), [foreignRow, onMenuCloseAutoFocus, rowMenuProps, langGen])
     return (
+      // A drop target in its own order: a pinned row takes pinned drags (the
+      // pinned order), an unpinned row unpinned ones (the manual order, in any
+      // sort). The collision layer keeps each to its own container.
       <DndDroppable
-        id={`pinned-session:${scope}:${rowIdentity}`}
-        data={{ type: 'pinned-session', key: s.key, container: reorderContainer }}
-        disabled={!dndRow || !pinnedReorderEnabled || !isPinned || isRenaming}
+        id={`${isPinned ? 'pinned-session' : 'manual-session'}:${scope}:${rowIdentity}`}
+        data={{ type: isPinned ? 'pinned-session' : 'manual-session', key: s.key, container: reorderContainer }}
+        disabled={!dndRow || !pinnedReorderEnabled || isRenaming}
       >
         {({ setNodeRef: setPinnedDropRef, isOver: isPinnedDropOver }) => (
       <motion.div ref={setPinnedDropRef} layout={rowAnimEnabled ? 'position' : false} layoutId={rowAnimEnabled ? `slot-${layoutScope}-${rowIdentity}` : undefined}
@@ -1126,14 +1138,17 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
           data-session-container={holdContainer}
           aria-current={isActive ? 'true' : undefined}
           aria-disabled={!connected}
-          aria-keyshortcuts={dndRow && pinnedReorderEnabled && isPinned ? 'Alt+ArrowUp Alt+ArrowDown' : undefined}
+          aria-keyshortcuts={keyboardMovable ? 'Alt+ArrowUp Alt+ArrowDown' : undefined}
           onKeyDown={e => {
-            if (dndRow && pinnedReorderEnabled && isPinned && e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey
+            if (keyboardMovable && e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey
               && (e.key === 'ArrowUp' || e.key === 'ArrowDown')
               && (e.target as HTMLElement) === e.currentTarget) {
               e.preventDefault()
               e.stopPropagation()
-              onPinnedKeyboardReorder(s.key, reorderContainer, e.key === 'ArrowUp' ? -1 : 1, e.currentTarget)
+              // A pinned row moves in the pinned order; an unpinned one in the
+              // manual order, exactly as dropping it one row along would.
+              const reorder = isPinned ? onPinnedKeyboardReorder : onManualKeyboardReorder
+              reorder(s.key, reorderContainer, e.key === 'ArrowUp' ? -1 : 1, e.currentTarget)
               return
             }
             // ArrowUp/ArrowDown rove focus through the rows of THIS list (see
@@ -1248,9 +1263,9 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
           }}>
           {isPinnedDropOver && activeDraggedKey !== null && activeDraggedKey !== s.key && (
             <span
-              data-testid="pinned-session-insertion"
+              data-testid={isPinned ? 'pinned-session-insertion' : 'manual-session-insertion'}
               aria-hidden="true"
-              className={`absolute left-3 right-3 h-0.5 rounded-full bg-accent pointer-events-none z-20 ${activeDraggedPinnedIndex < pinnedOrderIndex ? '-bottom-[1px]' : '-top-[1px]'}`}
+              className={`absolute left-3 right-3 h-0.5 rounded-full bg-accent pointer-events-none z-20 ${(isPinned ? activeDraggedPinnedIndex < pinnedOrderIndex : activeDraggedDrawnIndex < drawnOrderIndex) ? '-bottom-[1px]' : '-top-[1px]'}`}
             />
           )}
           {/* Held-modifier digit badge: while the chat-jump modifier is down,
@@ -1326,6 +1341,13 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
           ))}
           <div className="flex-1 min-w-0 overflow-hidden">
             <div className={`session-agent-label ${ROW_META_CLS} font-semibold truncate flex items-center gap-1 ${agentColor}`}>
+              {/* Under Manual an unpinned row wears a drag handle at its leading
+               *  edge, ahead of the agent name: the row's right end belongs to
+               *  the ⋮ button's touch area and the hover toolbar, which would
+               *  take a press aimed at it. The whole row still drags, so the
+               *  handle only says it can. Decorative to assistive tech, which
+               *  reads the row's Alt+Arrow shortcut instead. */}
+              {manualHandle && <span className="shrink-0" data-testid="session-row-drag-handle" aria-hidden="true" title={i18nT('pages.chatSidebar.drag_to_reorder')}><GripHorizontal size={10} className="text-muted" /></span>}
               {/* Plain keyed span, deliberately unanimated: 200+ per-row
                 *  AnimatePresence trees each paid child-diffing bookkeeping on
                 *  every sidebar commit for a crossfade that fires only on the

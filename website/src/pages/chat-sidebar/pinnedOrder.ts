@@ -264,13 +264,26 @@ export function usePinnedKeyboardReorder({ searchRanked, pinned, pinnedOrder, sl
   ) => {
     const { searchRanked, pinnedOrder, slotFolders, reorderPinned } = keyboardReorderInputsRef.current
     if (searchRanked) return
-    const rendered = new Set(sessionRowsInScope(row).map(el => el.dataset.sessionRow || ''))
-    const peers = pinnedOrder.filter(candidate => rendered.has(candidate) && (container === 'flat'
-      || (slotFolders[candidate] || 'root') === container))
-    const index = peers.indexOf(key)
-    const target = peers[index + delta]
-    if (index < 0 || !target) return
-    reorderPinned(key, target)
+    const target = keyboardReorderTarget(pinnedOrder, key, container, delta, row, slotFolders)
+    if (target) reorderPinned(key, target)
   }, [])
   return { startsAutomaticSection, reorderPinnedByKeyboard }
+}
+
+/** The key *delta* places from *key* among the keys of *order* drawn in *row*'s
+ *  list and container, or undefined at either end: the row Alt+Arrow moves past.
+ *  Shared by the pinned and the manual order. */
+export function keyboardReorderTarget(
+  order: readonly string[],
+  key: string,
+  container: string,
+  delta: -1 | 1,
+  row: HTMLElement,
+  slotFolders: Record<string, string>,
+): string | undefined {
+  const rendered = new Set(sessionRowsInScope(row).map(el => el.dataset.sessionRow || ''))
+  const peers = order.filter(candidate => rendered.has(candidate) && (container === 'flat'
+    || (slotFolders[candidate] || 'root') === container))
+  const index = peers.indexOf(key)
+  return index < 0 ? undefined : peers[index + delta]
 }

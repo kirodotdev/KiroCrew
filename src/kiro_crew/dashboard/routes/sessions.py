@@ -101,6 +101,9 @@ def register(app: web.Application) -> None:
     # The whole pinned-session order in one atomic write (sidebar drag and the
     # dashboard MCP's chat_session_pin_move).
     app.router.add_post("/api/chat/pinned-order", chat.api_chat_pinned_order)
+    # The manual order of every session (sort "Manual"): the person's browser
+    # only, no MCP tool.
+    app.router.add_post("/api/chat/manual-order", chat.api_chat_manual_order)
     app.router.add_patch("/api/chat/slots/{slot}/mode", chat.api_chat_slot_mode)
     # Message pins
     app.router.add_get("/api/chat/pins", chat.api_chat_pins_list)

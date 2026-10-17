@@ -145,6 +145,48 @@ describe('sidebarCollision — pinned-session eligibility', () => {
   })
 })
 
+describe('sidebarCollision — manual-session eligibility', () => {
+  /** Root lane holding one unpinned row's target (container `root`). */
+  function manualWorld() {
+    const laneHost = newRoot()
+    const lane = container('root-lane', rect(0, 800), laneHost, { type: 'folder-drop', folderId: null })
+    const row = container('manual-session:list:k2', rect(100, 140), nodeOf(lane),
+      { type: 'manual-session', key: 'k2', container: 'root' })
+    return { lane, row }
+  }
+
+  it('resolves to the row when the dragged session is unpinned in the same container', () => {
+    const { lane, row } = manualWorld()
+    for (const active of [
+      { type: 'session', key: 'k1', pinned: false, container: 'root' },
+      { type: 'session', key: 'k1', container: 'root' },
+    ]) {
+      const hits = sidebarCollision(args({ active, containers: [lane, row], pointer: ON_PINNED_ROW }))
+      expect(ids(hits)[0]).toBe('manual-session:list:k2')
+    }
+  })
+
+  it('ignores the row for a session from another folder, so the drop files it into this one', () => {
+    const { lane, row } = manualWorld()
+    const hits = sidebarCollision(args({
+      active: { type: 'session', key: 'k1', pinned: false, container: 'f1' },
+      containers: [lane, row],
+      pointer: ON_PINNED_ROW,
+    }))
+    expect(ids(hits)).toEqual(['root-lane'])
+  })
+
+  it('ignores the row for a pinned session, which moves only in the pinned order', () => {
+    const { lane, row } = manualWorld()
+    const hits = sidebarCollision(args({
+      active: { type: 'session', key: 'k1', pinned: true, container: 'root' },
+      containers: [lane, row],
+      pointer: ON_PINNED_ROW,
+    }))
+    expect(ids(hits)).toEqual(['root-lane'])
+  })
+})
+
 describe('sidebarCollision — the chat-pane zone', () => {
   it('wins when the pointer is inside the pane and inside no sidebar droppable', () => {
     const laneHost = newRoot()

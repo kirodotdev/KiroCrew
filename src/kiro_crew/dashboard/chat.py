@@ -12,6 +12,7 @@ The actual implementation lives in:
 - chat_title.py       — title generation
 - chat_regenerate.py  — regenerate, variant switch, edit-resend
 - chat_folders.py     — folder CRUD, pin, assignment
+- chat_manual_order.py — the manual session order (sort "Manual")
 - chat_voice.py       — TTS config + synthesis (optional)
 - chat_slack.py       — Slack link, handoff, channels
 - chat_fork.py        — fork session
@@ -92,6 +93,7 @@ from kiro_crew.dashboard.chat_handlers import (  # noqa: F401
     api_favorite_projects,
     api_recent_projects,
 )
+from kiro_crew.dashboard.chat_manual_order import api_chat_manual_order  # noqa: F401
 from kiro_crew.dashboard.chat_mirror import (  # noqa: F401
     api_channel_targets,
     api_chat_slot_mirror_link,
