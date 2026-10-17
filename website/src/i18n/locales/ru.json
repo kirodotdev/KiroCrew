@@ -18020,7 +18020,11 @@
         "backend_encoder_only": "{{name}} — ускорено частично, текстовый шаг на CPU",
         "backend_cpu_only": "Работает на CPU — в этой сборке нет GPU",
         "last_recognition_value": "{{duration}} до готового текста, {{rtf}}× длительности звука",
-        "decode_threads_value": "потоков декодирования: {{n}}"
+        "decode_threads_value": "потоков декодирования: {{n}}",
+        "decode_threads": "Потоки декодирования",
+        "decode_threads_desc": "Сколько потоков ЦП локальная модель использует для распознавания речи. «Авто» берёт половину ядер этого компьютера, но не больше 16. На большом компьютере со свободными ядрами больше потоков быстрее завершают каждую диктовку.",
+        "decode_threads_auto": "Авто",
+        "decode_threads_env_override": "Не действует, пока KIROCREW_STT_THREADS задаёт {{value}} потоков на этом шлюзе. Удали эту переменную, чтобы применить этот выбор."
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "выше. В отличие от Slack, у Bot Framework нет\n              режима только для исходящих сообщений.",

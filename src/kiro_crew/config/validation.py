@@ -598,6 +598,12 @@ def validate_config_data(data: dict) -> dict:
                 custom_path=stt.get("custom_model_path", ""),
                 custom_sha256=stt.get("custom_model_sha256", ""),
             )
+        # `"auto"` is a documented spelling of 0, so it must become the int before
+        # the integer type check deletes it with a misleading "wrong type" notice.
+        if "threads" in stt:
+            from kiro_crew.config.sections import _validated_stt_threads
+
+            stt["threads"] = _validated_stt_threads(stt["threads"])
 
     # 3d. The harness fields have a product default distinct from their safety
     # floor. Absent or "" is "no choice" and takes the default, but a PRESENT

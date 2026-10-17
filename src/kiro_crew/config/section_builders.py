@@ -799,6 +799,7 @@ def _build_stt_config(stt_data: dict) -> SttConfig:
         idle_evict_secs=section.read(
             "idle_evict_secs", _safe_int, lo=_STT_IDLE_EVICT_SECS_MIN, hi=_STT_IDLE_EVICT_SECS_MAX
         ),
+        threads=_sections._validated_stt_threads(section.get("threads")),
         endpointing=section.read("endpointing", _safe_bool),
         dictation_panel=section.read("dictation_panel", _safe_bool),
         timeout_secs=section.read(

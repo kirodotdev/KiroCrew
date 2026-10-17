@@ -643,12 +643,14 @@ class TestSttPrewarm:
         Both configured values are non-default, so this also proves the warm-up
         targets the operator's selection rather than the catalog default.
         """
-        _seed_stt(seeded_config, model="small", language_code="fr-FR")
+        _seed_stt(seeded_config, model="small", language_code="fr-FR", threads=32)
         seen: dict = {}
         release = asyncio.Event()
 
-        async def _fake_prewarm(*, model_name: str = "", language: str = ""):
-            seen.update({"model_name": model_name, "language": language})
+        async def _fake_prewarm(
+            *, model_name: str = "", language: str = "", threads: int | None = None
+        ):
+            seen.update({"model_name": model_name, "language": language, "threads": threads})
             await release.wait()
             return _availability(True)
 
@@ -662,6 +664,9 @@ class TestSttPrewarm:
         # The BCP-47 config value is reduced to the bare language code the
         # recogniser names its languages by.
         assert seen["language"] == "fr"
+        # The configured count, so a warm-up after a settings change loads the
+        # context the next session will use instead of one it would rebuild.
+        assert seen["threads"] == 32
 
     @pytest.mark.asyncio
     async def test_prewarm_failure_does_not_fail_the_request(

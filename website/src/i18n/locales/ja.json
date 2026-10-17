@@ -17225,7 +17225,11 @@
         "backend_encoder_only": "{{name}} — 一部のみ高速化、文字化の処理は CPU",
         "backend_cpu_only": "CPU で実行 — このビルドに GPU はありません",
         "last_recognition_value": "確定テキストまで {{duration}}、音声長の {{rtf}} 倍",
-        "decode_threads_value": "デコードスレッド {{n}}"
+        "decode_threads_value": "デコードスレッド {{n}}",
+        "decode_threads": "デコードスレッド数",
+        "decode_threads_desc": "ローカルモデルが音声認識に使う CPU スレッド数です。自動ではこのマシンのコアの半分（最大 16）を使います。空きコアのある大きなマシンでは、スレッドを増やすと各ディクテーションが早く終わります。",
+        "decode_threads_auto": "自動",
+        "decode_threads_env_override": "このゲートウェイでは KIROCREW_STT_THREADS がスレッド数を {{value}} に指定しているため、この選択は無視されます。この選択を使うには変数を削除してください。"
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "上記。Slack とは異なり、Bot Framework には\n              送信専用モードがありません。",

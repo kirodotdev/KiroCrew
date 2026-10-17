@@ -25,6 +25,7 @@ import pytest
 
 from conftest import requires_symlinks
 from kiro_crew.stt import engine as engine_mod
+from kiro_crew.stt import limits as stt_limits
 from kiro_crew.stt import models
 from kiro_crew.testing.wait import async_wait_until, await_until
 
@@ -789,8 +790,10 @@ def test_available_cpus_reads_the_affinity_helper(monkeypatch):
 
 
 def test_thread_count_is_bounded_and_positive(monkeypatch):
+    # An inherited override would outrank the auto sizing this test pins.
+    monkeypatch.delenv(stt_limits.THREADS_ENV, raising=False)
     monkeypatch.setattr(engine_mod, "available_cpus", lambda: 256)
-    assert engine_mod.thread_count() == engine_mod.THREAD_CEILING
+    assert engine_mod.thread_count() == stt_limits.THREAD_CEILING
     monkeypatch.setattr(engine_mod, "available_cpus", lambda: 1)
     assert engine_mod.thread_count() == 1
     monkeypatch.setattr(engine_mod, "available_cpus", lambda: 16)

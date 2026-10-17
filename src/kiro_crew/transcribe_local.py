@@ -285,6 +285,7 @@ async def _transcribe_local(audio_path: str, stt_config) -> str | None:  # type:
         language=_whisper_language(stt_config.language_code),
         idle_evict_secs=stt_config.idle_evict_secs,
         timeout_secs=stt_config.timeout_secs,
+        threads=stt_config.threads,
     )
     if not result.ok:
         logger.error("Local speech recognition unavailable: %s", result.detail)

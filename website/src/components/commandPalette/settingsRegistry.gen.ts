@@ -2589,6 +2589,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "stt.transcribe_vocabulary"
   },
   {
+    "id": "voice.decode-threads",
+    "label": "Decode threads",
+    "labelKey": "pages.settings.sttSettings.decode_threads",
+    "hint": "CPU threads the local model uses to recognise speech. Auto uses half of this machine's cores, at most 16. On a large machine with cores to spare, more threads finish each dictation sooner.",
+    "tab": "voice",
+    "type": "select",
+    "occurrence": 1,
+    "configKey": "stt.threads"
+  },
+  {
     "id": "voice.dictation-panel",
     "label": "Dictation panel",
     "labelKey": "pages.settings.sttSettings.dictation_panel",

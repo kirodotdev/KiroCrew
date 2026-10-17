@@ -17755,7 +17755,11 @@
         "backend_encoder_only": "{{name}} — parcialmente acelerado, el paso de texto va en la CPU",
         "backend_cpu_only": "Se ejecuta en CPU: este build no tiene GPU",
         "last_recognition_value": "{{duration}} para el texto final, {{rtf}}× la duración del audio",
-        "decode_threads_value": "{{n}} hilos de decodificación"
+        "decode_threads_value": "{{n}} hilos de decodificación",
+        "decode_threads": "Hilos de decodificación",
+        "decode_threads_desc": "Hilos de CPU que usa el modelo local para reconocer la voz. Automático usa la mitad de los núcleos de este equipo, como máximo 16. En un equipo grande con núcleos libres, más hilos terminan cada dictado antes.",
+        "decode_threads_auto": "Automático",
+        "decode_threads_env_override": "Se ignora mientras KIROCREW_STT_THREADS fije {{value}} hilos en esta puerta de enlace. Elimina esa variable para usar esta opción."
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "más arriba. A diferencia de Slack, el Bot Framework no tiene un modo solo de salida.",

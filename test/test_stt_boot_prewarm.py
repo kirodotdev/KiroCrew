@@ -37,6 +37,7 @@ def warm(monkeypatch: pytest.MonkeyPatch):
     cfg.stt.language_code = "zh-CN"
     cfg.stt.idle_evict_secs = 600
     cfg.stt.timeout_secs = 300
+    cfg.stt.threads = 64
     monkeypatch.setattr(server_mod.KiroCrewConfig, "load", staticmethod(lambda: cfg))
 
     engine_stub = MagicMock()
@@ -112,7 +113,7 @@ class TestTheBootPrewarmWarms:
         cfg, calls = warm
         _patch_stt(monkeypatch, calls, present=True)
         await server_mod._stt_startup_prewarm()
-        assert calls["bounds"] == [{"idle_evict_secs": 600, "timeout_secs": 300}]
+        assert calls["bounds"] == [{"idle_evict_secs": 600, "timeout_secs": 300, "threads": 64}]
 
 
 class TestTheBootPrewarmRefrains:

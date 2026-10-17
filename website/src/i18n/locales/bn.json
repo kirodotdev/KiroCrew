@@ -17490,7 +17490,11 @@
         "backend_encoder_only": "{{name}} — আংশিক দ্রুত, লেখার ধাপ CPU-তে",
         "backend_cpu_only": "CPU-তে চলে — এই বিল্ডে GPU নেই",
         "last_recognition_value": "সম্পূর্ণ লেখা পর্যন্ত {{duration}}, অদিও দৈর্ঘ্যের {{rtf}}×",
-        "decode_threads_value": "{{n}} ডিকোড থ্রেড"
+        "decode_threads_value": "{{n}} ডিকোড থ্রেড",
+        "decode_threads": "ডিকোড থ্রেড",
+        "decode_threads_desc": "স্থানীয় মডেল কথা চিনতে যতগুলো CPU থ্রেড ব্যবহার করে। অটো এই মেশিনের অর্ধেক কোর ব্যবহার করে, সর্বোচ্চ 16টি। খালি কোর থাকা বড় মেশিনে বেশি থ্রেড প্রতিটি ডিক্টেশন দ্রুত শেষ করে।",
+        "decode_threads_auto": "অটো",
+        "decode_threads_env_override": "এই গেটওয়েতে KIROCREW_STT_THREADS থ্রেডের সংখ্যা {{value}} নির্ধারণ করে, তাই এই পছন্দটি উপেক্ষা করা হয়। এই পছন্দটি ব্যবহার করতে ভেরিয়েবলটি সরান।"
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "উপরে। Slack-এর বিপরীতে, Bot Framework-এ কোনো\n              শুধু-আউটবাউন্ড মোড নেই।",

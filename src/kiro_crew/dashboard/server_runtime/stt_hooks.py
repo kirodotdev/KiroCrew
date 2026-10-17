@@ -211,7 +211,11 @@ async def _stt_startup_prewarm() -> None:
     # supply bounds is the one that sets them. Booting without them would leave the
     # module defaults in force until some later caller happened to pass the
     # operator's real values.
-    engine.shared_engine(idle_evict_secs=cfg.stt.idle_evict_secs, timeout_secs=cfg.stt.timeout_secs)
+    engine.shared_engine(
+        idle_evict_secs=cfg.stt.idle_evict_secs,
+        timeout_secs=cfg.stt.timeout_secs,
+        threads=cfg.stt.threads,
+    )
     from kiro_crew import stt
 
     started = time.monotonic()

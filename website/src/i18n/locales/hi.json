@@ -17490,7 +17490,11 @@
         "backend_encoder_only": "{{name}} — आंशिक रूप से तेज़, पाठ का चरण CPU पर",
         "backend_cpu_only": "CPU पर चलता है — इस बिल्ड में GPU नहीं है",
         "last_recognition_value": "तैयार पाठ तक {{duration}}, ऑडियो अवधि का {{rtf}}×",
-        "decode_threads_value": "{{n}} डिकोड थ्रेड"
+        "decode_threads_value": "{{n}} डिकोड थ्रेड",
+        "decode_threads": "डिकोड थ्रेड",
+        "decode_threads_desc": "स्थानीय मॉडल वाणी पहचानने के लिए जितने CPU थ्रेड उपयोग करता है। ऑटो इस मशीन के आधे कोर उपयोग करता है, अधिकतम 16। खाली कोर वाली बड़ी मशीन पर अधिक थ्रेड हर डिक्टेशन को जल्दी पूरा करते हैं।",
+        "decode_threads_auto": "ऑटो",
+        "decode_threads_env_override": "इस गेटवे पर KIROCREW_STT_THREADS थ्रेड की संख्या {{value}} तय करता है, इसलिए यह विकल्प अनदेखा किया जाता है। इस विकल्प का उपयोग करने के लिए वह वैरिएबल हटाएँ।"
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "ऊपर। Slack के विपरीत, Bot Framework में कोई\n              केवल-आउटबाउंड मोड नहीं है।",

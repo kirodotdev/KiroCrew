@@ -235,6 +235,22 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
             except ValueError as enum_error:
                 print(f"❌ {key}: {enum_error}", file=sys.stderr)
                 sys.exit(1)
+            # `stt.threads` stores an int but accepts `auto` as the spelling of 0.
+            # Refused here rather than written and degraded at load, for the same
+            # reason as the enum check above: the write is the last point where the
+            # mistake is still attributable to the command that made it.
+            if key == "stt.threads":
+                from kiro_crew.stt.limits import MAX_THREADS, parse_threads
+
+                threads = parse_threads(parsed)
+                if threads is None:
+                    print(
+                        f"❌ {key}: {parsed!r} is not 'auto', 0, or a thread count "
+                        f"from 1 to {MAX_THREADS}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                parsed = threads
             # Fourth write path to telemetry.beacon_enabled, after the dashboard
             # PATCH and `telemetry enable`. Gated here too, and BEFORE the
             # local/base split so it covers both: `--local` writes the overlay,
