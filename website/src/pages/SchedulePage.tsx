@@ -1635,10 +1635,25 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
             {job?.last_error && (
               <>
                 {/* No hand-off: JobForm draft */}
+                {/* A `last_error` is often a multi-frame Python traceback. The
+                    cap is viewport-relative (`min(45vh, 420px)`), not a fixed
+                    200px: a 200px window crushes a traceback to a few lines that
+                    scroll under the fold while the dialog itself scrolls, so the
+                    one line naming the failure is the half the reader loses. 45vh
+                    uses the dialog's own `max-h-[86vh]` height, the 420px ceiling
+                    stops it dominating a tall screen, and it still scrolls
+                    internally for anything longer.
+
+                    `shrink-0` is load-bearing: this notice is a flex child of the
+                    column-flex DialogBody, and an `overflow-y-auto` flex item with
+                    no shrink floor collapses toward its content's min-content
+                    height when the column is height-constrained — so without it
+                    the box renders ~16px (one line) even though its content wants
+                    the full height the cap allows. */}
                 <ErrorNotice
                   title={i18nT('pages.schedulePage.last_error')}
                   message={job.last_error}
-                  className="max-h-[200px] overflow-y-auto font-mono"
+                  className="shrink-0 max-h-[min(45vh,420px)] overflow-y-auto font-mono"
                   testId="schedule-job-last-error"
                 />
               </>
@@ -1646,7 +1661,10 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
             {job && !job.last_error && job.last_result && (
               <div className="flex flex-col gap-1.5">
                 <div className="text-[12px] text-muted font-medium">{i18nT('pages.schedulePage.last_output')}</div>
-                <pre className="text-[12px] font-mono whitespace-pre-wrap break-words rounded border px-2.5 py-2 max-h-[200px] overflow-y-auto bg-bg-elevated border-border text-text">{job.last_result}</pre>
+                {/* Same viewport-relative cap and the same `shrink-0` flex floor
+                    as `last_error`: a long run output is as unreadable crushed
+                    into one line as a traceback is. */}
+                <pre className="text-[12px] font-mono whitespace-pre-wrap break-words rounded border px-2.5 py-2 shrink-0 max-h-[min(45vh,420px)] overflow-y-auto bg-bg-elevated border-border text-text">{job.last_result}</pre>
               </div>
             )}
             {job?.last_run_ts && (
