@@ -7179,7 +7179,14 @@
       "tags_loading_hint": "Chargement des étiquettes…",
       "tags_error_hint": "Impossible de charger les étiquettes.",
       "tags_retry": "Réessayer",
-      "top_level": "Niveau supérieur"
+      "top_level": "Niveau supérieur",
+      "default_crew": "Crew par défaut",
+      "default_crew_hint": "Les nouvelles conversations lancées depuis ce dossier s'exécutent sur ce Crew. Déplacer une session dans le dossier ne la déplace pas vers le Crew.",
+      "default_crew_offline_notice": "Ce Crew est hors ligne. Une nouvelle conversation dans ce dossier le signalera et proposera Local pour cette seule conversation.",
+      "crew_local": "Local",
+      "crew_online": "{{name}} (en ligne)",
+      "crew_offline": "{{name}} (hors ligne)",
+      "crew_not_registered": "{{id}} (non enregistré)"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "Suggestion de dossier",
@@ -13046,7 +13053,9 @@
       "broadcast_col_result": "Résultat",
       "broadcast_open_unknown": "Non confirmé · ouvrir",
       "broadcast_delivery_hint": "Aucun travail en cours n’est interrompu : un tour actif le lit après l’appel d’outil en cours ; une session inactive commence un nouveau tour.",
-      "broadcast_retry": "Réessayer {{n}} en échec"
+      "broadcast_retry": "Réessayer {{n}} en échec",
+      "folder_crew_offline": "{{name}} est hors ligne, aucune conversation n'a donc été lancée. Les nouvelles conversations de ce dossier s'exécutent sur ce Crew.",
+      "folder_crew_offline_use_local": "Lancer plutôt cette conversation en local"
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",

@@ -17,6 +17,7 @@ from aiohttp import web
 
 from kiro_crew import pinned_fs
 from kiro_crew.dashboard import pinned_session_order
+from kiro_crew.dashboard.chat_folder_default_crew import clean_default_crew
 from kiro_crew.dashboard.chat_persistence import _coerce_requested_mode, save_slot_off_loop
 from kiro_crew.dashboard.chat_tags import tags_write_lock, validate_folder_tag_ids
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
@@ -1196,6 +1197,7 @@ async def create_folder_record(
     parent_id: str = "",
     project_dir: str = "",
     default_agent: str = "",
+    default_crew: str = "",
     color: str = "",
     icon: str = "",
     request_app: str = "",
@@ -1352,6 +1354,7 @@ async def create_folder_record(
         "parent_id": parent_id,
         "project_dir": project_dir,
         "default_agent": default_agent,
+        "default_crew": clean_default_crew(default_crew),
         # Epoch seconds, a JSON number, so the sidebar and the MCP tree read it
         # with the same rule they read ``order`` by. It is what the sidebar's
         # ``created`` folder sort orders on; a row from before this key existed
@@ -1557,6 +1560,7 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
             parent_id=parent_id,
             project_dir=str(body.get("project_dir") or ""),
             default_agent=str(body.get("default_agent") or "").strip(),
+            default_crew=clean_default_crew(body.get("default_crew")),
             color=str(body.get("color") or ""),
             icon=icon_val,
             request_app=request_app,
@@ -1720,6 +1724,8 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     if "default_agent" in body:
         val = body["default_agent"]
         changes["default_agent"] = str(val).strip() if val is not None else ""
+    if "default_crew" in body:
+        changes["default_crew"] = clean_default_crew(body["default_crew"])
     reparenting = "parent_id" in body
     new_parent = ""
     if reparenting:

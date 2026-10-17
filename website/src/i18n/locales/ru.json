@@ -7300,7 +7300,14 @@
       "tags_loading_hint": "Загрузка тегов…",
       "tags_error_hint": "Не удалось загрузить теги.",
       "tags_retry": "Повторить",
-      "top_level": "Верхний уровень"
+      "top_level": "Верхний уровень",
+      "default_crew": "Crew по умолчанию",
+      "default_crew_hint": "Новые чаты, начатые из этой папки, выполняются на этом Crew. Перенос сессии в папку не переносит её на Crew.",
+      "default_crew_offline_notice": "Этот Crew не в сети. Новый чат в этой папке сообщит об этом и предложит Локально только для этого чата.",
+      "crew_local": "Локально",
+      "crew_online": "{{name}} (в сети)",
+      "crew_offline": "{{name}} (не в сети)",
+      "crew_not_registered": "{{id}} (не зарегистрирован)"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "Предложение папки",
@@ -13259,7 +13266,9 @@
       "broadcast_col_result": "Итог",
       "broadcast_open_unknown": "Не подтверждено · открыть",
       "broadcast_delivery_hint": "Текущая работа не прерывается: активный ход прочитает сообщение после текущего вызова инструмента, простаивающая сессия начнёт новый ход.",
-      "broadcast_retry": "Повторить неудавшиеся ({{n}})"
+      "broadcast_retry": "Повторить неудавшиеся ({{n}})",
+      "folder_crew_offline": "{{name}} не в сети, поэтому чат не начат. Новые чаты в этой папке выполняются на этом Crew.",
+      "folder_crew_offline_use_local": "Начать этот чат локально"
     },
     "connectionsPage": {
       "action_failed": "Не удалось выполнить действие: {{error}}",

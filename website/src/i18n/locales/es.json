@@ -7179,7 +7179,14 @@
       "tags_loading_hint": "Cargando etiquetas…",
       "tags_error_hint": "No se pudieron cargar las etiquetas.",
       "tags_retry": "Reintentar",
-      "top_level": "Nivel superior"
+      "top_level": "Nivel superior",
+      "default_crew": "Crew predeterminado",
+      "default_crew_hint": "Los chats nuevos iniciados desde esta carpeta se ejecutan en este Crew. Mover una sesión a la carpeta no la mueve al Crew.",
+      "default_crew_offline_notice": "Este Crew está sin conexión. Un chat nuevo en esta carpeta lo indicará y ofrecerá Local solo para ese chat.",
+      "crew_local": "Local",
+      "crew_online": "{{name}} (en línea)",
+      "crew_offline": "{{name}} (sin conexión)",
+      "crew_not_registered": "{{id}} (no registrado)"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "Sugerencia de carpeta",
@@ -13046,7 +13053,9 @@
       "broadcast_col_result": "Resultado",
       "broadcast_open_unknown": "Sin confirmar · abrir",
       "broadcast_delivery_hint": "No se interrumpe ningún trabajo en curso: un turno activo lo lee tras la llamada de herramienta actual; una sesión inactiva empieza un turno nuevo.",
-      "broadcast_retry": "Reintentar {{n}} fallidos"
+      "broadcast_retry": "Reintentar {{n}} fallidos",
+      "folder_crew_offline": "{{name}} está sin conexión, por lo que no se inició ningún chat. Los chats nuevos de esta carpeta se ejecutan en ese Crew.",
+      "folder_crew_offline_use_local": "Iniciar este chat en Local"
     },
     "connectionsPage": {
       "action_failed": "La acción falló: {{error}}",

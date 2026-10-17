@@ -7058,7 +7058,14 @@
       "tags_loading_hint": "टैग लोड हो रहे हैं…",
       "tags_error_hint": "टैग लोड नहीं हो सके।",
       "tags_retry": "पुनः प्रयास करें",
-      "top_level": "सर्वोच्च स्तर"
+      "top_level": "सर्वोच्च स्तर",
+      "default_crew": "डिफ़ॉल्ट Crew",
+      "default_crew_hint": "इस फ़ोल्डर से शुरू की गई नई चैट इसी Crew पर चलती हैं। किसी सत्र को फ़ोल्डर में ले जाने से वह Crew पर नहीं जाता।",
+      "default_crew_offline_notice": "यह Crew ऑफ़लाइन है। इस फ़ोल्डर में नई चैट यह बताएगी और सिर्फ़ उसी एक चैट के लिए स्थानीय विकल्प देगी।",
+      "crew_local": "स्थानीय",
+      "crew_online": "{{name}} (ऑनलाइन)",
+      "crew_offline": "{{name}} (ऑफ़लाइन)",
+      "crew_not_registered": "{{id}} (पंजीकृत नहीं)"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "फ़ोल्डर सुझाव",
@@ -12833,7 +12840,9 @@
       "broadcast_col_result": "नतीजा",
       "broadcast_open_unknown": "पुष्टि नहीं · खोलो",
       "broadcast_delivery_hint": "चल रहा काम नहीं रुकता: चालू टर्न इसे मौजूदा टूल कॉल के बाद पढ़ता है; खाली सेशन नया टर्न शुरू करता है।",
-      "broadcast_retry": "{{n}} विफल फिर से भेजो"
+      "broadcast_retry": "{{n}} विफल फिर से भेजो",
+      "folder_crew_offline": "{{name}} ऑफ़लाइन है, इसलिए कोई चैट शुरू नहीं हुई। इस फ़ोल्डर की नई चैट उसी Crew पर चलती हैं।",
+      "folder_crew_offline_use_local": "इसके बजाय यह चैट स्थानीय रूप से शुरू करें"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",

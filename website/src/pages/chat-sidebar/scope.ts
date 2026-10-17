@@ -186,6 +186,8 @@ export interface SidebarScope {
   setHistoryFilter: SetState<string>
   hasRemoteExecutedRow: boolean
   warmCrews: { id: string; name: string }[]
+  /** Every registered crew and whether it is connected (Folder settings' Default crew). */
+  crewChoices: { id: string; name: string; online: boolean }[]
   collapsedHistoryGroups: Set<string>
   setCollapsedHistoryGroups: SetState<Set<string>>
   setFolderModal: SetState<FolderModalTarget | null>
