@@ -56,6 +56,7 @@ if TYPE_CHECKING:
         ContextBuilder,
         KiroCrewConfig,
         LLMEvent,
+        Mapping,
         MemoryWait,
         ProcessHandle,
         PublishedQueueDepths,
@@ -202,6 +203,9 @@ class SubagentManager:
         #: workflow ``ctx.agent()`` calls). Registered by the gateway through
         #: :meth:`set_cap_raise_listener`; None everywhere else.
         self._cap_raise_listener: Callable[[], object] | None = None
+        #: Returns ``{lane: "low"|"high"}`` for lanes whose owner set a queue
+        #: priority; see :meth:`set_lane_priority_source`. None: all medium.
+        self._lane_priority_source: Callable[[], Mapping[str, str]] | None = None
         self._default_turn_limit = default_turn_limit
         self._default_timeout = default_timeout if default_timeout > 0 else _TIMEOUT_SECS
         # A positive value pins the window; 0 derives it from the budget.
@@ -869,6 +873,7 @@ class SubagentManager:
     release_queue_dispatch = _config_surface.release_queue_dispatch
     _clamp_effective_cap = _config_surface._clamp_effective_cap
     set_cap_raise_listener = _config_surface.set_cap_raise_listener
+    set_lane_priority_source = _config_surface.set_lane_priority_source
     _notify_cap_raised = _config_surface._notify_cap_raised
     set_effective_cap = _config_surface.set_effective_cap
 

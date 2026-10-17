@@ -318,6 +318,20 @@ class TestSurfaceChannelSession:
         assert slot.title == "Ship the thing"
         assert [m["content"] for m in slot.messages] == ["hi", "hello"]
 
+    @pytest.mark.parametrize("written", ["low", "high"])
+    def test_never_restores_a_tier_from_agent_writable_metadata(
+        self, dashboard_state: Any, written: str
+    ) -> None:
+        slot = channel_slots.surface_channel_session(
+            dashboard_state,
+            _session("slack:1785370133.085470"),
+            {"queue_priority": written},
+            [],
+        )
+
+        assert slot is not None
+        assert slot.queue_priority == "medium"
+
     def test_binds_the_slot_to_the_real_channel_session_key(self, dashboard_state: Any) -> None:
         """The tab IS the conversation, not a picture of it: a reply typed in it
         runs on the channel's own session and lands in the channel transcript,

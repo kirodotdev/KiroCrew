@@ -478,6 +478,7 @@ class SlotProjection:
             "pinned": slot.pinned,
             "mutes_opened": slot.mutes_opened,
             "muted": slot.muted,
+            "queue_priority": slot.queue_priority,
             "tags": list(slot.tags),
             "tags_revision": getattr(slot, "tags_revision", ""),
             "color_index": slot.color_index,

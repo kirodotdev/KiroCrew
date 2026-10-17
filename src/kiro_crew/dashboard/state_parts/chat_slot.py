@@ -179,6 +179,7 @@ class _ChatSlot:
         "pinned",
         "mutes_opened",
         "muted",
+        "queue_priority",
         "tags",
         "tags_revision",
         "_pending_subagent_failures",
@@ -330,6 +331,7 @@ class _ChatSlot:
     pinned: bool
     mutes_opened: bool
     muted: bool
+    queue_priority: str
     tags: list[str]
     tags_revision: str
     color_index: int | None

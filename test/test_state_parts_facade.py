@@ -636,6 +636,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "mutes_opened": ("value", "False"),
     "pinned": ("value", "False"),
     "project": ("value", "''"),
+    "queue_priority": ("value", "'medium'"),
     "recovery_retrigger_count": ("value", "0"),
     "remote_slot": ("value", "''"),
     "replays": ("type", "kiro_crew.dashboard.recovery_replays.RecoveryReplays"),

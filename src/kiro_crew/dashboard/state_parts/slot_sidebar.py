@@ -191,6 +191,11 @@ def init_sidebar_fields(self: _ChatSlot) -> None:
     # menu: no turn-done chime, background-finished toast or unread badge
     # on the client. Tool-approval prompts stay exempt. Durable like ``pinned``; never set by an agent.
     self.muted = False
+    # Agent-queue priority of this chat's subagent spawns: "low", "medium"
+    # (default) or "high". Read by the dispatcher through the lane priority
+    # source DashboardState installs (see lane_queue_priorities). Memory
+    # only: transcript metadata is agent-writable (see kiro_crew.queue_priority).
+    self.queue_priority = "medium"
     self.tags = []  # assigned tag ids (see DashboardState._tags)
     # Change identity for tag snapshots. Orderable (see mint_tags_revision):
     # equality identifies a specific frame, and the sequence prefix lets a

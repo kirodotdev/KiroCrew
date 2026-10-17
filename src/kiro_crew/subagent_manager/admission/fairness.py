@@ -92,7 +92,37 @@ class _FairnessMixin(ManagerComponent):
             setattr(self._manager, "_lane_scheduler", scheduler)
         else:
             scheduler.weights = settings.lane_weights
+        scheduler.priorities = self.lane_priorities()
         return scheduler
+
+    def lane_priorities(self) -> dict[str, int]:
+        """Lane -> priority rank for every lane whose owner set a non-default
+        queue priority, read from the source the dashboard installs
+        (:meth:`SubagentManager.set_lane_priority_source`).
+
+        The source is asked on every pick, so a priority change reaches the
+        very next dispatch with no push step to forget. A missing or failing
+        source means every lane is medium: priority can reorder the queue,
+        never stop it.
+        """
+        from kiro_crew.taskq import lanes as _lanes
+
+        source = getattr(self._manager, "_lane_priority_source", None)
+        if not callable(source):
+            return {}
+        try:
+            raw = source()
+        except Exception:
+            _glue_logger.debug("lane priority source failed; all lanes medium", exc_info=True)
+            return {}
+        if not isinstance(raw, Mapping):
+            return {}
+        out: dict[str, int] = {}
+        for lane, name in raw.items():
+            rank = _lanes.priority_rank(name)
+            if lane and rank != _lanes.DEFAULT_PRIORITY_RANK:
+                out[str(lane)] = rank
+        return out
 
     def lane_for_session(self, session_key: str | None) -> str:
         """The lane a spawn from *session_key* is dispatched under.
@@ -353,6 +383,13 @@ class _FairnessMixin(ManagerComponent):
         round-robin over lanes among eligible entries. With only the reserve
         left, eligible means nested; with no slot at all, nothing is.
 
+        The per-chat priority tier applies to a ROOT pick only (``tiered=``).
+        Under the reserve every eligible entry is a nested row of a tree that
+        is already in flight, and a tier there would let one chat's queued
+        child hold the reserve pass after pass while another chat's running
+        tree waits on its own child: the tier reorders new work, it never
+        withholds the capacity a running tree needs.
+
         *lanes* answers the per-entry lane from a resolution the caller made
         off the loop (:meth:`resolve_window_lanes_async`); without it the lane
         of an entry that carries none is walked here, which only an inline
@@ -401,7 +438,9 @@ class _FairnessMixin(ManagerComponent):
         def lane_of(params: Mapping[str, Any]) -> str:
             return self.lane_of_entry(params, lanes)
 
-        return self.lane_scheduler().pick_index(queue, lane_of=lane_of, eligible=eligible)
+        return self.lane_scheduler().pick_index(
+            queue, lane_of=lane_of, eligible=eligible, tiered=roots_ok
+        )
 
     def arm_memory_wait(self, until: float) -> None:
         """Re-pump once a memory wait's not-before stamp (*until*,
@@ -493,6 +532,8 @@ class _FairnessMixin(ManagerComponent):
         self, pending: Mapping[str, int], resolved: Mapping[str, str]
     ) -> dict[str, Any]:
         """Assemble the snapshot from the store half *pending* / *resolved*."""
+        from kiro_crew.taskq import lanes as _lanes
+
         settings = self.fairness_settings()
         scheduler = self.lane_scheduler()
         lanes: dict[str, dict[str, Any]] = {}
@@ -500,7 +541,13 @@ class _FairnessMixin(ManagerComponent):
         def bucket(lane: str) -> dict[str, Any]:
             return lanes.setdefault(
                 lane,
-                {"queued": 0, "running": 0, "waiting": 0, "weight": scheduler.weight_of(lane)},
+                {
+                    "queued": 0,
+                    "running": 0,
+                    "waiting": 0,
+                    "weight": scheduler.weight_of(lane),
+                    "priority": _lanes.QUEUE_PRIORITIES[scheduler.rank_of(lane)],
+                },
             )
 
         def lane_of_key(session_key: str) -> str:

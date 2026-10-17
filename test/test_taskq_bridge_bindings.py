@@ -99,7 +99,7 @@ _MEMBERS: dict[str, tuple[str, str | None, str]] = {
     "_window_entry": ("staticmethod", "44d01f3428d8", "taskq_bridge_window"),
     "await_pending_defer": ("coroutine", "a7044e95935d", "taskq_bridge_accept"),
     "finish_parked_defer": ("coroutine", "8a9d36d2a473", "taskq_bridge_accept"),
-    "lane_refill_scheduler": ("function", "020878443ab5", "taskq_bridge_window"),
+    "lane_refill_scheduler": ("function", "1a3b4f48e97c", "taskq_bridge_window"),
     "park_defer": ("function", "d89931cb3585", "taskq_bridge_accept"),
     "taskq_accept": ("function", "31185aeae9eb", "taskq_bridge_accept"),
     "taskq_accept_record": ("function", "8046567e12c6", "taskq_bridge_accept"),
