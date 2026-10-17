@@ -444,12 +444,22 @@ def _rewrite_single_spec(
     agent's own declaration always wins). This is how empty-``mcpServers``
     agents get pooled coverage WITHOUT relying on kiro-cli merging the global
     settings — which is what produced the duplicate, empty-``--agent`` stub.
+
+    An agent whose spec sets ``includeMcpJson: false`` gets none of them:
+    kiro-cli does not merge the global file into that agent, so there is no raw
+    entry for a stub to take precedence over, and every wrapped overlay entry is
+    sent at ``session/new``. Injecting there would mount servers the agent
+    excluded, and a tool name one of them shares with the agent's own server
+    leaves one of the two with no tools. Only a literal ``false`` opts out,
+    because kiro-cli reads an absent flag as true.
     """
     agent_name = spec.get("name") or ""
     servers = spec.get("mcpServers") or {}
     if not isinstance(servers, dict):
         servers = {}
     inject = inject_servers or {}
+    if spec.get("includeMcpJson") is False:
+        inject = {}
     if not servers and not inject:
         return spec, 0
 
@@ -820,7 +830,9 @@ def _injectable_settings_servers(
     notes: _RewritePassNotes | None = None,
 ) -> dict[str, Any]:
     """Return ``{raw_name: raw_entry}`` of stdio servers in the global
-    ``settings/mcp.json`` that must be INJECTED into every per-agent overlay.
+    ``settings/mcp.json`` that must be INJECTED into every per-agent overlay
+    whose agent reads that file (an ``includeMcpJson: false`` agent does not;
+    see :func:`_rewrite_single_spec`).
 
     Each returned server is wrapped with the receiving agent's own name, so the
     stub carries a correct ``--agent`` identity, and injected at ACP

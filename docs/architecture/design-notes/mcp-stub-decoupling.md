@@ -120,7 +120,10 @@ Two paths can emit stubs, and both apply the same explicit
   under two identities; no settings overlay is written and the real settings
   file is never modified (#8111). The roster, not poolability, decides the
   injection: a rostered server that is not shared still gets a stub and a
-  callback address, and a server off the roster merges raw with no stub.
+  callback address, and a server off the roster merges raw with no stub. An
+  agent whose spec sets `includeMcpJson: false` gets no injected stubs: kiro-cli
+  merges nothing from the global file into it, so its overlay mounts only the
+  servers its own spec declares.
 
 ## The acquisition path
 
