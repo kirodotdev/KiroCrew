@@ -9,14 +9,19 @@ name: Cross-Platform Portability
 # Deterministic, ADDED-LINES ONLY, no model. Every rule below is a pattern the
 # repo has actually been burned by, not a speculative portability opinion.
 #
-# Scope: `src/kiro_crew/**/*.py`, excluding the vendored tree (not ours to fix),
-# tests (they may legitimately assert POSIX behaviour behind a skip marker),
-# and `platform_compat.py` itself -- that module's whole job is to name the
-# os-specific primitives everything else routes through. Its siblings
-# `platform_owner_compat.py` and `platform_lock_compat.py` hold POSIX owner and
-# lock primitives too but ARE scanned like any other module, so a PR that adds
-# a line matching a rule there (an `os.getuid` call, say) needs the
-# `posix-only-approved` label.
+# Scope: every module under `src/kiro_crew/`, the top-level ones included, so
+# the include pathspec carries `:(glob)` magic: without it `**/` needs at least
+# one directory and no module directly under `src/kiro_crew/` would match.
+# Excluded: the vendored tree (not ours to fix), tests (they may legitimately
+# assert POSIX behaviour behind a skip marker), and `platform_compat.py` with
+# its `platform_compat_*.py` owner modules -- their whole job is to name the
+# os-specific primitives everything else routes through. The
+# `kiro_prerequisite_*.py` owners and `_process_group_supervisor.py` are
+# excluded too: the module layout in `learn-cron-dashboard.md` keeps them
+# outside this scan. The siblings `platform_owner_compat.py` and
+# `platform_lock_compat.py` hold POSIX owner and lock primitives too but ARE
+# scanned like any other module, so a PR that adds a line matching a rule there
+# (an `os.getuid` call, say) needs the `posix-only-approved` label.
 #
 # The test exclusion has to be spelled out as a pathspec, not assumed from the
 # `test/` tree living outside `src/`: ~120 test modules ship INSIDE the package
@@ -62,10 +67,13 @@ jobs:
           # pre-existing violation elsewhere in a touched file is not this PR's
           # problem and must not block it.
           added="$(git diff --unified=0 "$BASE_SHA...$HEAD_SHA" -- \
-            'src/kiro_crew/**/*.py' \
+            ':(glob)src/kiro_crew/**/*.py' \
             ':(exclude)src/kiro_crew/_vendor/**' \
             ':(exclude)src/kiro_crew/platform_compat.py' \
+            ':(exclude)src/kiro_crew/platform_compat_*.py' \
             ':(exclude)src/kiro_crew/**/tests/**' \
+            ':(exclude)src/kiro_crew/kiro_prerequisite_*.py' \
+            ':(exclude)src/kiro_crew/_process_group_supervisor.py' \
             2>/dev/null | grep -E '^\+' | grep -vE '^\+\+\+' || true)"
 
           if [ -z "$added" ]; then
