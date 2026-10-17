@@ -596,6 +596,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         shielded_prepare_off_loop,
         spawn_delegates_masking,
         unconfined_live_agent_pid,
+        without_python_env,
         wrap_argv_async,
     )
     from kiro_crew.sandbox_staging import (  # noqa: F401

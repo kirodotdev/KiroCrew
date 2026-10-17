@@ -44,7 +44,7 @@ from kiro_crew.sandbox_unavailable import (
 from kiro_crew.sandbox_wrap import detect_backend, wrap_argv
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Iterable, Mapping
     from concurrent.futures import ThreadPoolExecutor
     from typing import Any
 
@@ -358,6 +358,28 @@ def scrub_env(
     prefixes = _SPAWN_SCRUB_ENV_PREFIXES + (extra_prefixes or [])
     src = os.environ if env is None else env
     return {k: v for k, v in src.items() if not any(k.startswith(p) for p in prefixes)}
+
+
+def without_python_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Return a copy of *env* (default ``os.environ``) without Kiro Crew's own
+    Python interpreter settings, and with every other variable kept.
+
+    Drops each key that starts with one of ``_PYTHON_ENV_PREFIXES``, compared
+    case-insensitively. Nothing else is touched: ``SSH_AUTH_SOCK``, the ``AWS_*``
+    variables, ``GNUPGHOME`` and ``GIT_ASKPASS`` all survive.
+
+    This is the policy for a child that is NOT an agent but still must not load
+    Kiro Crew's interpreter packages instead of its own: the user's own dashboard
+    terminal, a third-party pooled MCP backend, and the ``aws`` CLI the voice list
+    runs. Those children need the user's credentials, so they must not use
+    :func:`scrub_agent_subprocess_env`, which also strips them.
+    """
+    src = os.environ if env is None else env
+    return {
+        key: value
+        for key, value in src.items()
+        if not any(key.upper().startswith(prefix) for prefix in _PYTHON_ENV_PREFIXES)
+    }
 
 
 def agent_env_scrub_prefixes() -> tuple[str, ...]:
