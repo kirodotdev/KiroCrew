@@ -97,6 +97,7 @@ from kiro_crew.autonudge import (
     runtime_budget_exceeded,
     terminal_notification_delivery_matches,
 )
+from kiro_crew.autonudge_service.timers import _drain_registered_section
 from kiro_crew.beacon import distribution
 from kiro_crew.channel_history import ChannelHistory
 from kiro_crew.channels import builtin_channel_descriptors
@@ -239,7 +240,12 @@ from kiro_crew.executors import (
 )
 from kiro_crew.frontend import build_frontend_async
 from kiro_crew.gateway_restart import resolve_restart_launcher, supervisor_reentry
-from kiro_crew.gateway_shutdown_budget import GRACEFUL_SHUTDOWN_SECS, UPDATE_INSTALLER_STOP_SECS
+from kiro_crew.gateway_shutdown_budget import (
+    AUTONUDGE_DRAIN_WAIT_SECS,
+    GRACEFUL_SHUTDOWN_SECS,
+    PERSISTENCE_DRAIN_GRACE_SECS,
+    UPDATE_INSTALLER_STOP_SECS,
+)
 from kiro_crew.heartbeat import (
     HEARTBEAT_TASK_TIMEOUT_SECS,
     HeartbeatService,
@@ -905,6 +911,8 @@ class GatewayOrchestrator:
     _init_heartbeat = _heartbeat._init_heartbeat
     # gateway_runtime/nudge_channel_fire.py
     _fire_slack_nudge = _nudge_chan._fire_slack_nudge
+    _fire_slack_inner_nudge = _nudge_chan._fire_slack_inner_nudge
+    _bookkeeping_section = _nudge_chan._bookkeeping_section
     _fire_dm_nudge = _nudge_chan._fire_dm_nudge
     _fire_discord_nudge = _nudge_chan._fire_discord_nudge
     _fire_webex_nudge = _nudge_chan._fire_webex_nudge
@@ -1071,6 +1079,7 @@ class GatewayOrchestrator:
     _connect_slack = _channel_lifecycle._connect_slack
     # gateway_runtime/exit_path.py
     _shutdown = _exit._shutdown
+    _stop_services_and_sessions = _exit._stop_services_and_sessions
     _write_marker_worker = _exit._write_marker_worker
     _install_shutdown_signal_handlers = _exit._install_shutdown_signal_handlers
     _shutdown_and_exit = _exit._shutdown_and_exit

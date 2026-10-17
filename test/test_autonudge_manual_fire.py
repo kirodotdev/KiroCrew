@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -38,6 +39,7 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
+from kiro_crew.autonudge_service.model import SERVICE_SHUTTING_DOWN_MESSAGE
 from kiro_crew.dashboard.handlers import autonudge as h
 from kiro_crew.monitoring.models import MonitorState
 
@@ -452,6 +454,39 @@ async def test_route_refuses_when_the_approval_hold_cannot_be_released(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_route_maps_closed_held_loop_to_shutdown_without_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    svc_base_dir: Any,
+) -> None:
+    svc, loop = _svc_with_loop(svc_base_dir)
+    loop.approval_stalled = True
+    loop.approval_stalled_at = 1.0
+    await svc.shutdown()
+    monkeypatch.setattr(h, "_autonudge_get", lambda: svc)
+    caplog.clear()
+
+    try:
+        with caplog.at_level(logging.WARNING, logger=h.logger.name):
+            response = await h.api_autonudge_fire(_mk(loop.id, slot=_slot()))
+
+        assert response.status == 503
+        assert _body(response) == {
+            "error": SERVICE_SHUTTING_DOWN_MESSAGE,
+            "code": "shutting_down",
+        }
+        assert loop.approval_stalled
+        assert loop.id not in svc._timers
+        assert not [
+            record
+            for record in caplog.records
+            if record.name == h.logger.name and record.levelno >= logging.WARNING
+        ], "the expected shutdown refusal emitted a warning traceback"
+    finally:
+        svc.stop()
+
+
+@pytest.mark.asyncio
 async def test_route_refuses_when_the_session_already_has_a_turn_in_flight(monkeypatch) -> None:
     """Refused, not queued — and the fire path already decided that.
 
@@ -754,3 +789,48 @@ async def test_fire_now_never_suspends_which_is_what_makes_it_race_free(svc_base
             "closed here, because those writers take no lock."
         )
     svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_fire_now_refuses_closed_mutation_admission_without_arming(
+    svc_base_dir,
+) -> None:
+    """The timer guard's no-op must never be reported as a successful fire."""
+    from kiro_crew.autonudge_service.model import SERVICE_SHUTTING_DOWN_MESSAGE
+
+    svc, loop = _svc_with_loop(svc_base_dir)
+    svc._accepting_mutations = False
+
+    armed, error, status = await svc.fire_now(loop.id)
+
+    assert (armed, error, status) == (
+        None,
+        SERVICE_SHUTTING_DOWN_MESSAGE,
+        503,
+    )
+    assert loop.id not in svc._timers, "the closed service armed a manual timer"
+    svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_route_maps_the_shutdown_refusal_to_a_literal_503(
+    monkeypatch, sel_mock: MagicMock
+) -> None:
+    """The HTTP arm preserves both the shutdown status and machine code."""
+    from kiro_crew.autonudge_service.model import SERVICE_SHUTTING_DOWN_MESSAGE
+
+    loop = NudgeLoop(id="lp-1", slot_key="chat-1-111", message="check", idle_secs=300)
+    svc = _FakeSvc([loop])
+    svc.result = (None, SERVICE_SHUTTING_DOWN_MESSAGE, 503)
+    monkeypatch.setattr(h, "_autonudge_get", lambda: svc)
+
+    response = await h.api_autonudge_fire(_mk("lp-1", slot=_slot()))
+
+    assert response.status == 503
+    assert _body(response) == {
+        "error": SERVICE_SHUTTING_DOWN_MESSAGE,
+        "code": "shutting_down",
+    }
+    kwargs = sel_mock.log_tool_invocation.call_args.kwargs
+    assert kwargs["outcome"] == "denied"
+    assert kwargs["metadata"]["error"] == SERVICE_SHUTTING_DOWN_MESSAGE

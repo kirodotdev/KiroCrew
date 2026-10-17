@@ -854,7 +854,13 @@ def _notify_nudge_expired(self: GatewayOrchestrator, loop: NudgeLoop) -> bool:
         # the cap is raised) sees that literal unchanged.
         owed = ""
         if loop.monitor:
-            owed = str(getattr(loop.monitor, "terminal_pending", "") or "")
+            # A landed turn awaiting settlement keeps the same fact in
+            # ``terminal_delivered``.
+            owed = str(
+                getattr(loop.monitor, "terminal_pending", "")
+                or getattr(loop.monitor, "terminal_delivered", "")
+                or ""
+            )
         terminal = loop.stopped_reason == MONITOR_TERMINAL_REASON or bool(owed)
         if not terminal and not capped_out and runtime_budget_exceeded(loop):
             title = "Monitoring loop spent its time budget"

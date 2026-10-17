@@ -16,6 +16,11 @@ from autonudge_helpers import _structured_monitor
 from kiro_crew import autonudge as _an
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
 
+#: Lost-run ceiling for synchronization the test itself must release. It is a
+#: hang guard whose expiry fails at the awaited line, never a performance
+#: assertion, and is at most half the repository's ``--timeout=120``.
+_LOST_RUN_SECS = 30.0
+
 
 @pytest.mark.asyncio
 async def test_a_long_quiet_streak_is_delivered_anyway(tmp_path, monkeypatch):
@@ -346,7 +351,9 @@ async def test_a_death_between_the_floor_decision_and_its_turn_leaves_the_fire_o
         assert loop.monitor.quiet_streak == 0, "the baseline the next tick reads is published"
         assert loop.id in service._pending_floor_tick
         # The write that decision scheduled is what a restart reads, so let it land.
-        await asyncio.gather(*tuple(service._inflight_adds))
+        await asyncio.wait_for(
+            asyncio.gather(*tuple(service._inflight_adds)), timeout=_LOST_RUN_SECS
+        )
     finally:
         service.stop()
 
@@ -419,7 +426,9 @@ async def test_a_refused_floor_fire_then_a_restart_delivers_exactly_one_turn(tmp
         assert loop.monitor.floor_fire_pending is True
         assert loop.monitor.followup_ticks == _an._WAKE_FOLLOWUP_TICKS
         assert fired == [loop.id], "the refused fire is the only one so far"
-        await asyncio.gather(*tuple(service._inflight_adds))
+        await asyncio.wait_for(
+            asyncio.gather(*tuple(service._inflight_adds)), timeout=_LOST_RUN_SECS
+        )
     finally:
         service.stop()
 

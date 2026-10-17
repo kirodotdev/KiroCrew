@@ -19,12 +19,14 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import asyncio
+    import contextlib
     import time
 
     from kiro_crew.slack.gateway import (
         APPROVAL_INTERACTIVE,
         STRUCTURAL_TERMINAL_REASON,
         AgentTurnUsage,
+        AutoNudgeService,
         GatewayOrchestrator,
         InboundMessage,
         LLMEvent,
@@ -37,6 +39,7 @@ if TYPE_CHECKING:
         SilentRenderer,
         ToolApprovalPolicy,
         TurnDriver,
+        _drain_registered_section,
         _get_agent_for_session,
         _persist_turn_row,
         build_directive_consumer,
@@ -120,7 +123,38 @@ async def _fire_slack_nudge(
     thread, persist for dashboard replay. Returns True when the turn ran;
     False on skip (busy/unroutable/error) — the AutoNudge service re-arms
     with backoff on False.
+
+    Everything after the provider returns -- the completion report, the usage
+    row, the session release, the thread post and the replay save -- is one
+    section registered with the AutoNudge shutdown drain, so a gateway stop
+    that lands there waits for it instead of cancelling a reply the provider
+    already produced. The provider wait itself stays cancellable.
     """
+    with contextlib.ExitStack() as bookkeeping:
+        return await self._fire_slack_inner_nudge(loop, wake_message, bookkeeping)
+
+
+def _bookkeeping_section(
+    self: GatewayOrchestrator,
+) -> contextlib.AbstractContextManager[None]:
+    """A section the AutoNudge shutdown drain waits for instead of cancelling.
+
+    Only a running service has a drain to register with; without one the
+    section is a no-op.
+    """
+    svc = self.autonudge_svc
+    if not isinstance(svc, AutoNudgeService):
+        return contextlib.nullcontext()
+    return _drain_registered_section(svc)
+
+
+async def _fire_slack_inner_nudge(
+    self: GatewayOrchestrator,
+    loop: NudgeLoop,
+    wake_message: str | None,
+    bookkeeping: contextlib.ExitStack,
+) -> bool | MonitorDispatchResult:
+    """The body of :meth:`_fire_slack_nudge`; *bookkeeping* holds its drain section."""
     key = loop.slot_key
     if self.sessions is None or self.slack is None:
         return _delivery_result(wake_message, MonitorDispatchResult.BUSY)
@@ -175,6 +209,16 @@ async def _fire_slack_nudge(
     _completion_hook: MonitorCompletionHook | None = None
     _raw_dispositions: list[MonitorActionDisposition] = []
     _completion_reported = False
+    _in_bookkeeping = False
+
+    def _open_bookkeeping() -> None:
+        # Called with no await since the provider returned, so shutdown never
+        # finds this task between the reply and its registration.
+        nonlocal _in_bookkeeping
+        if not _in_bookkeeping:
+            bookkeeping.enter_context(self._bookkeeping_section())
+            _in_bookkeeping = True
+
     try:
         _memory_store = await session_store_for_turn(self.ctx_builder, key)
         if wake_message is None:
@@ -277,6 +321,7 @@ async def _fire_slack_nudge(
                 return MonitorDispatchResult.UNAVAILABLE
             assert _completion_hook is not None
             _completion_hook.mark_accepted()
+        _open_bookkeeping()
         _turn_usage = provider_last_turn_usage(client)
 
         if _raw_dispositions:
@@ -312,6 +357,7 @@ async def _fire_slack_nudge(
         return _delivery_result(wake_message, MonitorDispatchResult.BUSY)
     except asyncio.CancelledError:
         if _turn_started and _raw_dispositions and not _completion_reported:
+            _open_bookkeeping()
             _turn_usage = provider_last_turn_usage(client)
             await self._report_monitor_completion(
                 loop,
@@ -336,6 +382,7 @@ async def _fire_slack_nudge(
             key,
             loop.id,
         )
+        _open_bookkeeping()
         _turn_usage = provider_last_turn_usage(client)
         if _raw_dispositions:
             await self._report_monitor_completion(
