@@ -706,7 +706,7 @@ export default function SchedulePage() {
                       <span className="flex items-center gap-2 mt-auto">
                         <span className="text-[12px] text-muted/80 font-medium">{formatCadence(p.prefill)}</span>
                         {p.writes && (
-                          <span className="inline-flex items-center gap-1 text-[11px] font-medium text-warn-fg bg-warn-subtle rounded-full px-2 py-0.5" title={i18nT('pages.schedulePage.writes_badge_tooltip')}>
+                          <span className="inline-flex items-center gap-1 text-[11px] font-medium text-warn-text bg-warn-subtle rounded-full px-2 py-0.5" title={i18nT('pages.schedulePage.writes_badge_tooltip')}>
                             <GitPullRequestArrow size={11} aria-hidden="true" />
                             {i18nT('pages.schedulePage.writes_to_your_repos')}
                           </span>
@@ -1376,7 +1376,7 @@ export function JobSecretsPanel({ job, onSaved }: { job: CronJob; onSaved: () =>
   return (
     <div className="flex flex-col gap-1.5">
       {pending && (
-        <div className="flex flex-col gap-2 px-3 py-2.5 rounded-lg bg-warn-subtle text-warn-fg" role="note">
+        <div className="flex flex-col gap-2 px-3 py-2.5 rounded-lg bg-warn-subtle text-warn-text" role="note">
           <div className="flex items-center gap-1.5 text-[13px] font-semibold">
             <KeyRound size={14} className="lucide-inline shrink-0" aria-hidden="true" />
             {i18nT('pages.schedulePage.secrets_pending_title')}
@@ -1610,7 +1610,7 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
           <>
             {job && <TemplateUpdatedNotice job={job} />}
             {prefillWrites && (
-              <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-warn-subtle text-[12.5px] text-warn-fg" role="note" data-testid="schedule-writes-notice">
+              <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-warn-subtle text-[12.5px] text-warn-text" role="note" data-testid="schedule-writes-notice">
                 <GitPullRequestArrow size={14} className="shrink-0 mt-0.5" aria-hidden="true" />
                 <span>{i18nT('pages.schedulePage.writes_notice')}</span>
               </div>
