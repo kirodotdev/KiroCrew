@@ -1,11 +1,11 @@
 import { Clock, Code2, FolderGit2, PlugZap } from 'lucide-react'
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Card, CardTitle } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { findReport } from '../../utils/errorReport'
 import { api } from '../../api/client'
-import type { WakaTimeStats, WakaTimeStatsEntry } from '../../api/client'
+import type { WakaTimeStats, WakaTimeStatsEntry, WakaTimeOauthStatus } from '../../api/client'
 import { i18nT } from '../../i18n/t'
 import { fmtDuration } from '../../i18n/format'
 
@@ -65,6 +65,13 @@ function rangeDates(range: string): { start: string; end: string } {
 export default function WakaTimeTab() {
   const [range, setRange] = useState<string>(DEFAULT_RANGE)
   const [exportErr, setExportErr] = useState<string | null>(null)
+  // Read the callback's one-shot result marker once, then strip it from the URL
+  // so a manual refresh does not re-show the notice.
+  const [oauthResult] = useState<'connected' | 'error' | null>(() => {
+    const result = readOauthResult()
+    if (result) clearOauthResult()
+    return result
+  })
   const { data, error: queryErr, isLoading } = useQuery<WakaTimeStats>({
     queryKey: ['wakatime-stats', range],
     queryFn: () => api.wakatimeStats(range),
@@ -97,6 +104,11 @@ export default function WakaTimeTab() {
           <PlugZap className="lucide-inline text-accent" />
           <div className="font-medium text-text-strong">{i18nT('pages.overview.wakatimeTab.connect_title')}</div>
           <div className="text-muted text-sm max-w-md">{i18nT('pages.overview.wakatimeTab.connect_body')}</div>
+          <div className="text-muted text-sm max-w-md">{i18nT('pages.overview.wakatimeTab.oauth_connect_lead')}</div>
+          {oauthResult === 'error' && (
+            <div className="text-danger text-[12.5px] max-w-md">{i18nT('pages.overview.wakatimeTab.oauth_result_error')}</div>
+          )}
+          <WakaTimeConnect />
           <div className="text-muted text-[12.5px] max-w-md">{i18nT('pages.overview.wakatimeTab.connect_hint')}</div>
         </div>
       </Card>
@@ -129,7 +141,15 @@ export default function WakaTimeTab() {
 
   return (
     <div className="space-y-4">
-      <p className="text-muted text-[12.5px] -mt-1">{i18nT('pages.overview.wakatimeTab.subtitle')}</p>
+      {oauthResult === 'connected' && (
+        <div className="rounded-md border border-border bg-accent-subtle text-accent px-3 py-2 text-[12.5px]">
+          {i18nT('pages.overview.wakatimeTab.oauth_result_connected')}
+        </div>
+      )}
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <p className="text-muted text-[12.5px] -mt-1">{i18nT('pages.overview.wakatimeTab.subtitle')}</p>
+        <WakaTimeConnect />
+      </div>
       {/* Toolbar: range control + export */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="inline-flex rounded-md border border-border overflow-hidden" role="group"
@@ -206,6 +226,104 @@ export default function WakaTimeTab() {
           )}
         </>
       )}
+    </div>
+  )
+}
+
+// Read a one-shot result marker the OAuth callback appends to the settings URL
+// (?wakatime_oauth=connected | error). Returns the marker; clearOauthResult
+// strips it so a refresh does not re-show the notice.
+function readOauthResult(): 'connected' | 'error' | null {
+  const value = new URLSearchParams(window.location.search).get('wakatime_oauth')
+  return value === 'connected' || value === 'error' ? value : null
+}
+
+function clearOauthResult(): void {
+  const url = new URL(window.location.href)
+  url.searchParams.delete('wakatime_oauth')
+  url.searchParams.delete('reason')
+  window.history.replaceState({}, '', url.toString())
+}
+
+// Connect/disconnect control. Reads the OAuth status so a connected account
+// shows Disconnect and an unconfigured app shows the setup hint instead of a
+// dead Connect button. Starting the flow navigates the browser to WakaTime.
+function WakaTimeConnect() {
+  const queryClient = useQueryClient()
+  const [busy, setBusy] = useState(false)
+  const [actionErr, setActionErr] = useState<string | null>(null)
+  const { data: status } = useQuery<WakaTimeOauthStatus>({
+    queryKey: ['wakatime-oauth-status'],
+    queryFn: () => api.wakatimeOauthStatus(),
+  })
+
+  const connect = async () => {
+    setActionErr(null)
+    setBusy(true)
+    try {
+      const { authorize_url } = await api.wakatimeOauthAuthorize()
+      // Full navigation, not a fetch: WakaTime's authorize page must load in the
+      // browser so the user signs in and approves, then it redirects back.
+      window.location.assign(authorize_url)
+    } catch (e) {
+      setBusy(false)
+      setActionErr(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const disconnect = async () => {
+    setActionErr(null)
+    setBusy(true)
+    try {
+      await api.wakatimeOauthDisconnect()
+      await queryClient.invalidateQueries({ queryKey: ['wakatime-oauth-status'] })
+      await queryClient.invalidateQueries({ queryKey: ['wakatime-stats'] })
+    } catch (e) {
+      setActionErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (status?.connected) {
+    return (
+      <div className="flex flex-col gap-2">
+        <button
+          type="button"
+          onClick={disconnect}
+          disabled={busy}
+          className="px-3.5 py-1.5 rounded-md border border-border text-text text-[12.5px] disabled:opacity-60"
+        >
+          {busy
+            ? i18nT('pages.overview.wakatimeTab.oauth_disconnecting')
+            : i18nT('pages.overview.wakatimeTab.oauth_disconnect_button')}
+        </button>
+        {actionErr && <span className="text-danger text-[12px]">{actionErr}</span>}
+      </div>
+    )
+  }
+
+  if (status && !status.client_configured) {
+    return (
+      <div className="text-muted text-[12.5px] max-w-md">
+        {i18nT('pages.overview.wakatimeTab.oauth_setup_hint')}
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col items-center gap-2">
+      <button
+        type="button"
+        onClick={connect}
+        disabled={busy}
+        className="px-3.5 py-1.5 rounded-md bg-accent text-accent-fg text-[12.5px] font-semibold disabled:opacity-60"
+      >
+        {busy
+          ? i18nT('pages.overview.wakatimeTab.oauth_connecting')
+          : i18nT('pages.overview.wakatimeTab.oauth_connect_button')}
+      </button>
+      {actionErr && <span className="text-danger text-[12px]">{actionErr}</span>}
     </div>
   )
 }

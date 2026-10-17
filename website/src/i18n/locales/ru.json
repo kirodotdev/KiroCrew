@@ -15546,7 +15546,17 @@
         "subtitle": "Ваша активность в программировании, измеренная WakaTime из вашего редактора кода.",
         "this_range": "Всего за эти даты",
         "unreachable_body": "Не удалось связаться со службой или проверить ваш ключ API. Ваши данные не потеряны, повторите попытку позже.",
-        "unreachable_title": "WakaTime недоступен"
+        "unreachable_title": "WakaTime недоступен",
+        "oauth_connect_button": "Connect with WakaTime",
+        "oauth_connect_lead": "WakaTime is making API keys read-only on 1 November 2026. Connect your WakaTime account to keep reading stats after that date.",
+        "oauth_connected_body": "Stats are read through your connected WakaTime account. Disconnect to return to API-key access.",
+        "oauth_connected_title": "WakaTime account connected",
+        "oauth_connecting": "Opening WakaTime…",
+        "oauth_disconnect_button": "Disconnect",
+        "oauth_disconnecting": "Disconnecting…",
+        "oauth_result_connected": "WakaTime account connected.",
+        "oauth_result_error": "Could not connect your WakaTime account. Please try again.",
+        "oauth_setup_hint": "Set wakatime.oauth_client_id in config.json and the client secret in Settings → Secrets first. Create an app at wakatime.com/apps."
       },
       "memoryStoreCard": {
         "backups": "Резервные копии: <v/>",

@@ -15062,7 +15062,17 @@
         "subtitle": "আপনার কোড এডিটর থেকে WakaTime দ্বারা পরিমাপ করা আপনার কোডিং কার্যকলাপ।",
         "this_range": "এই তারিখগুলোর মোট",
         "unreachable_body": "সেবা বা আপনার API কী-তে পৌঁছানো যায়নি। আপনার ডেটা হারায়নি, একটু পরে আবার চেষ্টা করুন।",
-        "unreachable_title": "WakaTime-এ পৌঁছানো যাচ্ছে না"
+        "unreachable_title": "WakaTime-এ পৌঁছানো যাচ্ছে না",
+        "oauth_connect_button": "Connect with WakaTime",
+        "oauth_connect_lead": "WakaTime is making API keys read-only on 1 November 2026. Connect your WakaTime account to keep reading stats after that date.",
+        "oauth_connected_body": "Stats are read through your connected WakaTime account. Disconnect to return to API-key access.",
+        "oauth_connected_title": "WakaTime account connected",
+        "oauth_connecting": "Opening WakaTime…",
+        "oauth_disconnect_button": "Disconnect",
+        "oauth_disconnecting": "Disconnecting…",
+        "oauth_result_connected": "WakaTime account connected.",
+        "oauth_result_error": "Could not connect your WakaTime account. Please try again.",
+        "oauth_setup_hint": "Set wakatime.oauth_client_id in config.json and the client secret in Settings → Secrets first. Create an app at wakatime.com/apps."
       },
       "memoryStoreCard": {
         "backups": "ব্যাকআপ: <v/>",

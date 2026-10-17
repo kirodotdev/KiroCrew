@@ -14820,7 +14820,17 @@
         "subtitle": "코드 편집기에서 WakaTime이 측정한 코딩 활동입니다.",
         "this_range": "해당 날짜 합계",
         "unreachable_body": "서비스 또는 API 키에 연결할 수 없습니다. 데이터는 손실되지 않았습니다. 잠시 후 다시 시도하세요.",
-        "unreachable_title": "WakaTime에 연결할 수 없음"
+        "unreachable_title": "WakaTime에 연결할 수 없음",
+        "oauth_connect_button": "Connect with WakaTime",
+        "oauth_connect_lead": "WakaTime is making API keys read-only on 1 November 2026. Connect your WakaTime account to keep reading stats after that date.",
+        "oauth_connected_body": "Stats are read through your connected WakaTime account. Disconnect to return to API-key access.",
+        "oauth_connected_title": "WakaTime account connected",
+        "oauth_connecting": "Opening WakaTime…",
+        "oauth_disconnect_button": "Disconnect",
+        "oauth_disconnecting": "Disconnecting…",
+        "oauth_result_connected": "WakaTime account connected.",
+        "oauth_result_error": "Could not connect your WakaTime account. Please try again.",
+        "oauth_setup_hint": "Set wakatime.oauth_client_id in config.json and the client secret in Settings → Secrets first. Create an app at wakatime.com/apps."
       },
       "memoryStoreCard": {
         "backups": "백업: <v/>",
