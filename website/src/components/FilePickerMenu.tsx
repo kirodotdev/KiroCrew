@@ -167,7 +167,14 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
     // the tick right after the menu opens. Fetching there would ask for the
     // project root under a token that names something else.
     enabled: open && (pathMode ? scope.dir !== '' : debounced.length >= 2),
-    placeholderData: prev => prev,
+    // Keep the previous payload on screen only while the PROJECT is unchanged:
+    // `project` is part of the key (index 2 for search, 1 for path-complete),
+    // so bridging across a root change would render the previous root's rows
+    // AND root until the re-rooted answer lands, and a click in that window
+    // inserts a path relative to the OLD root. Same-root key moves (a new
+    // query, a deeper path token) still bridge, flicker-free.
+    placeholderData: (prev, prevQuery) =>
+      (pathMode ? prevQuery?.queryKey?.[1] : prevQuery?.queryKey?.[2]) === project ? prev : undefined,
     staleTime: 10_000,
   })
   rootRef.current = data?.root || ''
