@@ -2122,13 +2122,10 @@ async def _consolidate_bg(ns: str) -> None:
         # flight must not have it cleared by that merge — the worker never saw it,
         # so it is not represented in the merged ruleset and a blanket clear would
         # destroy the only copy.
-        # One element per staged entry, not a set: duplicate ids are legitimate
-        # (same title+scope re-learned) and the COUNT is what tells
-        # clear_candidate how many occurrences this merge is entitled to drop.
-        cand_ids = [
-            p["id"] for p in await asyncio.to_thread(
-                learning.list_candidate, None, ns)
-        ]
+        # Each entry's equivalence key and `seen` count, not a set of ids: the
+        # COUNT is what tells clear_candidate how many sightings this merge is
+        # entitled to drop, so one staged again mid-merge is kept.
+        cand_ids = await asyncio.to_thread(learning.candidate_snapshot, None, ns)
         # Clear any residue BEFORE dispatching. The worker writes this path and
         # the backend applies it afterwards; a crash between those two steps
         # leaves a stale merge on disk, and the next consolidation whose

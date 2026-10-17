@@ -479,7 +479,8 @@ from the `learn-from-sage` skill:
    the `store.py --ensure` self-heal above and is inside the app root, so it is
    real on every platform — unlike a `/tmp/...` path, which does not exist on a
    Windows host and would lose the learning silently.
-   This appends to `learned-patterns.candidate.md` only — it does NOT touch the
+   This stages into `learned-patterns.candidate.md` only (an exact equivalent
+   bumps its `seen` count instead of appending) — it does NOT touch the
    live ruleset. A human later triggers **consolidation** (an AI one-shot merge
    into `learned-patterns.md`); see the `learn-from-sage` skill.
 
