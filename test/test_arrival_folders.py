@@ -149,6 +149,38 @@ async def test_both_levels_are_settled_in_one_transaction():
 
 
 @pytest.mark.asyncio
+async def test_an_arrival_keeps_a_ranked_section_ranked():
+    """A top level the person already arranged is fully ranked; an arrival row
+    appended there without a rank would un-rank it, and the next positioning in
+    that section would be refused. The group gets a rank sorting after every
+    sibling, the child (alone in its new section) gets the empty-section rank,
+    and both still read as untouched so a failed import can reclaim them."""
+    state = _store([_row("Work", rank="V"), _row("Home", rank="k")])
+    filing = await af.arrival_folder_id(state, origin="mac", request_app="")
+
+    group = next(f for f in state._folders if f["name"] == "Imported")
+    child = next(f for f in state._folders if f["name"] == "from mac")
+    assert group["rank"] > "k", "the group sorts after every ranked sibling"
+    assert child["rank"] == "V", "an empty section gets the midpoint rank"
+    assert af._is_untouched_arrival_row(group, name="Imported", parent_id="")
+    assert af._is_untouched_arrival_row(child, name="from mac", parent_id=str(group["id"]))
+
+    await af.discard_arrival_folders(state, filing.created_rows)
+    assert [f["name"] for f in state._folders] == ["Work", "Home"]
+
+
+@pytest.mark.asyncio
+async def test_an_arrival_into_an_unranked_section_gets_no_rank():
+    """A section still holding a legacy unranked row stays on the legacy path:
+    the new group gets no rank, exactly as a hand-made folder would."""
+    state = _store([_row("Work", rank="V"), _row("Legacy")])
+    await af.arrival_folder_id(state, origin="mac", request_app="")
+
+    group = next(f for f in state._folders if f["name"] == "Imported")
+    assert "rank" not in group
+
+
+@pytest.mark.asyncio
 async def test_a_second_arrival_from_one_sender_adopts_the_same_folder():
     state = _store()
     first = (await af.arrival_folder_id(state, origin="mac", request_app="")).folder_id
@@ -837,11 +869,12 @@ def test_the_untouched_test_reads_content_edits_and_ignores_view_state():
     """Which fields the fourth guard treats as content, per field.
 
     ``name``, ``parent_id``, ``project_dir`` and ``default_agent`` are content a
-    person invests in. ``order``, ``collapsed`` and ``hidden`` are sidebar
-    position and view state, which carry nothing a person loses when an EMPTY
-    auto-created row is removed -- so they must NOT pin a row in place. Any key
-    the created record does not carry counts as an edit without being named, which
-    is what covers ``color``, ``icon``, ``tags`` and ``owner_app``.
+    person invests in. ``order`` and ``rank`` are sidebar position, while
+    ``collapsed`` and ``hidden`` are view state; they carry nothing a person
+    loses when an EMPTY auto-created row is removed, so they must NOT pin a row
+    in place. Any key the created record does not carry counts as an edit without
+    being named, which is what covers ``color``, ``icon``, ``tags`` and
+    ``owner_app``.
     """
     base = af._new_folder("from mac", "parent", 3)
     assert af._is_untouched_arrival_row(base, name="from mac", parent_id="parent")
@@ -857,7 +890,12 @@ def test_the_untouched_test_reads_content_edits_and_ignores_view_state():
             edited, name="from mac", parent_id="parent"
         ), f"{field} is content, so editing it must spare the row"
 
-    for field, value in (("order", 99), ("collapsed", True), ("hidden", True)):
+    for field, value in (
+        ("order", 99),
+        ("rank", "V"),
+        ("collapsed", True),
+        ("hidden", True),
+    ):
         moved = {**base, field: value}
         assert af._is_untouched_arrival_row(
             moved, name="from mac", parent_id="parent"

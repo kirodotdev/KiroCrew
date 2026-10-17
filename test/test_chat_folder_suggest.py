@@ -101,6 +101,42 @@ def test_eligible_folders_caps_the_list() -> None:
     assert len(fs._eligible_folders(state)) == fs._MAX_FOLDERS
 
 
+def test_eligible_folders_keeps_tree_order_when_a_nested_section_is_ranked() -> None:
+    """A ranked nested section must not jump ahead of unranked top-level folders.
+
+    ``custom_sort_key`` is a sibling order (ranked rows before unranked ones), so
+    sorting the flat list with it would place every ranked child of ``top0``
+    ahead of the other top-level folders and push them past the cap. Sidebar
+    order is depth-first: each top-level folder, then its children.
+    """
+    tops = [{"id": f"top{i}", "name": f"Top {i}", "order": i} for i in range(fs._MAX_FOLDERS + 5)]
+    nested = [
+        {"id": "kid1", "name": "Kid 1", "parent_id": "top0", "rank": "V"},
+        {"id": "kid0", "name": "Kid 0", "parent_id": "top0", "rank": "F"},
+    ]
+    state = _state(nested + tops)
+    got = [f["id"] for f in fs._eligible_folders(state)]
+    assert len(got) == fs._MAX_FOLDERS
+    assert got[:3] == ["top0", "kid0", "kid1"]
+    assert got[3:] == [f"top{i}" for i in range(1, fs._MAX_FOLDERS - 2)]
+
+
+def test_eligible_folders_tolerates_missing_parents_and_cycles() -> None:
+    """An orphan is top level; a ``parent_id`` loop is visited once, not forever."""
+    state = _state(
+        [
+            {"id": "orphan", "name": "Orphan", "parent_id": "gone", "order": 1},
+            {"id": "loop-a", "name": "Loop A", "parent_id": "loop-b", "order": 2},
+            {"id": "loop-b", "name": "Loop B", "parent_id": "loop-a", "order": 3},
+            {"id": "hid", "name": "Hidden", "order": 0, "hidden": True},
+            {"id": "under-hid", "name": "Under hidden", "parent_id": "hid", "order": 0},
+        ]
+    )
+    got = [f["id"] for f in fs._eligible_folders(state)]
+    assert got[:2] == ["under-hid", "orphan"]
+    assert sorted(got[2:]) == ["loop-a", "loop-b"]
+
+
 # ── grounding samples ───────────────────────────────────────────────────────
 
 

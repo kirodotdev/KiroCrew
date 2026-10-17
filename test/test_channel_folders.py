@@ -229,6 +229,36 @@ class TestEnsureChannelFolder:
         assert first == second
         assert len(dashboard_state._folders) == 1
 
+    def test_a_new_folder_keeps_a_ranked_top_level_ranked(self, dashboard_state: Any) -> None:
+        """A top level the person arranged is fully ranked; a channel folder
+        appended there without a rank would un-rank it and the next positioning
+        would be refused. It gets a rank sorting after every sibling instead."""
+        dashboard_state._folders.extend(
+            [
+                {"id": "f1", "name": "Work", "order": 0, "parent_id": "", "rank": "V"},
+                {"id": "f2", "name": "Home", "order": 1, "parent_id": "", "rank": "k"},
+            ]
+        )
+        fid = asyncio.run(
+            channel_folders.ensure_channel_folder(dashboard_state, "discord", "Discord")
+        )
+        folder = next(f for f in dashboard_state._folders if f["id"] == fid)
+        assert folder["rank"] > "k"
+
+    def test_a_new_folder_in_an_unranked_top_level_gets_no_rank(self, dashboard_state: Any) -> None:
+        """A section holding a legacy unranked row stays on the legacy path."""
+        dashboard_state._folders.extend(
+            [
+                {"id": "f1", "name": "Work", "order": 0, "parent_id": "", "rank": "V"},
+                {"id": "f2", "name": "Legacy", "order": 1, "parent_id": ""},
+            ]
+        )
+        fid = asyncio.run(
+            channel_folders.ensure_channel_folder(dashboard_state, "discord", "Discord")
+        )
+        folder = next(f for f in dashboard_state._folders if f["id"] == fid)
+        assert "rank" not in folder
+
     def test_empty_name_creates_nothing(self, dashboard_state: Any) -> None:
         assert (
             asyncio.run(channel_folders.ensure_channel_folder(dashboard_state, "discord", "")) == ""

@@ -57,7 +57,7 @@ vi.mock('../pages/chat/ChatSettings', () => ({
   saveChatConfig: vi.fn(),
 }))
 
-const mocks = vi.hoisted(() => ({ updateChatFolder: vi.fn(), reorderChatFolders: vi.fn() }))
+const mocks = vi.hoisted(() => ({ updateChatFolder: vi.fn() }))
 
 vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
@@ -121,7 +121,6 @@ function renderSidebar() {
 beforeEach(() => {
   localStorage.clear()
   mocks.updateChatFolder.mockResolvedValue({})
-  mocks.reorderChatFolders.mockResolvedValue({})
 })
 afterEach(() => vi.clearAllMocks())
 

@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 from typing import Any, Iterable
 
 from aiohttp import web
@@ -49,6 +48,7 @@ from kiro_crew.dashboard.chat_folders import (
     _folder_history_counts,
     _refuse_unattributable_caller,
 )
+from kiro_crew.dashboard.folder_rank import custom_sort_key
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import MEMBER_CHAT_PRINCIPAL_KEY
@@ -61,21 +61,6 @@ logger = logging.getLogger(__name__)
 #: carrying any of them is kept even when it is empty: deleting it would throw
 #: the setting away along with the row.
 _KEEP_FIELDS = ("project_dir", "default_agent", "steering_dirs", "tags", "color", "icon")
-
-
-def _order_key(folder: dict[str, Any]) -> int:
-    """A folder's stored position as a sort key; a non-number is 0.
-
-    ``folders.json`` is loaded with only ``id`` checked, so a hand-edited or
-    legacy ``order`` reaches this module verbatim. A sort key that raised on
-    it would turn the whole cleanup into a 500 for one bad row.
-    """
-    value = folder.get("order", 0)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return 0
-    if isinstance(value, float) and not math.isfinite(value):
-        return 0
-    return int(value)
 
 
 def _name_key(name: object) -> str:
@@ -196,12 +181,17 @@ def removable_folder_ids(
         seen.add(fid)
         if verdict.get(fid) and (include_top_level or depth > 0):
             ordered.append(fid)
-        for child in sorted(children.get(fid, []), key=lambda c: _order_key(by_id[c])):
+        for child in sorted(children.get(fid, []), key=lambda c: custom_sort_key(by_id[c])):
             _walk(child, depth + 1, seen)
 
     roots = [fid for fid, f in by_id.items() if str(f.get("parent_id") or "") not in by_id]
     seen: set[str] = set()
-    for root in sorted(roots, key=lambda r: _order_key(by_id[r])):
+    # Siblings and roots walk in the sidebar's custom order (rank first, then
+    # legacy ``order`` and name), so the preview lists folders as the sidebar
+    # draws them. ``folders.json`` is loaded with only ``id`` checked, so a
+    # hand-edited rank or order reaches this module verbatim; the key reads
+    # both without raising, so one bad row cannot turn the cleanup into a 500.
+    for root in sorted(roots, key=lambda r: custom_sort_key(by_id[r])):
         _walk(root, 0, seen)
     return ordered
 

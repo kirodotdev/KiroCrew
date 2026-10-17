@@ -397,12 +397,11 @@ class TestPatchIcon:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("payload", ([], "a string", 5, True, None))
     async def test_a_non_object_body_on_update_is_a_400_not_a_500(self, payload: Any) -> None:
-        """``[]`` etc. are valid JSON, so ``request.json()`` parses them and the
-        handler's ``body.get("regenerate_icon", ...)`` would raise
-        AttributeError outside the parse ``try`` — a 500 for malformed client
-        input. Sent as raw text because the client's
-        ``json=None`` means "no body", which exercises the parse error, not
-        the guard."""
+        """The shared guard refuses valid non-object JSON before field access.
+
+        Sent as raw text because the client's ``json=None`` means "no body",
+        which exercises the parse error rather than the shape guard.
+        """
         state = _state(_ChatSlot("chat-1-100"))
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.patch(
@@ -412,7 +411,7 @@ class TestPatchIcon:
             )
             body = await resp.json()
         assert resp.status == 400
-        assert body["code"] == "invalid_json"
+        assert body["code"] == "body_not_object"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("payload", ([], "a string", 5, True, None))
