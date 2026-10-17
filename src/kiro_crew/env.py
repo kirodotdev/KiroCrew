@@ -1615,7 +1615,7 @@ def activate_mise(env: MutableMapping[str, str] | None = None) -> list[str]:
         proc = subprocess.run(
             [mise, "env", "--json"],
             capture_output=True,
-            text=True,
+            **UTF8_TEXT,
             timeout=10,
             env=dict(target),
             cwd=str(Path.home()),

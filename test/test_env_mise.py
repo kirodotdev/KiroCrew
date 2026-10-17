@@ -11,6 +11,7 @@ from unittest.mock import Mock
 import pytest
 
 from kiro_crew import env
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 
 @pytest.fixture
@@ -150,7 +151,7 @@ def test_activation_uses_homebrew_binary_from_bare_path(monkeypatch, mise_host, 
     run.assert_called_once_with(
         [str(binary), "env", "--json"],
         capture_output=True,
-        text=True,
+        **UTF8_TEXT,
         timeout=10,
         env={"PATH": original_path, "KEEP": "unchanged"},
         cwd=str(env.Path.home()),
