@@ -12,6 +12,7 @@ Commands:
     kirocrew spawn run "task"     Spawn a background subagent
     kirocrew spawn list           List subagents
     kirocrew learn add|list|remove Save and manage learned corrections
+    kirocrew skills list|show        Inspect skills without changing them
     kirocrew setup                Interactive setup wizard
     kirocrew doctor               Verify setup
 """
@@ -524,6 +525,7 @@ def main() -> None:
 
     cli_parser_agent.register_computer_parser(sub)
     cli_parser_agent.register_learn_parser(sub)
+    cli_parser_agent.register_skills_parser(sub)
     cli_parser_agent.register_artifact_parser(sub)
     cli_parser_agent.register_memory_parser(sub)
     cli_parser_agent.register_agent_parser(sub)
@@ -835,7 +837,10 @@ def main() -> None:
         from kiro_crew.cli_commands import _learn
 
         _learn(args)
-    elif args.command == "artifact":
+    elif args.command == "skills":
+        from kiro_crew.cli_skills import _skills
+
+        _skills(args)
         from kiro_crew.cli_commands import _artifact
 
         _artifact(args)

@@ -5571,11 +5571,14 @@ Opt-in secondary flag, gated by `auto_create_from_sessions`. When on, the consol
 
 ### CLI
 
-No new command. Users interact via the existing skill management surface:
+No new command for approval. Users interact via the existing skill management surface:
 
 - Off by default (opt-in). Enable: `kirocrew config set skills.auto_create_from_sessions true` (or dashboard Settings → Skills); auto-approve prose-only: `kirocrew config set skills.approval_required false`
-- Review pending candidates: dashboard Skills → Pending review, or `GET /api/skills/-/pending`
-- List auto skills: filter `kirocrew` skill listings to those under `auto/`, or use `SkillsLoader.list_auto_skills()` in code
+- Review pending candidates: dashboard Skills → Pending review, or `GET /api/skills/-/pending`; read-only from a terminal with `kirocrew skills list` / `kirocrew skills show <slug>`
+- `kirocrew skills` (`cli_skills.py`) never approves or dismisses. `list` calls `list_pending_skills` (default) and `list_skills` (`--live`, `--all`) and prints at most 500 rows per section, counting the rest. `show` calls `get_pending_skill`, the descriptor-pinned, byte- and entry-bounded read the dashboard detail API uses, and prints the redacted `SKILL.md`, helper scripts, `.meta.json` and the loader's script-validation verdict. A candidate holding a link, a hard link, a non-regular entry, an oversized file or non-UTF-8 text exits `candidate_unreadable` and prints nothing, so no partial preview can look complete. An unavailable verdict prints `status: unavailable`, never `ok: true`.
+- Skill-derived text goes through `external_text.scrub_untrusted_text`, the function the dashboard's `_scrub_text` also calls, with the terminal's escape-sequence strip as its one surface-specific step. Each line is then bounded with `safe_terminal_line`. A pending slug or live key that matches a credential pattern is redacted.
+- Pending enumeration and `get_pending_skill` classify a candidate with `_pending_candidate_shape` (`skills_candidate_tree.py`), which never follows a link by name: it opens the directory once with `O_NOFOLLOW`, matches device and inode to the first `lstat`, and stats `SKILL.md` relative to that descriptor, so a Windows UNC-linked candidate cannot trigger outbound SMB authentication. A linked candidate is still listed (for its failing verdict and so it can be dismissed) but its `.meta.json` is not read. `pending_candidate_is_staged` uses the same check.
+- A pending list row reads `.meta.json` through `_read_pending_meta_for_listing`: no-link, capped at 64 KiB, and empty when refused. The approve paths keep `_read_pending_meta` unchanged. `has_scripts` is true only for a JSON `true`.
 - Remove unwanted auto skill: use the dashboard Skills delete action
 - Audit trail: `kirocrew security events -n 20 | grep auto_skill`
 
