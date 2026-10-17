@@ -315,8 +315,9 @@ notice is tracked outside the turn's refusal ledger so it cannot skew
 answers the permission as an ordinary rejection (the recovery continuation
 stays reserved for system-side blocks), so on a harness without steer the
 unattended transcript line remains the only agent-facing explanation. The
-timeout card stays the sole user-visible surface — this steer paints no
-tool-blocked row.
+timeout card and the expiry's bell note (see
+[app-notifications](../modules/app-notifications.md)) are the user-visible
+surfaces — this steer paints no tool-blocked row.
 
 **The other two host-originated approval auto-declines take the same path**,
 each with its own cause and the same no-ledger, no-row discipline as the

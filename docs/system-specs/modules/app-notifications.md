@@ -85,6 +85,8 @@ Channels register lazily on the first push to each declared channel. App lifecyc
 
 System channels are fixed in `notifications.bus.SYSTEM_CHANNELS`, including `system.monitor` (see Per-channel settings). A legacy `DashboardState.notify(kind, ...)` call maps `kind` to `system.<kind>`, falling back to `system.agent`, unless the caller passes `channel=`. `payload_from_legacy` raises `NotificationValidationError` when that override names anything but a system channel, and `NotificationCoordinator.notify` drops such a note with a warning; `test_monitor_notice_channel.py::TestLegacyChannelOverride` pins the override and the rejection.
 
+An approval prompt in a dashboard chat that expires unanswered also posts one `system.agent` bell note (`kind` `agent`, title `turn_dispatch.APPROVAL_EXPIRED_NOTE_TITLE`, body `format_approval_expired_note`) from the runner's timeout branch, so someone who is not looking at the session learns the turn went on without the tool. The body names the tool and the session's display title, never the prompt's agent-authored text, and `meta.slot` gives the detail panel its open-session action. It is not `kind` `approval`, which the feed renders with live Approve and Reject buttons. It carries no `publisher_session`, so a muted session's expiry still notifies. A no-budget decline, where nothing was asked, posts none. `test_dashboard_approval_window.py` pins all three.
+
 ## Per-channel settings
 
 `notifications.settings.ChannelSettings` is state-owned, writes atomically, and loads an invalid settings file as empty defaults. `ChannelSettings.apply` runs in `DashboardState._deliver_note` before append and broadcast, so disk and clients receive the same user view while `NotificationBus` remains policy-free.
