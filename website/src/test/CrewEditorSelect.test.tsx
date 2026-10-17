@@ -10,7 +10,9 @@
  * same two interactions are driven for real, in a real browser, by
  * `scripts/verify-crews-dialog-select.mjs`, which asserts the value commits, the
  * warning names the colliding crew, Escape closes only the nested layer, and the
- * console stays clean.
+ * console stays clean. That script runs on demand only
+ * (`npm run verify:crews-dialog-select`): no CI lane runs it, so the real Radix
+ * path is not guarded on every PR.
  *
  * So SimpleSelect is stubbed HERE (and only here) with a plain listbox that
  * keeps the same accessible surface: a `combobox` labelled the same way showing
@@ -275,7 +277,8 @@ describe('crew editor — collision warning', () => {
     // inside React's current batch, so the flushSync lands DURING a render and
     // React throws "Should not already be working." `userEvent` awaits between
     // steps, which is also what a real browser does — the same interaction is
-    // proven end-to-end in scripts/verify-crews-dialog-select.mjs.
+    // driven in a real browser by scripts/verify-crews-dialog-select.mjs, which
+    // runs on demand only (no CI lane runs it).
     const user = userEvent.setup()
     await user.click(within(sheet).getByRole('combobox', { name: 'Workspace' }))
     await user.click(await screen.findByRole('option', { name: 'oncall' }))
