@@ -1,0 +1,81 @@
+/**
+ * resolveLegacyHighlightId — migrations for `?highlight=` deep-link ids.
+ *
+ * Registry ids are `<tab>.<kebab-label>`, so tab collapses and label renames
+ * orphan old ids in bookmarks and palette history. The resolver maps them to
+ * their current equivalents; unknown/current ids pass through unchanged.
+ */
+import { describe, it, expect } from 'vitest'
+import { LEGACY_EXACT_HIGHLIGHT_IDS, resolveLegacyHighlightId } from '../hooks/useSettingHighlight'
+import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
+
+describe('resolveLegacyHighlightId', () => {
+  it('maps slack.* ids to the suffixed channels.* forms (tab collapse + label suffix)', () => {
+    expect(resolveLegacyHighlightId('slack.slash-command')).toBe('channels.slash-command-slack')
+    expect(resolveLegacyHighlightId('slack.owner-slack-member-id')).toBe('channels.owner-slack-member-id-slack')
+  })
+
+  it('maps pre-suffix channels.* ids (all SlackPanel rows) to the -slack forms', () => {
+    expect(resolveLegacyHighlightId('channels.slash-command')).toBe('channels.slash-command-slack')
+    // A suffixed (current) id passes through untouched.
+    expect(resolveLegacyHighlightId('channels.folder-name-teams')).toBe('channels.folder-name-teams')
+  })
+
+  it('maps the four positional voice AWS ids to their qualified forms', () => {
+    expect(resolveLegacyHighlightId('voice.aws-profile')).toBe('voice.aws-profile-transcribe')
+    expect(resolveLegacyHighlightId('voice.aws-profile-2')).toBe('voice.aws-profile-amazon-polly')
+    expect(resolveLegacyHighlightId('voice.aws-region')).toBe('voice.aws-region-transcribe')
+    expect(resolveLegacyHighlightId('voice.aws-region-2')).toBe('voice.aws-region-amazon-polly')
+  })
+
+  // The qualifier itself was renamed once the label was corrected to the
+  // service's real name, so the ids that shipped as `-polly` are legacy too.
+  it('maps the short-form Polly ids to the Amazon Polly forms', () => {
+    expect(resolveLegacyHighlightId('voice.aws-profile-polly')).toBe('voice.aws-profile-amazon-polly')
+    expect(resolveLegacyHighlightId('voice.aws-region-polly')).toBe('voice.aws-region-amazon-polly')
+  })
+
+  it('passes current ids through unchanged', () => {
+    expect(resolveLegacyHighlightId('chat.quick-send')).toBe('chat.quick-send')
+    expect(resolveLegacyHighlightId('display.zoom-level')).toBe('display.zoom-level')
+  })
+
+  // The pin toggle's label moved from "prompt" to "turn" vocabulary, and the
+  // derived id moved with it.
+  it('maps the pin toggle id to its turn-vocabulary form', () => {
+    expect(resolveLegacyHighlightId('chat.pin-the-latest-prompt')).toBe('chat.pin-the-latest-turn')
+  })
+
+  // The peer-session preview card folded into "Chat on a crew"; a bookmark
+  // saved against either of its ids lands on the one switch.
+  it('maps both peer-session preview ids to the Chat on a crew card', () => {
+    expect(resolveLegacyHighlightId('developer.remote-instance-sessions')).toBe('developer.chat-on-a-crew')
+    expect(resolveLegacyHighlightId('developer.remote-crew-sessions')).toBe('developer.chat-on-a-crew')
+  })
+
+  // The two About update switches were relabelled by what each one does.
+  it('maps the update switch ids to their current labels', () => {
+    expect(resolveLegacyHighlightId('about.auto-update-on-restart')).toBe('about.install-app-updates-automatically')
+    expect(resolveLegacyHighlightId('about.update-notifications')).toBe('about.update-the-gateway-automatically')
+  })
+
+  it('rewrites no id a registry row has now', () => {
+    const ids = new Set(SETTINGS_REGISTRY.map(e => e.id))
+    expect(LEGACY_EXACT_HIGHLIGHT_IDS.filter(id => ids.has(id))).toEqual([])
+  })
+
+  it('every migrated target exists in the generated registry', () => {
+    const ids = new Set(SETTINGS_REGISTRY.map(e => e.id))
+    for (const legacy of [
+      'slack.slash-command', 'slack.owner-slack-member-id', 'slack.phase-reactions', 'slack.show-thinking',
+      'voice.aws-profile', 'voice.aws-profile-2', 'voice.aws-region', 'voice.aws-region-2',
+      'voice.aws-profile-polly', 'voice.aws-region-polly',
+      'chat.pin-the-latest-prompt',
+      'developer.remote-instance-sessions', 'developer.remote-crew-sessions',
+      'about.auto-update-on-restart', 'about.update-notifications',
+    ]) {
+      const target = resolveLegacyHighlightId(legacy)
+      expect(ids.has(target), `${legacy} -> ${target} missing from registry`).toBe(true)
+    }
+  })
+})

@@ -1,0 +1,777 @@
+"""Tests for the lesson store module."""
+
+from __future__ import annotations
+
+import os
+import stat
+import sys
+import threading
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+import kiro_crew.learn as learn_mod
+from kiro_crew.atomic_write import replace_with_retry
+from kiro_crew.learn import Lesson, LessonStore
+
+# Read through the MODULE, never `from kiro_crew.learn import _DEFAULT_DIR`.
+# ``_DEFAULT_DIR`` is a ``Path.home()``-derived literal, so the isolation floor in the
+# rootdir conftest redirects it per test to keep the fallback from writing the
+# operator's real data home. A by-value capture at import time would freeze the
+# pre-redirect path and compare against a directory the code under test does not
+# name — the assertion would fail while the behaviour was correct.
+
+
+def _default_dir() -> Path:
+    return learn_mod._DEFAULT_DIR
+
+
+def _make_lesson(rule: str, category: str = "knowledge", negative: str | None = None) -> Lesson:
+    return Lesson(ts="2026-01-01T00:00:00Z", rule=rule, category=category, negative=negative)
+
+
+class TestLessonStore:
+    def test_save_and_load(self, tmp_path: Path) -> None:
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Use tool-b instead of tool-a", "tool", "Never use tool-a"))
+
+        loaded = store.load_all()
+        assert len(loaded) == 1
+        assert "tool-b" in loaded[0].rule
+        assert loaded[0].category == "tool"
+        assert loaded[0].negative == "Never use tool-a"
+
+    def test_remove_matching(self, tmp_path: Path) -> None:
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Use tool-b"))
+        store.save(_make_lesson("Use tool-c"))
+        assert store.remove("tool-b")
+        assert len(store.load_all()) == 1
+        assert "tool-c" in store.load_all()[0].rule
+
+    def test_remove_no_match(self, tmp_path: Path) -> None:
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Use tool-b"))
+        assert not store.remove("nonexistent")
+        assert len(store.load_all()) == 1
+
+    def test_get_context_empty(self, tmp_path: Path) -> None:
+        store = LessonStore(base_dir=tmp_path)
+        assert store.get_context() == ""
+
+    def test_get_context_with_lessons(self, tmp_path: Path) -> None:
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Always use tool-b", negative="Never use tool-a"))
+
+        ctx = store.get_context()
+        assert "tool-b" in ctx
+        assert "tool-a" in ctx
+        assert "Learned corrections" in ctx
+
+    def test_load_corrupted_line(self, tmp_path: Path) -> None:
+        path = tmp_path / "lessons.jsonl"
+        path.write_text("not json\n")
+        store = LessonStore(base_dir=tmp_path)
+        assert store.load_all() == []
+
+    def test_multiple_saves(self, tmp_path: Path) -> None:
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Rule one"))
+        store.save(_make_lesson("Rule two"))
+        store.save(_make_lesson("Rule three"))
+        assert len(store.load_all()) == 3
+
+
+_RULE_A = '{"ts": "t", "rule": "Run the linter first", "category": "tool"}'
+_RULE_B = '{"ts": "t", "rule": "Write tests first", "category": "tool"}'
+
+
+class TestUnreadableRows:
+    """A row that does not read as a lesson costs only itself, and is reported."""
+
+    def _store_with(self, tmp_path: Path, *bad_lines: str) -> LessonStore:
+        (tmp_path / "lessons.jsonl").write_text(
+            "\n".join([_RULE_A, *bad_lines, _RULE_B]) + "\n", encoding="utf-8"
+        )
+        return LessonStore(base_dir=tmp_path)
+
+    @pytest.mark.parametrize("bad_line", ["null", "[]", '"Use tabs"', "5"])
+    def test_a_row_that_is_not_an_object_is_skipped_and_counted(
+        self, tmp_path: Path, bad_line: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level("WARNING", logger="kiro_crew.learn")
+        store = self._store_with(tmp_path, bad_line)
+        assert [le.rule for le in store.load_all()] == ["Run the linter first", "Write tests first"]
+        context = store.get_context()
+        assert "Run the linter first" in context and "Write tests first" in context
+        assert "Skipped 1 of 3 rows" in caplog.text
+
+    @pytest.mark.parametrize("rule", ["5", "null", '["a"]'])
+    def test_a_row_whose_rule_is_not_text_does_not_block_writes(
+        self, tmp_path: Path, rule: str
+    ) -> None:
+        store = self._store_with(tmp_path, '{"ts": "t", "rule": %s, "category": "tool"}' % rule)
+        assert store.save(_make_lesson("Pin tool versions")) == "inserted"
+        assert store.remove("Run the linter first") is True
+        assert [le.rule for le in store.load_all()] == ["Write tests first", "Pin tool versions"]
+
+    def test_the_next_write_drops_the_skipped_rows_and_the_warning_says_so(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # The cron store's per-entry rule: a skipped record is dropped by the first
+        # write that follows, and the load warning, which names it, is the window
+        # to recover it.
+        caplog.set_level("WARNING", logger="kiro_crew.learn")
+        bad = [
+            '"Always use tabs"',
+            '{"ts": "t", "rule": 5, "category": "tool"}',
+            '{"ts": "t", "rule": "half a row',
+        ]
+        store = self._store_with(tmp_path, *bad)
+        assert store.save(_make_lesson("Pin tool versions")) == "inserted"
+        assert "Skipped 3 of 5 rows" in caplog.text and "(lines 2, 3, 4)" in caplog.text
+        assert "the next save removes them" in caplog.text
+        lines = store.path.read_text(encoding="utf-8").splitlines()
+        assert [line for line in lines if line in bad] == []
+        assert [le.rule for le in store.load_all()] == [
+            "Run the linter first",
+            "Write tests first",
+            "Pin tool versions",
+        ]
+
+    def test_the_migration_reader_skips_the_same_rows(self, tmp_path: Path) -> None:
+        from kiro_crew.vector_memory_runtime import migration
+
+        store = self._store_with(tmp_path, "null", '{"ts": "t", "rule": 5, "category": "tool"}')
+        rows = list(migration.legacy_lessons(store.path))
+        assert [row if row is migration.SKIP else row[0] for row in rows] == [
+            "Run the linter first",
+            migration.SKIP,
+            migration.SKIP,
+            "Write tests first",
+        ]
+
+
+def _pin_mtime(path: Path, st: os.stat_result) -> None:
+    """Give *path* the mtime in *st*: a rewrite inside the same timestamp tick."""
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+
+
+class TestCacheAcrossInstances:
+    """Every instance caches its own parse; a write through one reaches the others.
+
+    Two writes inside one timestamp tick leave the file's mtime unchanged. These
+    tests pin it back with ``os.utime`` so that case is deterministic.
+    """
+
+    def test_reads_with_no_write_between_are_served_from_the_cache(self, tmp_path: Path) -> None:
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Write tests first"))
+        first = store.load_all()
+        assert store.load_all() is first
+
+    def test_a_save_through_a_stale_instance_keeps_the_other_instances_save(
+        self, tmp_path: Path
+    ) -> None:
+        writer = LessonStore(base_dir=tmp_path)
+        other = LessonStore(base_dir=tmp_path)
+        writer.save(_make_lesson("Run the linter before every commit"))
+        other.load_all()
+        tick = writer.path.stat()
+        writer.save(_make_lesson("Never force-push a shared branch"))
+        _pin_mtime(writer.path, tick)
+
+        other.save(_make_lesson("Prefer tmp_path over /tmp in tests"))
+        assert [le.rule for le in LessonStore(base_dir=tmp_path).load_all()] == [
+            "Run the linter before every commit",
+            "Never force-push a shared branch",
+            "Prefer tmp_path over /tmp in tests",
+        ]
+
+    def test_a_removed_lesson_stops_reaching_another_instances_prompt(self, tmp_path: Path) -> None:
+        writer = LessonStore(base_dir=tmp_path)
+        reader = LessonStore(base_dir=tmp_path)
+        writer.save(_make_lesson("Deploy on Fridays"))
+        writer.save(_make_lesson("Write tests first"))
+        assert "Deploy on Fridays" in reader.get_context()
+        tick = writer.path.stat()
+        assert writer.remove("Deploy on Fridays") is True
+        _pin_mtime(writer.path, tick)
+
+        context = reader.get_context()
+        assert "Deploy on Fridays" not in context and "Write tests first" in context
+
+    def test_a_change_that_keeps_size_and_mtime_reaches_another_instance(
+        self, tmp_path: Path
+    ) -> None:
+        # Same-length clause and a pinned mtime: only the write generation tells the
+        # reader that its parse is stale.
+        writer = LessonStore(base_dir=tmp_path)
+        reader = LessonStore(base_dir=tmp_path)
+        writer.save_or_enrich(_make_lesson("Use tabs", negative="NOT spaces"))
+        assert "NOT spaces" in reader.get_context()
+        tick = writer.path.stat()
+        assert writer.save_or_enrich(_make_lesson("Use tabs", negative="NOT braces")) == "enriched"
+        assert writer.path.stat().st_size == tick.st_size
+        _pin_mtime(writer.path, tick)
+
+        context = reader.get_context()
+        assert "NOT braces" in context and "NOT spaces" not in context
+
+    def test_a_write_landing_while_another_instance_parses_is_read_next_time(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The reader has read the old bytes when the other instance rewrites the file
+        # (same size, mtime pinned back). The reader's cache must not look current:
+        # the generation it keys on was read before the file.
+        writer = LessonStore(base_dir=tmp_path)
+        reader = LessonStore(base_dir=tmp_path)
+        writer.save_or_enrich(_make_lesson("Use tabs", negative="NOT spaces"))
+        tick = writer.path.stat()
+        real_read_text = Path.read_text
+        landed: list[bool] = []
+
+        def read_then_rewrite(path: Path, *args: object, **kwargs: object) -> str:
+            text = real_read_text(path, *args, **kwargs)
+            if path == reader.path and not landed:
+                landed.append(True)
+                writer.save_or_enrich(_make_lesson("Use tabs", negative="NOT braces"))
+                assert writer.path.stat().st_size == tick.st_size
+                _pin_mtime(writer.path, tick)
+            return text
+
+        with monkeypatch.context() as m:
+            m.setattr(Path, "read_text", read_then_rewrite)
+            assert "NOT spaces" in reader.get_context()
+        assert landed, "load_all no longer reads through Path.read_text; move the hook"
+
+        context = reader.get_context()
+        assert "NOT braces" in context and "NOT spaces" not in context
+
+    def test_a_read_just_before_the_rename_is_not_current_afterwards(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The other instance parses just before the writer's rename. The bump follows
+        # the rename, so that parse stays keyed to the older generation.
+        writer = LessonStore(base_dir=tmp_path)
+        reader = LessonStore(base_dir=tmp_path)
+        writer.save_or_enrich(_make_lesson("Use tabs", negative="NOT spaces"))
+        tick = writer.path.stat()
+        real_atomic_write = learn_mod.atomic_write
+        parsed: list[str] = []
+
+        def parse_then_write(*args: object, **kwargs: object) -> None:
+            parsed.append(reader.get_context())
+            real_atomic_write(*args, **kwargs)
+
+        with monkeypatch.context() as m:
+            m.setattr(learn_mod, "atomic_write", parse_then_write)
+            writer.save_or_enrich(_make_lesson("Use tabs", negative="NOT braces"))
+        assert writer.path.stat().st_size == tick.st_size
+        _pin_mtime(writer.path, tick)
+
+        assert "NOT spaces" in parsed[0]
+        context = reader.get_context()
+        assert "NOT braces" in context and "NOT spaces" not in context
+
+    def test_a_rewrite_by_another_process_that_changes_the_size_reaches_a_read(
+        self, tmp_path: Path
+    ) -> None:
+        # Another process appends a row: no generation bump in this process and the
+        # mtime pinned back. Only the size tells the cached read that the file moved.
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Run the linter before every commit"))
+        assert len(store.load_all()) == 1
+        tick = store.path.stat()
+        text = store.path.read_text(encoding="utf-8")
+        copy = text.replace("Run the linter before every commit", "Write tests first")
+        store.path.write_text(text + copy, encoding="utf-8")
+        _pin_mtime(store.path, tick)
+
+        assert [le.rule for le in store.load_all()] == [
+            "Run the linter before every commit",
+            "Write tests first",
+        ]
+
+    def test_a_save_starts_from_the_file_not_from_the_cache(self, tmp_path: Path) -> None:
+        # Another process rewrites the file: no generation bump in this process, same
+        # size, pinned mtime. A save that started from the cache would undo it.
+        store = LessonStore(base_dir=tmp_path)
+        store.save_or_enrich(_make_lesson("Use tabs", negative="NOT spaces"))
+        store.load_all()
+        tick = store.path.stat()
+        edited = store.path.read_text(encoding="utf-8").replace("NOT spaces", "NOT braces")
+        store.path.write_text(edited, encoding="utf-8")
+        _pin_mtime(store.path, tick)
+
+        store.save(_make_lesson("Write tests first"))
+        rows = LessonStore(base_dir=tmp_path).load_all()
+        assert [(le.rule, le.negative) for le in rows] == [
+            ("Use tabs", "NOT braces"),
+            ("Write tests first", None),
+        ]
+
+    def test_a_remove_starts_from_the_file_not_from_the_cache(self, tmp_path: Path) -> None:
+        # The same foreign rewrite (same size, mtime pinned back): a remove built on the
+        # cache would write the clause it replaced back.
+        store = LessonStore(base_dir=tmp_path)
+        store.save_or_enrich(_make_lesson("Use tabs", negative="NOT spaces"))
+        store.save(_make_lesson("Deploy on Fridays"))
+        store.load_all()
+        tick = store.path.stat()
+        edited = store.path.read_text(encoding="utf-8").replace("NOT spaces", "NOT braces")
+        store.path.write_text(edited, encoding="utf-8")
+        _pin_mtime(store.path, tick)
+
+        assert store.remove("Deploy on Fridays") is True
+        rows = LessonStore(base_dir=tmp_path).load_all()
+        assert [(le.rule, le.negative) for le in rows] == [("Use tabs", "NOT braces")]
+
+
+class TestLessonStoreSecurity:
+    """Tests for sensitive path rejection and SEL audit in LessonStore."""
+
+    def test_sensitive_base_dir_falls_back_to_default(self, tmp_path: Path) -> None:
+        sensitive = tmp_path / ".ssh"
+        sensitive.mkdir()
+        with patch("kiro_crew.security.is_sensitive_path", return_value=True):
+            store = LessonStore(base_dir=sensitive)
+        assert store._dir == _default_dir()
+
+    def test_sensitive_base_dir_emits_sel_audit(self, tmp_path: Path) -> None:
+        sensitive = tmp_path / ".aws"
+        sensitive.mkdir()
+        with (
+            patch("kiro_crew.security.is_sensitive_path", return_value=True),
+            patch("kiro_crew.sel.SecurityEventLog.log_tool_invocation") as mock_log,
+        ):
+            LessonStore(base_dir=sensitive)
+        mock_log.assert_called_once()
+        call_kwargs = mock_log.call_args[1]
+        assert call_kwargs["outcome"] == "rejected"
+        assert str(sensitive) in call_kwargs["resources"]
+
+    def test_sel_failure_does_not_bypass_fallback(self, tmp_path: Path) -> None:
+        sensitive = tmp_path / ".secret"
+        sensitive.mkdir()
+        with (
+            patch("kiro_crew.security.is_sensitive_path", return_value=True),
+            patch(
+                "kiro_crew.sel.SecurityEventLog.log_tool_invocation",
+                side_effect=RuntimeError("SEL broken"),
+            ),
+        ):
+            store = LessonStore(base_dir=sensitive)
+        assert store._dir == _default_dir()
+
+    def test_sensitive_config_dir_falls_back_to_default(self, tmp_path: Path) -> None:
+        sensitive = tmp_path / ".kirocrew-sensitive"
+        sensitive.mkdir()
+        with (
+            patch("kiro_crew.learn._config_dir", return_value=sensitive),
+            patch("kiro_crew.security.is_sensitive_path", return_value=True),
+        ):
+            store = LessonStore()
+        assert store._dir == _default_dir()
+
+    def test_config_dir_exception_falls_back_to_default(self) -> None:
+        with patch("kiro_crew.learn._config_dir", side_effect=OSError("broken loader")):
+            store = LessonStore()
+        assert store._dir == _default_dir()
+
+    def test_config_dir_none_falls_back_to_default(self) -> None:
+        with patch("kiro_crew.learn._config_dir", None):
+            store = LessonStore()
+        assert store._dir == _default_dir()
+
+    def test_non_sensitive_base_dir_used_directly(self, tmp_path: Path) -> None:
+        with patch("kiro_crew.security.is_sensitive_path", return_value=False):
+            store = LessonStore(base_dir=tmp_path)
+        assert store._dir == tmp_path
+
+
+class TestImportPurity:
+    def test_importing_learn_never_calls_config_dir(self) -> None:
+        # Single-point-migration invariant: the one-time blocking
+        # legacy-home migration fires ONLY at ensure_data_home() in the CLI
+        # prologue. learn is eagerly imported by cli_server, slack/gateway,
+        # context, taskrunner, and cli_commands — a module-scope config_dir()
+        # call here would fire the migration as an import side effect
+        # (potentially on the asyncio event loop). _DEFAULT_DIR must therefore
+        # be a pure literal; config_dir() is resolved lazily in
+        # LessonStore.__init__.
+        #
+        # Probed on a PRIVATE copy of learn.py, never by reloading kiro_crew.learn: a
+        # reload rebinds Lesson, LessonStore and _PATH_LOCKS inside the shared module
+        # while every by-value importer (onboarding_import, context, taskrunner,
+        # cli_server, slack.gateway) keeps the old objects, so a later identity
+        # contract in the same worker goes red.
+        import importlib.util
+
+        import kiro_crew.config.loader as config_loader
+
+        inherited = dict(vars(learn_mod))
+        real_config_dir = config_loader.config_dir
+        owner = threading.get_ident()
+
+        def _tripwire() -> Path:
+            if threading.get_ident() != owner:
+                # An earlier test's leftover thread, not this import.
+                return real_config_dir()
+            raise AssertionError("config_dir() called at learn import scope")
+
+        name = "_kiro_crew_learn_import_purity_probe"
+        spec = importlib.util.spec_from_file_location(name, learn_mod.__file__)
+        assert spec is not None and spec.loader is not None
+        probe = importlib.util.module_from_spec(spec)
+        assert name not in sys.modules
+        # Registered while it executes: Lesson's annotations are strings, which
+        # @dataclass resolves through sys.modules[cls.__module__].
+        sys.modules[name] = probe
+        try:
+            with patch("kiro_crew.config.loader.config_dir", _tripwire):
+                spec.loader.exec_module(probe)
+        finally:
+            sys.modules.pop(name, None)
+        assert probe._config_dir is _tripwire, "the probe never bound the seam it trips"
+        assert probe._DEFAULT_DIR == Path.home() / ".kiro" / "crew"
+        rebound = sorted(k for k, v in inherited.items() if vars(learn_mod).get(k) is not v)
+        assert rebound == [], f"the shared kiro_crew.learn was re-executed: {rebound}"
+
+
+class TestSaveOrEnrich:
+    """Re-submitting a rule to attach a NOT-clause must store the clause.
+
+    The duplicate check matched on the rule alone and returned before looking at
+    ``negative``, so the clause was dropped and the route still answered 200.
+    """
+
+    def test_attaches_a_clause_to_an_existing_rule(self, tmp_path: Path) -> None:
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Pin the port", "tool"))
+
+        assert store.save_or_enrich(_make_lesson("Pin the port", "tool", "Do not autopick")) == (
+            "enriched"
+        )
+
+        records = store.load_all()
+        assert len(records) == 1, "must enrich in place, not append a second record"
+        assert records[0].negative == "Do not autopick"
+
+    def test_replaces_an_existing_clause(self, tmp_path: Path) -> None:
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Pin the port", "tool", "Old reason"))
+
+        assert store.save_or_enrich(_make_lesson("Pin the port", "tool", "New reason")) == (
+            "enriched"
+        )
+        assert [le.negative for le in store.load_all()] == ["New reason"]
+
+    def test_a_bare_resubmit_never_strips_a_stored_clause(self, tmp_path: Path) -> None:
+        """No clause supplied must not blank one that is already stored."""
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Pin the port", "tool", "Do not autopick"))
+
+        assert store.save_or_enrich(_make_lesson("Pin the port", "tool")) == "unchanged"
+        assert [le.negative for le in store.load_all()] == ["Do not autopick"]
+
+    def test_inserts_when_no_rule_matches(self, tmp_path: Path) -> None:
+        store = LessonStore(base_dir=tmp_path)
+        assert store.save_or_enrich(_make_lesson("Pin the port", "tool")) == "inserted"
+        assert len(store.load_all()) == 1
+
+    def test_requires_an_exact_rule_not_a_superset(self, tmp_path: Path) -> None:
+        """A stored rule that merely CONTAINS the submitted one is a different lesson."""
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Pin the port in every environment", "tool"))
+
+        assert store.save_or_enrich(_make_lesson("Pin the port", "tool", "Do not autopick")) == (
+            "inserted"
+        )
+
+        records = store.load_all()
+        assert len(records) == 2
+        assert records[0].negative is None, "the superset record must be untouched"
+
+    def test_distinct_words_differing_only_by_sharp_s_are_not_conflated(
+        self, tmp_path: Path
+    ) -> None:
+        """"Maße" (dimensions) and "Masse" (mass) are DIFFERENT rules. casefold() maps ß
+        to ss, so under it these compared equal and a clause submitted for "Masse"
+        attached itself to the stored "Maße" while the intended lesson was never
+        created -- the wrong rule enriched, the right one discarded. lower() keeps them
+        distinct."""
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Ma\u00dfe", "tool"))
+
+        store.save_or_enrich(_make_lesson("Masse", "tool", "Do not confuse with volume"))
+
+        records = store.load_all()
+        rules = {le.rule for le in records}
+        assert rules == {"Ma\u00dfe", "Masse"}, f"distinct rules were conflated: {rules}"
+        stored_masse = next(le for le in records if le.rule == "Masse")
+        assert stored_masse.negative == "Do not confuse with volume"
+        stored_masze = next(le for le in records if le.rule == "Ma\u00dfe")
+        assert stored_masze.negative is None, "the clause landed on the wrong rule"
+
+    def test_a_sharp_s_case_variant_inserts_rather_than_enriching(self, tmp_path: Path) -> None:
+        """The cost of choosing lower(): a stored "Straße" and a submitted "STRASSE" no
+        longer compare equal, so this inserts a second row instead of enriching. That is
+        the deliberate trade -- a missed enrichment is recoverable, conflating "Maße"
+        with "Masse" is not. ASCII case variants still enrich (see the test above this
+        one in the class)."""
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Stra\u00dfe", "tool"))
+
+        store.save_or_enrich(_make_lesson("STRASSE", "tool", "Do not misspell"))
+
+        records = store.load_all()
+        assert len(records) == 2, f"expected the miss, not a conflation: {records}"
+        assert {le.rule for le in records} == {"Stra\u00dfe", "STRASSE"}
+        stored_original = next(le for le in records if le.rule == "Stra\u00dfe")
+        assert stored_original.negative is None, "the clause must not land on the ß row"
+
+    def test_idempotent_when_the_clause_is_already_present(self, tmp_path: Path) -> None:
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Pin the port", "tool", "Do not autopick"))
+
+        assert store.save_or_enrich(
+            _make_lesson("Pin the port", "tool", "Do not autopick")
+        ) == "unchanged"
+        assert len(store.load_all()) == 1
+
+    def test_a_whitespace_only_clause_never_overwrites_a_stored_one(self, tmp_path: Path) -> None:
+        """Same defect class as the vector store's: a truthy blank clause replaced a
+        real stored one. Both stores are reached directly by the CLI, the route,
+        consolidation and the task runner, so both normalise."""
+        store = LessonStore(base_dir=tmp_path)
+        store.save_or_enrich(_make_lesson("Pin the port", "tool", "Do not autopick"))
+
+        assert store.save_or_enrich(_make_lesson("Pin the port", "tool", "   ")) == "unchanged"
+        assert [le.negative for le in store.load_all()] == ["Do not autopick"]
+
+    def test_a_whitespace_only_clause_is_not_stored_on_insert(self, tmp_path: Path) -> None:
+        store = LessonStore(base_dir=tmp_path)
+        assert store.save_or_enrich(_make_lesson("Pin the port", "tool", "  \t ")) == "inserted"
+        assert [le.negative for le in store.load_all()] == [None], "blanks were persisted"
+
+    def test_a_non_string_clause_does_not_crash_the_write(self, tmp_path: Path) -> None:
+        """Same defect class as the vector store's: consolidation hands over the LLM's own
+        value, so .strip() on an int would abort the run with AttributeError."""
+        store = LessonStore(base_dir=tmp_path)
+        assert store.save_or_enrich(_make_lesson("Pin the port", "tool", 123)) == "inserted"
+        assert [le.negative for le in store.load_all()] == [None]
+
+    def test_a_non_string_clause_never_overwrites_a_stored_one(self, tmp_path: Path) -> None:
+        store = LessonStore(base_dir=tmp_path)
+        store.save_or_enrich(_make_lesson("Pin the port", "tool", "Do not autopick"))
+
+        assert store.save_or_enrich(_make_lesson("Pin the port", "tool", 123)) == "unchanged"
+        assert [le.negative for le in store.load_all()] == ["Do not autopick"]
+
+    def test_save_returns_its_outcome(self, tmp_path: Path) -> None:
+        """Automatic callers need the outcome to avoid reporting a refused write."""
+        store = LessonStore(base_dir=tmp_path)
+        assert store.save(_make_lesson("Pin the port", "tool")) == "inserted"
+
+    def test_save_does_not_overwrite_a_stored_clause(self, tmp_path: Path) -> None:
+        """An AUTOMATIC writer must not replace a clause a human authored.
+
+        save() is reached by consolidation, task-runner extraction and onboarding
+        import. If it enriched, any of those arriving with its own negative for an
+        already-stored rule would silently replace the human's wording. Only
+        explicit refinement -- the route and `learn add` -- may enrich.
+        """
+        store = LessonStore(base_dir=tmp_path)
+        store.save_or_enrich(_make_lesson("Pin the port", "tool", "Human wrote this"))
+
+        store.save(_make_lesson("Pin the port", "tool", "Machine wrote this"))
+
+        records = store.load_all()
+        assert len(records) == 1
+        assert records[0].negative == "Human wrote this", "an automatic writer overwrote a human"
+
+    def test_save_still_skips_a_plain_duplicate(self, tmp_path: Path) -> None:
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Pin the port", "tool"))
+        store.save(_make_lesson("Pin the port", "tool"))
+        assert len(store.load_all()) == 1
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="POSIX mode bits are not meaningful on Windows: os.chmod only toggles the "
+        "read-only flag, so the file reports 0o666 whatever mode was requested",
+    )
+    def test_a_restrictive_store_mode_survives_a_write(self, tmp_path: Path) -> None:
+        """Swapping the inode must not drop the store's permissions.
+
+        write_text reused the existing inode, so a 0600 store stayed 0600 implicitly.
+        A temp-file rename installs a NEW inode carrying umask permissions (0644
+        under the usual 0022), which would widen a private lessons file on the next
+        save. The mode is now read off the destination and reapplied.
+        """
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Pin the port", "tool"))
+        store._path.chmod(0o600)
+
+        store.save_or_enrich(_make_lesson("Pin the port", "tool", "Do not autopick"))
+
+        assert stat.S_IMODE(store._path.stat().st_mode) == 0o600, "permissions widened"
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="POSIX mode bits are not meaningful on Windows (reports 0o666 regardless)",
+    )
+    def test_a_new_store_is_not_world_readable(self, tmp_path: Path) -> None:
+        """Lesson text is personal content; a store created fresh defaults to 0600."""
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Pin the port", "tool"))
+
+        assert stat.S_IMODE(store._path.stat().st_mode) == 0o600
+
+    def test_the_rename_goes_through_the_windows_retry_helper(self, tmp_path: Path) -> None:
+        """A bare os.replace raises PermissionError when Windows Search or AV holds a
+        handle. The repo's replace_with_retry exists for exactly that; this pins that
+        the store's write routes through it rather than hand-rolling the rename."""
+        store = LessonStore(base_dir=tmp_path)
+        with patch(
+            "kiro_crew.atomic_write.replace_with_retry", wraps=replace_with_retry
+        ) as spy:
+            store.save(_make_lesson("Pin the port", "tool"))
+        assert spy.called, "the write bypassed replace_with_retry"
+
+
+class TestConcurrentClauseAttach:
+    """One lock acquisition, not two.
+
+    Doing this as enrich-then-insert took the lock twice. Two concurrent posts of
+    the same rule with different clauses interleaved in the gap: both enrich checks
+    missed, the first insert appended, the second saw a duplicate and skipped -- so
+    one clause was lost behind a 200.
+    """
+
+    def test_concurrent_attaches_never_lose_a_record(self, tmp_path: Path) -> None:
+        store = LessonStore(base_dir=tmp_path)
+        outcomes: list[str] = []
+        barrier = threading.Barrier(8)
+
+        def _attach(i: int) -> None:
+            barrier.wait()  # maximise overlap inside the critical section
+            outcomes.append(store.save_or_enrich(_make_lesson("Pin the port", "tool", f"no {i}")))
+
+        threads = [threading.Thread(target=_attach, args=(i,)) for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        records = store.load_all()
+        assert len(records) == 1, f"the same rule must collapse to one record, got {records}"
+        # Exactly one writer inserts; every other either enriches or finds its own
+        # clause already stored. A dropped clause would show up as a record whose
+        # negative is None despite every writer supplying one.
+        assert outcomes.count("inserted") == 1, f"expected a single insert, got {outcomes}"
+        assert records[0].negative is not None, "a clause was dropped"
+        assert records[0].negative.startswith("no ")
+
+    def test_concurrent_save_and_remove_do_not_lose_the_write(self, tmp_path: Path) -> None:
+        """remove() must not rewrite the file with no lock at all, or a concurrent
+        save could be lost outright."""
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Keep me", "tool"))
+        barrier = threading.Barrier(2)
+
+        def _add() -> None:
+            barrier.wait()
+            store.save_or_enrich(_make_lesson("Added under contention", "tool"))
+
+        def _drop() -> None:
+            barrier.wait()
+            store.remove("nothing matches this")
+
+        threads = [threading.Thread(target=_add), threading.Thread(target=_drop)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        rules = {le.rule for le in store.load_all()}
+        assert rules == {"Keep me", "Added under contention"}, f"lost a write: {rules}"
+
+    def test_separate_instances_on_one_file_share_a_lock(self, tmp_path: Path) -> None:
+        """Two instances over the same file must serialize against each other.
+
+        DashboardState.lessons and context.get_lessons_for() build separate instances
+        over the same global store. With a per-instance lock they serialized against
+        nothing, so a dashboard refinement racing a consolidation write could lose a
+        clause -- and both composed the same pid-named temp file, so one os.replace
+        consumed the other's.
+        """
+        a = LessonStore(base_dir=tmp_path)
+        b = LessonStore(base_dir=tmp_path)
+        assert a._lock is b._lock, "instances on one file must share the lock"
+
+        different = LessonStore(base_dir=tmp_path / "other")
+        assert different._lock is not a._lock, "a different file must not share it"
+
+    def test_concurrent_writes_from_separate_instances_lose_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        stores = [LessonStore(base_dir=tmp_path) for _ in range(6)]
+        barrier = threading.Barrier(len(stores))
+
+        def _add(i: int) -> None:
+            barrier.wait()
+            stores[i].save_or_enrich(_make_lesson(f"rule {i}", "tool"))
+
+        threads = [threading.Thread(target=_add, args=(i,)) for i in range(len(stores))]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        rules = {le.rule for le in stores[0].load_all()}
+        assert rules == {f"rule {i}" for i in range(len(stores))}, f"lost a write: {rules}"
+        assert list(tmp_path.rglob("*.tmp")) == [], "a temp file survived"
+
+
+class TestAtomicWrite:
+    """The live file is swapped, never written in place.
+
+    load_all() reads without the lock, so a partial write would be observable, and
+    a crash mid-write could truncate the store.
+    """
+
+    def test_leaves_no_temp_file_behind(self, tmp_path: Path) -> None:
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Pin the port", "tool"))
+        store.save_or_enrich(_make_lesson("Pin the port", "tool", "Do not autopick"))
+        store.remove("Pin")
+
+        strays = list(tmp_path.rglob("*.tmp"))
+        assert strays == [], f"os.replace should consume the temp file, found {strays}"
+
+    def test_a_failed_swap_leaves_the_store_and_cache_intact(self, tmp_path: Path) -> None:
+        """A failed install must not leave the clause visible via the cache either.
+
+        load_all() returns the cached objects, so an in-place mutation followed by a
+        failed write would advertise an unpersisted clause to every later reader --
+        including context injection.
+        """
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Pin the port", "tool"))
+        store.load_all()  # prime the cache
+
+        # Patched inside atomic_write, which is where the rename now happens. This is
+        # the real seam: learn.py does not touch os itself.
+        with patch(
+            "kiro_crew.atomic_write.replace_with_retry", side_effect=OSError("disk full")
+        ):
+            with pytest.raises(OSError):
+                store.save_or_enrich(_make_lesson("Pin the port", "tool", "Do not autopick"))
+
+        assert all(le.negative is None for le in store.load_all()), "cache advertises a lost write"
+        store._cache = None
+        assert all(le.negative is None for le in store.load_all()), "file was modified"
+        assert list(tmp_path.rglob("*.tmp")) == [], "temp file survived a failed swap"

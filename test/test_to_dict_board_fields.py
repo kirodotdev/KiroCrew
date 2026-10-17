@@ -1,0 +1,512 @@
+"""Tests for to_dict() Board fields: options, waiting_for_input, pending_approval_info, last_activity_ts."""
+
+import asyncio
+import json
+from types import SimpleNamespace
+
+from kiro_crew.dashboard.state import _ChatSlot
+
+
+def _slot(*messages: dict) -> _ChatSlot:
+    s = _ChatSlot("test-slot")
+    for m in messages:
+        s.messages.append(m)
+    return s
+
+
+def test_options_from_assistant():
+    s = _slot({"role": "assistant", "content": "Pick one.\n[OPTIONS: A | B | C]", "ts": "t1"})
+    d = s.to_dict()
+    assert d["has_options"] is True
+    assert d["options"] == ["A", "B", "C"]
+    assert d["options_ts"] == "t1"
+    assert "[OPTIONS:" not in d["prompt_preview"]
+
+
+def test_options_ts_stays_on_reply_after_system_notice():
+    s = _slot({"role": "assistant", "content": "Pick one.\n[OPTIONS: A | B]", "ts": "t1"})
+    before = s.to_dict()
+    s.messages.append(
+        {
+            "role": "assistant",
+            "content": "Session reloaded.",
+            "meta": {"kind": "session_reload"},
+            "ts": "t2",
+        }
+    )
+    after = s.to_dict()
+    assert before["last_ts"] == "t1"
+    assert after["last_ts"] == "t2"
+    assert after["has_options"] is True
+    assert after["options"] == before["options"] == ["A", "B"]
+    assert after["options_ts"] == before["options_ts"] == "t1"
+
+
+def test_options_ts_empty_without_options():
+    assert _slot().to_dict()["options_ts"] == ""
+    s = _slot({"role": "assistant", "content": "Done.", "ts": "t1"})
+    assert s.to_dict()["options_ts"] == ""
+
+
+def test_no_options_when_user_last():
+    s = _slot(
+        {"role": "assistant", "content": "Here you go.\n[OPTIONS: X | Y]", "ts": "t1"},
+        {"role": "user", "content": "X", "ts": "t2"},
+    )
+    d = s.to_dict()
+    assert d["has_options"] is False
+    assert d["options"] == []
+    assert d["options_ts"] == ""
+
+
+def test_waiting_for_input_assistant_last():
+    s = _slot({"role": "assistant", "content": "Done. What next?", "ts": "t1"})
+    # task=None means not running
+    d = s.to_dict()
+    assert d["waiting_for_input"] is True
+
+
+def test_not_waiting_when_user_last():
+    s = _slot(
+        {"role": "assistant", "content": "Done.", "ts": "t1"},
+        {"role": "user", "content": "Thanks", "ts": "t2"},
+    )
+    d = s.to_dict()
+    assert d["waiting_for_input"] is False
+
+
+def test_not_waiting_when_running():
+    s = _slot({"role": "assistant", "content": "Working on it.", "ts": "t1"})
+    loop = asyncio.new_event_loop()
+    # Create a non-done future to simulate running
+    s.task = loop.create_future()
+    d = s.to_dict()
+    assert d["waiting_for_input"] is False
+    loop.close()
+
+
+def test_pending_approval_info():
+    meta = json.dumps({"tool_input": "ls -la", "tool_kind": "bash", "request_id": "r1"})
+    s = _slot()
+    row = s.append("permission", "shell", meta)
+    loop = asyncio.new_event_loop()
+    fut = loop.create_future()
+    s.register_approval("r1", fut, row)
+    d = s.to_dict()
+    assert d["pending_approval"] is True
+    assert d["pending_approval_info"]["tool"] == "shell"
+    assert d["pending_approval_info"]["request_id"] == "r1"
+    loop.close()
+
+
+def test_pending_approval_skips_resolved():
+    old_meta = json.dumps({"resolved": True, "request_id": "r0"})
+    new_meta = json.dumps({"tool_input": "cat foo", "request_id": "r2"})
+    s = _slot(
+        {"role": "permission", "content": "old_tool", "cls": old_meta, "ts": "t1"},
+    )
+    row = s.append("permission", "new_tool", new_meta)
+    loop = asyncio.new_event_loop()
+    fut = loop.create_future()
+    s.register_approval("r2", fut, row)
+    d = s.to_dict()
+    assert d["pending_approval_info"]["tool"] == "new_tool"
+    assert d["pending_approval_info"]["request_id"] == "r2"
+    loop.close()
+
+
+def test_last_activity_ts_from_tool_call():
+    s = _slot(
+        {"role": "assistant", "content": "Let me check.", "ts": "t1"},
+        {"role": "tool_call", "content": "grep ...", "ts": "t2"},
+        {"role": "tool_result", "content": "found", "ts": "t3"},
+        {"role": "assistant", "content": "Here's what I found.", "ts": "t4"},
+    )
+    d = s.to_dict()
+    assert d["last_activity_ts"] == "t4"
+
+
+# ── last_turn_ts ──
+# The instant the session list is ORDERED by: the last prompt or turn
+# completion, never a mid-turn row. `last_ts` (newest row of any role) advances
+# on every streamed tool call, so ranking by it reshuffles the sidebar
+# continuously while several sessions work.
+
+
+def test_last_turn_ts_is_last_row_when_idle():
+    # Turn over: the newest row IS the completion.
+    s = _slot(
+        {"role": "user", "content": "do it", "ts": "t1"},
+        {"role": "tool_call", "content": "grep ...", "ts": "t2"},
+        {"role": "assistant", "content": "done", "ts": "t3"},
+    )
+    d = s.to_dict()
+    assert d["last_turn_ts"] == "t3"
+    assert d["last_ts"] == "t3"
+
+
+def test_last_turn_ts_holds_the_prompt_while_running():
+    # The whole point: rows keep arriving (t3, t4) and the ordering key does not
+    # move off the prompt that asked for the work.
+    s = _slot(
+        {"role": "assistant", "content": "earlier answer", "ts": "t1"},
+        {"role": "user", "content": "do it", "ts": "t2"},
+        {"role": "tool_call", "content": "grep ...", "ts": "t3"},
+        {"role": "tool_result", "content": "found", "ts": "t4"},
+    )
+    s.task = SimpleNamespace(done=lambda: False)
+    d = s.to_dict()
+    assert d["last_turn_ts"] == "t2"
+    assert d["last_ts"] == "t4"
+
+
+def test_last_turn_ts_counts_an_injected_prompt():
+    # A cron notification / subagent completion event asks for work just as a
+    # human send does, so it settles the rank of the turn it starts.
+    s = _slot(
+        {"role": "user", "content": "earlier", "ts": "t1"},
+        {"role": "assistant", "content": "done", "ts": "t2"},
+        {"role": "inject", "content": "[Cron notification]", "ts": "t3"},
+        {"role": "tool_call", "content": "gh pr view", "ts": "t4"},
+    )
+    s.task = SimpleNamespace(done=lambda: False)
+    d = s.to_dict()
+    assert d["last_turn_ts"] == "t3"
+
+
+def test_last_turn_ts_empty_when_running_with_no_prompt_row():
+    # Nothing to rank by — the frontend falls back down its own ladder rather
+    # than receiving a bogus instant.
+    s = _slot({"role": "assistant", "content": "streaming…", "ts": "t1"})
+    s.task = SimpleNamespace(done=lambda: False)
+    d = s.to_dict()
+    assert d["last_turn_ts"] == ""
+
+
+def test_last_turn_ts_counts_a_send_queued_behind_a_running_turn():
+    # A send that lands mid-turn is QUEUED, not appended, so a message-only scan
+    # would rank the session by the older prompt — and this snapshot is
+    # authoritative, so it would drop a row the user just typed into back down
+    # the list even after the client bumped it.
+    s = _slot(
+        {"role": "user", "content": "do it", "ts": "2026-08-17T01:00:00+00:00"},
+        {"role": "tool_call", "content": "grep ...", "ts": "2026-08-17T01:00:05+00:00"},
+    )
+    s.task = SimpleNamespace(done=lambda: False)
+    s.queue_append("and also this")
+    d = s.to_dict()
+    assert d["last_turn_ts"] > "2026-08-17T01:00:00+00:00"
+    assert d["last_turn_ts"] != d["last_ts"]
+
+
+def test_queue_entries_keep_their_exact_shape():
+    # The enqueue instant lives beside the queue, not on the entry: entry dicts
+    # are compared wholesale across the suite, so widening them would make those
+    # comparisons depend on a clock.
+    s = _slot()
+    qid = s.queue_append("later")
+    assert s._queue == [{"id": qid, "content": "later", "kind": ""}]
+
+
+def test_last_turn_ts_ignores_the_queue_once_idle():
+    # Queue drains only while a turn runs; an idle slot's newest row is the
+    # completion, and a leftover queued entry must not outrank it.
+    s = _slot(
+        {"role": "user", "content": "do it", "ts": "2026-08-17T01:00:00+00:00"},
+        {"role": "assistant", "content": "done", "ts": "2026-08-17T01:00:09+00:00"},
+    )
+    s.queue_append("held")
+    d = s.to_dict()
+    assert d["last_turn_ts"] == "2026-08-17T01:00:09+00:00"
+
+
+def test_last_turn_ts_empty_for_empty_slot():
+    d = _slot().to_dict()
+    assert d["last_turn_ts"] == ""
+    assert d["last_ts"] == ""
+
+
+# ── last_ts is a durable instant ──
+# The dashboard stores `last_ts` as a slot's unread watermark and later clears
+# it only with a `last_ts` that covers it. A row the save path never persists
+# (the turn-end `done` row and the other transient roles) disappears when a
+# gateway restart rebuilds the slot from disk, so a `last_ts` taken from one
+# moves backwards across the restart and strands the watermark.
+
+
+def test_last_ts_skips_the_turn_end_done_row():
+    s = _slot(
+        {"role": "user", "content": "question", "ts": "2026-09-22T22:08:00.000000+00:00"},
+        {"role": "assistant", "content": "final reply", "ts": "2026-09-22T22:08:03.989142+00:00"},
+        {"role": "done", "content": "", "ts": "2026-09-22T22:08:04.001106+00:00"},
+    )
+    d = s.to_dict()
+    assert d["last_ts"] == "2026-09-22T22:08:03.989142+00:00"
+    assert d["last_turn_ts"] == "2026-09-22T22:08:03.989142+00:00"
+
+
+def test_last_ts_is_unchanged_by_a_rebuild_from_disk():
+    # The same transcript before and after a restart: the live slot still holds
+    # the unsaved rows, the rebuilt one holds only what the save path keeps.
+    from kiro_crew.dashboard.chat_persistence import _build_message_entry
+
+    s = _ChatSlot("test-slot")
+    s.append("user", "question", "msg msg-u")
+    s.append("assistant", "final reply", "msg msg-a")
+    s.append("done", "", "done")
+    live = s.to_dict()["last_ts"]
+
+    rebuilt = _ChatSlot("test-slot")
+    rebuilt.messages = [dict(m) for m in s.messages if _build_message_entry(m) is not None]
+    assert live == rebuilt.to_dict()["last_ts"]
+
+
+def test_last_ts_skips_every_transient_role():
+    from kiro_crew.dashboard.state import _TRANSIENT_ROLES
+
+    for role in sorted(_TRANSIENT_ROLES):
+        s = _slot(
+            {"role": "assistant", "content": "reply", "ts": "t1"},
+            {"role": role, "content": "x", "ts": "t2"},
+        )
+        assert s.to_dict()["last_ts"] == "t1", role
+
+
+def test_last_ts_empty_when_only_transient_rows():
+    s = _slot({"role": "done", "content": "", "ts": "t1"})
+    assert s.to_dict()["last_ts"] == ""
+
+
+def test_the_dashboard_unsaved_role_list_matches_the_save_path():
+    # The dashboard refuses to take an unread watermark from a row the gateway
+    # never saves; its copy of the role set must be this one.
+    import re
+    from pathlib import Path
+
+    from kiro_crew.dashboard.state import _TRANSIENT_ROLES
+
+    source = (
+        Path(__file__).resolve().parents[1] / "website/src/hooks/unreadOnAttention.ts"
+    ).read_text(encoding="utf-8")
+    match = re.search(r"UNSAVED_ROLES[^=]*= new Set\(\[([^\]]*)\]\)", source)
+    assert match, "UNSAVED_ROLES not found in unreadOnAttention.ts"
+    assert set(re.findall(r"'([a-z_]+)'", match.group(1))) == set(_TRANSIENT_ROLES)
+
+
+def test_prompt_preview_truncation():
+    long_text = "x" * 300 + "\n[OPTIONS: A | B]"
+    s = _slot({"role": "assistant", "content": long_text, "ts": "t1"})
+    d = s.to_dict()
+    assert len(d["prompt_preview"]) == 241  # 240 + "…"
+    assert d["prompt_preview"].endswith("…")
+
+
+def test_queue_depth_zero_when_no_queue():
+    s = _slot({"role": "assistant", "content": "Done. What next?", "ts": "t1"})
+    d = s.to_dict()
+    assert d["queue_depth"] == 0
+
+
+def test_queue_depth_reflects_queued_prompts():
+    # A finished turn (assistant last) with prompts queued behind it: the Board
+    # must see queue_depth so it can show the session in Working, not Your Turn.
+    s = _slot({"role": "assistant", "content": "Done.", "ts": "t1"})
+    s.queue_append("next prompt")
+    s.queue_append("and another")
+    d = s.to_dict()
+    assert d["queue_depth"] == 2
+
+
+# ── interrupted ──
+# The transcript-evidence flag behind the composer's Resume button, surfaced on
+# the summary so the sidebar can stop rendering a goal-loop session as actively
+# working while it actually sits dead until resumed. Must mirror
+# chat_handlers._is_interrupted (same scan — see state.is_turn_interrupted).
+
+
+def test_interrupted_trailing_error_after_assistant():
+    s = _slot(
+        {"role": "user", "content": "do the thing", "ts": "t1"},
+        {"role": "assistant", "content": "starting…", "ts": "t2"},
+        {"role": "error", "content": "The model failed to generate a response", "ts": "t3"},
+    )
+    d = s.to_dict()
+    assert d["interrupted"] is True
+
+
+def test_interrupted_unanswered_user_row():
+    # A gateway restart mid-turn writes no error row; the unanswered user row is
+    # the only evidence.
+    s = _slot({"role": "user", "content": "do the thing", "ts": "t1"})
+    d = s.to_dict()
+    assert d["interrupted"] is True
+
+
+def test_not_interrupted_on_clean_finish():
+    s = _slot(
+        {"role": "user", "content": "do the thing", "ts": "t1"},
+        {"role": "assistant", "content": "done", "ts": "t2"},
+    )
+    d = s.to_dict()
+    assert d["interrupted"] is False
+
+
+_QUIET_META = {"tool_call_id": "b", "tool_name": "nothing_to_do", "mcp_server": "kirocrew-core"}
+
+
+def test_not_interrupted_after_a_quiet_end():
+    # A `nothing_to_do` turn ends on its tool row: [user, tool, tool] is the
+    # same tail a mid-turn crash leaves, so the directive's persisted TRUSTED
+    # identity plus the runner's `ends_turn` stamp is what tells the two apart.
+    s = _slot(
+        {"role": "user", "content": "patrol", "ts": "t1"},
+        {"role": "tool", "content": "🔧 gh pr view", "ts": "t2", "meta": {"tool_call_id": "a"}},
+        {
+            "role": "tool",
+            "content": "🔧 @kirocrew-core/nothing_to_do",
+            "ts": "t3",
+            "meta": {**_QUIET_META, "ends_turn": True},
+        },
+    )
+    assert s.to_dict()["interrupted"] is False
+
+
+def test_a_refused_quiet_end_is_still_interrupted():
+    # Same identity, no `ends_turn`: the applier refused (a person opened the
+    # turn), so the turn is unanswered and Resume stays offered.
+    s = _slot(
+        {"role": "user", "content": "patrol", "ts": "t1"},
+        {
+            "role": "tool",
+            "content": "🔧 @kirocrew-core/nothing_to_do",
+            "ts": "t2",
+            "meta": dict(_QUIET_META),
+        },
+    )
+    assert s.to_dict()["interrupted"] is True
+
+
+def test_a_quiet_end_followed_by_more_tool_work_does_not_close_the_turn():
+    # The model broke the contract (a tool call after nothing_to_do) and the
+    # gateway then died: the quiet-end row is not the last act, so the tail
+    # reads as interrupted and Resume is offered.
+    s = _slot(
+        {"role": "user", "content": "patrol", "ts": "t1"},
+        {
+            "role": "tool",
+            "content": "🔧 @kirocrew-core/nothing_to_do",
+            "ts": "t2",
+            "meta": {**_QUIET_META, "ends_turn": True},
+        },
+        {"role": "tool", "content": "🔧 gh pr view", "ts": "t3", "meta": {"tool_call_id": "c"}},
+    )
+    assert s.to_dict()["interrupted"] is True
+
+
+def test_quiet_end_needs_the_trusted_identity_not_the_title():
+    # A shell row whose TITLE names the tool has no `_meta.kiro` identity and
+    # must not close the turn.
+    s = _slot(
+        {"role": "user", "content": "patrol", "ts": "t1"},
+        {
+            "role": "tool",
+            "content": "🔧 echo nothing_to_do",
+            "ts": "t2",
+            "meta": {"tool_call_id": "a"},
+        },
+    )
+    assert s.to_dict()["interrupted"] is True
+    # ...and the right name on a foreign server is a foreign tool.
+    s = _slot(
+        {"role": "user", "content": "patrol", "ts": "t1"},
+        {
+            "role": "tool",
+            "content": "🔧 nothing_to_do",
+            "ts": "t2",
+            "meta": {
+                "tool_call_id": "a",
+                "tool_name": "nothing_to_do",
+                "mcp_server": "other-mcp",
+                "ends_turn": True,
+            },
+        },
+    )
+    assert s.to_dict()["interrupted"] is True
+
+
+def test_not_interrupted_after_deliberate_stop():
+    # Pressing Stop ENDS the turn — same [user, stop_event] tail as a crash, but
+    # the stop card must win.
+    s = _slot(
+        {"role": "user", "content": "do the thing", "ts": "t1"},
+        {
+            "role": "system",
+            "content": "stopped",
+            "cls": json.dumps({"kind": "stop_event"}),
+            "ts": "t2",
+        },
+    )
+    d = s.to_dict()
+    assert d["interrupted"] is False
+
+
+def test_not_interrupted_while_running():
+    # A trailing error belongs to a superseded turn once a new one is in
+    # flight; the live status already tells the truth. `running` reads only
+    # `task.done()`, so a plain stub keeps the test loop-free (nothing to
+    # close, no ResourceWarning leaking into later tests on assert failure).
+    s = _slot(
+        {"role": "user", "content": "do the thing", "ts": "t1"},
+        {"role": "error", "content": "transient", "ts": "t2"},
+    )
+    s.task = SimpleNamespace(done=lambda: False)
+    d = s.to_dict()
+    assert d["interrupted"] is False
+
+
+def test_interrupted_inject_successor_outranks_older_stop():
+    s = _slot(
+        {"role": "user", "content": "first", "ts": "t1"},
+        {
+            "role": "system",
+            "content": "stopped",
+            "cls": json.dumps({"kind": "stop_event"}),
+            "ts": "t2",
+        },
+        {
+            "role": "inject",
+            "content": "continue queued work",
+            "ts": "t3",
+            "meta": {"injectKind": "recovery"},
+        },
+        {"role": "tool", "content": "read complete", "ts": "t4"},
+    )
+
+    assert s.to_dict()["interrupted"] is True
+
+
+def test_halted_hook_inject_is_not_interrupted():
+    # A Stop-hook halt card is appended as ``inject`` but dispatched nothing, so
+    # the deliberately halted run must not read as interrupted.
+    s = _slot(
+        {"role": "user", "content": "first", "ts": "t1"},
+        {"role": "assistant", "content": "done", "ts": "t2"},
+        {"role": "inject", "content": "Stop hook halted #3", "ts": "t3"},
+    )
+
+    assert s.to_dict()["interrupted"] is False
+
+
+def test_interrupted_scan_tolerates_non_string_cls():
+    # A row whose persisted `cls` is object-valued (foreign writer / corrupted
+    # transcript) must not crash the summary scan — `to_dict()` runs on every
+    # slots push and at gateway startup, so a TypeError here aborts snapshots.
+    # The predicate treats such a row as not-a-stop and the scan continues.
+    s = _slot(
+        {"role": "user", "content": "do the thing", "ts": "t1"},
+        {"role": "system", "content": "odd row", "cls": {"kind": "stop_event"}, "ts": "t2"},
+    )
+    d = s.to_dict()
+    # The object-valued cls is NOT recognized as a stop card, so the unanswered
+    # user row makes the transcript read interrupted.
+    assert d["interrupted"] is True

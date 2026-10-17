@@ -1,0 +1,855 @@
+/**
+ * TrustAppModal — the consent gate for third-party app code execution.
+ *
+ * A third-party app is refused execution until the user grants it trust, so both
+ * `POST /api/apps/{name}/enable` and the registry INSTALL path (which checks the
+ * gate before cloning, so the refusal arrives before anything is on disk) answer
+ * with `code: "app_execution_denied"`. Surfacing that raw backend string left the
+ * user with no way forward; this modal turns the refusal into an informed
+ * decision and, on confirm, grants trust for THIS APP ONLY and retries whichever
+ * action was refused.
+ *
+ * The trust check keys off the machine-readable CODE, never the English
+ * message: `isTrustDeniedError` reads the structured error body, so a reworded
+ * backend message can never silently turn the consent flow back into a raw
+ * error card. It reads the body STRUCTURALLY (duck-typed `body` / `code`
+ * fields) rather than via `instanceof ApiError`, so it keeps working both for
+ * the ApiError-shaped rejections that page tests stub in AND for a RESOLVED
+ * install result — the SSE stream reports a refused install as a `done` payload
+ * carrying the code, not as a rejection.
+ */
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import { Code2, GitBranch, Loader2, RotateCcw, Server, ShieldAlert, Terminal } from 'lucide-react'
+
+import { api } from '../../api/client'
+import { isNotFoundError } from '../../api/apiError'
+import Modal from '../Modal'
+import ErrorNotice from '../ErrorNotice'
+import { Badge, Btn } from '../ui'
+import SessionApprovalModes from './SessionApprovalModes'
+import { i18nT } from '../../i18n/t'
+import { findReport, isGatewayConnected, subscribeGatewayConnected } from '../../utils/errorReport'
+import { sourceLabel, type RegistryApp } from './types'
+
+/** Machine-readable code the enable and registry-install paths return when trust is missing. */
+export const APP_EXECUTION_DENIED = 'app_execution_denied'
+/** Machine-readable code returned when enable needs the detail disclosure. */
+export const SESSION_APPROVAL_CONSENT_REQUIRED = 'session_approval_consent_required'
+/**
+ * Machine-readable code the registry install returns when the gateway is the
+ * desktop app's bundled interpreter and the app's Python layout needs a build
+ * step it cannot run. A PERMANENT condition for this gateway: retrying cannot
+ * change it, which is why the consent modal keys its copy on this code rather
+ * than on the sentence beside it.
+ */
+export const DESKTOP_BUILD_STEP_UNSUPPORTED = 'desktop_build_step_unsupported'
+
+/**
+ * The subset of an app row the consent modal needs: identity for the grant,
+ * display name for the title, provenance (clone target + source label), and the
+ * session approval grant so the user can see WHO and WHAT they are about to trust.
+ */
+export type TrustAppTarget = Pick<RegistryApp, 'name' | '_registry' | 'origin'> & {
+  displayName?: string
+  trustRepository?: string
+  sessionApproval?: boolean
+  /**
+   * True when confirming re-runs the registry INSTALL rather than the enable.
+   * An install lands the app switched off (enabling is its own step), so the
+   * confirm button must not promise "and enable" on that path, and the outcome,
+   * Cancel and failure sentences use their `install_*` keys.
+   */
+  retryInstalls?: boolean
+  /**
+   * True when that install REPLACES an app that is already installed (an
+   * Update). The `install_*` sentences say nothing is installed yet, which is
+   * false there, and the enable path's say trusting "turns it on" and that the
+   * app is "switched off", which may be false too (the app may be on). So an
+   * update uses its own `update_*` Cancel and failure sentences.
+   */
+  replacesInstalled?: boolean
+  /**
+   * `community` when the registry that LISTED this app is a community one
+   * (`registryTierFor`): a negative claim, the listing was not vetted, which is
+   * the fact the user needs at the moment they say yes. No other tier is
+   * carried: a `curated` listing review is not a code review, and an
+   * endorsement beside `not_reviewed` would contradict that sentence. Display
+   * only: it never selects the grant, the retry or any consent step.
+   */
+  registryReview?: 'community'
+  /**
+   * That registry's credential posture (`trust`). The not-vetted sentence names
+   * whether apps clone with the user's Git credentials, and that fact is read
+   * from here, never inferred from `registryReview`.
+   */
+  registryTrust?: string
+}
+
+/**
+ * Which refused action the dialog's confirm re-runs. Each path owns its exit
+ * (Cancel) sentence and its failure headlines, because what confirming does and
+ * what Cancel leaves behind differ: enabling turns an installed app on; a first
+ * install lands an app switched off; an update replaces an app that is already
+ * there, possibly running.
+ */
+type TrustPath = 'enable' | 'install' | 'update'
+
+/** The path a target's flags describe: an Update is an install over an installed app. */
+function trustPath(app: Pick<TrustAppTarget, 'retryInstalls' | 'replacesInstalled'> | null): TrustPath {
+  if (!app?.retryInstalls) return 'enable'
+  return app.replacesInstalled ? 'update' : 'install'
+}
+
+/** Mirror the backend's credential-free Git coordinate projection. */
+export function credentialFreeRepository(raw?: string): string | undefined {
+  if (!raw) return raw
+  const schemeAt = raw.indexOf('://')
+  if (schemeAt >= 0) {
+    const scheme = raw.slice(0, schemeAt).toLowerCase()
+    const authorityAt = schemeAt + 3
+    const suffixCandidates = ['/', '?', '#']
+      .map(delimiter => raw.indexOf(delimiter, authorityAt))
+      .filter(index => index >= 0)
+    const suffixAt = suffixCandidates.length ? Math.min(...suffixCandidates) : raw.length
+    const authority = raw.slice(authorityAt, suffixAt)
+    const pathAndSuffix = raw.slice(suffixAt)
+    const secretSuffixAt = ['?', '#']
+      .map(delimiter => pathAndSuffix.indexOf(delimiter))
+      .filter(index => index >= 0)
+    const publicPath = pathAndSuffix.slice(
+      0,
+      secretSuffixAt.length ? Math.min(...secretSuffixAt) : pathAndSuffix.length,
+    )
+    const userinfoAt = authority.lastIndexOf('@')
+    if (userinfoAt < 0) return raw.slice(0, suffixAt) + publicPath
+
+    const userinfo = authority.slice(0, userinfoAt)
+    const hostport = authority.slice(userinfoAt + 1)
+    if (scheme === 'ssh' || scheme === 'git+ssh') {
+      const passwordAt = userinfo.indexOf(':')
+      const username = passwordAt >= 0 ? userinfo.slice(0, passwordAt) : userinfo
+      const safeAuthority = username ? `${username}@${hostport}` : hostport
+      return raw.slice(0, authorityAt) + safeAuthority + publicPath
+    }
+    return raw.slice(0, authorityAt) + hostport + publicPath
+  }
+  // A standard SCP username is routing identity and must remain byte-exact.
+  // For a remote-only proof, any colon before the first @ is the backend's
+  // unsupported/ambiguous SCP shape, regardless of the suffix Git may parse.
+  const firstColon = raw.indexOf(':')
+  const firstAt = raw.indexOf('@')
+  if (firstAt > 0 && firstColon >= 0 && firstColon < firstAt) return undefined
+  return raw
+}
+
+/** Pull a machine-readable `code` out of an API rejection, if it carries one. */
+function errorCode(e: unknown): string | null {
+  if (!e || typeof e !== 'object') return null
+  const direct = (e as { code?: unknown }).code
+  if (typeof direct === 'string') return direct
+  const body = (e as { body?: unknown }).body
+  if (typeof body !== 'string' || !body.trim().startsWith('{')) return null
+  try {
+    const code = (JSON.parse(body) as { code?: unknown }).code
+    return typeof code === 'string' ? code : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * True when a failure is the missing-trust gate rather than a real error.
+ *
+ * Accepts a rejection OR a resolved payload: a refused registry install comes
+ * back as `{ ok: false, code: "app_execution_denied" }` on the SSE `done` event,
+ * while a refused enable (and the non-streaming install route) rejects with the
+ * code inside the response body.
+ */
+export function isTrustDeniedError(e: unknown): boolean {
+  return errorCode(e) === APP_EXECUTION_DENIED
+}
+
+/** True when enable must continue from the detail disclosure surface. */
+export function isSessionApprovalConsentRequiredError(e: unknown): boolean {
+  return errorCode(e) === SESSION_APPROVAL_CONSENT_REQUIRED
+}
+
+/**
+ * The server's own account of why the retried action failed, or `''`.
+ *
+ * A build refusal or a clone failure arrives on the failure the retry throws;
+ * this lifts that string so the modal renders the reason beside its own copy
+ * instead of leaving it readable only in `security_events.jsonl`.
+ *
+ * Deliberately the Error's OWN `message`, not a field re-parsed out of the
+ * response body: `ApiError.message` is already the unwrapped `{"error": …}`
+ * sentence AND the key the error journal recorded the request under, so
+ * handing it to `ErrorNotice` as the message keeps the structured report
+ * (endpoint, status, backend code) reachable for the ask-the-agent hand-off.
+ *
+ * A trust refusal returns `''`: `APP_EXECUTION_DENIED` is a machine code the
+ * retry throws as a sentinel, not user-facing text, and the modal's own copy
+ * already explains a grant that did not take effect.
+ */
+export function retryFailureDetail(e: unknown): string {
+  if (isTrustDeniedError(e)) return ''
+  const message = e instanceof Error ? e.message : typeof e === 'string' ? e : ''
+  const trimmed = message.trim()
+  if (!trimmed || trimmed === APP_EXECUTION_DENIED) return ''
+  return trimmed
+}
+
+/**
+ * The machine code the failure carried beside its reason, or `''`.
+ *
+ * Only a failure that also has a reason to show (`retryFailureDetail`) yields
+ * one: the code selects HOW that reason is presented (a permanent condition
+ * gets copy without a retry instruction), and a sentinel refusal with nothing
+ * to show has nothing for a code to select.
+ */
+export function retryFailureCode(e: unknown): string {
+  if (!retryFailureDetail(e)) return ''
+  return errorCode(e) ?? ''
+}
+
+/**
+ * Owns the consent-modal state and the grant-then-retry sequence, so the page
+ * that owns the refused mutation drives one modal instead of each button
+ * duplicating the flow.
+ *
+ * `retryEnable` is the DEFAULT action re-run once the grant lands (the page's own
+ * enable path, including its cache invalidation). Two different gates now open
+ * this same modal — enable, and the registry install, which checks the execution
+ * gate before cloning — so `open()` takes an optional per-refusal retry: which
+ * action to resume is a property of the refusal, not of the hook. The retry
+ * travels WITH the target in one state object, so a confirm can never pair an
+ * app with the wrong action.
+ */
+export function useTrustGate(retryEnable: (name: string) => Promise<void>) {
+  // This hook mutates trust through `api.trustApp` / `api.untrustApp` directly
+  // rather than a `useMutation`, so nothing invalidates the queries that render
+  // the resulting state. Without this the Security panel's trusted-apps list and
+  // the App Store's own rows keep serving a cached snapshot from before the
+  // grant — a settings surface showing a stale answer about who may run code.
+  // Invalidated (not hand-patched) because the authoritative post-grant shape is
+  // whatever the server returns, including the `ineffective` split.
+  const qc = useQueryClient()
+  const refreshTrustViews = useCallback(() => {
+    qc.invalidateQueries({ queryKey: ['trusted-apps'] })
+    qc.invalidateQueries({ queryKey: ['apps'] })
+  }, [qc])
+
+  const [gate, setGate] = useState<{
+    app: TrustAppTarget
+    retry: (name: string) => Promise<void>
+  } | null>(null)
+  const [pending, setPending] = useState(false)
+  const [failed, setFailed] = useState(false)
+  // The server's reason for the failure, shown under the generic headline. Reset
+  // wherever `failed` is, so a second attempt never displays the first one's
+  // cause beside a newer outcome.
+  const [detail, setDetail] = useState('')
+  // The machine code beside that reason (`retryFailureCode`), which selects how
+  // the reason is presented: a permanent condition gets copy without a retry
+  // instruction. Reset in step with `detail`, for the same reason.
+  const [detailCode, setDetailCode] = useState('')
+  // Whether `trustApp` SUCCEEDED before a failure. The two failure cases need
+  // different advice: a landed grant leaves state the user should know about and
+  // may want to remove; a failed grant changed nothing, and sending them to
+  // Settings to "check and remove it" would send them after nothing.
+  const [granted, setGranted] = useState(false)
+
+  const open = useCallback((app: TrustAppTarget, retry?: (name: string) => Promise<void>) => {
+    const credentialFree = credentialFreeRepository(app.trustRepository)
+    // `trustRepository` is a server-owned opaque consent proof.  A client-side
+    // rewrite would authorize a coordinate the user was not shown and the server
+    // did not issue.  Use the sanitizer only as a defensive validator: if a
+    // compromised/stale response is not already credential-free, fail closed
+    // without rendering or submitting either the secret or a transformed proof.
+    if (credentialFree !== app.trustRepository) {
+      setGate(null)
+      setPending(false)
+      setFailed(false)
+      setDetail('')
+      setDetailCode('')
+      setGranted(false)
+      return
+    }
+    setGate({
+      app: { ...app, trustRepository: credentialFree },
+      retry: retry ?? retryEnable,
+    })
+    setPending(false)
+    setFailed(false)
+    setDetail('')
+    setDetailCode('')
+    setGranted(false)
+  }, [retryEnable])
+
+  const cancel = useCallback(() => {
+    // Cancel grants nothing — it only drops the pending action.
+    setGate(null)
+    setPending(false)
+    setFailed(false)
+    setDetail('')
+    setDetailCode('')
+    setGranted(false)
+  }, [])
+
+  const confirm = useCallback(async () => {
+    if (!gate || pending) return
+    setPending(true)
+    setFailed(false)
+    setDetail('')
+    setDetailCode('')
+    // Local, not the `granted` state: state updates are not readable in this same
+    // closure, and the catch below has to know whether the grant actually landed.
+    let grantLanded = false
+    try {
+      await api.trustApp(gate.app.name, gate.app.trustRepository)
+      grantLanded = true
+      setGranted(true)
+      await gate.retry(gate.app.name)
+      refreshTrustViews()
+      setGate(null)
+    } catch (failure) {
+      // Keep the modal open and report inline: the grant may have landed while
+      // the retried action failed for an unrelated reason, and closing here
+      // would strand the user back on the raw-error path this modal replaces.
+      //
+      // But a landed grant over a name NO app occupies is an orphan, and grants
+      // are keyed on the name alone: whatever is installed under it next would
+      // run its own code with no consent prompt. That is the exact state the
+      // uninstall path refuses to create (`trust_grant_not_removed`), so this
+      // flow must not create it either — the grant is rolled back when the app
+      // it was for is not there.
+      //
+      // OBSERVED, not inferred from which retry ran. The install retry leaves
+      // nothing on disk when it fails, the enable retry leaves the app installed,
+      // and only the first produces an orphan — but asking the server which is
+      // true beats trusting a caller to pass the right flag. When the check
+      // itself fails we KEEP the grant: revoking on a guess would switch off an
+      // app that exists and works, and the copy below already points the user at
+      // Settings to review it.
+      let rolledBack = false
+      if (grantLanded) {
+        try {
+          const installed = await api.getApp(gate.app.name)
+          if (installed == null) {
+            await api.untrustApp(gate.app.name)
+            rolledBack = true
+          }
+        } catch (probe) {
+          // `GET /api/apps/{name}` answers 404 for a name no app occupies, and
+          // `j()` turns that into a rejection — so "not installed" arrives HERE,
+          // not as a null. Only a 404 is proof of absence; a network error or a
+          // 500 is not, and revoking on those would switch off an app that
+          // exists and works. Status read structurally, matching
+          // `isTrustDeniedError` above: page tests stub ApiError-SHAPED objects
+          // rather than real instances.
+          if (isNotFoundError(probe)) {
+            try {
+              await api.untrustApp(gate.app.name)
+              rolledBack = true
+            } catch {
+              // The rollback itself failed; the grant stands and the copy below
+              // sends the user to Settings to remove it by hand.
+              rolledBack = false
+            }
+          }
+        }
+      }
+      // Either branch changed server-side trust state — the grant landed, or it
+      // landed and was rolled back — so the views have to be refreshed even on
+      // the failure path, which is exactly where a stale list is most confusing.
+      if (grantLanded) refreshTrustViews()
+      // A rolled-back grant means nothing was left behind, which is what the
+      // `failed_generic` copy says; `granted` is what selects between the two.
+      setGranted(grantLanded && !rolledBack)
+      setFailed(true)
+      // The reason the grant or the retry failed, straight from the failure it
+      // threw (the catch covers both, and a failed grant's message is worth
+      // showing too), and the code that says how to present it. Without the
+      // reason the user sees the generic copy alone while the cause lives only
+      // in the security event log — a dead end, since Try again fails identically.
+      setDetail(retryFailureDetail(failure))
+      setDetailCode(retryFailureCode(failure))
+    } finally {
+      setPending(false)
+    }
+  }, [gate, pending, refreshTrustViews])
+
+  return {
+    target: gate?.app ?? null,
+    pending,
+    failed,
+    detail,
+    detailCode,
+    granted,
+    open,
+    cancel,
+    confirm,
+  }
+}
+
+/**
+ * Return *raw* as an href ONLY if it is a scheme we can hand a user, else `null`.
+ *
+ * Repository text still reaches this dialog from a remote source. Parsed
+ * with the URL constructor rather than a regex: a prefix check is defeated by
+ * `\tjavascript:`, `JaVaScRiPt:`, and percent/entity encodings that the browser
+ * still resolves, whereas `new URL().protocol` is the browser's own normalized
+ * answer. Everything outside the allowlist — `javascript:`, `data:`, `blob:`,
+ * `file:` — is refused, and a value the parser rejects outright is refused too.
+ */
+export function safeHref(raw: string): string | null {
+  try {
+    const url = new URL(raw)
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The three capabilities a trust grant confers, each paired with its icon.
+ *
+ * The label is a RESOLVED STRING, not a key: `check-i18n-keys.mjs` can only
+ * verify a key it sees as a literal at the `i18nT()` call site, so mapping over
+ * a list of key strings and calling `i18nT(key)` in the row makes the reference
+ * invisible to the gate (it reports the file as a dynamic-key site) and a typo
+ * would reach users as a raw key. A function, not a module constant, because the
+ * strings must re-resolve on a language switch rather than freeze at import.
+ */
+function capabilities(): { label: string; Icon: typeof Code2 }[] {
+  return [
+    { label: i18nT('components.appstore.trustAppModal.capability_python'), Icon: Code2 },
+    { label: i18nT('components.appstore.trustAppModal.capability_backend'), Icon: Server },
+    { label: i18nT('components.appstore.trustAppModal.capability_shell'), Icon: Terminal },
+  ]
+}
+
+/**
+ * The dialog's terminal states. Each owns its headline, its help line and its
+ * EXIT sentence together, in one row of `terminalCopy`, so no state can inherit
+ * another state's exit line through a missing guard -- the defect this table
+ * replaced: the granted failure rendered the consent state's "Cancel changes
+ * nothing … switched off" beside a notice saying the app is now trusted, because
+ * the one guard on that sentence knew only the permanent refusal.
+ *
+ * - `consent`: the question itself (also while the grant and retry are running).
+ * - `failed_generic`: the retry failed and nothing stayed -- the grant never
+ *   landed, or landed over a name no app occupies and was rolled back.
+ * - `granted`: the grant landed and stands (the app is there), only the retry
+ *   failed -- the state the user may want to undo.
+ * - `permanent`: the desktop build-step refusal, only while the grant did NOT
+ *   stay: a grant left behind is the more urgent fact and `granted` names it, so
+ *   that case keeps the generic rendering.
+ */
+type TerminalState = 'consent' | 'failed_generic' | 'granted' | 'permanent'
+
+function terminalState({ failed, granted, detail, detailCode }: {
+  failed: boolean
+  granted: boolean
+  detail: string
+  detailCode: string
+}): TerminalState {
+  if (!failed) return 'consent'
+  if (granted) return 'granted'
+  if (detail && detailCode === DESKTOP_BUILD_STEP_UNSUPPORTED) return 'permanent'
+  return 'failed_generic'
+}
+
+/**
+ * One row per terminal state: headline (the notice's message, or its title on the
+ * permanent refusal), help (the permanent refusal's plain sentence) and the exit
+ * sentence. Every key is a LITERAL at its `i18nT()` call: `check-i18n-keys.mjs`
+ * verifies only a key it can read at the call site, so the table resolves
+ * strings rather than carrying key names.
+ *
+ * The exit sentence describes the footer control this state offers and the state
+ * it leaves behind, which is not the same everywhere: on `consent` and
+ * `failed_generic` Cancel truly changes nothing (nothing was saved); on `granted`
+ * Cancel keeps the grant, so the sentence names both facts the reader leaves with
+ * -- trusted, and switched off -- and promises nothing about the retry; on
+ * `permanent` the footer is Close alone and no trust decision is left to make, so
+ * the sentence says that instead of describing a Cancel button the reader
+ * cannot find.
+ */
+function terminalCopy(state: TerminalState, app: string, path: TrustPath): {
+  headline: string | null
+  help: string | null
+  exit: string
+} {
+  // Each path has its own headline and exit sentences. The enable path's say
+  // trusting "turns it on" and that the app "stays in place, switched off":
+  // before a first install nothing is in place, and on an update the app may be
+  // on. `permanent` is already install-only copy, so it needs no second row.
+  switch (state) {
+    case 'granted':
+      switch (path) {
+        case 'install':
+          return {
+            headline: i18nT('components.appstore.trustAppModal.install_failed', { app }),
+            help: null,
+            exit: i18nT('components.appstore.trustAppModal.install_on_cancel_granted', { app }),
+          }
+        case 'update':
+          return {
+            headline: i18nT('components.appstore.trustAppModal.update_failed', { app }),
+            help: null,
+            exit: i18nT('components.appstore.trustAppModal.update_on_cancel_granted', { app }),
+          }
+        case 'enable':
+          return {
+            headline: i18nT('components.appstore.trustAppModal.failed', { app }),
+            help: null,
+            exit: i18nT('components.appstore.trustAppModal.on_cancel_granted', { app }),
+          }
+      }
+    case 'permanent':
+      return {
+        headline: i18nT('components.appstore.trustAppModal.failed_desktop_unsupported', { app }),
+        help: i18nT('components.appstore.trustAppModal.failed_desktop_unsupported_help'),
+        exit: i18nT('components.appstore.trustAppModal.on_close_desktop_unsupported', { app }),
+      }
+    case 'failed_generic':
+      switch (path) {
+        case 'install':
+          return {
+            headline: i18nT('components.appstore.trustAppModal.install_failed_generic', { app }),
+            help: null,
+            exit: i18nT('components.appstore.trustAppModal.install_on_cancel', { app }),
+          }
+        case 'update':
+          return {
+            headline: i18nT('components.appstore.trustAppModal.update_failed_generic', { app }),
+            help: null,
+            exit: i18nT('components.appstore.trustAppModal.update_on_cancel', { app }),
+          }
+        case 'enable':
+          return {
+            headline: i18nT('components.appstore.trustAppModal.failed_generic', { app }),
+            help: null,
+            exit: i18nT('components.appstore.trustAppModal.on_cancel', { app }),
+          }
+      }
+    case 'consent':
+      switch (path) {
+        case 'install':
+          return { headline: null, help: null, exit: i18nT('components.appstore.trustAppModal.install_on_cancel', { app }) }
+        case 'update':
+          return { headline: null, help: null, exit: i18nT('components.appstore.trustAppModal.update_on_cancel', { app }) }
+        case 'enable':
+          return { headline: null, help: null, exit: i18nT('components.appstore.trustAppModal.on_cancel', { app }) }
+      }
+  }
+}
+
+export default function TrustAppModal({
+  app, pending, failed, detail = '', detailCode = '', granted, onCancel, onConfirm,
+}: {
+  /** The app awaiting consent; `null` keeps the modal closed. */
+  app: TrustAppTarget | null
+  pending: boolean
+  failed: boolean
+  /**
+   * The server's reason for the failure, from `useTrustGate().detail`. Empty
+   * when the failure carried none (or carried only a machine code), which keeps
+   * the generic copy as the whole message rather than showing an empty detail.
+   */
+  detail?: string
+  /**
+   * The machine code beside that reason, from `useTrustGate().detailCode`. Only
+   * `DESKTOP_BUILD_STEP_UNSUPPORTED` changes the rendering: it names a permanent
+   * condition, so the notice drops the retry instruction and explains the reason
+   * in plain words above the server's own sentence.
+   */
+  detailCode?: string
+  /** True when the grant was written and only the retried action failed. */
+  granted: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  const name = app ? (app.displayName || app.name) : ''
+  const state = terminalState({ failed, granted, detail, detailCode })
+  const path = trustPath(app)
+  // A first install only: an Update re-runs the install over an app that is
+  // already there, where "nothing is installed" would be false.
+  const freshInstall = path === 'install'
+  const copy = terminalCopy(state, name, path)
+  const permanentRefusal = state === 'permanent'
+  // The not-saved state's next step, shared by every path. It names the retry
+  // and the notice's Ask the agent hand-off only while both can be used: the
+  // hand-off reads the same gateway-connection store and hides while the
+  // gateway is unreachable, the retry is off then (below), and a sentence
+  // pointing at a control the reader cannot use is a dead end. So the
+  // headline above it names no control.
+  const gatewayConnected = useSyncExternalStore(subscribeGatewayConnected, isGatewayConnected)
+  const nextStep = state !== 'failed_generic'
+    ? null
+    : gatewayConnected
+      ? i18nT('components.appstore.trustAppModal.failed_generic_next_ask')
+      : i18nT('components.appstore.trustAppModal.failed_generic_next_offline')
+  // That offline next step says the retry stays off until the gateway is back,
+  // so the button is off for exactly that long: a retry while unreachable can
+  // only fail the same way. Cancel stays on. Only the not-saved state: it is the
+  // one whose copy names the wait.
+  const retryWaitsForGateway = state === 'failed_generic' && !gatewayConnected
+  // When the refusal turns permanent the footer swaps Cancel + confirm for Close.
+  // The user's focus was on the confirm button they just pressed; unmounting it
+  // drops focus to the document, so a keyboard user's next Tab starts from
+  // nowhere and Escape is the only way out they can find. Move focus to the one
+  // control left as it mounts, so the dialog keeps a focus position.
+  const closeRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (permanentRefusal) closeRef.current?.focus()
+  }, [permanentRefusal])
+  return (
+    <Modal
+      open={!!app}
+      onClose={onCancel}
+      maxWidth={560}
+      guideTrustRoot
+      title={i18nT('components.appstore.trustAppModal.title', { app: name })}
+      footer={
+        permanentRefusal ? (
+          // Retrying cannot change what the bundled interpreter can install, and
+          // the retry is a full clone/build that ends in the identical refusal and
+          // then leans on the rollback probe to revoke the grant it just re-wrote.
+          // So the one action left is to close; `app.close` is the shared label.
+          <Btn primary onClick={onCancel} ref={closeRef}>
+            {i18nT('app.close')}
+          </Btn>
+        ) : (
+          <>
+            <Btn onClick={onCancel} disabled={pending}>
+              {i18nT('components.appstore.trustAppModal.cancel')}
+            </Btn>
+            <Btn primary onClick={onConfirm} disabled={pending || retryWaitsForGateway}>
+              {/* Each path names what confirming runs. A first install only
+                  installs (the app lands switched off), so its labels name the
+                  trust alone, never "and enable"; an Update names the update.
+                  After a failure the retry label follows the state: with trust
+                  already saved it just tries again, so it does not say "Trust". */}
+              {pending
+                ? <><Loader2 size={14} className="animate-spin" /> {path === 'update'
+                    ? i18nT('components.appstore.trustAppModal.working_update')
+                    : path === 'install'
+                      ? i18nT('components.appstore.trustAppModal.working_install')
+                      : i18nT('components.appstore.trustAppModal.working')}</>
+                : failed
+                  ? state === 'granted'
+                    // No new trust is asked here, so no trust (shield) icon either.
+                    ? <><RotateCcw size={14} /> {i18nT('components.appstore.trustAppModal.confirm_retry_granted')}</>
+                    : <><ShieldAlert size={14} /> {i18nT('components.appstore.trustAppModal.confirm_after_failure')}</>
+                  : <><ShieldAlert size={14} /> {path === 'update'
+                      ? i18nT('components.appstore.trustAppModal.confirm_update')
+                      : path === 'install'
+                        ? i18nT('components.appstore.trustAppModal.confirm_install')
+                        : i18nT('components.appstore.trustAppModal.confirm')}</>}
+            </Btn>
+          </>
+        )
+      }
+    >
+      {app && (
+        <div className="flex flex-col gap-3.5 text-[13px]">
+          <p className="text-muted leading-relaxed">
+            {i18nT('components.appstore.trustAppModal.scope', { app: name })}
+          </p>
+          <p className="text-text leading-relaxed">
+            {i18nT('components.appstore.trustAppModal.intro', { app: name })}
+          </p>
+          {/* Explicit color-mix rather than a `bg-card/88` opacity modifier:
+              theme colors are raw `var(--x)`, so the translucency depends on
+              the config's opacity shim rather than on Tailwind's own alpha
+              path. Verified to emit
+              `background-color: color-mix(in srgb,var(--card) 88%,transparent)`. */}
+          <ul className="flex flex-col gap-2.5 rounded-lg border border-border bg-[color-mix(in_srgb,var(--card)_88%,transparent)] px-3.5 py-3">
+            {capabilities().map(({ label, Icon }) => (
+              <li key={label} className="flex items-start gap-2.5 text-text leading-relaxed">
+                <Icon size={14} className="mt-[3px] shrink-0 text-warn" />
+                <span>{label}</span>
+              </li>
+            ))}
+          </ul>
+          {/* The three rows are a CEILING, not a manifest reading: trust grants all
+              three regardless of what this app happens to use, and Kiro Crew
+              cannot narrow it. Listing them without saying so reads as "here is what it
+              does", which would be a promise we do not keep. */}
+          <p className="text-muted leading-relaxed">
+            {i18nT('components.appstore.trustAppModal.capability_note')}
+          </p>
+          {/* The sessionApproval grant is NOT part of that ceiling: it is a separate,
+              manifest-declared request enforced for app-token calls, so it lives in
+              its own box under its own heading. Folding it into the list above made
+              "all three" miscount the rows the user was consenting to. */}
+          {app.sessionApproval && (
+            <div className="flex flex-col gap-1.5 rounded-lg border border-warn/30 bg-warn-subtle px-3.5 py-3">
+              <div className="flex items-center gap-2 font-semibold text-warn">
+                <ShieldAlert size={14} className="shrink-0" />
+                <span>{i18nT('components.appstore.trustAppModal.session_approval_heading')}</span>
+              </div>
+              <p className="text-text leading-relaxed">
+                {i18nT('components.appstore.trustAppModal.session_approval_desc')}
+              </p>
+              <SessionApprovalModes label={i18nT('components.appstore.trustAppModal.session_approval_modes')} />
+            </div>
+          )}
+          <div className="flex flex-wrap items-center gap-2 text-muted">
+            <GitBranch size={14} className="shrink-0" />
+            <span className="shrink-0">{i18nT('components.appstore.trustAppModal.source')}</span>
+            {app.trustRepository && (
+              /* Provenance is shown as a LINK only when the URL is one the user can
+                 safely be handed: the clone target is remote content, and
+                 rendering it into `href` unchecked makes `javascript:...` a
+                 one-click script-execution vector in the dashboard's own origin —
+                 on the very dialog whose job is to gate code execution. So the
+                 scheme is allowlisted, and anything else degrades to plain text
+                 (still visible, still copyable, just not clickable) rather than
+                 being hidden, because a weird URL is exactly what the user should
+                 see before granting trust. `noreferrer` also keeps the dashboard
+                 URL, which carries a session, out of the referrer header. */
+              safeHref(app.trustRepository)
+                ? (
+                  <a
+                    href={safeHref(app.trustRepository) ?? undefined}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-mono text-[12px] text-accent underline break-all hover:text-accent-hover"
+                  >
+                    {app.trustRepository}
+                  </a>
+                )
+                : (
+                  <span className="font-mono text-[12px] text-text break-all">{app.trustRepository}</span>
+                )
+            )}
+            <Badge variant="muted">{sourceLabel(app)}</Badge>
+          </div>
+          {/* The registry badge above reads as an endorsement. It is not one. */}
+          <p className="text-muted leading-relaxed">
+            {i18nT('components.appstore.trustAppModal.not_reviewed')}
+          </p>
+          {/* A community registry's listing was not vetted by the team. Below the
+              not-an-endorsement line, so that line stays next to the badge it
+              explains and the two review statements read in order. Said on the
+              gate itself, because this is where the user decides; the
+              credential clause is chosen by the registry's `trust`, never by
+              its review tier (the same whole-sentence rule as `reviewTip` in
+              RegistryManager), and both sentences name this one app, in plain
+              words, because the user is judging it and not the registry.
+              Display only: no consent step depends on it. */}
+          {app.registryReview === 'community' && (
+            <div
+              data-testid="trust-app-registry-community"
+              className="flex flex-col gap-1.5 rounded-lg border border-warn/30 bg-warn-subtle px-3.5 py-3"
+            >
+              {/* A plain bold label, not a pill: inside the box a rounded chip
+                  read as a button or a filter tag (UX review), and nothing here
+                  is clickable. */}
+              <strong data-testid="trust-app-registry-community-label" className="font-semibold text-warn-text">
+                {i18nT('components.appstore.registryTier.community')}
+              </strong>
+              <p className="text-text leading-relaxed">
+                {app.registryTrust === 'owner'
+                  ? i18nT('components.appstore.trustAppModal.registry_community_credentialed', { app: name })
+                  : i18nT('components.appstore.trustAppModal.registry_community', { app: name })}
+              </p>
+            </div>
+          )}
+          {/* Consent needs an exit: what leaving does, and that this is reversible
+              plus where. Without these the dialog is a one-way door. The exit
+              sentence comes from the state's own row of `terminalCopy`, never
+              from a guard on another state's sentence: it describes the control
+              this state's footer actually offers (Cancel, or Close on the
+              permanent refusal) and the state that control LEAVES, which differs
+              per state -- see the table. */}
+          {/* The install path's confirm button says "Trust this app" and nothing
+              more, so this line says where confirming leaves the app: installed
+              and switched off. Only before an attempt: once a failure headline
+              shows, it states what happened and this promise no longer applies. */}
+          {freshInstall && !failed && (
+            <p className="text-text leading-relaxed">
+              {i18nT('components.appstore.trustAppModal.install_outcome', { app: name })}
+            </p>
+          )}
+          {/* The Update path's own outcome line, so the dialog says this is an
+              update and not a first install: the title and the scope line read
+              the same on every path. It stays after a retryable failure, because
+              the footer's retry label is shared by every path and this line is
+              what says the retry still runs the update. A permanent refusal
+              offers Close alone and nothing was changed, so the line goes. */}
+          {path === 'update' && !permanentRefusal && (
+            <p className="text-text leading-relaxed">
+              {i18nT('components.appstore.trustAppModal.update_outcome', { app: name })}
+            </p>
+          )}
+          <p className="text-muted leading-relaxed">{copy.exit}</p>
+          <p className="text-muted leading-relaxed">
+            {i18nT('components.appstore.trustAppModal.revocable')}
+          </p>
+          {/* Two failure strings, because the two cases need different advice: if
+              the grant landed and only the enable failed, the user has state to
+              clean up; if nothing was written, telling them to go check Settings
+              sends them after something that isn't there. askAgent on: a trust
+              decision dialog holds no draft.
+
+              When the failure carried a server reason, the copy is the notice's
+              message and the raw string sits BENEATH it on its own line, as the
+              notice's footer -- the same block the permanent refusal uses -- so the
+              developer-vocabulary sentence does not run on inline after "check
+              the logs". The raw string is still the error journal's key, so the
+              report is looked up from it explicitly and handed to the notice
+              (`report={findReport(detail)}`): a localized message in its place
+              would otherwise cost the ask-the-agent hand-off the endpoint, status
+              and backend code in every non-English locale. With no reason to
+              show, the copy stays the message exactly as before.
+
+              A PERMANENT refusal (the desktop code) is the one shape where the
+              generic headline is wrong: "Choose Try again" cannot help, and the
+              server's sentence is developer vocabulary. So the title says what
+              is true in the words of the action the user pressed -- the app
+              could not be INSTALLED: the build step this code names runs at
+              install and nowhere else, so this dialog only ever shows it on the
+              way from the detail page's Install button, and that page's own
+              banner behind the dialog says "installed" too; one verb on the one
+              path, so a reader is never left wondering whether installing and
+              turning on are two steps -- and nothing was changed, the same
+              assurance `failed_generic` gives for the `!granted` state in its
+              own words (trust was not saved) -- the message
+              is one plain sentence about what the app needs and where it can
+              install, and the server's sentence stays beneath in the same notice
+              (this dialog has no log panel to carry it). That sentence is still
+              the journal key, so the report is looked up from it explicitly and
+              handed to the notice -- the hand-off keeps the endpoint, the
+              install log and this code. */}
+          {permanentRefusal && copy.headline && (
+            <ErrorNotice
+              title={copy.headline}
+              message={copy.help ?? ''}
+              report={findReport(detail)}
+              footer={<span className="font-mono text-[12px]">{detail}</span>}
+              askAgent
+            />
+          )}
+          {failed && !permanentRefusal && copy.headline && (
+            <ErrorNotice
+              message={copy.headline}
+              report={detail ? findReport(detail) : undefined}
+              footer={nextStep || detail ? (
+                <>
+                  {nextStep && <div>{nextStep}</div>}
+                  {detail && <div className="font-mono text-[12px]">{detail}</div>}
+                </>
+              ) : undefined}
+              askAgent
+            />
+          )}
+        </div>
+      )}
+    </Modal>
+  )
+}

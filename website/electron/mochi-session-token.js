@@ -1,0 +1,84 @@
+"use strict";
+
+/**
+ * Borrow the gateway session the MAIN WINDOW already established, for
+ * Mochi's poller — a plain Node process in the main process with no browser
+ * session of its own.
+ *
+ * Two paths already cover how the shell gets a gateway credential: the local
+ * secret (local-token.js, same machine) and an explicitly configured SSH
+ * remote host (remote-token.js). Neither reaches a third topology: the
+ * gateway and Electron are reachable over loopback-equivalent networking (a
+ * WSL2 gateway and a Windows Electron shell, say) but sit on different
+ * filesystems, so `os.homedir()` inside Electron never resolves to the
+ * gateway's `.local_secret` — and there is nothing remote about the setup to
+ * configure an SSH host for.
+ *
+ * The main window already authenticated — by whichever path worked for it —
+ * the moment it first loaded successfully: the gateway's
+ * token_auth_middleware sets an `mc_token_<port>` session cookie on that
+ * response (httpOnly, hours-long `session_exp`; see
+ * docs/system-specs/modules/security.md). This reads that cookie back out of
+ * Electron's own cookie store so Mochi can present the SAME credential.
+ *
+ * FAILS CLOSED: a missing session/cookie API, an unparsable backendUrl, or no
+ * matching cookie all resolve to "". This never mints or fabricates a
+ * credential — it can only ever hand back one a genuine prior authentication
+ * already produced, so an app that never authenticated stays unauthenticated.
+ *
+ * @param {{electronSession: {cookies: {get: Function}}, backendUrl: string}} deps
+ * @returns {Promise<string>}
+ */
+async function borrowSessionToken({ electronSession, backendUrl }) {
+  if (!electronSession || typeof electronSession.cookies?.get !== "function") return "";
+  // Deliberately the RAW port, and deliberately fail closed when it is empty.
+  //
+  // `mc_token_<port>` is named by the GATEWAY, after the port the browser's Host
+  // header carried -- and a browser omits a scheme's default port from `Host`,
+  // so the gateway falls back to its OWN listen port there. Behind a tunnel that
+  // listen port is the remote one, which this process cannot know. Resolving the
+  // URL's default port would therefore name a cookie belonging to whichever
+  // gateway last served that port, and cookies are host-scoped only, so such a
+  // cookie is present in this jar. Borrowing it would hand one gateway's session
+  // credential to another. A port the URL states is unambiguous; an absent one
+  // is a guess, and this path declines to guess.
+  let port;
+  try {
+    port = new URL(backendUrl).port;
+  } catch {
+    return "";
+  }
+  if (!port) return "";
+  try {
+    const cookies = await electronSession.cookies.get({ url: backendUrl, name: `mc_token_${port}` });
+    const value = Array.isArray(cookies) && cookies[0] && cookies[0].value;
+    return typeof value === "string" ? value : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * The `Cookie` header that delivers a credential borrowed by borrowSessionToken.
+ *
+ * Same raw-port rule as the borrow, for the same reason: the cookie's name is the
+ * one the GATEWAY chose, and a borrowed credential only exists for a URL that
+ * states its port. Returns "" when the URL states none, so nothing is sent under
+ * a guessed name.
+ *
+ * @param {string} backendUrl the URL the credential was borrowed for.
+ * @param {string} value      the borrowed credential.
+ * @returns {string}
+ */
+function sessionCookieHeader(backendUrl, value) {
+  let port;
+  try {
+    port = new URL(backendUrl).port;
+  } catch {
+    return "";
+  }
+  if (!port || !value) return "";
+  return `mc_token_${port}=${value}`;
+}
+
+module.exports = { borrowSessionToken, sessionCookieHeader };

@@ -1,0 +1,531 @@
+# App notification producers
+
+## Overview
+
+Installed apps declare notification channels in `app.json` and publish through `POST /api/notifications/push` with an app token. `dashboard.handlers.notifications_push.api_push_notification` resolves the producer from the verified token rather than the request body, requires a manifest-declared channel, and uses the state-owned rate limiter. `NotificationBus.push` enriches the payload and calls `DashboardState._deliver_note`, which redacts, applies channel settings, appends the note, broadcasts it, and queues persistence.
+
+### Reaching the endpoint from an entryPoint backend
+
+A `backend.entryPoint` app runs as a separate loopback process, so it must learn the gateway's own address before it can push. The gateway injects that at spawn time as two generic environment variables (see `docs/app-kit/api-reference.md` -> Backend Environment Variables): `KIROCREW_GATEWAY_ORIGIN`, the gateway's `http://127.0.0.1:<bound port>` (`http://[::1]:<bound port>` for a `::1` bind; omitted for a bind to one specific interface — `docs/app-kit/api-reference.md` owns the rule), and `KIROCREW_GATEWAY_ORIGIN_PROOF` (`HMAC-SHA256(app_secret, origin)`, injected only when the app has a `.app_secret` and the origin is set). The origin is set ONLY from the port the gateway ACTUALLY bound (its exported `KIROCREW_BOUND_PORT`, numeric and in `1..65535`), never the app's own `PORT`, an inherited `KIROCREW_PORT`, a config value, a default, or a request-derived value. Without that bound-port evidence both variables are omitted, so a backend that needs a callback base fails closed (stays dormant) rather than pushing to a guessed address. When the origin is present the backend recomputes the proof with its owner-only `0600` `.app_secret` to confirm the origin is one this gateway minted, then pushes to `POST {KIROCREW_GATEWAY_ORIGIN}/api/notifications/push`, authenticating with its app secret. In-gateway route apps (`backend.routes`) have no separate process and push in-process (see `ops-mission-control` `notify_out`), so they need neither variable.
+
+## API
+
+### POST /api/notifications/push
+
+This endpoint requires an app token. Dashboard-user tokens carry no `request["app"]` identity and `api_push_notification` rejects them. `dashboard.server._register_mcp_routes` registers the route for both dashboard and headless gateway servers.
+
+The JSON object contains:
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `channel` | string | yes | A bare channel id declared in the app manifest. |
+| `title` | string | yes | `NotificationPayload.validate` applies the title cap. |
+| `body` | string | yes | `NotificationPayload.validate` applies the body cap. |
+| `priority` | string | no | `critical`, `default`, or `passive`; absent values use the channel default. |
+| `group_key`, `url`, `icon`, `ttl`, `actions`, `meta` | — | no | `NotificationPayload.validate` validates the payload. Note and action URLs must be dashboard-internal paths, making persistence the trust root: no stored action can carry an external link. |
+
+`read_bounded_json` enforces the request-size bound before decoding, both from `Content-Length` and while incrementally reading a chunked stream; `test_notifications_push.py::test_body_size_boundary_exact` and `::test_oversized_chunked_body_rejected` pin that boundary. `api_push_notification` sets `source` to `app:<name>` from the verified token and expands `channel` to `<app-name>.<channel-id>`.
+
+The endpoint returns the enriched note on success, including resolved source, full channel, effective priority, and `ts`. Validation and registration failures return `400`, including undeclared channels and an invalid manifest channel priority; missing or disabled app identity returns `403`; oversized bodies return `413`; exhausted budgets return `429`; and delivery or persistence failures return `500`. `test_notifications_push.py::TestPushDurability` pins the durability invariant: the handler awaits `DashboardState.last_notification_persist`, so it does not return success when the queued persist fails. Legacy `DashboardState.notify` remains best-effort.
+
+### Deep-linking a push back to its notification
+
+`NotificationBus.push` creates `ts` as the note store id. The push response and notification envelope carry it, and the per-note mutation APIs key on it. Producers can link to a note with:
+
+```
+/notifications?note=<url-encoded ts>
+```
+
+`ts` is an ISO-8601 UTC value, so callers must percent-encode it: an unencoded `+` decodes as a space and cannot match the stored value. `website/src/pages/NotificationsPage.tsx` exports `NOTE_DEEP_LINK_PARAM`, captures and removes the parameter with history replacement, and resolves it through the same selection path as a tapped row. That path preserves acknowledgement, mobile detail, stack expansion, and scroll behavior; an unmatched id leaves the page unselected without an error.
+
+### Request pipeline order
+
+`api_push_notification` performs bounded parsing and app/channel resolution, registers an unregistered channel while holding `app_lifecycle_lock`, validates the payload, consumes a rate-limit token, then calls `NotificationBus.push`. The order is load-bearing:
+
+- `test_invalid_payload_does_not_consume_rate_token` and `test_corrupt_manifest_400_does_not_consume_rate_token` ensure non-delivering `400` paths do not drain the budget.
+- `test_register_once_does_not_stomp_runtime_priority_override` ensures lazy registration cannot reset a runtime channel priority.
+- The lifecycle lock serializes enablement and registration with disable/uninstall. If a channel becomes unavailable before `NotificationBus.push`, the handler fails the push and refunds the token (`notifications_push.py`).
+- A `NotificationValidationError` from `NotificationBus.push` refunds the consumed token. Delivery and persistence errors do not refund because the note may already have been broadcast.
+
+## Manifest schema: `notifications.channels`
+
+```json
+{
+  "notifications": {
+    "channels": [
+      { "id": "sync-status", "name": "Sync status", "defaultPriority": "passive" }
+    ]
+  }
+}
+```
+
+`apps.manifest.NotificationsConfig.validate` requires unique kebab-case ids, names, and enum priorities; `test_notifications_push.py::TestNotificationsManifest::test_channel_cap_enforced` pins the channel-count bound. `AppManifest.signing_payload` includes non-empty channel declarations, so signed declarations and their defaults are tamper-evident. `test_no_channels_keeps_pre_phase2_payload_shape` pins the empty-channel payload shape.
+
+## Authorization
+
+- `dashboard.token_auth.app_token_path_allowed` denies app-token paths by default and explicitly permits `/api/notifications/push`; it does not grant `/api/notifications`, which includes notification-history reads and deletes.
+- `_resolve_app_channels` requires an installed, enabled app and manifest declaration. It runs in `asyncio.to_thread` and uses the read-only `is_app_enabled`/`get_app_manifest` path rather than `get_app`, whose version synchronization can write metadata.
+- `api_push_notification` SEL-audits token-identity, disabled/unknown-app, undeclared-channel, rate-limit, delivery, persistence, and successful-grant outcomes. Bounded-body, channel-registration, and payload-validation responses return directly without a `log_api_access` call.
+
+## Rate limiting
+
+`notifications.rate_limit.AppRateLimiter` maintains a per-app token bucket. `DashboardState.notification_rate_limiter` owns the limiter, keeping lifecycle and test isolation scoped to a gateway instance; `test_rate_limiter_is_state_owned_not_module_global` enforces that invariant. `test_burst_allowed_then_limited` and `test_refund_returns_token_capped_at_burst` pin the bucket configuration and refund ceiling. The handler reaches the limiter only after installed/enabled authorization, so its never-evicted buckets are bounded by authorized app names.
+
+## Delivery and event-loop safety
+
+`DashboardState._deliver_note` redacts the note, applies settings, appends it to the in-memory log, broadcasts it, and queues `_persist_notification`. On a running event loop, delivery appends and rewrite mutations share `_notification_io_executor`, a single-worker executor; `DashboardState._rewrite_notifications_async` awaits rewrites for delete, acknowledgement, unacknowledgement, clear, and acknowledge-all paths. Submission order is load-bearing: a rewrite queued after an append cannot be overtaken, preventing deleted rows from reappearing. Snapshot copies prevent later loop-side mutations from changing the data being serialized. `test_dashboard.py::test_deliver_note_offloads_persist_on_running_loop` and `::test_ack_persists_durably_before_return` cover these guarantees; synchronous callers persist inline.
+
+## Testing
+
+`test/test_notifications_push.py` covers app-token authorization, manifest channel enforcement, bounded/chunked bodies, rate-limit and refund semantics, falsy valid fields, signing-payload coverage, lazy registration, and sink/persistence failure paths. `test/test_dashboard.py` covers persistence, load-time redaction, ordered executor persistence, and durable rewrite behavior. `test/test_notification_settings.py` covers settings persistence, protected channels, sink application, badge behavior, and settings APIs.
+
+## Channel lifecycle
+
+Channels register lazily on the first push to each declared channel. App lifecycle routes call `NotificationBus.unregister_app_channels(app_name)` while holding the app lifecycle lock; disabling or uninstalling an app removes its registered `<app>.*` channels, and a later enabled push registers them again. `test_notifications_push.py::TestUnregisterAppChannels` pins boundary-safe removal and preservation of system channels. `RESERVED_APP_NAMES` rejects `system` during manifest validation, and `_resolve_app_channels` rejects it again, preventing app channels from shadowing `system.*`.
+
+System channels are fixed in `notifications.bus.SYSTEM_CHANNELS`, including `system.monitor` (see Per-channel settings). A legacy `DashboardState.notify(kind, ...)` call maps `kind` to `system.<kind>`, falling back to `system.agent`, unless the caller passes `channel=`. `payload_from_legacy` raises `NotificationValidationError` when that override names anything but a system channel, and `NotificationCoordinator.notify` drops such a note with a warning; `test_monitor_notice_channel.py::TestLegacyChannelOverride` pins the override and the rejection.
+
+## Per-channel settings
+
+`notifications.settings.ChannelSettings` is state-owned, writes atomically, and loads an invalid settings file as empty defaults. `ChannelSettings.apply` runs in `DashboardState._deliver_note` before append and broadcast, so disk and clients receive the same user view while `NotificationBus` remains policy-free.
+
+- A muted non-protected channel remains in history but receives `silenced: true` and passive priority. `test_apply_mute_forces_passive_and_silenced` and `test_muted_channel_excluded_from_badge` pin the visibility and badge invariant.
+- A priority override replaces the effective producer or channel priority.
+- `system.approval` is protected. `ChannelSettings.update` rejects muting or lowering it, and `ChannelSettings.apply` enforces the same floor for hand-edited settings; `test_protected_channel_cannot_be_muted_or_lowered` and `test_apply_ignores_noncritical_override_on_protected_channel` cover both boundaries.
+- A note published by a muted session is delivered like a note on a muted channel. The two agent routes, `POST /api/notifications/agent` (`send_notification`) and the bell fallback of `send_message`, pass the caller's attested session key as `NotificationPayload.publisher_session` (a schema field in `_RESERVED_NOTE_KEYS`, so `meta` cannot set it, and empty for an unattested or app caller). `NotificationCoordinator.deliver` pops the key before redaction, so it is never stored or broadcast, applies `ChannelSettings.apply`, and then, when `session_is_muted` holds, stamps `silenced: true` and passive priority. A session is muted by its own `muted` flag or by `mutes_opened` on a session up its `_created_by` chain, walked from its creator, as `isSlotMuted` does on the client; a creator that is gone or a cycle ends the walk unmuted. The rule runs after the channel settings, so a channel priority override can neither undo it nor exempt a note. A note stays audible when the producer asked for `critical` (the structured needs-the-user signal; the approval channel defaults to it), when its channel is protected, or, for the `send_message` bell fallback, when the message offers `[OPTIONS:]` choices, in which case the fallback passes no `publisher_session`. Gateway reports about a session (monitor-loop notices, heartbeat, hook results, error and pause notices) name the session only through `slot` or `session_key` for jump-to-source and are not changed; a producer opts in by passing `publisher_session`. `test_notification_publisher_mute.py` pins the walk, the exemptions, the ordering against channel settings, the unforgeable key and both routes.
+
+Settings import writes the file through two more paths. `parse_imported_settings` validates an archive's `notification_settings.json` and re-applies the field and protected-channel rules `update` enforces, dropping and counting what fails them. The dashboard Merge installs the result with `ChannelSettings.install_imported`, only where no settings file exists; a Replace swaps the file inside `ChannelSettings.replacing_file`. See [config](config.md) under "Settings import (dashboard Merge)".
+
+`system.monitor` is a system channel for the gateway's monitoring-loop stop and finish notices. `GatewayOrchestrator._notify_nudge_expired` emits them through `DashboardState.notify(..., channel=MONITOR_CHANNEL)`, and the note keeps the legacy `kind` `agent`. The channel shares the `system.agent` default priority and is not protected. `ChannelSettings._seed_monitor_from_agent` runs at construction: a settings mapping with no `system.monitor` key receives an in-memory copy of its `system.agent` entry, so a boot never writes the file and a fresh install with no stored `system.agent` entry seeds nothing. The next `update()` persists the copy. Every `update()` write keeps a `system.monitor` key, `{}` when the channel has no settings, as the record that the seed ran; a build without this key handling rewrites every dict-valued `channel_settings` entry as-is, so the record survives a downgrade, and removing it re-runs the seed and can re-mute a channel the user unmuted. `all_settings()` omits empty entries, so the channels listing never shows `{}`. `test_notification_settings.py::TestSeedMonitorFromAgent` pins the seed, with `test_unmuted_monitor_survives_downgrade_rewrite` and `test_fresh_install_agent_mute_does_not_seed_monitor` covering the downgrade and fresh-install boundaries; `test_monitor_notice_channel.py` pins channel registration, the legacy `kind` override, notice routing and the settings listing.
+
+Dashboard-user settings routes (in `dashboard/messaging_api/notifications.py`, beside the feed routes) expose the union of registered channels and stored settings through `api_notification_channels`; `api_notification_channel_settings` accepts mute and priority updates, clears an override for `priority: null`, and broadcasts `notification_channel_settings`.
+
+## Agent notifications and expiration
+
+`mcp_tools.messaging.send_notification` requires a verified caller identity, applies the messaging governance gate, and denies channel-agent callers. `dashboard.handlers.messaging.api_notification_agent_push` fixes agent notes to the `system.agent` channel and server-derived source before `NotificationPayload` validation. The agent endpoint and the app push handler both await queued persistence before returning success.
+
+### Crewmate attribution
+
+A note published from a crewmate's pinned DM session carries `member: {slug, name}`. `members.member_identity_for_session` derives it from the caller's `X-Session-Key` and the slot's live `dm.json` binding, so the name is the binding's member, never the lossy slug; any other session, or a key whose binding is gone, yields no `member`. The key counts only through `members.attributable_session_key`: the request must not be an app caller (`request["app"]`), and `member_memory_auth.session_key_is_attested` must bind the key to the caller, either by the kernel peer attestation on the Unix socket (`peer_verified`) or by a signed per-session `X-Session-Token` that verifies to that key (what Kiro Crew's own pooled tool backends send on TCP loopback). A bare header is the caller's own word, so an app token, or a caller holding only the internal secret, that declares a crewmate's DM key gets an unattributed note. `api_notification_agent_push` (the `send_notification` path) and the `send_message` bell fallback in `messaging_api/proactive_send.py` both stamp it. `member` is a `NotificationPayload` schema field with a closed `{slug, name}` shape and is in `_RESERVED_NOTE_KEYS`, so neither a request body nor an app push's `meta` can attach a crewmate's identity to a note. `test_notification_crewmate_member.py` pins the derivation, the transport gate on both producers, the body and meta refusals, and both producers.
+
+`website/src/components/notifications/CrewmateNoteFace.tsx` draws the attribution on `NotificationCard` (bell popover and banner), the panel `NotificationFeed` row and `NotificationDetailPanel`: the crewmate's avatar replaces the kind icon and its display label sits above the title. Face and label come from the row of `membersRosterQuery` (the Crewmates page's query, invalidated by the gateway's `refresh` frame and by every crew save) whose slug and exact name match the note's `member`; while that query loads, or when no such row exists, the kind icon renders and no label shows. When that query fails, `CrewmateRosterError` renders one inline `ErrorNotice` with a Retry that refetches the roster: in a crewmate note's detail panel, and at the top of a feed showing a crewmate note unless the selected note is a crewmate note (its open detail panel already reports it), and in the footer of the first full `NotificationBanner` card showing a crewmate note (deck shells draw no face, and the banner is suppressed while the popover or the inbox is on screen, so it never repeats their notice). The notice carries no agent hand-off because all three surfaces are overlays over a page that may hold an unsaved draft; a feed with no crewmate note never reads the roster. `NotificationCrewmateFace.test.tsx` pins these states.
+
+`DashboardState.sweep_expired_notifications` removes only passive notes with a positive integer `ttl` whose parseable timestamp has elapsed; ambiguous timestamps and other priorities remain. `DashboardState` invokes the sweep while loading persisted history and before each delivery. The in-memory sweep becomes durable on a later full rewrite, so already-open clients retain an expired row until their next reload or refresh.
+
+## Inline actions and grouping
+
+`NotificationPayload.validate` accepts action entries with non-empty `id` and `label`, and validates each optional action URL at the persistence trust root. `test_notification_bus.py::test_action_count_capped` and `::test_action_field_lengths_capped` pin action bounds. URL-less actions persist but do not render; `test_action_without_url_accepted` pins that contract.
+
+`website/src/components/notifications/NotificationDetailPanel.tsx` and `NotificationFeed.tsx` render navigation actions only after `safeInternalUrl` rechecks a dashboard-internal URL. Unacknowledged approval feed rows render inline Approve and Reject that resolve through the approvals endpoint (the one-click path `rfc-local-notification-bus.md` Phase 4 shipped). Every approval row -- read or unread, because reading a pending request must not shrink it -- renders the notification body in full through the same markdown renderer and per-item error boundary as the detail panel: no slice, clamp or hidden overflow, because a control that authorizes a command must sit next to the whole command, and a truncated excerpt turns two lines into one harmless-looking line. The producer tags the command fence `approval-command` (`lib/approvalNotificationBody.ts`), a dashboard-own tag `CodeBlock` soft-wraps like `error-report`, so a line wider than the feed column wraps instead of scrolling off the edge. Both surfaces render the body with `readOnlyCode`, so the command carries a copy control but no edit affordance: `EditableCodeBlock`'s scratch editor changes only a local copy, and a pencil beside Approve would let a reader authorize the original command while looking at their edit. Every other row keeps the flattened one-line excerpt. This contract applies to the full page and bell popover, including the mac feed variant. `NotificationFeed` collapses notes sharing a `group_key` within a date group to the newest row and expands the stack on demand. `NotificationsBellButton` sends the unread attention count through `badge:set`; `electron/badge.js` clamps it before `app.setBadgeCount`.
+
+### Feed keyboard stepping
+
+In the bell sheet and the inbox feed, Up and Down on a row's open control press the neighbouring row's open control, in rendered order, and move focus to it. A step does exactly what a click on that row does, so a collapsed stack is one stop and in the bell sheet it expands rather than opening its newest note. Keys from an inner control (dismiss, Approve, a code block), modified arrows and the two ends are left to the browser. The shortcuts reference lists this as "Previous notification" and "Next notification"; those entries are reference-only and bind no global key.
+
+### Detail-panel hand-offs
+
+The detail panel's hand-off buttons ("Continue in Chat", and "View last result" on a cron note) show an inline `ErrorNotice` when the hand-off fails. The sentence names the button by its own label and is scoped to the note it failed on, so it does not follow the reader to another row. The notice appears only where the hand-off did NOT succeed: `/to-chat` is not idempotent — a repeat mints another slot and spawns a second agent on the same `work_dir` — so a succeeded call is never offered or run again automatically.
+
+## Unread badge (client)
+
+Settings › Notifications › "Mark sessions unread only when they need you" (`localStorage` key `mc-unread-on-attention`, default off, `hooks/unreadOnAttention.ts`) limits which `chat_message` rows mark a background session unread: with it on, only a `permission` row does, while a finished turn and a question card badge on their own paths. A row carrying the watchdog's `session_recycled` notice (`meta.notice`, written by `wire_session_recycle_callback` in `dashboard/state.py` when an idle session is recycled) never marks the session unread, regardless of this opt-in: `chatMessageMarksUnread` (and `noteMemberThreadRow`) short-circuit it because the notice lands in a session that is not running and has nothing new to read. A slot's `last_ts` is its newest durable row (`slot_projection.py` skips transient roles). The unread watermark is never taken from a transient-role row, because a restarted gateway never again reports a `last_ts` that high and the badge could never clear. The client's role set (`UNSAVED_ROLES`) mirrors `dashboard/state_parts/transcript_rows.py` `_TRANSIENT_ROLES`; `test_to_dict_board_fields.py` pins the mirror.
+
+A member DM thread (`slot.mode === 'member'`, key prefix `member-`, which `slot_registry.py` reserves for that mode) is narrower in both modes: `memberThreadRowMarksUnread` badges it only on a row the crewmate wrote to the user, `assistant` or `permission`, with the opt-in still applied on top. Its `tool_call`, `tool_result`, `inject` and streaming rows never badge it: the Crewmates rail dot means "a crewmate said something to you", not "a crewmate ran a tool". `isMemberThreadSlot` reads the mode from `dashboard.slots` and falls back to the reserved prefix for a thread the list has not caught up to. Its `chat_done` is narrowed the same way (`turnCompletion.ts`): `chatStream` records every such row on the thread's running turn (`noteMemberThreadRow`, on or off screen), and the finished turn badges only when the turn delivered one (`takeMemberThreadSpoke`, which also clears the record) or paused for input (`needs_input` / a live question card). A patrol turn that only ran tools and ended quietly badges nothing. The question-card path is unchanged.
+
+## Plain-text previews
+
+The native notification body, feed-row preview and transcript turn minimap share
+`website/src/components/notifications/notifMeta.tsx::stripMd`. It unwraps paired
+emphasis and code delimiters, keeps code contents literal, and preserves unpaired
+markers and intraword underscores. Heading, blockquote and list prefixes (`-`,
+`+`, `*`, ordered) are removed only at line starts and only when whitespace
+follows the marker, so `*emphasis*` and `**bold**` at a line start are unwrapped
+as emphasis rather than deleted as bullets; links/images retain labels/alt text,
+and fenced code loses its language tag. A single prose newline collapses to a space; a
+paragraph break (two or more newlines, blank lines may hold whitespace) in prose
+becomes ` · ` — the detail panel's own separator idiom — so an approval reads
+`Source: agent · <command> · <purpose>` and a skill note's paragraphs stay
+distinct instead of running together. Empty paragraphs are dropped, so the
+separator never leads, trails or doubles. Whitespace inside code regions stays
+literal, including indentation, repeated spaces, tabs and blank lines; only the
+fence wrapper's final line ending is removed. A multiline command remains a
+multiline string in the preview. Backtick fences
+close only on a standalone run at least as long as their opening run; shorter
+runs inside code remain literal. An inline span pairs runs of EQUAL length, so a
+longer or shorter run inside one stays literal content. One deliberate deviation
+from CommonMark: a newline ends an unclosed inline span rather than continuing
+it, because in a preview a stray backtick would otherwise pair with another far
+below and hold every line between as code, suppressing flattening for that whole
+region — the deviation costs only multi-line inline spans, which no producer
+writes. Approval bodies use
+`website/src/lib/approvalNotificationBody.ts::approvalNotificationBody` to combine
+a formatted source label with a literal command in a fence longer than any
+backtick run in that command (minimum three). Empty input adds no fence. The
+live WebSocket event appends its optional purpose; reconciliation keeps its
+source-and-command-only content. This preserves balanced globs, home paths,
+redirects and command backticks in both previews. The feed slices the flattened
+text to 80/140 characters, so wrapper fences do not consume its excerpt budget;
+the detail panel renders the fenced input as one code block. That body is the
+only surface naming the requesting system: the detail panel's metadata row
+prints the note's kind (`KIND_META[...].label`) under the `pages.artifactsPage.kind`
+label, so its label and the body's `Source:` label are distinct fields.
+
+The shared contracts live in `website/src/test/notifMeta.stripMd.test.ts` (with
+the code-region scan in `website/src/test/notifMeta.codeScan.test.ts`) and
+`website/src/test/approvalNotificationBody.test.tsx`; native banner formatting is
+pinned in `website/integration/AppNotification.integration.test.tsx`. WebSocket
+producer coverage pins the differing purpose policies, and the feed tests pin
+both excerpt lengths.
+
+## Notification sound (client)
+
+Notification sound is produced entirely on the client and is independent of the
+notification feed, the bell badge, and OS notification-center toasts. The
+WebAudio layer is the **single source of sound**: `website/src/hooks/useNotificationSound.ts`
+synthesizes tones through the Web Audio API (no audio files) and is the only
+component that emits sound. The feed toast's page-context `Notification`
+constructor (`website/src/hooks/useNativeNotification.ts`, see "OS toast"
+below) passes `silent: true`, so the OS toast never adds its own system chime
+on top of the WebAudio tone. A browser that
+ignores `silent` degrades to the prior double-sound behavior and no worse.
+
+### Sound events
+
+Two sound kinds are synthesized by the websocket layer, and a third by the
+dictation hook. `TURN_DONE_KIND`
+(`'turn'`, on `chat_done`) is sound-only: it never appears in the feed (no Redux
+entry, no toast, no badge). `DICTATION_STOPPED_KIND` (`'dictation'`) is
+synthesized by `useStreamingStt` when a live dictation stops before the user ends
+it: an `error` frame or a socket close while still capturing, or the readiness
+buffer filling up. It is sound-only for the same reason as `'turn'`: the hook
+already shows the error, and the sound is for someone dictating without watching
+the screen. A stop the user makes, a cancel and an unmount stay silent.
+`APPROVAL_KIND` (`'approval'`) is synthesized at
+three sites:
+
+- an `approval` frame (a coordinator-registry approval: a Slack, cron, or
+  sub-agent spawn gate). The same frame *separately* adds an approval
+  notification to the feed — so a coordinator approval both chimes and shows a
+  feed entry, and the two are independent (the feed entry is also what carries
+  the approval to the OS toast);
+- a `question_card` frame, once per server card identity;
+- a `chat_message` frame carrying the chat runner's `permission` row — an
+  INTERACTIVE chat parked on a tool prompt. The runner appends that row
+  (delivered once to every dashboard window as this frame), registers its
+  future and pushes the slots; no `approval` frame exists for it, and the
+  coordinator's own cards are synthesized on the client, so every server row
+  of this role is the runner's and its one delivery is the one sound.
+  `shouldChimeOnPermissionRow` requests it unless the row carries `resolved`
+  or the socket is in reconnect catch-up. A row arrives `resolved` when the
+  runner already knows nobody will answer it: the batch-rejection re-append,
+  and a turn with no budget left to wait, which the runner decides before the
+  append (no I/O is needed) because the in-place mark that closes a prompt
+  later reaches the client only as an `approval_resolved` frame, which
+  retires the card but cannot un-play a sound. A row pre-declined that way is
+  not mirrored to a linked Slack thread: the post is the one cancellable await
+  between the prompt's registration and the backstop that retires its future,
+  and a turn ceiling landing inside it would strand a future nothing resolves
+  (the Board keeps the session Blocked, Continue answers 409) for a card the
+  backstop deletes the moment the post returns — so the pre-declined row's
+  `resolved` is its final state and its future settles exactly as an
+  interactive prompt's does. The one host decline known
+  only after the row is out — a linked Slack thread the prompt could not be
+  posted to — retires the row through that frame; its arrival chime is the
+  accepted residual, since holding the row back until the post settles would
+  hide the card, the chime and the Board's pending state for the post's whole
+  duration on every linked prompt. This site is
+  the `chat_done` layering: no feed row and no producer for the protected
+  `system.approval` bus channel (which still has none); the same gate also
+  posts this prompt's OS toast (see "OS toast"). A
+  prompt already parked when a tab opens or reconnects reaches it through the
+  snapshot and the transcript rehydration, not through this frame, and stays
+  silent.
+
+Every synthesized chime (`TURN_DONE_KIND` and all three `APPROVAL_KIND`
+sites) is suppressed during reconnect catch-up replay, and
+`shouldChimeOnTurnDone` also suppresses slot-less turn completions. A real feed
+`notification` frame fires `MC_NOTIFICATION_EVENT` with its own `kind`, except
+when the note is muted-channel (`silenced`) or `passive`; that sound is not
+gated on catch-up, only the frame's live banner is (see Trigger below).
+
+### Settings and resolution
+
+Settings persist in `localStorage` under `mc-notification-sound`
+(`{ enabled, volume, perCategory, customTones? }`). `presetForKind(kind, settings)` resolves
+the preset for a kind, in order:
+
+1. `enabled === false` → `'none'` (primary switch; WebAudio never plays).
+2. An explicit per-category override in `perCategory[kind]`.
+3. Global `perCategory.all === 'none'` → `'none'`. An explicit global silence
+   wins over any built-in category default, so `all='none'` truly silences every
+   category that has no explicit override — **including** approval.
+4. A built-in, non-persisted category default (`BUILTIN_CATEGORY_DEFAULTS`,
+   currently `approval → pulse`). Reached only when the global fallback is
+   audible. Not written to `localStorage`, so a "Use default" reset cannot clear
+   it.
+5. The global fallback `perCategory.all ?? 'chime'`.
+
+`NotificationsPanel.tsx` previews the effective per-category preset by calling
+`presetForKind` (not a naive `perCategory[cat] ?? fallback`), so the settings
+row, its Test button, and runtime playback always agree — notably for approval,
+whose built-in `pulse` default the naive form did not show.
+
+### Custom sounds
+
+A user can add named sounds of their own (Settings > Notifications > Custom
+sounds), so instances in one room can sound different. They live in the same
+blob under `customTones` (`{ [name]: ToneStep[] }`, each step
+`{ freq, start, dur, gain }`, the shape of the built-in table). A category
+selects one as `custom:<name>`, so a custom name can never collide with a
+built-in id. The built-in presets, their ids and their levels are unchanged.
+
+`validateCustomTone` holds every sound to `CUSTOM_TONE_LIMITS`: 1-32 character
+name of letters, digits, space, `-` or `_`, not a built-in, `none` or `default`
+and not already used (case-insensitive); 1-16 steps; `freq` 20-20000 Hz; `dur`
+0.02-2 s; `gain` above 0 and at most 1; every step starting at 0 or later and
+ending within 5 s; at most 20 sounds. It runs when a sound is added AND inside
+`loadSoundSettings`, because the stored blob can be hand-edited or restored from
+`ui-prefs.json`: a sound that fails is dropped, and a category pointing at a
+missing custom sound falls back as if unset. The host backup stores the blob
+as an opaque string, like every other ui-pref, and never parses it: every
+reader goes through `loadSoundSettings`, so the load-time check is the one
+gate between a stored value and the speakers. Playback scales a custom sound by
+its loudest overlap of step gains, so it never drives the output past full
+scale. The form edits one row per tone (Pitch, Start, Length, Volume), starts
+from a two-note example, and can play the draft ("Test") before it is saved;
+the draft plays under a throwaway id and is never stored. Bound failures show
+as plain hints, not error banners, each under the field it is about (a name
+problem under Name, a tone bound under its row); the offending inputs get
+`aria-invalid`, and "Add sound" stays off until the user edits. A save that
+fails (add, delete, undo, or a sound, volume or category setting) shows through
+`ErrorNotice` with a next step (free up this site's browser storage, then try
+again), without the agent hand-off because the form holds an unsaved draft.
+Deleting a sound clears every category set to it (`all` returns to `chime`) and
+offers an Undo. Undo merges into the settings as they are at that moment: it
+puts back the one sound and each category that used it unless the user has
+since set that category to something else, so a sound added or a choice made
+after the delete survives. Saving a sound under the deleted name (any case)
+withdraws the Undo, and an Undo refused because the name was reused elsewhere
+is withdrawn after its hint, so no notice says a listed sound was deleted.
+Pickers label a custom sound
+"<name> (yours)". Crew avatar sounds still offer only the built-ins.
+
+### Persistence and cross-surface sync
+
+`saveSoundSettings` writes through `safeSetItem` (quota-defensive) and returns a
+boolean. It fires the same-window `MC_SOUND_SETTINGS_CHANGED_EVENT` **only on a
+successful persist**; a quota-dropped write returns `false` and stays silent, so
+no mounted `useNotificationSound` reloads and reads the old value.
+`NotificationsPanel` adopts a change into local state only when the save returns
+`true`, leaving the UI showing the persisted truth on failure.
+
+`useNotificationSound` stays in sync three ways: the same-window
+`MC_SOUND_SETTINGS_CHANGED_EVENT`, and a cross-tab DOM `storage` listener that
+filters by `storageArea === localStorage` and by the `mc-notification-sound`
+key (a `null` key, i.e. `clear()`, is also honored) then reloads through
+`loadSoundSettings` so validation and clamping are reused. Notification playback
+is debounced to one tone per 300 ms.
+
+## OS toast (client)
+
+`website/src/hooks/useNativeNotification.ts` is the **single poster** of an OS
+toast for a feed note. It posts through `lib/nativeNotify.ts`
+`postNativeNotification`, which constructs a page-context `Notification` in a
+top-level window. In an embedded instance pane (the full dashboard inside the
+Instances hub's cross-origin iframe, where the frame's own permission is
+`denied` by design) it relays the note instead: it posts an `mc-native-notify`
+envelope to `window.parent` at the exact loopback origin `document.referrer`
+names — never `'*'`, and never from an `/embed/*` document. The hub
+(`InstancesViewport`) accepts it only from a warm tunnel port, prefixes the title
+with the instance's name, namespaces the tag per instance id, brings that
+instance forward when the banner is clicked, posts only when its own permission
+is `granted`, and never prompts. The pane keeps its own mute, away and `silent`
+rules, so only a note it would have shown is relayed. It watches the count of unacked,
+unsilenced notes in the Redux store and, when the count grows, posts one toast
+carrying the newest note's title and flattened body, tagged with its
+`approval_id` / `job_id` / `task_id` (or `kirocrew-notif`) so a burst about
+one subject replaces rather than stacks. An `approval` frame reaches the OS
+through the feed entry the socket's approval registry
+(`website/src/hooks/websocket/approvals.ts`) dispatches for it; the socket layer
+constructs no toast of its own. One event, one constructor, one tag: the OS
+collapses only equal tags, so a second constructor with its own tag is two
+banners for one approval.
+
+The toast fires **only while the user is away from the window**:
+`isWindowAway()` (`hooks/windowAway.ts`) is `document.hidden ||
+!document.hasFocus()`, both axes because Page Visibility reports an occluded or
+unfocused window as visible. While the window is visible and focused the in-app
+banner and the bell badge already show the note, and the toast stays quiet; a
+note that arrived while focused is not re-announced when focus later leaves.
+The same predicate is the in-app banner's `windowFocused` (its complement) and
+the chat-complete toast's away check, so a live note lands on exactly one of
+the two surfaces. The gate sits inside the permission-granted branch: the
+best-effort `requestPermission()` on an undecided permission runs regardless
+of focus.
+
+The opt-in "a background chat finished" toast (`hooks/chatCompleteNotify.ts`,
+constructed by the socket's turn-completion owner
+`website/src/hooks/websocket/turnCompletion.ts` on `chat_done`) is a separate, default-OFF
+surface with its own `kirocrew-chat-done:<slot>` tag; it shares only the away
+predicate.
+
+An interactive chat's tool prompt (the chat runner's `permission` row, which has no feed note) is toasted by the socket's transcript owner `website/src/hooks/websocket/chatStream.ts` on the row's live arrival, behind the same gate as its chime (`shouldChimeOnPermissionRow`: not `resolved`, not a reconnect replay). It is on by default, posts only with the OS permission granted and while `isWindowAway()`, is `silent`, reads like the chat-complete toast (session title as the title, `Waiting for your approval: <tool>` as the body), and carries a `kirocrew-approval:<slot>:<request_id>` tag, so one pending prompt is one banner however many windows receive the row. Neither mute suppresses it, the session's own per-row mute or its creator's: a prompt is the session waiting on the user.
+
+## Bell sheet dismissal (client)
+
+A press on the bell sheet's own background dismisses it, like a press outside. It dismisses at click, and only when the pointerdown, the pointerup and the click all land on background and the text selection is collapsed, so a drag or a text selection never closes it. A press on the sheet's own scrollbar, a card (`notif-material`), a row (`data-notif-row`), the detail panel (`data-nc-material`) or any control keeps it open (`isSheetBackgroundPress` in `shell/notifications/notificationSheet.tsx`). Every child composed into the sheet must be material or background by decision; the structural test in `App.notificationSheetBackgroundDismiss.test.tsx` enforces it.
+
+## In-app banner (client)
+
+`website/src/components/notifications/NotificationBanner.tsx`, mounted once with
+the bell's sheet (`website/src/shell/notifications/notificationSheet.tsx`, which
+the bell button in `App.tsx` renders) and portalled beside it, shows a
+macOS Notification Center-style card under the top bar for a **live**
+notification. The card body is `NotificationCard.tsx`, the ONE rendering the
+bell popover's mac rows and the banner both use (kind-tinted 26 px icon square,
+one-line title, two-line body, relative time with the unread dot, hover-reveal
+close, quiet capsule actions). The card IS a Liquid Glass pane
+(`components/Glass.tsx`, the `panel` recipe, `CARD_RADIUS` 16 px) — the same
+material as the composer dock — so it carries no tint, blur, border or shadow
+classes of its own: the pane's layers are the material, `glass-shadow` the
+rest shadow. The card does not know which surface it is on: the pane reads
+correctly over the sheet's scrim and over page content alike, so there is no
+elevation prop and both surfaces are one glass.
+State is a tint step on the host, never an edge: `glass-accent` for the feed's
+selected row, `glass-hover` while a pressable card is hovered, and
+`glass-faded` (the tint thinned to 55 %) for a silenced row, a collapsed
+stack's edges and the banner's deck shells — recession is a tint step, never
+an `opacity` on a glass host, because opacity < 1 makes the host a backdrop
+root and voids the pane's own blur. The banner's blank deck
+shells, its "+N more in your inbox" pill and the feed's controls card, stack
+edges and first-note-from-a-channel prompt (its own accent-tinted pane under
+the row, since a pane has one radius) are the same primitive. Every pane also
+carries `notif-material`, the index.css hook that solidifies it to the card
+color where backdrop-filter is unsupported and the selector the sheet's
+background-press verdict keys on. The
+card's `body` prop replaces the two-line clamp: the feed passes the full
+read-only approval render for every approval row, because the popover card
+keeps one-click Approve/Reject and a clamped excerpt hides the tail of the
+command they authorize. The banner, which offers only Review, keeps the
+excerpt. A critical note is signalled only by its danger dot and the approval
+icon tint, never an edge or a label. Nothing about the banner is persisted
+server-side.
+
+### Trigger
+
+The banner listens to `MC_LIVE_NOTIFICATION_EVENT` (`hooks/notificationEvent.ts`),
+which the socket fires for a `notification` frame received on a live
+connection (the frame's arm in `useWebSocket`'s router) and for the feed note
+the approval registry (`website/src/hooks/websocket/approvals.ts`) synthesizes
+from an `approval` frame (the
+note carries the owning `slot`, so `targetsCurrentView` skips it while that
+chat is on screen and its inline permission card is visible; an approval with
+no slot banners on every surface). It never reads the Redux list: the boot `fetchNotifications`
+snapshot and reconnect refetches fill the store with history, and history is
+never bannered. Both paths withhold the event during a reconnect catch-up
+(`reconnectingRef`, held by `website/src/hooks/websocket/connection.ts`), the
+same window that mutes the turn-done chime.
+
+### Priorities
+
+| Priority | Banner |
+|---|---|
+| `critical` | stays until clicked, dismissed, or acted on; the live region is `role="alert"` while one is pending |
+| `default` | auto-hides after `BANNER_AUTO_HIDE_MS` (6 s). Every pending default card shares ONE timer, restarted by each default arrival and paused while the stack is hovered or holds focus. The pointer and keyboard are tracked as two separate holds and the clock resumes only when BOTH have let go. A card's removal destroys ownership without firing the release event, so the holds are re-read after every change to the deck and to how it is rendered (expanding it, or crossing the mobile breakpoint, unmounts the focusable "+N" pill and deck shells with no note leaving): FOCUS is owned by an element (held while a card still shown contains the active one; a leaving card stays mounted and focused through its exit animation and nothing re-reads the holds when it finally unmounts, so focus inside it is released as it starts to leave), the POINTER by the container (a removal does not move that boundary, so only a real pointer-leave — or an empty deck — releases it) |
+| `passive`, or `silenced` (`isSilencedNote`) | never |
+
+Auto-hide does **not** acknowledge: the note stays unread in the bell, and the
+unread dot is the visible continuation of the card. A body click or a url
+action acknowledges (the popover's selection effect for the former,
+`ackNotification` for the latter). A url action runs entirely inside the
+navigation leave guard and awaits the ack: a user who answers "stay" keeps an
+unread note and the card; a rejected ack (`ackNotification.rejected` flips
+`acked` back in the slice) keeps the card and shows an `ErrorNotice` under its
+actions, the action itself being the retry. The rollback is held to the same
+per-write stamp rule as the confirmation: a rejection carrying a stamp a newer
+ack has since moved (a second press that succeeded) changes nothing. The bell
+popover's own open-a-note auto-ack asks once per selection so that flip cannot
+loop it.
+
+### Suppression (never banner)
+
+`shouldBannerNote` in `hooks/notificationBanner.ts`, in order: the preference is
+off; the note is passive or silenced; the bell popover is open (or closing); the
+route is `/notifications`; the note describes what is already on screen —
+`targetsCurrentView`: while the window is focused, a note whose `slot` is the
+active chat on a chat route, or whose `url` path is the current route. Opening
+the popover, landing on the inbox page, or switching the preference off also
+retires every pending card.
+
+### Stack
+
+Newest on top. Beyond the top card, up to `BANNER_DECK_DEPTH` (2) older cards
+peek as a deck of BLANK shells (the card's glass only, no text, icon or time;
+4/8 px offset, .98/.96 scale, the `glass-faded` tint step), so nothing prints through the
+translucent top card. The shells are absolutely positioned over the top card's
+box, so the top card is `position: relative` and its higher `zIndex` paints it
+above them — unpositioned, it sat under the shells, which blurred it and took
+its close click. Each shell and the "Show N more" pill on the top card's
+corner are the same control (`Show N more notifications`) that expands to a
+vertical list of at most `BANNER_EXPANDED_MAX` (4) cards plus a "+N more in your
+inbox" line that goes to `/notifications` (through the navigation leave guard) —
+the same place the popover's "Open inbox" goes, so "inbox" names one place. On the mobile breakpoint only the newest card renders,
+full width, with its close visible at rest (no hover on touch).
+
+### Motion
+
+Enter: slide in from the right with a fade (~220 ms, ease-out; the deck offsets
+move on the same curve). Exit, for auto-hide and
+dismiss alike: the card shrinks about its top-right corner and travels to the
+bell (`computeExitDelta` measures the vector from the card's own rect to
+`bellRef`'s) while fading (~260 ms) — the relocation animates the same element
+into its new home rather than swapping it out. The presence is
+`mode="popLayout"`: a leaving card is taken out of flow the instant it is
+dismissed or auto-hidden, so the card behind it moves into the vacated slot
+straight away rather than after the exit finishes. That slide is its own
+layout transition, 160 ms on an ease-out-expo curve (`[0.16, 1, 0.3, 1]`), short
+and front-loaded because it is the one motion a user chases with a second
+click: every card's close sits at the same offset from its top-right corner, so
+the next close is under a stationary pointer within a few frames and repeated
+clicks clear the stack. For the whole of its exit a leaving card takes no
+pointer events (`pointerEvents: 'none'` in the exit target, `'auto'` in the
+live one), so a click during the overlap reaches the card sliding in, never
+the one flying out. Under `prefers-reduced-motion`
+(`useReducedMotion`) enter and exit are plain fades (the exit still drops
+pointer events) and neither the slot fill nor the deck/list switch does any
+layout animation. Escape dismisses the topmost card; arrival never moves
+focus.
+
+### Setting
+
+Settings › Notifications › Desktop alerts › "Show a banner for new
+notifications", default ON, `localStorage` key `mc-notification-banner`
+(`loadBannerEnabled` / `saveBannerEnabled`). A flip is announced same-window via
+`MC_BANNER_SETTING_CHANGED_EVENT` and cross-tab via the DOM `storage` event, so
+a mounted banner honours it immediately.
+
+### System-notification permission surfaces
+
+`hooks/useNotificationPermission.ts` exposes `Notification.permission` as state
+(`unsupported | default | granted | denied`), re-read on window focus and after
+its own `request()` settles. In an embedded instance pane that relays its toasts
+to the hub it reports `unsupported`: the pane's own verdict is not the user's
+switch (the hub's is), so both surfaces below unmount there. Two user-gesture
+surfaces call `request()`:
+
+- **Settings › Notifications › Desktop alerts › System notifications**
+  (`SystemNotificationsRow`): `granted` shows "Allowed" with a check and no
+  button; `default` offers "Allow system notifications"; `denied` states in
+  plain language that the browser blocked it and where to turn it back on.
+  Absent entirely when `Notification` is undefined.
+- **Bell popover hint** (`NotificationPermissionHint`, in the mac controls
+  card): one row — bell-ring icon, "Get alerted when you're away", "Allow",
+  "Not now" — shown only while permission is `default`, the store holds at
+  least one notification, and the user has not pressed "Not now"
+  (`mc-notification-permission-hint-dismissed`). Any verdict after "Allow"
+  retires it too. The row leaves only once the dismissal is on disk; a failed
+  write keeps it with an `ErrorNotice`, the buttons being the retry.
+
+`useNativeNotification`'s effect-time `requestPermission()` on a first unacked
+arrival is left in place as best effort; browsers refuse a prompt with no
+gesture behind it, which is why the two surfaces above exist.

@@ -1,0 +1,99 @@
+# The crew layer: a thin, digest-pinned layer on the maintainer's base image.
+#
+# This file exists so that ONE artifact -- the pushed crew image -- pins both the
+# serving code (the base) and the crew content (the bundle). See
+# PACKAGING-CONTRACT.md. A bundle delivered separately, in S3, is a thing the
+# container can fail to read while every gate still reports green: the deploy
+# serves a default agent and nothing says the crew is missing. A layer of the
+# running image cannot be absent, so the bundle lives here.
+#
+# It COMPILES NOTHING and INSTALLS NOTHING. There is no RUN, no apt, no pip. If
+# the crew layer ever needed to install a package, the base image would be wrong
+# and that is a REPORT to the base-image (maintainer) track, never a fix here.
+#
+# Build context is the BUNDLE DIRECTORY (T1's `packaging.build` output). The four
+# explicit COPY sources below are the whole layout contract; a bundle missing any
+# of them fails the build here, which is the earliest place it can fail.
+
+# BASE is the maintainer's base image, pinned by digest (repo@sha256:...). It is
+# an ARG BEFORE FROM on purpose: that is the only way `FROM ${BASE}` resolves.
+# scripts/build_crew_image.sh always passes it; there is no sane default.
+ARG BASE
+FROM ${BASE}
+
+# BASE again, INSIDE the stage. An ARG declared before FROM lives outside every
+# build stage, so it is available to `FROM ${BASE}` and to nothing after it: the
+# LABEL below expanded to an empty string in every build until this line existed,
+# which made `docker inspect` on a crew image report no base at all -- the one
+# thing the label is for. Found by running scripts/build_crew_image.sh and reading
+# the labels back; the sibling ARGs below are declared after FROM and were always
+# fine, which is what isolates the cause to the pre-FROM scope rather than to the
+# build arg being unset.
+ARG BASE
+
+# Provenance travels with the image, not alongside it. These are the only inputs
+# the crew layer adds, and they are the answer to "which crew is this image".
+ARG CREW_NAME
+ARG BUNDLE_DIGEST
+ARG BUNDLE_VERSION=unknown
+ARG BUILT_AT=unknown
+
+# Read-only crew payload. The supervisor (T3) copies it into the data home before
+# the backend starts; nothing runs from /app/crew-bundle. Four explicit sources
+# so a missing manifest/agent/mcp is a hard build failure rather than a container
+# that boots with three files and a plausible-looking empty spot.
+#   manifest.json  {bundle_version, crew_name, created_at, digest}
+#   agent.json     the Kiro agent spec; "name" == crew_name
+#   mcp.json       MCP server config; may be {} but MUST exist
+#   skills/        skill directories; may be empty but MUST exist
+#
+# An explicit `--chmod` is LOAD-BEARING, not hygiene. `COPY` preserves the source
+# file's mode, and `packaging.build` writes every bundle file 0600 -- correctly,
+# since a curated bundle sits on the operator's own disk. Carried into the image
+# unchanged, that produces a bundle owned by root and readable only by root,
+# while the supervisor that reads it runs as `crew` (the base image's `USER`).
+# The container then fails at startup with
+#   ConfigError: bundle check failed [manifest.json is readable JSON]:
+#   /app/crew-bundle/manifest.json could not be read as JSON (Permission denied)
+# which reads like a corrupt bundle and is a file mode. Measured in a live
+# MicroVM; the same build runs on the Fargate lane, so it is not a
+# MicroVM-specific fault.
+#
+# `0755` AND NOT `0644`, which is a real trade-off and not a slip. `--chmod`
+# takes ONE octal and applies it to every path the COPY creates -- files and
+# directories alike -- and a directory without the execute bit cannot be
+# traversed, so `0644` makes `/app/crew-bundle` and `skills/` unreadable even
+# though each file inside them is `-rw-r--r--`. Measured: the first attempt at
+# this fix produced `drw-r--r-- skills` and failed on the same Permission denied
+# it was written to prevent.
+#
+# BOTH lines, including the one that names only files. A COPY into
+# `/app/crew-bundle/` CREATES that directory, so its `--chmod` lands on the
+# directory too -- `0644` there produces `drw-r--r--`, which the crew user cannot
+# enter, and then every file inside it is unreachable whatever its own mode says.
+# Measured live: `drw-r--r-- 1 root root /app/crew-bundle`, and the supervisor
+# failing with the same Permission denied this block exists to prevent. The
+# destination directory is the reason the file-only line is not a special case.
+#
+# The execute bit on a JSON file buys an attacker nothing here: the bundle is a
+# READ-ONLY payload owned by root, the supervisor copies it into the data home
+# before the backend starts, and nothing is ever run from /app/crew-bundle. A
+# mode that is traversable is worth more than one that is minimal, because the
+# minimal one does not work.
+#
+# Pinned by `test_the_bundle_stays_traversable_by_the_crew_user`, so a later pass
+# at tightening these modes fails a test instead of a crew's boot.
+COPY --chmod=0755 manifest.json agent.json mcp.json /app/crew-bundle/
+COPY --chmod=0755 skills /app/crew-bundle/skills
+
+# OCI + Share My Crew labels. base.name carries the digest-pinned base ref, so
+# `docker inspect` on the crew image traces back to the exact base it was built
+# on; bundle-digest is the crew content's identity, echoed into the tag by the
+# build script so the two can never silently disagree.
+LABEL org.opencontainers.image.base.name="${BASE}" \
+      org.opencontainers.image.created="${BUILT_AT}" \
+      org.opencontainers.image.title="remote crew image" \
+      org.opencontainers.image.description="Maintainer base image plus one curated, digest-pinned crew bundle." \
+      dev.sharemycrew.crew-name="${CREW_NAME}" \
+      dev.sharemycrew.bundle-digest="${BUNDLE_DIGEST}" \
+      dev.sharemycrew.bundle-version="${BUNDLE_VERSION}"

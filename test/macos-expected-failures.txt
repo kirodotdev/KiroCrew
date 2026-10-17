@@ -1,0 +1,16 @@
+# Known macOS test gaps: the macOS-only strict-xfail list.
+#
+# Currently EMPTY: nothing is marked on macOS. A genuine intended-platform
+# refusal belongs in a `skipif` AT THE TEST, not here -- a list entry says "this
+# ought to pass and does not", which is a different claim.
+#
+# Applied by conftest.py::pytest_collection_modifyitems (rootdir) on macOS ONLY,
+# through the same _apply_tracked_gap_list matcher that applies
+# windows-expected-failures.txt: each listed test is marked a STRICT xfail there
+# and runs normally on the Linux matrix. Entries are pytest node ids -- file,
+# class, function -- and may optionally name ONE parametrization; a bare id
+# covers every parametrization of that test. No @group suffix.
+#
+# Fix the test (or the product gap) and DELETE the line -- additions require a
+# reason in the PR. Group entries under a `# reason` heading so the PR body's
+# count-by-reason table can be rebuilt from this file.

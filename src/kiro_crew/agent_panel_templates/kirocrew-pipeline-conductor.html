@@ -1,0 +1,424 @@
+<!--
+  The pipeline conductor's work board, one Card per column.
+
+  THE FILENAME IS THE WIRING. ``template_for_crew`` slugifies a crew's name and looks
+  for a template of exactly that id, falling back to ``default`` when there is none --
+  so this file is selected because it is named for the ``kirocrew-pipeline-conductor``
+  crew, and renaming it silently returns that crew to the generic template. A name no
+  crew slugifies to is selected by nobody, and its parity gate stays green over a file
+  that is never rendered, so
+  ``test_the_board_template_id_is_reachable_through_crew_selection`` asserts this id
+  against the real selection function.
+
+  Do NOT wire this contract to ``default.html``. Any crew may publish anything to the
+  generic template, so binding it here would rebuild the free-form panel dict this
+  contract exists to replace.
+
+  A BODY FRAGMENT, not a document. The drawer parses this as a fragment and wraps
+  it with the strict CSP and the theme variables, so a doctype/html/head/body
+  wrapper here would be mangled -- pinned by
+  ``test_every_shipped_template_is_a_body_fragment``.
+
+  Every field the script reads off the data island is a leaf of the TypedDict
+  ``PipelineBoardPanel`` in ``kiro_crew.pipeline_board_contract``, and
+  ``test/test_pipeline_board_contract_parity.py`` asserts the template's read set
+  equals the contract's declared set in both directions: a field read here with no
+  home in the contract fails, and a field the contract declares that the script never
+  reads fails too. That test strips this comment before extracting, so a field named
+  only in prose here does not count as read.
+-->
+<!--
+  shadcn/ui's VISUAL LANGUAGE, not the library. The library is React + Tailwind + Radix and
+  needs a build step; this file is one document with no bundler. What is portable is the
+  part that made it look right, and it is all here:
+
+    surfaces   a Card per column: bg-card, 1px border, rounded-lg (0.5rem), and a header
+               separated by a border-b -- content sits ON a surface instead of floating on
+               the page background.
+    badge      the count is a Badge: rounded-md, bordered, px-2 py-0.5, text-xs, medium.
+    table      shadcn's table header: text-xs, medium, muted-foreground, left-aligned,
+               and each row separated by a hairline rather than boxed.
+    type       14px body / 12px meta / tracking-tight on headings, one system stack.
+    spacing    the 4px scale: 4 6 8 12 16 24.
+    alert      the action line is an Alert: destructive text on a destructive-tinted
+               surface with a left border, not loose red text.
+
+  HELD FROM EVERY EARLIER ROUND
+    one line per item, so 62 items fit one screen; the board is the only thing that
+      scrolls, so the metric strip never leaves.
+    the ACTION belongs to the column, once. Per item, a column where everything needs the
+      same thing turns entirely red, which marks nothing.
+    every count with its denominator; never a bare zero.
+    three states, never two: readable / not said / published-but-unreadable. A value the
+      publisher sent that cannot be set as text gets its own word -- a blank reports it as
+      never sent and the reader cannot recover it.
+    no completion percentage: an item finding 3 more sub-items would send one backwards.
+    plain nouns. No metaphor.
+    zero interactive elements, and none may be added: the host frame only dispatches
+      clicks carrying an action attribute and this document declares none, so anything
+      shaped like a control would be dead. Values reach the page as text only.
+    every var() reads a name the frame forwards (--fg is NOT one; ink is --text), and no
+      local token shares a name with the var it reads -- a self reference is void at
+      computed-value time and silently kills the declaration using it.
+-->
+<style>
+  :root{
+    /* host tokens first, shadcn's neutral scale as the fallback */
+    --bg-1:   var(--bg,     hsl(240 10% 3.9%));
+    --surface:var(--card,   hsl(240 6% 6.5%));
+    --ink:    var(--text,   hsl(0 0% 98%));
+    --ink-2:  var(--muted,  hsl(240 5% 64.9%));
+    --edge:   var(--border, hsl(240 3.7% 15.9%));
+    --bad:    var(--danger, hsl(0 72% 61%));
+
+    --r-lg:8px; --r-md:6px; --r-sm:4px;
+    --sp1:4px; --sp2:6px; --sp3:8px; --sp4:12px; --sp5:16px; --sp6:24px;
+  }
+  @media (prefers-color-scheme: light){
+    :root{
+      --bg-1:   var(--bg,     hsl(0 0% 100%));
+      --surface:var(--card,   hsl(0 0% 99%));
+      --ink:    var(--text,   hsl(240 10% 3.9%));
+      --ink-2:  var(--muted,  hsl(240 3.8% 46.1%));
+      --edge:   var(--border, hsl(240 5.9% 90%));
+      --bad:    var(--danger, hsl(0 72% 42%));
+    }
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--bg-1); color:var(--ink);
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+    font-size:14px; line-height:1.45; font-variant-numeric:tabular-nums;
+    -webkit-font-smoothing:antialiased;
+    padding:var(--sp5); display:flex; flex-direction:column; gap:var(--sp4);
+  }
+
+  /* ---------- header ---------- */
+  .bar{display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--sp2) var(--sp4)}
+  .bar .nm{font-weight:600; letter-spacing:-0.01em}
+  .bar .meta{color:var(--ink-2); font-size:12px}
+  .bar .meta.bad{color:var(--bad)}
+  .lede{margin:0; font-size:15px; font-weight:500; letter-spacing:-0.011em; max-width:74ch}
+
+  /* ---------- badge ---------- */
+  .badge{
+    display:inline-flex; align-items:center; border:1px solid var(--edge);
+    border-radius:var(--r-md); padding:1px var(--sp2);
+    font-size:11px; font-weight:500; line-height:1.5; color:var(--ink-2);
+  }
+  .badge.bad{border-color:var(--bad); color:var(--bad)}
+
+  /* ---------- the board: one Card per column ---------- */
+  .board{
+    display:grid; grid-auto-flow:column; grid-auto-columns:1fr; gap:var(--sp4);
+    align-items:start; overflow:auto; flex:1 1 auto; min-height:0;
+  }
+  .card{
+    background:var(--surface); border:1px solid var(--edge); border-radius:var(--r-lg);
+    min-width:0; display:flex; flex-direction:column; max-height:100%;
+  }
+  .card > header{
+    display:flex; align-items:center; justify-content:space-between; gap:var(--sp3);
+    padding:var(--sp3) var(--sp4); border-bottom:1px solid var(--edge);
+  }
+  .card > header h2{
+    margin:0; font-size:13px; font-weight:500; letter-spacing:-0.006em;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .body{padding:var(--sp1) 0; overflow:auto; min-height:0}
+
+  /* ---------- alert: ONE item's action, under that item's row ---------- */
+  .alert{
+    margin:var(--sp1) var(--sp4) var(--sp2); padding:var(--sp2) var(--sp3);
+    border-left:2px solid var(--bad); border-radius:var(--r-sm);
+    background:color-mix(in oklab, var(--bad) 9%, transparent);
+    color:var(--bad); font-size:12px; line-height:1.4;
+  }
+
+  /* ---------- rows, styled as shadcn's table ---------- */
+  /* The id column sizes to its CONTENT with a floor, not to a fixed 4.2em: an item with
+     no pull request falls back to its item id, which is wider than "#14805" and printed
+     straight over the owner beside it. max-content grows the column instead; the
+     ellipsis on the span is the last resort for a pathological id. */
+  .hd, .row{
+    display:grid; grid-template-columns:minmax(4.2em,max-content) minmax(0,1fr) auto;
+    gap:var(--sp3); align-items:baseline; padding:var(--sp1) var(--sp4);
+  }
+  .hd{color:var(--ink-2); font-size:11px; font-weight:500;
+    text-transform:uppercase; letter-spacing:0.04em; padding-bottom:2px}
+  .row{border-top:1px solid var(--edge); font-size:13px}
+  .row:first-of-type{border-top:0}
+  .row .who{color:var(--ink-2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  /* the item's own name keeps the full ink; it carries the clipping rules, not the colour */
+  .row .what{color:var(--ink)}
+  .row .of{color:var(--ink-2); font-size:12px; text-align:right; white-space:nowrap}
+  .empty{padding:var(--sp3) var(--sp4); color:var(--ink-2); font-size:12px}
+
+  /* ---------- progress ---------- */
+  .track{display:flex; height:6px; border-radius:999px; overflow:hidden;
+    background:var(--edge); max-width:560px}
+  .track i{display:block; height:100%; min-width:1px}
+  .track i.s0{background:var(--ink)}
+  .track i.s1{background:var(--ink); opacity:.55}
+  .track i.s2{background:var(--ink); opacity:.28}
+  .track i.s3{background:var(--bad)}
+  .track i.gap{background:repeating-linear-gradient(45deg,var(--bad) 0 2px,transparent 2px 4px)}
+  .legend{margin:0; font-size:12px; color:var(--ink-2)}
+  .legend b{color:var(--ink); font-weight:500}
+  .legend .bad{color:var(--bad)}
+
+  /* ---------- metric cards ---------- */
+  .metrics{display:grid; gap:var(--sp3);
+    grid-template-columns:repeat(auto-fit,minmax(158px,1fr))}
+  .metric{background:var(--surface); border:1px solid var(--edge);
+    border-radius:var(--r-lg); padding:var(--sp3) var(--sp4)}
+  .metric .k{display:block; color:var(--ink-2); font-size:11px; font-weight:500;
+    text-transform:uppercase; letter-spacing:0.04em}
+  .metric .v{display:block; font-size:20px; font-weight:500; letter-spacing:-0.02em;
+    line-height:1.2; margin-top:2px}
+  .metric .sub{display:block; color:var(--ink-2); font-size:11.5px; line-height:1.35; margin-top:2px}
+  .foot{margin:0; color:var(--ink-2); font-size:12px}
+  .said{color:var(--ink-2)}
+</style>
+<div id="page" style="display:flex;flex-direction:column;gap:var(--sp4);flex:1 1 auto;min-height:0"></div>
+<!--kirocrew:panel-data-->
+<script>
+(function(){
+  "use strict";
+  var ABSENT = 0, TEXT = 1, UNREADABLE = 2;
+
+  function classify(v){
+    if (v === null || v === undefined) return ABSENT;
+    if (typeof v === "string") return v.trim().length ? TEXT : ABSENT;
+    if (typeof v === "number") return isFinite(v) ? TEXT : UNREADABLE;
+    return UNREADABLE;
+  }
+  function textOf(v){ return typeof v === "string" ? v : (typeof v === "number" ? String(v) : ""); }
+  function held(v){
+    if (v === null || v === undefined) return false;
+    if (typeof v === "string") return v.trim().length > 0;
+    if (typeof v === "number") return isFinite(v);
+    if (typeof v === "object"){ try { return Object.keys(v).length > 0; } catch(e){ return false; } }
+    return true;
+  }
+  function el(tag, cls, text){
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined && text !== null) n.textContent = (classify(text) === TEXT) ? textOf(text) : "";
+    return n;
+  }
+  function unsaid(){ return el("span", "said", "not said"); }
+  function unreadable(){ return el("span", "said", "unreadable"); }
+  /* the only route a published value takes to the page */
+  function put(parent, v, disclose){
+    var c = classify(v);
+    if (c === TEXT) parent.appendChild(document.createTextNode(textOf(v)));
+    else if (c === UNREADABLE) parent.appendChild(unreadable());
+    else if (disclose) parent.appendChild(unsaid());
+    return c;
+  }
+  function intOf(v){ return (typeof v === "number" && isFinite(v)) ? Math.floor(v) : null; }
+
+  /* The contract version this view was written against. A board published by a
+     DIFFERENT version is a reachable state, not a theoretical one: the operator
+     override directory wins over the shipped template, so an older template can be
+     serving a newer provider on the same machine. Saying nothing would render that
+     board's fields as merely absent, which reads as a crew that published little
+     rather than as two halves that disagree. */
+  var READS_CONTRACT = 1;
+
+  var page = document.getElementById("page");
+  var isl = document.getElementById("kirocrew-panel-data");
+  var d = null, broke = null;
+  try { d = JSON.parse(isl ? isl.textContent : "null"); }
+  catch (e) { broke = "the board did not parse"; }
+  if (broke || !d || typeof d !== "object"){
+    page.appendChild(el("p", "lede", broke || "Nothing published."));
+    return;
+  }
+
+  /* ---------- header ---------- */
+  var meta = held(d.meta) ? d.meta : {};
+  var age = intOf(meta.age_seconds), cap = intOf(meta.stale_after_seconds);
+  var stale = (age !== null && cap !== null && age > cap);
+  function ageWords(s){
+    var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+    if (h) return h + "h " + m + "m";
+    return m > 0 ? (m + "m " + r + "s") : (r + "s");
+  }
+
+  var bar = el("div", "bar");
+  var nm = el("span", "nm");
+  if (classify(meta.name) !== ABSENT) put(nm, meta.name, false); else nm.textContent = "Board";
+  bar.appendChild(nm);
+  if (intOf(meta.revision) !== null) bar.appendChild(el("span", "meta", "rev " + intOf(meta.revision)));
+  var when = el("span", stale ? "meta bad" : "meta");
+  if (age === null) when.appendChild(unsaid());
+  else when.textContent = (classify(meta.captured_at) === TEXT ? (textOf(meta.captured_at) + " · ") : "")
+                        + ageWords(age) + (stale ? " · stale" : "");
+  bar.appendChild(when);
+
+  /* Entries the fold DROPPED. A board missing an item is not recoverable by whoever
+     reads it, so this is stated on the bar where it cannot be missed -- not folded into
+     the progress legend, which is not drawn at all when every segment is empty. */
+  var lost = intOf(d.omitted);
+  if (lost !== null && lost > 0) bar.appendChild(el("span", "meta bad", lost + " not shown"));
+  page.appendChild(bar);
+
+  /* Three states, like every other published value: the version matches and is worth
+     no words, it is absent so the publisher's contract is unknown, or it names another
+     version and the two halves of this board disagree. */
+  /* ABSENT says nothing. The provider always writes this key -- a blocking type check
+     rejects a board without it -- so the only payload reaching here without one is a
+     record the provider never touched: a crew with no work board, whose document is
+     served exactly as published. Alarming there accuses the one crew that did nothing
+     wrong, and it is the loudest thing on an otherwise blank panel.
+
+     PRESENT BUT UNREADABLE is a different fact and keeps its own words: something IS
+     in the field and it is not a version, so the two halves cannot be compared at all. */
+  var wrote = intOf(d.contract_version);
+  if (wrote === null && held(d.contract_version)){
+    var vu = el("p", "legend");
+    vu.appendChild(el("span", "bad", "The contract version is not readable; this view reads " + READS_CONTRACT + "."));
+    page.appendChild(vu);
+  } else if (wrote !== null && wrote !== READS_CONTRACT){
+    var vm = el("p", "legend");
+    vm.appendChild(el("span", "bad", "Published by contract version " + wrote + "; this view reads " + READS_CONTRACT + ". Fields may be missing or mean something else."));
+    page.appendChild(vm);
+  }
+
+  var lede = el("p", "lede"); put(lede, d.lede, true); page.appendChild(lede);
+
+  /* ---------- the board ---------- */
+  var cols = Array.isArray(d.columns) ? d.columns.filter(held) : [];
+  var board = el("div", "board");
+  cols.forEach(function(c){
+    var items = Array.isArray(c.cards) ? c.cards.filter(held) : [];
+    var card = el("section", "card");
+
+    var head = el("header");
+    var h2 = el("h2"); put(h2, c.name, true); head.appendChild(h2);
+    var count = el("span", "badge");
+    count.textContent = String(items.length);
+    head.appendChild(count);
+    card.appendChild(head);
+
+    var body = el("div", "body");
+    if (!items.length){
+      body.appendChild(el("div", "empty", "empty"));
+    } else {
+      var hd = el("div", "hd");
+      hd.appendChild(el("span", null, "PR"));
+      hd.appendChild(el("span", null, "Owner"));
+      hd.appendChild(el("span", "of", "Checks"));
+      body.appendChild(hd);
+      items.forEach(function(k){
+        var row = el("div", "row");
+        var a = el("span", "who what"); put(a, k && k.id, true); row.appendChild(a);
+        var w = el("span", "who"); put(w, k && k.sub, false); row.appendChild(w);
+        var o = el("span", "of"); put(o, k && k.of, false); row.appendChild(o);
+        body.appendChild(row);
+        /* the action belongs to ONE item, so it is drawn under that item's own row.
+           Drawn once for the column instead, only the first item's sentence survives and
+           every other item that needs a person is silently not mentioned. */
+        if (k && classify(k.you) !== ABSENT){
+          var al = el("div", "alert"); put(al, k.you, false); body.appendChild(al);
+        }
+      });
+    }
+    card.appendChild(body);
+    board.appendChild(card);
+  });
+  page.appendChild(board);
+
+  /* ---------- progress: counts, never a percentage ---------- */
+  var pg = held(d.progress) ? d.progress : {};
+  var total = intOf(pg.total);
+  /* NORMALISED once, so nothing downstream coerces a raw value. `String(x)` throws a
+     TypeError on an object whose `toString` and `valueOf` are not callable, and that
+     aborts the whole script -- leaving a half-drawn panel, which is the one state a
+     status board must never reach, because a reader cannot tell it from an empty one.
+     A record stored in the free shape before this contract existed reaches here
+     untouched whenever its crew has no work fold, so such a value is not theoretical.
+     `textOf` answers "" for anything that is not a string or a number and cannot
+     throw; an unrecognised name then falls to the default tone instead of killing
+     the render. */
+  var segs = (Array.isArray(pg.segments) ? pg.segments : []).filter(function(s){
+    return s && typeof s === "object" && intOf(s.n) !== null && intOf(s.n) > 0;
+  }).map(function(s){ return { name: textOf(s.name), n: intOf(s.n) }; });
+  /* The segment names are the work board's own CLOSED item states, so this map lists
+     exactly those four and nothing else. A map keyed on invented words silently matches
+     none of them: every band falls to the default tone and the headline below counts zero
+     settled items on a board where several are. The parity gate cannot catch that -- it
+     compares field NAMES, not the values a field's name may take. */
+  var SETTLED = "accepted";
+  var NAMES = { accepted:"s0", abandoned:"s1", open:"s2", rejected:"s3" };
+  if (total !== null && total > 0 && segs.length){
+    var counted = 0;
+    segs.forEach(function(s){ counted += s.n; });
+    var track = el("div", "track");
+    segs.forEach(function(s){
+      var seg = el("i", NAMES[s.name] || "s2");
+      seg.style.width = Math.min(100, (s.n / total) * 100).toFixed(3) + "%";
+      track.appendChild(seg);
+    });
+    /* a remainder is drawn and named rather than absorbed by the other segments */
+    var gap = total - counted;
+    if (gap > 0){
+      var g = el("i", "gap");
+      g.style.width = Math.min(100, (gap / total) * 100).toFixed(3) + "%";
+      track.appendChild(g);
+    }
+    page.appendChild(track);
+
+    var lg = el("p", "legend");
+    var settled = segs.filter(function(s){ return s.name === SETTLED; })[0];
+    lg.appendChild(el("b", null, (settled ? settled.n : 0) + " of " + total + " " + SETTLED));
+    segs.forEach(function(s){
+      if (s.name === SETTLED) return;
+      lg.appendChild(document.createTextNode(" · " + s.n + " " + s.name));
+    });
+    if (gap > 0) lg.appendChild(el("span", "bad", " · " + gap + " unaccounted"));
+    /* "this round", not "since": the count is items whose round is the conductor's
+       current one, so on a board that has only ever had one round it is every item --
+       which is true, and reads as nonsense under the word "since". */
+    if (intOf(pg.added_since) !== null && intOf(pg.added_since) > 0){
+      lg.appendChild(document.createTextNode(" · +" + intOf(pg.added_since) + " this round"));
+    }
+    page.appendChild(lg);
+  } else if (total === 0){
+    /* A well-formed board with nothing counted yet: total is a readable zero, so
+       every band is empty and the track above draws nothing. That is an empty board,
+       not a broken one, and it reads as empty rather than raising the alarm below. */
+    var mt = el("p", "legend");
+    mt.appendChild(document.createTextNode("No items yet."));
+    page.appendChild(mt);
+  } else if (held(d.progress)){
+    /* Present but not drawable: total is not a readable count, or it counts items no
+       band accounts for. Something IS published and cannot be rendered as a track,
+       which is a different fact from an empty board and keeps its own words. */
+    var no = el("p", "legend");
+    no.appendChild(el("span", "bad", "Progress published, but it cannot be drawn."));
+    page.appendChild(no);
+  }
+
+  /* ---------- metrics ---------- */
+  var stats = Array.isArray(d.stats) ? d.stats.filter(function(s){ return s && typeof s === "object"; }) : [];
+  if (stats.length){
+    var grid = el("div", "metrics");
+    stats.forEach(function(s){
+      var m = el("div", "metric");
+      var k = el("span", "k"); put(k, s.k, true); m.appendChild(k);
+      var v = el("span", "v"); put(v, s.v, true); m.appendChild(v);
+      /* the definition travels with the number: an average over 2 and the same number
+         over 26 are different facts, and hiding which is how a true number lies */
+      if (classify(s.note) !== ABSENT){ var n = el("span", "sub"); put(n, s.note, false); m.appendChild(n); }
+      grid.appendChild(m);
+    });
+    page.appendChild(grid);
+  }
+
+  var f = el("p", "foot"); put(f, d.since, true); page.appendChild(f);
+})();
+</script>

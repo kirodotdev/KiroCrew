@@ -1,0 +1,135 @@
+/**
+ * The kiro-light shell rules in index.css select plain hook classes
+ * (`.user-bubble`, `.focus-chrome-rail`, ...), not Tailwind utilities, so the
+ * phantom-classes gate never sees them: a refactor that drops one of those
+ * classes from its component leaves the rule matching nothing, and the surface
+ * quietly falls back to the token it was scoped away from -- the user bubble
+ * back to white-on-white, the rail back to a white card on a white page.
+ *
+ * This pins each hook to the source file that must carry it, in both
+ * directions: every class the kiro-light rules select must appear in its
+ * component's markup, and every hook the components advertise for kiro-light
+ * must still be selected by a rule -- otherwise a dropped rule leaves a dead
+ * class behind that reads as load-bearing.
+ */
+import { describe, it, expect } from 'vitest'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { join } from 'node:path'
+import { readMembersPage } from './membersPageFamily'
+
+const read = (...p: string[]) => readFileSync(join(__dirname, '..', ...p), 'utf8')
+
+/** The owners under pages/chat-sidebar/ the sidebar shell composes. */
+function sidebarOwnerSources(): string[] {
+  const out: string[] = []
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir).sort()) {
+      const p = join(dir, name)
+      if (statSync(p).isDirectory()) walk(p)
+      else if (/\.(ts|tsx)$/.test(name) && !/\.test\./.test(name)) out.push(readFileSync(p, 'utf8'))
+    }
+  }
+  walk(join(__dirname, '..', 'pages', 'chat-sidebar'))
+  return out
+}
+
+/** A page's surface for the negative half: the sidebar shell joined with its owners, the
+ *  Crewmates page every file it is built from, any other page its one file. */
+const surface = (file: string[]) =>
+  file.join('/') === 'pages/ChatSidebar.tsx' ? [read(...file), ...sidebarOwnerSources()].join('\n')
+    : file[1] === 'members' ? readMembersPage() : read(...file)
+const css = read('index.css')
+
+/** hook class -> the source that must render it, and the regex proving it does */
+const HOOKS: Record<string, { file: string[]; carries: RegExp }> = {
+  'focus-chrome-rail': { file: ['App.tsx'], carries: /className="focus-chrome-rail / },
+  // Carried by the shared list-shell recipe, which both the sessions sidebar and
+  // the members roster mount (pinned below) — one string, two cards.
+  'sidebar-inner': { file: ['components', 'listShell.ts'], carries: /export const LIST_SHELL_CLS = 'sidebar sidebar-inner / },
+  'user-bubble': { file: ['pages', 'chat', 'UserMessage.tsx'], carries: /'user-bubble bg-card text-card-fg'/ },
+  // `.tb-capsule` and `.feedback-pill` are no longer kiro-light hooks: both
+  // pills are Liquid Glass panes (components/Glass.tsx) that draw their own
+  // edge on every canvas, so the inset ring rule that once gave them one on
+  // the white chrome is gone.
+}
+
+/**
+ * What a failing assertion should tell the developer: the fix is to keep the
+ * hook on the element, never to loosen the regex. The regexes are anchored on
+ * the hook sitting FIRST in the class string so a reorder that pushes it
+ * behind a utility still fails -- the hook is load-bearing, not decorative.
+ */
+const KEEP_HOOK = (hook: string, file: string[]) =>
+  `\`.${hook}\` must stay on its element in ${file.join('/')} (leading position in the class string): ` +
+  'it is what the kiro-light rules in index.css select. See website/docs/theming-contract.md, ' +
+  '"A card must carry its own edge" -- keep the hook, do not widen this regex.'
+
+/** every `.hook` selected under a kiro-light prefix in index.css */
+function kiroLightHooks(): Set<string> {
+  const out = new Set<string>()
+  for (const m of css.matchAll(/\[data-theme="kiro-light"\] \.([a-z][a-z0-9-]*)/g)) out.add(m[1])
+  return out
+}
+
+describe('kiro-light shell hooks', () => {
+  const selected = kiroLightHooks()
+
+  it.each(Object.keys(HOOKS))('the kiro-light rules select `.%s`', hook => {
+    expect(selected.has(hook), `index.css lost the kiro-light rule for \`.${hook}\``).toBe(true)
+  })
+
+  it.each(Object.entries(HOOKS))('`.%s` is still rendered by its component', (hook, { file, carries }) => {
+    expect(read(...file), KEEP_HOOK(hook, file)).toMatch(carries)
+  })
+
+  it.each([
+    ['pages', 'ChatSidebar.tsx'],
+    ['pages', 'members', 'MembersPageRoster.tsx'],
+  ])('%s/%s mounts the shared list shell, so the kiro-light --panel step-back reaches both cards', (...file) => {
+    // The roster once carried its own bg-bg-elevated card and stayed white on
+    // the white canvas while the sessions list beside it stepped back to
+    // --panel — the hook only reaches a card that mounts LIST_SHELL_CLS.
+    const src = read(...file)
+    const joined = surface(file)
+    expect(src, KEEP_HOOK('sidebar-inner', file)).toMatch(/import \{[^}]*\bLIST_SHELL_CLS\b[^}]*\} from '(\.\.\/)+components\/listShell'/)
+    expect(src, KEEP_HOOK('sidebar-inner', file)).toMatch(/\$\{LIST_SHELL_CLS\}/)
+    expect(joined, KEEP_HOOK('sidebar-inner', file)).not.toMatch(/className="sidebar sidebar-inner /)
+  })
+
+  it('the user bubble tint is scoped to the non-steer branch only', () => {
+    // The steer bubble keeps bg-accent-subtle; tinting it too would erase the
+    // one cue that distinguishes a steer from an ordinary turn. Both non-steer
+    // tones (#17839: the crewmate chat's accent fill and the default) keep the
+    // hook leading, so the kiro-light tint rule still selects the default one
+    // and the accent rules (keyed on `.user-bubble.user-bubble-accent`) win
+    // over it on the other.
+    const src = read('pages', 'chat', 'UserMessage.tsx')
+    expect(src, KEEP_HOOK('user-bubble', ['pages', 'chat', 'UserMessage.tsx'])).toMatch(
+      /isSteer \? 'bg-accent-subtle text-text' : tone === 'accent' \? 'user-bubble user-bubble-accent bg-accent text-accent-fg' : 'user-bubble bg-card text-card-fg'/,
+    )
+  })
+
+  it('the edit-mode box carries the same hook as the bubble it replaces', () => {
+    // Editing swaps the bubble for an in-place textarea box; without the hook it
+    // flips back to white under the caret while every other bubble stays grey.
+    const src = read('pages', 'chat', 'UserMessage.tsx')
+    expect(src, KEEP_HOOK('user-bubble', ['pages', 'chat', 'UserMessage.tsx'])).toMatch(/className="edit-grow user-bubble /)
+  })
+
+  it('the pinned-prompt card carries the same hook as the bubble it stands in for', () => {
+    // The banner is a pixel-for-pixel copy of the bubble so the hand-off reads as
+    // the bubble sticking, not being replaced; a theme that tints one must tint
+    // the other or the swap becomes visible.
+    const src = read('pages', 'chat', 'PinnedPrompt.tsx')
+    expect(src, KEEP_HOOK('user-bubble', ['pages', 'chat', 'PinnedPrompt.tsx'])).toMatch(
+      /className="user-bubble flex items-stretch gap-2 overflow-hidden rounded-xl bg-card text-card-fg ring-1 /,
+    )
+  })
+
+  it('kiro-light gives the borderless bg-card surfaces an edge the white canvas would otherwise erase', () => {
+    expect(css).toMatch(/\[data-theme="kiro-light"\] \.user-bubble\{background-color:var\(--bg-hover\)\}/)
+    expect(css).toMatch(
+      /\[data-theme="kiro-light"\] \.focus-chrome-rail,\[data-theme="kiro-light"\] \.sidebar-inner\{background-color:var\(--panel\)\}/,
+    )
+  })
+})

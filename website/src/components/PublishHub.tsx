@@ -1,0 +1,1026 @@
+// PublishHub — the single publish surface for an artifact.
+//
+// All publish destinations are *providers* rendered from one registry:
+//   • App providers (e.g. deploy-web "Publish to public web (your AWS)") — fetched
+//     from GET /api/publish-providers and rendered via the generic flow.
+//
+// Kinds supported: widget, html, markdown, svg, json, text (non-webapp).
+// Webapp artifacts have their own deploy flow (Artifact Deploy page).
+
+import { useRef, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
+import { AlertCircle, AlertTriangle, Check, ExternalLink, Globe, Settings, Upload, X } from 'lucide-react'
+import { api, type AppPublishProvider, type DeploySitesResponse } from '../api/client'
+import type { Site } from '../hooks/useDirectDeploy'
+import { Card, Btn, ContentSkeleton } from './ui'
+import PublicPublishAckModal from './PublicPublishAckModal'
+import ErrorDetails from './ErrorDetails'
+import ErrorNotice from './ErrorNotice'
+import SimpleSelect from './SimpleSelect'
+import type { Artifact, PublishProviderDescriptor } from '../types'
+import { safeHttpUrl } from '../lib/safeUrl'
+import { usePreviewFlag } from '../hooks/usePreviewFlag'
+import { PREVIEW_ARTIFACT_DEPLOY } from '../utils/previewFlags'
+import { errMessage } from '../utils/thunkError'
+
+import { i18nT } from '../i18n/t'
+interface UnifiedProvider {
+  id: string
+  label: string
+  icon: typeof Globe
+  configured: boolean
+  setupRoute: string
+  app?: AppPublishProvider
+  /** Set for a row from the CORE registry (GET /api/artifacts/publish-providers).
+   *  Its presence is what routes a publish at the artifact endpoint instead of the
+   *  app row's declared endpoint -- see `requestPreview`. */
+  core?: PublishProviderDescriptor
+  /** The provider's own remedy text, rendered in place when `configured` is false.
+   *  Only a provider knows WHICH action makes it available, so a core row explains
+   *  itself here rather than sending the user to a generic setup page. */
+  installHint?: string
+  /** Whether the published link is served with no authentication. Decides whether the
+   *  public-exposure warning and the blocking acknowledgment stand in front of the
+   *  confirm: both say the content is going onto the open internet, which is false for
+   *  a destination that stores it privately behind a login -- and a false gate teaches
+   *  the user to click past the true one. App rows are the public-web deploy surface,
+   *  so they are always reachable; a core row declares it via its descriptor. */
+  publicReachable: boolean
+}
+
+const ICONS: Record<string, typeof Globe> = { Globe, Upload, Settings, ExternalLink }
+function iconFor(name: string): typeof Globe {
+  return ICONS[name] ?? Upload
+}
+
+/**
+ * Whether a provider row is the Artifact Deploy destination (publish to a public
+ * HTTPS URL in the operator's own AWS account).
+ *
+ * Identified by its endpoint or id rather than by its display label, which is
+ * translated and would stop matching in every language but English. An app row
+ * declares the deploy endpoint; the core registry row carries the `deploy-web`
+ * id. A row that is neither is some other destination and is never filtered.
+ */
+export function isPublicWebDeploy(p: { id: string; app?: { endpoint?: string } }): boolean {
+  if (p.id === 'deploy-web') return true
+  return (p.app?.endpoint ?? '').startsWith('/api/deploy/')
+}
+
+/** The longest site id the public-web deploy stores. */
+const SITE_ID_MAX = 64
+
+/**
+ * The site id the public-web deploy stores for an artifact slug.
+ *
+ * The panel sends `site_id: artifact.slug`, and the deploy route normalizes it
+ * (`_safe_site_id` in the deploy handlers): lowercased, every character other
+ * than a letter, digit, `-` or `_` replaced by `-`, leading and trailing `-`/`_`
+ * stripped, then cut to 64 characters. A slug longer than that is stored
+ * truncated, so comparing the raw slug would miss its site.
+ */
+export function deploySiteIdFor(slug: string): string {
+  const normalized = Array.from(slug.trim().toLowerCase(), c => (/[\p{L}\p{N}_-]/u.test(c) ? c : '-')).join('')
+  return Array.from(normalized.replace(/^[-_]+|[-_]+$/g, '')).slice(0, SITE_ID_MAX).join('')
+}
+
+/**
+ * The live public-web site this artifact already has, or `null`.
+ *
+ * Reads the deploy's own listing, which comes from the AWS account's resource
+ * tags. A site removed by teardown, by the expiry reaper, or outside the
+ * dashboard is not listed, so the answer cannot go stale the way a stored copy
+ * of the link would. No listing, an unconfigured deploy, and no site under this
+ * artifact's id all answer `null`, which leaves the panel on its destination list.
+ */
+export function findLiveSite(
+  resp: DeploySitesResponse | null | undefined,
+  slug: string,
+): Site | null {
+  if (!resp || resp.configured === false || !Array.isArray(resp.sites)) return null
+  const id = deploySiteIdFor(slug)
+  if (!id) return null
+  return resp.sites.find(s => !!s && s.site_id === id) ?? null
+}
+
+/**
+ * Read the OUTCOME of a publish response, across the two shapes an endpoint returns.
+ *
+ * * The deploy-style shape — `{url}` / `{public_url}` — used by `/api/deploy/deploy`.
+ * * The artifact shape — the serialized artifact carrying a `publication` block —
+ *   returned by `POST /api/artifacts/{slug}/publish`, which is where an app
+ *   provider lands when it hands the confirmed publish to the core route (the
+ *   supported way to reuse the core's single publish authorization + audit).
+ *
+ * Returns `null` for anything unrecognized so the caller reports an explicit
+ * error instead of rendering a blank one.
+ *
+ * **HTTP 200 is not success on the artifact shape.** `publish_sync.publish()`
+ * treats the version push as best-effort: on a RE-publish it captures the push
+ * error, persists it as `publication.last_error` and returns normally, so the
+ * route answers 200 with a publication whose remote content is stale. Reading
+ * that as "Published!" would be the same class of lie as the blank error this
+ * function replaces, in the opposite direction — so a non-empty `last_error` is
+ * an error outcome, carrying the provider's own (already redacted) message.
+ *
+ * A success whose destination exposes no browsable URL yields `{url: ''}` —
+ * success WITHOUT a link, which is why a caller must not infer success from a
+ * non-empty url.
+ *
+ * A non-empty `publication.notice` rides ALONGSIDE a success outcome, never as
+ * an error: it means the publish succeeded but the link is not usable yet (e.g.
+ * CloudFront still rolling out). It is deliberately NOT folded into `error` —
+ * `last_error` is checked first and wins, so a real failure is still an error;
+ * a notice-only publication is a success carrying a warn line beside the link.
+ */
+export function readPublishOutcome(
+  data: Record<string, unknown> | null | undefined,
+): { url: string; notice?: string; notice_code?: string } | { error: string } | null {
+  if (!data || typeof data !== 'object') return null
+  const direct = data.url ?? data.public_url
+  if (typeof direct === 'string' && direct) return { url: direct }
+  const pub = data.publication
+  // `publication: null` (an UNpublished artifact) is deliberately not success.
+  if (pub && typeof pub === 'object') {
+    const lastError = (pub as { last_error?: unknown }).last_error
+    if (typeof lastError === 'string' && lastError.trim()) return { error: lastError }
+    const viewUrl = (pub as { view_url?: unknown }).view_url
+    const noticeRaw = (pub as { notice?: unknown }).notice
+    const notice = typeof noticeRaw === 'string' && noticeRaw.trim() ? noticeRaw : undefined
+    // The discriminator travels WITH the notice: it is meaningless without one,
+    // so it is only surfaced when a notice is actually present.
+    const codeRaw = (pub as { notice_code?: unknown }).notice_code
+    const notice_code = notice && typeof codeRaw === 'string' && codeRaw.trim() ? codeRaw : undefined
+    return {
+      url: typeof viewUrl === 'string' ? viewUrl : '',
+      ...(notice ? { notice } : {}),
+      ...(notice_code ? { notice_code } : {}),
+    }
+  }
+  return null
+}
+
+/** The three catalog keys a render site offers for a publish notice: the
+ *  existing rolling-out line, the disabled-distribution remedy, and the neutral
+ *  fallback that promises no time. */
+export interface PublishNoticeKeys {
+  rolling_out: string
+  distribution_disabled: string
+  notice_generic: string
+}
+
+/**
+ * Selects the catalog key for a publish notice from its machine `notice_code`.
+ *
+ * The backend used to hand back only free text, and the UI printed one fixed
+ * "still rolling out — reachable in a few minutes" line for every notice. That
+ * is a lie for a DISABLED distribution, whose links never resolve until a human
+ * re-enables it — so a time promise there sends the user off to wait for
+ * something that will not happen. The `notice_code` discriminator lets each case
+ * get its own copy, and anything unrecognised (or an empty-but-present notice)
+ * falls back to a neutral line that promises no time at all — never a time
+ * promise the code does not justify.
+ */
+export function publishNoticeKey(keys: PublishNoticeKeys, noticeCode: string | undefined): string {
+  switch (noticeCode) {
+    case 'rolling_out':
+      return keys.rolling_out
+    case 'distribution_disabled':
+      return keys.distribution_disabled
+    default:
+      // 'unknown', empty, or any value a newer backend introduces.
+      return keys.notice_generic
+  }
+}
+
+export const TTL_72 = '72 hours (requires reaper)'
+
+/**
+ * Whether a TTL may be chosen for this row at all.
+ *
+ * A core destination declaring no expiration support gets no TTL control: the core
+ * publish route carries no TTL, so offering "72 hours" would hand back a persistent
+ * public link while the user believed the exposure was time-boxed.
+ */
+export function ttlSelectableFor(selected: UnifiedProvider | undefined): boolean {
+  return !(selected?.core && !selected.core.sharing_model.supports_expiration)
+}
+
+/**
+ * The TTL that actually applies to the current selection.
+ *
+ * `ttlHours` is ONE piece of state shared across rows, so hiding the control was not
+ * enough: choosing "72 hours" on a row that supports expiry and then switching to a
+ * core row that does not left the choice standing underneath the hidden control, and
+ * the acknowledgment modal went on promising a time-boxed exposure for a link that is
+ * permanent. Deriving from the same predicate that hides the control -- rather than
+ * resetting the state when the selection changes -- is what makes the two unable to
+ * disagree; a missed reset or a re-render ordering cannot bring the promise back.
+ */
+export function effectiveTtlHours(
+  ttlChoice: string,
+  selected: UnifiedProvider | undefined,
+): number {
+  return ttlSelectableFor(selected) && ttlChoice === TTL_72 ? 72 : 0
+}
+
+export type PublishVisibility = 'PRIVATE' | 'PUBLIC'
+/** What a publication can already carry. The panel never offers SHARED, but a re-publish keeps it. */
+export type StoredVisibility = PublishVisibility | 'SHARED'
+
+/**
+ * The visibilities the panel offers for this row, or `[]` when there is nothing to choose.
+ *
+ * Only a core row describes its sharing model, and the choice is offered only when that
+ * model supports BOTH private and public publications. Shared is left out: it needs a
+ * list of people, which this panel does not collect.
+ *
+ * Only a FIRST publish gets the choice. The panel's copy of an existing publication can
+ * be stale, so a re-publish keeps the publication's own visibility instead (see
+ * `effectiveVisibility`); the publish engine orders a narrowing re-publish sharing-first.
+ */
+export function visibilityOptionsFor(
+  selected: UnifiedProvider | undefined,
+  alreadyPublished: boolean,
+): PublishVisibility[] {
+  if (alreadyPublished) return []
+  const sm = selected?.core?.sharing_model
+  if (!sm) return []
+  const out: PublishVisibility[] = []
+  if (sm.supports_private) out.push('PRIVATE')
+  if (sm.supports_public) out.push('PUBLIC')
+  return out.length > 1 ? out : []
+}
+
+/**
+ * The visibility the publish request actually carries for the current selection.
+ *
+ * Derived the same way as the TTL: the choice is one piece of state shared by every row,
+ * so a "private" picked on one row must not ride along onto a row that offers no choice.
+ * A re-publish keeps the publication's own visibility, so it neither widens a private
+ * copy nor narrows a public one. Anything else the row cannot honour reads as public,
+ * which is the request the panel has always sent.
+ */
+export function effectiveVisibility(
+  choice: PublishVisibility,
+  selected: UnifiedProvider | undefined,
+  existing: string | null | undefined,
+): StoredVisibility {
+  // Only a core row publishes through the artifact's own publication. Any other row
+  // (the public-web deploy surface) is public whatever the artifact's record says.
+  if (!selected?.core) return 'PUBLIC'
+  if (existing != null) {
+    return existing === 'PRIVATE' || existing === 'SHARED' ? existing : 'PUBLIC'
+  }
+  return visibilityOptionsFor(selected, false).includes(choice) ? choice : 'PUBLIC'
+}
+
+/** The label for a visibility, shared by the choice and the confirm step so they read the same. */
+function visibilityLabel(v: PublishVisibility): string {
+  return v === 'PRIVATE'
+    ? i18nT('components.publishHub.visibility_private')
+    : i18nT('components.publishHub.visibility_public')
+}
+
+export function buildProviderList(
+  appProviders: AppPublishProvider[],
+  kind: string,
+  coreProviders: PublishProviderDescriptor[] = [],
+): UnifiedProvider[] {
+  const list: UnifiedProvider[] = []
+  for (const p of appProviders) {
+    if (p.kinds.length && !p.kinds.includes(kind)) continue
+    list.push({
+      id: p.id,
+      label: p.label,
+      icon: iconFor(p.icon),
+      configured: p.configured,
+      setupRoute: p.setupRoute,
+      app: p,
+      publicReachable: true,
+    })
+  }
+  // Core-registry rows come SECOND, and an id already claimed by an app row is
+  // skipped. An enabled app may declare a row under a core destination's id, and
+  // the pre-existing resolution for that clash is app-first (test_publish_providers
+  // asserts the APP's endpoint wins). Ordering the merge this way keeps that
+  // behaviour rather than quietly reversing it.
+  const claimed = new Set(list.map(p => p.id))
+  for (const c of coreProviders) {
+    if (!c.capable || claimed.has(c.name)) continue
+    list.push({
+      id: c.name,
+      label: c.display_name,
+      icon: Globe,
+      // `available` is the core registry's word for the same thing `configured` means
+      // to an app row: usable right now, without the user going and setting something
+      // up first. Missing means available -- the field is documented as omitted by
+      // older gateways, so treating absence as "needs setup" would mark every
+      // destination on such a gateway unusable.
+      configured: c.available !== false,
+      setupRoute: '',
+      core: c,
+      installHint: c.install_hint,
+      // Only an explicit `false` turns the gate off. An older gateway omits the
+      // field, and the wrong default there would be a public link with no warning.
+      publicReachable: c.public_reachable !== false,
+    })
+  }
+  return list
+}
+
+export function PublishHub({
+  artifact,
+  onClose,
+}: {
+  artifact: Artifact
+  onClose?: () => void
+}) {
+  const navigate = useNavigate()
+  const providersQuery = useQuery({
+    queryKey: ['publish-providers'],
+    queryFn: () => api.publishProviders(),
+    staleTime: 30_000,
+  })
+  const appProviders = providersQuery.data?.providers ?? []
+  // The core registry is a SECOND source and the panel has to read both. The app
+  // endpoint deliberately omits built-in destinations ("registered frontend-side and
+  // are not returned here"), so a provider registered by the edition -- which is how
+  // a stock build gets any publish destination at all -- appears nowhere without this.
+  const coreQuery = useQuery({
+    queryKey: ['artifact-publish-providers', artifact.kind],
+    queryFn: () => api.getArtifactPublishProviders(artifact.kind),
+    staleTime: 30_000,
+  })
+  const coreProviders = coreQuery.data?.providers ?? []
+  // Artifact Deploy is a Feature Preview, so its destination is not offered here
+  // until the operator opts in: publishing through it spends money in a real AWS
+  // account and puts the content on the open internet. Filtered at the ROW level
+  // rather than by hiding the panel, because an artifact's other destinations are
+  // unaffected by that choice.
+  const deployPreview = usePreviewFlag(PREVIEW_ARTIFACT_DEPLOY)
+  const unified = buildProviderList(appProviders, artifact.kind, coreProviders)
+    .filter(p => deployPreview || !isPublicWebDeploy(p))
+  const queryClient = useQueryClient()
+  // An artifact already on the public web keeps its link in the AWS account, not
+  // on the artifact, so the panel asks the deploy for it. Only when the public-web
+  // row is offered AND set up: with no registered profile there is no account to
+  // list. Shares the Artifact Deploy page's cache entry, which reads the same route.
+  const publicWebRow = unified.find(p => isPublicWebDeploy(p))
+  const lookupLiveSite = !!publicWebRow?.configured
+  const sitesQuery = useQuery({
+    queryKey: ['deploy-web', 'sites'],
+    queryFn: () => api.deploySites(),
+    enabled: lookupLiveSite,
+    staleTime: 30_000,
+    // A failed lookup leaves the panel exactly as it is without one, so a retry
+    // would only hold the "checking" line on screen longer.
+    retry: false,
+  })
+  const liveSite = lookupLiveSite ? findLiveSite(sitesQuery.data, artifact.slug) : null
+  // The listing comes from resource tags, which take a minute or two to show a
+  // site a deploy just created, so a publish writes its own result into the
+  // cached list (as the Artifact Deploy page's deploy does): the next open of the
+  // panel shows the link at once. A row the listing already has is left as is.
+  const seedPublishedSite = (url: string) => {
+    const siteId = deploySiteIdFor(artifact.slug)
+    if (!siteId) return
+    queryClient.setQueryData<DeploySitesResponse>(['deploy-web', 'sites'], prev => {
+      const sites = prev?.sites ?? []
+      if (sites.some(s => s.site_id === siteId)) return prev
+      const seeded: Site = {
+        site_id: siteId,
+        url,
+        profile: deployProfile || previewIdentity.profile,
+        // CloudFront may still be spreading the site, so it is not called live yet.
+        status: 'deploying',
+      }
+      return { ...(prev ?? { configured: true }), sites: [...sites, seeded] }
+    })
+  }
+  const liveUrl = liveSite?.url ? safeHttpUrl(liveSite.url) : null
+  // A lookup that could not read every account says so, beside a link shown from
+  // an earlier read too: with no card on screen the panel otherwise looks like an
+  // unpublished artifact's, and a publish from it may not update a page that
+  // already exists in an account it could not read. A listing that could not run
+  // here at all answers HTTP 200 with its reason in `error`, so that reason
+  // counts as a failure as well.
+  const listingErrors = [sitesQuery.data?.error, ...(sitesQuery.data?.profile_errors ?? [])]
+    .filter((e): e is string => !!e)
+  const lookupFailure = !lookupLiveSite
+    ? ''
+    : sitesQuery.error
+      ? (errMessage(sitesQuery.error) || i18nT('components.errorBoundary.something_went_wrong'))
+      : listingErrors.join('; ')
+
+  const [selectedId, setSelectedId] = useState<string>('')
+  const [preview, setPreview] = useState<Record<string, unknown> | null>(null)
+  const [contentDigest, setContentDigest] = useState<string>('')
+  const [previewIdentity, setPreviewIdentity] = useState<{ profile: string; region: string }>({ profile: '', region: '' })
+  const [scanBlocked, setScanBlocked] = useState<{ findings: string; count: number; credential?: boolean } | null>(null)
+  // `error` is the discriminator the render keys off, so a success is the ABSENCE
+  // of an error rather than a non-empty `url`: a destination can publish
+  // successfully and expose no browsable link, and conflating the two is what
+  // rendered a succeeded publish as a blank error.
+  const [result, setResult] = useState<{ url?: string; error?: string; notice?: string; notice_code?: string; details?: string; remediation?: string } | null>(null)
+  const [busy, setBusy] = useState(false)
+  // Non-null while the blocking public-exposure acknowledgment is on screen.
+  // `overrideScan` remembers WHICH commit path opened it, so acknowledging
+  // resumes that path instead of collapsing both into a plain publish.
+  const [ack, setAck] = useState<{ overrideScan: boolean } | null>(null)
+  /** Latch making a confirmed publish at-most-once; see `confirmPublish`. */
+  const publishInFlight = useRef(false)
+  const [ttlHours, setTtlHours] = useState<string>('Persistent (no expiry)')
+  // A TTL change invalidates an existing preview — the previewed TTL
+  // must match the confirmed one, so force a fresh preview.
+  const onTtlChange = (v: string) => { setTtlHours(v); setPreview(null) }
+
+  const selected = unified.find(p => p.id === selectedId)
+  // Updating the live site deploys with the profile whose account holds it. The
+  // deploy reuses the site it finds by tag in the account it runs against, so the
+  // default profile, pointed at a different account, would create a second site
+  // under a new URL instead of updating this one.
+  const updatingLiveSite = !!liveSite && !!selected && selected.id === publicWebRow?.id
+  const deployProfile = updatingLiveSite ? (liveSite?.profile ?? '') : ''
+  const busyPublishingLabel = updatingLiveSite
+    ? i18nT('components.publishHub.updating_in_progress')
+    : i18nT('components.publishHub.publishing_2')
+  // Whether a TTL may be chosen for the CURRENT selection. One condition, read by
+  // both the control's visibility and the value everything downstream uses, because
+  // the bug here was those two disagreeing: `ttlHours` is a single piece of state
+  // shared across rows, so picking "72 hours" on an app row and then switching to a
+  // core row that cannot expire hid the control while leaving the choice standing —
+  // and the acknowledgment modal went on promising a time-boxed exposure for a link
+  // that is permanent. Deriving the value rather than resetting the state on
+  // selection means no ordering or missed reset can bring the promise back.
+  const ttlSelectable = ttlSelectableFor(selected)
+  const selectedTtlHours = () => effectiveTtlHours(ttlHours, selected)
+  const [visibilityChoice, setVisibilityChoice] = useState<PublishVisibility>('PUBLIC')
+  const existingVisibility = artifact.publication ? (artifact.publication.visibility ?? 'PUBLIC') : null
+  const alreadyPublished = existingVisibility != null
+  const visibilityOptions = visibilityOptionsFor(selected, alreadyPublished)
+  const selectedVisibility = effectiveVisibility(visibilityChoice, selected, existingVisibility)
+  // The exposure warning and the acknowledgment describe a public link, so both need a
+  // destination that serves without login AND a request that asks for public.
+  const exposesPublicly = selected?.publicReachable !== false
+    && (!selected?.core || selectedVisibility === 'PUBLIC')
+  // A core row can be SELECTED while unconfigured (its remedy is its own hint, so
+  // it is selected rather than routed away — see the provider-list onClick). But an
+  // unconfigured destination cannot publish, so the confirm step must NOT offer a
+  // live Publish CTA that only fails after the acknowledgment: show the remedy and a
+  // link to set the destination up instead.
+  const unconfiguredCore = !!(selected?.core && !selected.configured)
+
+  /** First call: no confirm → get preview or scan-blocked. */
+  const requestPreview = async () => {
+    if (!selected) return
+    setBusy(true)
+    setScanBlocked(null)
+    setPreview(null)
+    try {
+      if (selected.core) {
+        // A core row does NOT publish here. For a publicly reachable destination,
+        // PublicPublishAckModal is the blocking acknowledgment in front of the publish
+        // (#3599), and it is reached from the confirm step -- so posting on this first
+        // click would make content world-readable with no consent shown at all. The
+        // backend has no preview to return for this path, so the confirm step is
+        // entered locally: consent is about what is ABOUT to happen, not about a digest.
+        setPreview({ requires_confirm: true, core: true })
+        return
+      }
+      const resp = await api.publishToProvider(
+        artifact.slug, selected.id, selected.app, selectedTtlHours(), deployProfile || undefined,
+      )
+      const outcome = readPublishOutcome(resp)
+      if (resp?.requires_confirm) {
+        setPreview(resp)
+        setContentDigest(typeof resp.content_digest === 'string' ? resp.content_digest : '')
+        setPreviewIdentity({
+          profile: typeof resp.profile === 'string' ? resp.profile : '',
+          region: typeof resp.region === 'string' ? resp.region : '',
+        })
+      } else if (resp?.blocked && resp?.reason === 'scan') {
+        // The scan-block 409 carries preview bindings too --
+        // store them so an override-confirm is pinned to the scanned
+        // content and the resolved identity.
+        setContentDigest(typeof resp.content_digest === 'string' ? resp.content_digest : '')
+        setPreviewIdentity({
+          profile: typeof resp.profile === 'string' ? resp.profile : '',
+          region: typeof resp.region === 'string' ? resp.region : '',
+        })
+        setScanBlocked({ findings: resp.findings as string, count: resp.count as number, credential: !!resp.credential })
+      } else if (resp?.error) {
+        setResult({ error: String(resp.error) })
+      } else if (outcome) {
+        // Immediate success (already deployed / no confirm needed), or a
+        // persisted push failure the route reported with a 200.
+        setResult('error' in outcome ? { error: outcome.error } : { url: outcome.url, notice: outcome.notice, notice_code: outcome.notice_code })
+        if (!('error' in outcome) && isPublicWebDeploy(selected)) seedPublishedSite(outcome.url)
+      } else {
+        setResult({ error: i18nT('components.publishHub.unexpected_response') })
+      }
+    } catch (err: unknown) {
+      setResult({ error: err instanceof Error ? err.message : i18nT('components.publishHub.publish_failed') })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** Second call: confirm=true to proceed (+ optional override_scan). */
+  const confirmPublish = async (overrideScan = false) => {
+    if (!selected) return
+    // A confirmed publish must happen AT MOST ONCE per acknowledgment. `busy`
+    // alone cannot enforce that: the acknowledgment lives inside `Modal`'s
+    // <AnimatePresence>, so on close framer-motion keeps rendering the exiting
+    // subtree from the element it captured BEFORE `busy` flipped -- an enabled
+    // `danger` button, still hit-testable for the exit duration. A second click
+    // there would issue a second confirmed deploy of the same slug. A ref is
+    // the latch because it is written synchronously, so it is already set for a
+    // click dispatched in the same render generation (state would still read
+    // stale). Released in `finally`, so a failed publish stays retryable.
+    if (publishInFlight.current) return
+    publishInFlight.current = true
+    setBusy(true)
+    try {
+      if (selected.core) {
+        // Reached only from the acknowledgment, same as the app path. A core row MUST NOT
+        // go through the deploy endpoint below: with no app endpoint that path falls back
+        // to `/api/deploy/deploy`, the per-artifact deploy machinery this destination
+        // exists to replace.
+        const resp = await api.publishArtifactToCoreProvider(
+          artifact.slug,
+          selected.id,
+          selectedVisibility,
+          selectedVisibility === 'SHARED' ? (artifact.publication?.shared_with ?? []) : [],
+        )
+        const outcome = readPublishOutcome(resp)
+        if (!outcome) {
+          // Same condition, same wording as the app path below: the response carried
+          // neither a link nor a publication.
+          setResult({ error: typeof resp?.error === 'string' ? resp.error : i18nT('components.publishHub.unexpected_response') })
+        } else {
+          setResult('error' in outcome ? { error: outcome.error } : { url: outcome.url, notice: outcome.notice, notice_code: outcome.notice_code })
+        }
+        return
+      }
+      const endpoint = selected.app?.endpoint || '/api/deploy/deploy'
+      const payload: Record<string, unknown> = {
+        site_id: artifact.slug,
+        artifact_slug: artifact.slug,
+        provider_id: selected.id,
+        confirm: true,
+        ttl_hours: selectedTtlHours(),
+      }
+      if (contentDigest) payload.expected_content_digest = contentDigest
+      if (deployProfile) payload.profile = deployProfile
+      // Bind the previewed identity -- backend 409s (stale_preview) if
+      // the resolved profile/region drifted between preview and confirm.
+      if (previewIdentity.profile) payload.expected_profile = previewIdentity.profile
+      if (previewIdentity.region) payload.expected_region = previewIdentity.region
+      if (overrideScan) payload.override_scan = true
+      const r = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Session-Key': 'dashboard:ui' },
+        body: JSON.stringify(payload),
+      })
+      const data = await r.json()
+      const outcome = readPublishOutcome(data)
+      if (data?.code === 'stale_preview') {
+        // Content changed since preview — force re-preview
+        setPreview(null)
+        setContentDigest('')
+        setResult({ error: i18nT('components.publishHub.content_changed_since_preview_re_run_publish_to') })
+      } else if (data?.blocked && data?.reason === 'scan') {
+        setScanBlocked({ findings: data.findings, count: data.count, credential: !!data.credential })
+        setPreview(null)
+      } else if (data?.error) {
+        // Checked BEFORE the outcome: an error response is authoritative even if
+        // it happens to carry other fields. `details` and `remediation` ride
+        // along so the banner can hold the plain sentence while the technical
+        // half goes behind the Details toggle.
+        setResult({
+          error: data.error,
+          ...(typeof data.details === 'string' && data.details ? { details: data.details } : {}),
+          ...(typeof data.remediation === 'string' && data.remediation
+            ? { remediation: data.remediation } : {}),
+        })
+      } else if (outcome) {
+        // `notice_code` travels with `notice` here for the same reason as the two
+        // sibling sites above: the catalog selector keys the remedy copy off the code,
+        // so dropping it silently downgrades a `distribution_disabled` notice to the
+        // generic warning -- the one case whose whole point is telling the user how to
+        // re-enable. Every site that reads an outcome must copy BOTH fields.
+        setResult('error' in outcome ? { error: outcome.error } : { url: outcome.url, notice: outcome.notice, notice_code: outcome.notice_code })
+        if (!('error' in outcome) && isPublicWebDeploy(selected)) seedPublishedSite(outcome.url)
+      } else {
+        // An unrecognized shape is a failure we cannot describe — say so.
+        // Reporting it as `{url: ''}` (the previous shape) rendered the error
+        // branch with an UNDEFINED message: a bare red icon and no text, on a
+        // publish that had in fact succeeded.
+        setResult({ error: i18nT('components.publishHub.unexpected_response') })
+      }
+    } catch (err: unknown) {
+      setResult({ error: err instanceof Error ? err.message : i18nT('components.publishHub.publish_failed') })
+    } finally {
+      setBusy(false)
+      publishInFlight.current = false
+    }
+  }
+
+  /** The one place a commit click lands, for BOTH paths (clean confirm and scan
+   *  override). A publicly reachable destination goes through the blocking
+   *  acknowledgment first, and the acknowledgment's confirm is what calls
+   *  `confirmPublish`. A destination that requires authentication publishes on this
+   *  click: the acknowledgment's sentence -- "publish publicly" -- is false there, and
+   *  the same `scanBlocked` reset the acknowledgment performs is done here so the
+   *  override path settles identically whichever way it went. */
+  const commitPublish = (overrideScan: boolean) => {
+    if (exposesPublicly) {
+      setAck({ overrideScan })
+      return
+    }
+    if (overrideScan) setScanBlocked(null)
+    void confirmPublish(overrideScan)
+  }
+
+  // While EITHER provider source is still loading, hold a skeleton rather than the
+  // empty state. `unified.length === 0` is true during that window too, so without
+  // this gate a stock build flashes "No publish providers available" before the core
+  // row arrives from its query.
+  if (providersQuery.isLoading || coreQuery.isLoading) {
+    return (
+      <Card>
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-sm font-semibold text-text-strong">{i18nT('components.publishHub.publish')}</span>
+          {onClose && <Btn onClick={onClose} aria-label={i18nT('components.publishHub.close_publish_panel')}><X size={12} /></Btn>}
+        </div>
+        <ContentSkeleton rows={2} />
+      </Card>
+    )
+  }
+
+  if (unified.length === 0) {
+    return (
+      <Card>
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-sm font-semibold text-text-strong">{i18nT('components.publishHub.publish')}</span>
+          {onClose && <Btn onClick={onClose} aria-label={i18nT('components.publishHub.close_publish_panel')}><X size={12} /></Btn>}
+        </div>
+        <p className="text-sm text-muted">{i18nT('components.publishHub.no_publish_providers_available_for_this_artifact')}</p>
+      </Card>
+    )
+  }
+
+  return (
+    <Card>
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-sm font-semibold text-text-strong">{i18nT('components.publishHub.publish')}</span>
+        {onClose && <Btn onClick={onClose} aria-label={i18nT('components.publishHub.close_publish_panel')}><X size={12} /></Btn>}
+      </div>
+
+      {/* Provider list */}
+      {!selectedId && (
+        <div className="space-y-2">
+          {/* The lookup never holds the list back: the destinations stay usable
+              while it runs, and a failed lookup leaves them as they are. */}
+          {lookupLiveSite && sitesQuery.isLoading && (
+            <p role="status" className="text-[12px] text-muted">
+              {i18nT('components.publishHub.checking_for_existing_public_link')}
+            </p>
+          )}
+          {/* No hand-off: this panel sits on the artifact page beside an editable
+              buffer, and the hand-off navigates away from unsaved edits. Check
+              again re-reads the listing in place, and the destinations below
+              stay usable. */}
+          <ErrorNotice
+            title={i18nT('components.publishHub.existing_link_check_failed')}
+            message={lookupFailure || null}
+            messagePlacement="below"
+            footer={lookupFailure && (
+              <div className="space-y-2">
+                {/* With a link on screen the update already targets that page. */}
+                {!liveSite && <p>{i18nT('components.publishHub.existing_link_check_failed_hint')}</p>}
+                <Btn onClick={() => { void sitesQuery.refetch() }} disabled={sitesQuery.isFetching}>
+                  {i18nT('components.publishHub.check_again')}
+                </Btn>
+              </div>
+            )}
+          />
+          {/* An artifact already on the public web shows its link, and the
+              public-web row becomes an update of that same site. Same tone and
+              wording as the detail page's published-copy line. */}
+          {liveSite && publicWebRow && (
+            <div className="px-3 py-2.5 rounded-md border border-info/40 bg-info-subtle space-y-2">
+              <div className="flex items-center gap-2 text-sm font-medium text-text">
+                <Globe size={16} className="text-info shrink-0" />
+                {i18nT('components.publishHub.published_on_public_web')}
+              </div>
+              {liveUrl && (
+                <div className="text-[12px] font-mono text-text break-all">{liveUrl}</div>
+              )}
+              <div className="flex flex-wrap gap-2">
+                {liveUrl && (
+                  <a
+                    href={liveUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-border text-[13px] text-text hover:border-border-strong hover:bg-bg-hover"
+                  >
+                    <ExternalLink size={12} /> {i18nT('components.publishHub.open_published_page')}
+                  </a>
+                )}
+                <Btn primary onClick={() => setSelectedId(publicWebRow.id)}>
+                  <Upload size={12} /> {i18nT('components.publishHub.update_same_url')}
+                </Btn>
+              </div>
+              <p className="text-[12px] text-muted">{i18nT('components.publishHub.update_reviewed_first')}</p>
+            </div>
+          )}
+          {unified.filter(p => !(liveSite && p.id === publicWebRow?.id)).map(p => {
+            const Icon = p.icon
+            return (
+              <button
+                key={p.id}
+                type="button"
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-md border border-border hover:border-accent/40 hover:bg-accent-subtle transition-all text-left cursor-pointer"
+                onClick={() => {
+                  if (p.configured) {
+                    setSelectedId(p.id)
+                  } else if (p.core) {
+                    // Select it rather than navigating. A core destination's setup is
+                    // described by its OWN hint, shown below; sending the user to the
+                    // deploy setup page would explain a different destination's flow.
+                    setSelectedId(p.id)
+                  } else {
+                    navigate(p.setupRoute || '/deploy')
+                  }
+                }}
+              >
+                <Icon size={16} className="text-accent shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-text">{p.label}</div>
+                  {!p.configured && (
+                    <div className="text-[11px] text-warn flex items-center gap-1">
+                      <Settings size={10} /> {i18nT('components.publishHub.setup_required')}
+                    </div>
+                  )}
+                  {!p.configured && p.installHint && (
+                    <div className="mt-1.5 text-[11px] leading-relaxed text-muted whitespace-pre-line">
+                      {p.installHint}
+                    </div>
+                  )}
+                </div>
+              </button>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Preview — shows what will happen, user must confirm */}
+      {selected && preview && !result && !scanBlocked && (
+        <div className="space-y-3">
+          <div className="text-sm text-muted">
+            {updatingLiveSite
+              ? i18nT('components.publishHub.ready_to_update')
+              : i18nT('components.publishHub.publishing')} <span className="font-mono font-semibold text-text">{artifact.slug}</span> {i18nT('components.publishHub.via')}{' '}
+            <span className="font-semibold text-text">{selected.label}</span>
+          </div>
+          <div className="text-[12px] text-muted space-y-1">
+            {/* The deploy's own preview line speaks of a first publish; an update
+                restates what it replaces instead. */}
+            {updatingLiveSite
+              ? <p className="text-text">{i18nT('components.publishHub.update_replaces_published_page')}</p>
+              : typeof preview.message === 'string' && <p>{preview.message}</p>}
+            {typeof preview.bytes === 'number' && <p>{i18nT('components.publishHub.size')} {(preview.bytes / 1024).toFixed(1)} {i18nT('components.publishHub.kb')}</p>}
+            {typeof preview.scan === 'string' && <p>{i18nT('components.publishHub.scan')} {preview.scan}</p>}
+            {selected.core && (visibilityOptions.length > 0 || alreadyPublished) && selectedVisibility !== 'SHARED' && (
+              <p>
+                {i18nT('components.publishHub.visibility')}:{' '}
+                <span className="font-semibold text-text">{visibilityLabel(selectedVisibility)}</span>
+              </p>
+            )}
+          </div>
+          {exposesPublicly && (
+            <div className="flex items-start gap-2 text-[12px] text-warn-text p-2 rounded border border-warn/30 bg-warn-subtle">
+              <AlertTriangle className="lucide-inline shrink-0" />
+              <span>{i18nT('components.publishHub.public_exposure_warning')}</span>
+            </div>
+          )}
+          <div className="flex gap-2">
+            <Btn primary onClick={() => commitPublish(false)} disabled={busy}>
+              {busy ? busyPublishingLabel : <><Upload size={12} /> {updatingLiveSite
+                ? i18nT('components.publishHub.confirm_update')
+                : selected.core && selectedVisibility === 'PRIVATE'
+                  ? i18nT('components.publishHub.confirm_publish_private')
+                  : i18nT('components.publishHub.confirm_publish')}</>}
+            </Btn>
+            <Btn onClick={() => { setPreview(null); setSelectedId('') }}>{i18nT('components.publishHub.back')}</Btn>
+          </div>
+        </div>
+      )}
+
+      {/* Scan blocked — user must acknowledge findings to override */}
+      {selected && scanBlocked && !result && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 text-sm text-warn">
+            <AlertCircle size={14} /> {i18nT('components.publishHub.scan_blocked_finding', { count: scanBlocked.count })}
+          </div>
+          <div className="text-[12px] text-muted p-2 rounded border border-warn/30 bg-warn-subtle">
+            {scanBlocked.findings}
+          </div>
+          {scanBlocked.credential ? (
+            <>
+              <p className="text-[12px] text-warn font-medium">
+                {i18nT('components.publishHub.credential_security_findings_cannot_be_overridde')}
+              </p>
+              <div className="flex gap-2">
+                <Btn onClick={() => { setScanBlocked(null); setSelectedId('') }}>{i18nT('components.publishHub.cancel')}</Btn>
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="text-[12px] text-muted">
+                {i18nT('components.publishHub.publishing_is_blocked_until_scan_findings_are_re')}
+              </p>
+              {exposesPublicly && (
+                <div className="flex items-start gap-2 text-[12px] text-warn-text p-2 rounded border border-warn/30 bg-warn-subtle">
+                  <AlertTriangle className="lucide-inline shrink-0" />
+                  <span>{i18nT('components.publishHub.public_exposure_warning')}</span>
+                </div>
+              )}
+              <div className="flex gap-2">
+                <Btn danger onClick={() => commitPublish(true)} disabled={busy}>
+                  {busy ? busyPublishingLabel : i18nT('components.publishHub.override_publish_anyway')}
+                </Btn>
+                <Btn onClick={() => { setScanBlocked(null); setSelectedId('') }}>{i18nT('components.publishHub.cancel')}</Btn>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Initial confirm step — request preview */}
+      {selected && !preview && !result && !scanBlocked && (
+        <div className="space-y-3">
+          <div className="text-sm text-muted">
+            {updatingLiveSite
+              ? i18nT('components.publishHub.update_question_lead')
+              : i18nT('components.publishHub.publish')} <span className="font-mono font-semibold text-text">{artifact.slug}</span> {i18nT('components.publishHub.via')}{' '}
+            <span className="font-semibold text-text">{selected.label}</span>?
+          </div>
+          {updatingLiveSite && (
+            <p className="text-[12px] text-text">{i18nT('components.publishHub.update_replaces_published_page')}</p>
+          )}
+          {/* Unconfigured core destination: no live Publish. Offering one here lets the
+              user pass the acknowledgment and only THEN hit a failure. Show the remedy
+              (the provider's own hint) plus a link to set it up, and no Publish CTA. */}
+          {unconfiguredCore ? (
+            <>
+              {selected.installHint && (
+                <div className="text-[12px] leading-relaxed text-muted whitespace-pre-line">
+                  {selected.installHint}
+                </div>
+              )}
+              <div className="flex gap-2">
+                <Btn primary onClick={() => navigate('/deploy')}>
+                  <Settings size={12} /> {i18nT('components.publishHub.open_artifact_deploy')}
+                </Btn>
+                <Btn onClick={() => setSelectedId('')}>{i18nT('components.publishHub.back')}</Btn>
+              </div>
+            </>
+          ) : (
+            <>
+          {/* A core destination declaring no expiration support gets no TTL control at all.
+              Offering it would be a lie: the core publish route carries no TTL, so choosing
+              "72 hours" would hand back a persistent public link while the user believed the
+              exposure was time-boxed. Same `ttlSelectable` the value derives from, so a
+              hidden control can never leave a live choice behind it. */}
+          {visibilityOptions.length > 0 && (
+          <fieldset>
+            <legend className="text-[11px] text-muted mb-1">{i18nT('components.publishHub.visibility')}</legend>
+            <div className="flex gap-4">
+              {visibilityOptions.map(v => {
+                const label = visibilityLabel(v)
+                return (
+                <label key={v} className="flex items-center gap-1.5 text-sm text-text cursor-pointer">
+                  <input
+                    type="radio"
+                    name="publish-visibility"
+                    value={v}
+                    aria-label={label}
+                    checked={selectedVisibility === v}
+                    onChange={() => setVisibilityChoice(v)}
+                  />
+                  {label}
+                </label>
+                )
+              })}
+            </div>
+          </fieldset>
+          )}
+          {ttlSelectable && (
+          <div>
+            <label className="text-[11px] text-muted block mb-1">{i18nT('components.publishHub.ttl_time_to_live')}</label>
+            <SimpleSelect
+              options={['Persistent (no expiry)', '72 hours (requires reaper)']}
+              value={ttlHours}
+              onChange={onTtlChange}
+              aria-label={i18nT('components.publishHub.ttl_time_to_live')}
+            />
+            {/* An update re-arms the expiry for the page that already exists, so
+                a time limit chosen here can delete a page that is persistent today. */}
+            {updatingLiveSite && (
+              <p className="mt-1 text-[11px] text-muted">{i18nT('components.publishHub.update_ttl_applies_to_page')}</p>
+            )}
+          </div>
+          )}
+          <div className="flex gap-2">
+            <Btn primary onClick={requestPreview} disabled={busy}>
+              {busy ? i18nT('components.publishHub.checking') : <><Upload size={12} /> {updatingLiveSite
+                ? i18nT('components.publishHub.review_update')
+                : i18nT('components.publishHub.publish')}</>}
+            </Btn>
+            <Btn onClick={() => setSelectedId('')}>{i18nT('components.publishHub.back')}</Btn>
+          </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Result */}
+      {result && (
+        <div className="space-y-2">
+          {result.error ? (
+            <div className="space-y-1.5">
+              {/* Through ErrorNotice rather than a hand-written danger row: a
+                  failed publish is a dead end that needs the structured surface
+                  and the agent hand-off (errors-use-error-notice). */}
+              <ErrorNotice message={result.error} askAgent />
+              {/* Same split the deploy refusals use: the sentence stays in the
+                  banner, the stack and parameter names go one click away. */}
+              <ErrorDetails details={result.details} remediation={result.remediation} />
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2 text-sm text-ok">
+                <Check size={14} /> {i18nT('components.publishHub.published')}
+                {result.url && safeHttpUrl(result.url) && (
+                  <a href={safeHttpUrl(result.url)!} target="_blank" rel="noreferrer" className="text-accent hover:underline inline-flex items-center gap-1">
+                    <ExternalLink size={12} /> {result.url}
+                  </a>
+                )}
+              </div>
+              {/* A notice rides WITH a success: the publish worked, the link just
+                  is not reachable yet. Neutral/warn line beside the link, never
+                  the danger surface `error` drives. */}
+              {result.notice && (
+                <div className="flex items-start gap-1.5 text-[12px] text-warn">
+                  <AlertTriangle className="lucide-inline shrink-0" />
+                  <span>{i18nT(publishNoticeKey({
+                    rolling_out: 'components.publishHub.published_still_rolling_out',
+                    distribution_disabled: 'components.publishHub.published_distribution_disabled',
+                    notice_generic: 'components.publishHub.published_notice_generic',
+                  }, result.notice_code))}</span>
+                </div>
+              )}
+            </div>
+          )}
+          <Btn onClick={() => { setResult(null); setPreview(null); setScanBlocked(null); setSelectedId(''); onClose?.() }}>{i18nT('components.publishHub.done')}</Btn>
+        </div>
+      )}
+
+      {/* Blocking public-exposure acknowledgment — the last thing between a
+          human and a world-readable URL, for BOTH commit paths. Opened only by
+          `commitPublish`, which never opens it for a destination that requires
+          authentication: there the URL is not world-readable and the
+          acknowledgment's own words would be untrue. */}
+      <PublicPublishAckModal
+        open={!!ack}
+        target={artifact.slug}
+        ttlHours={selectedTtlHours()}
+        // The default sentence names `recall` and `destroy` -- the deploy surface's
+        // actions. A core destination has neither, so it would be telling the user their
+        // way out is something that does not exist. Say what actually ends the exposure.
+        persistentExposureNote={
+          selected?.core
+            ? i18nT('components.publicPublishAckModal.exposure_window_persistent_withdrawable')
+            : undefined
+        }
+        busy={busy}
+        onCancel={() => setAck(null)}
+        onConfirm={() => {
+          const overrideScan = !!ack?.overrideScan
+          if (overrideScan) setScanBlocked(null)
+          // The acknowledgment stays MOUNTED and `busy`-disabled until the
+          // publish settles, then closes. Closing first (the previous shape)
+          // handed the exiting <AnimatePresence> subtree an enabled confirm
+          // button for the exit duration; holding it open is what lets `busy`
+          // actually reach the buttons. `confirmPublish` also latches, so the
+          // at-most-once guarantee does not depend on this timing.
+          void confirmPublish(overrideScan).finally(() => setAck(null))
+        }}
+      />
+    </Card>
+  )
+}

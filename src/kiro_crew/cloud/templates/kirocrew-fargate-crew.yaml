@@ -1,0 +1,314 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Per-crew Fargate scaffolding for one Kiro Crew remote crew: the two roles a task
+  carries and the log group it writes to. One stack per crew, alongside the
+  shared kirocrew-fargate-base.yaml. Deleting this stack removes exactly one
+  crew's identity and logs and leaves the cluster and its siblings untouched.
+
+  Every name here is DERIVED by src/kiro_crew/cloud/fargate/identity.py, not
+  chosen: the task definition builds executionRoleArn, taskRoleArn and the log
+  group from the crew name and then refuses a document whose ARNs disagree. So a
+  name changed on either side is a launch refusal, not a mismatch that runs.
+
+# ---------------------------------------------------------------------------
+# Parameters
+# ---------------------------------------------------------------------------
+Parameters:
+  Crew:
+    Type: String
+    # Mirrors _CREW_RE in cloud/fargate/identity.py exactly. The bounds are not
+    # cosmetic: a trailing hyphen makes the derived role name end in "--exec",
+    # and a leading one is not a legal start for the resource names built from
+    # it. Refusing here keeps that at deploy time rather than at first launch.
+    AllowedPattern: "^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$"
+    Description: >-
+      Crew name. 1 to 32 characters, lower-case alphanumeric with inner hyphens,
+      never leading or trailing.
+
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365]
+    Description: Days a crew's task logs are kept before CloudWatch expires them.
+
+  PermissionsBoundaryArn:
+    Type: String
+    # REQUIRED, with no Default. A security parameter that accepts empty is the
+    # optional-security-control shape: the parameter's presence makes the ceiling
+    # look present while an empty value leaves it absent. The creator exists:
+    # cloud/source.py ensure_crew_boundary authors this policy ONCE from a
+    # content-fixed document and FAILS CLOSED when an existing policy at the name
+    # does not match it, so a leaked launcher credential cannot seed a permissive
+    # ceiling and have it reused. With that in place there is no honest reason to
+    # accept empty, and the ceiling an empty value skips is the only thing standing
+    # between a compromised task role and whatever its policies later grow.
+    #
+    # Free to require right now: nothing deploys this template yet, so there is no
+    # existing stack to break.
+    #
+    # Three tests hold this shape. One asserts the pattern stays exact, so widening
+    # it is a visible edit. One asserts empty is REJECTED, so the degraded mode
+    # cannot return by restoring a single alternation. One compares this against
+    # identity._PARTITION_RE behaviourally, so the partition alternation cannot
+    # drift from the one CrewBinding accepts: a pattern admitting only "aws" would
+    # refuse a valid aws-cn or aws-us-gov ARN at parameter validation, and the
+    # per-crew stack would simply fail to deploy in those partitions.
+    AllowedPattern: "^arn:aws(-[a-z0-9]+)*:iam::[0-9]{12}:policy/kirocrew-crew-boundary$"
+    Description: >-
+      ARN of the shared TASK-role permissions boundary
+      (arn:aws:iam::<account>:policy/kirocrew-crew-boundary), created by
+      cloud/source.py ensure_crew_boundary. The ceiling on what TaskRole can ever
+      do regardless of the policies attached to it.
+
+  ExecutionPermissionsBoundaryArn:
+    Type: String
+    # A SEPARATE ceiling for ExecutionRole, and the separation is load-bearing
+    # rather than tidy. A boundary caps to the intersection of the identity policy
+    # and the ceiling, and this role's job is different from TaskRole's: ECS uses it
+    # to fetch the crew's secret and open its log stream BEFORE the container
+    # starts. Capping it with the task role's four ssmmessages actions denies both,
+    # so no task launches at all. Sizing one ceiling to cover both roles would
+    # instead be their union, which hands TaskRole the secretsmanager read that
+    # keeping the secret off the container is the whole point of.
+    #
+    # Required with no Default for the same reason as the parameter above, and
+    # pinned to one exact policy name by the same kind of pattern, so an operator
+    # cannot pass a ceiling they authored.
+    AllowedPattern: "^arn:aws(-[a-z0-9]+)*:iam::[0-9]{12}:policy/kirocrew-crew-exec-boundary$"
+    Description: >-
+      ARN of the shared EXECUTION-role permissions boundary
+      (arn:aws:iam::<account>:policy/kirocrew-crew-exec-boundary), created by
+      cloud/source.py ensure_crew_exec_boundary. The ceiling on what ExecutionRole
+      can ever do regardless of the policies attached to it.
+
+  EcrRepositoryArn:
+    Type: String
+    Default: ""
+    # Empty means the crew image is pulled from a public registry, which needs no
+    # execution-role permission at all -- the decided delivery for the shared
+    # crew image (issue #11408) is ECR Public. Set it only for a private
+    # repository, and the grant is then scoped to that one repository ARN.
+    # Partition alternation as above, pinned to identity._PARTITION_RE by the same
+    # test: an ECR repository in aws-cn or aws-us-gov is a valid target.
+    AllowedPattern: "^$|^arn:aws(-[a-z0-9]+)*:ecr:[a-z0-9-]{1,32}:[0-9]{12}:repository/[a-zA-Z0-9._/-]+$"
+    Description: >-
+      ARN of the private ECR repository holding the crew image, or empty when the
+      image is pulled from a public registry.
+
+Conditions:
+  HasPrivateRegistry: !Not [!Equals [!Ref EcrRepositoryArn, ""]]
+
+Resources:
+  # --- Log group. Named /kirocrew/crew/<crew> because log_group_name() derives
+  #     exactly that, and logConfiguration is one of the four fields RunTask
+  #     CANNOT override, so the name is fixed at registration.
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/kirocrew/crew/${Crew}"
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - { Key: "kirocrew:managed", Value: "true" }
+        - { Key: "kirocrew:crew", Value: !Ref Crew }
+
+  # --- Execution role: what ECS itself assumes BEFORE the container starts, to
+  #     fetch the crew's secrets and open its log stream. The container never
+  #     holds this role, which is why the secret read lives here and not on the
+  #     task role.
+  #
+  #     Every action is listed individually. No prefix wildcard appears anywhere
+  #     in this template, deliberately: cloud/aws.py's read allowlist documents
+  #     that a prefix admits `secretsmanager get-secret-value` and
+  #     `ssm get-parameter --with-decryption`, so `secretsmanager:Get*` would
+  #     grant the very thing the task role is denied.
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "kirocrew-crew-${Crew}-exec"
+      PermissionsBoundary: !Ref ExecutionPermissionsBoundaryArn
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              # Two keys, and only one of them can narrow what this actually is.
+              #
+              # aws:SourceAccount closes the CROSS-ACCOUNT confused deputy: a
+              # principal in another account cannot get ecs-tasks.amazonaws.com to
+              # assume this role on its behalf. This is the key doing the work.
+              #
+              # aws:SourceArn is ACCOUNT-WIDE, not cluster-scoped, because ECS does
+              # not support the narrower form. AWS states it directly: "Using the
+              # aws:SourceArn condition key to specify a specific cluster is not
+              # currently supported, you should use the wildcard to specify all
+              # clusters", and the documented example is this exact shape beside
+              # SourceAccount. A cluster-qualified value does not match what ECS
+              # presents when it assumes the role, so every task launch would fail.
+              #
+              # What that costs, stated plainly rather than implied: within one
+              # account these two keys do NOT distinguish one cluster from another,
+              # so any task definition this account can register may carry this role
+              # -- and this role reads the crew's secret namespace. Account scoping
+              # plus SourceAccount is the supported ceiling here, not a trade chosen
+              # for convenience. Narrowing the same-account case needs a different
+              # mechanism than a trust-policy condition.
+              StringEquals:
+                "aws:SourceAccount": !Ref "AWS::AccountId"
+              ArnLike:
+                "aws:SourceArn": !Sub
+                  "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:*"
+      Policies:
+        - PolicyName: CrewSecretRead
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Resource-scoped to THIS crew's secret namespace. The trailing
+              # wildcard covers the six-character suffix Secrets Manager appends
+              # and which no caller can derive (see identity.py's
+              # _SECRET_SUFFIX_RE) -- it does not widen the crew segment, so this
+              # role cannot read a sibling crew's secret.
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:kirocrew/crew/${Crew}/*"
+        - PolicyName: CrewLogWrite
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Scoped to this crew's own log group. CreateLogGroup is absent on
+              # purpose: the group is created by this stack, so a task that could
+              # create one could also write outside the namespace it is retained
+              # and deleted under.
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/kirocrew/crew/${Crew}:*"
+        - !If
+          - HasPrivateRegistry
+          - PolicyName: CrewImagePull
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                # GetAuthorizationToken is account-wide by the service's own
+                # design: it names no repository, so it cannot be scoped to one.
+                - Effect: Allow
+                  Action:
+                    - ecr:GetAuthorizationToken
+                  Resource: "*"
+                - Effect: Allow
+                  Action:
+                    - ecr:BatchCheckLayerAvailability
+                    - ecr:BatchGetImage
+                    - ecr:GetDownloadUrlForLayer
+                  Resource:
+                    - !Ref EcrRepositoryArn
+          - !Ref "AWS::NoValue"
+      Tags:
+        - { Key: "kirocrew:managed", Value: "true" }
+        - { Key: "kirocrew:crew", Value: !Ref Crew }
+
+  # --- Task role: the identity the RUNNING container carries, and therefore the
+  #     blast radius one agent turn reaches. It carries exactly ONE policy, the
+  #     four ssmmessages actions the SSM agent needs to open its channel, and
+  #     nothing else. Those four are what make the task reachable from a laptop
+  #     over a port-forward; before this it had no policies at all.
+  #
+  #     Four actions and not a fifth. Not `ssm:*`, not `ssm:StartSession` (that is
+  #     the CALLER's permission, not the task's), not kms:Decrypt. The agent
+  #     opens control and data channels and does nothing else, so a wider grant
+  #     would buy the task nothing while widening what one prompt-reachable turn
+  #     could reach.
+  #
+  #     It must NEVER be granted secretsmanager:GetSecretValue. identity.py's
+  #     task_role_arn docstring states the reason: the model credential is
+  #     already in the container's environment by the time this role exists, so
+  #     the permission buys the crew nothing it does not have, while a turn that
+  #     could re-read a secret could read every crew's. A test asserts the
+  #     absence, so granting it later is a visible, argued edit.
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "kirocrew-crew-${Crew}-task"
+      PermissionsBoundary: !Ref PermissionsBoundaryArn
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              # Same pair as ExecutionRole, and the same ceiling: ECS does not
+              # support a cluster-qualified aws:SourceArn, so this is account-wide
+              # and the reasoning is spelled out on that role.
+              #
+              # The consequence lands harder here, so it is worth naming twice. This
+              # role holds a real grant, the SSM channel below, and account scoping
+              # means any task definition this account can register may carry it.
+              # SourceAccount keeps that within the owner's own account; nothing in
+              # a trust policy can narrow it to one cluster.
+              StringEquals:
+                "aws:SourceAccount": !Ref "AWS::AccountId"
+              ArnLike:
+                "aws:SourceArn": !Sub
+                  "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:*"
+      Policies:
+        - PolicyName: SsmChannel
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Resource "*" is the only form these four accept: an ssmmessages
+              # channel has no ARN to name before it is opened, and AWS's own
+              # managed policy for the same purpose is written the same way. The
+              # scoping that matters is therefore on the OTHER side -- the caller
+              # needs ssm:StartSession on this task's ARN and on the port-forward
+              # document, and holds no ecs:ExecuteCommand at all, so these four
+              # let the agent answer a session that IAM has already authorised
+              # rather than letting the task initiate anything.
+              - Effect: Allow
+                Action:
+                  - ssmmessages:CreateControlChannel
+                  - ssmmessages:CreateDataChannel
+                  - ssmmessages:OpenControlChannel
+                  - ssmmessages:OpenDataChannel
+                Resource: "*"
+      Tags:
+        - { Key: "kirocrew:managed", Value: "true" }
+        - { Key: "kirocrew:crew", Value: !Ref Crew }
+
+Outputs:
+  Crew:
+    Description: The crew this stack scaffolds.
+    Value: !Ref Crew
+  ExecutionRoleArn:
+    Description: >-
+      Role ECS assumes to fetch secrets and open the log stream. Must equal
+      identity.execution_role_arn() for this crew or the task definition is
+      refused.
+    Value: !GetAtt ExecutionRole.Arn
+  TaskRoleArn:
+    Description: >-
+      Role the running container carries. Must equal identity.task_role_arn() for
+      this crew or the task definition is refused.
+    Value: !GetAtt TaskRole.Arn
+  LogGroupName:
+    Description: Log group for the task's awslogs driver.
+    Value: !Ref LogGroup
+  SecretNamePrefix:
+    Description: >-
+      Namespace a crew secret must be created under for the execution role to
+      read it. A secret outside it resolves to no value and the task refuses to
+      start.
+    Value: !Sub "kirocrew/crew/${Crew}/"
+  SecretArnPattern:
+    Description: >-
+      The one secret ARN pattern the execution role may read, for the launch
+      spec's secret references. A test asserts this is character-for-character the
+      Resource on the CrewSecretRead statement, so widening one and not the other
+      cannot ship: an output that promised more than the policy grants would send
+      a caller after a secret the task then cannot read.
+    Value: !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:kirocrew/crew/${Crew}/*"

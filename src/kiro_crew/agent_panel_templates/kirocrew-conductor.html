@@ -1,0 +1,317 @@
+<!--
+  The goal conductor's task board.
+
+  THE FILENAME IS THE WIRING. ``template_for_crew`` slugifies a crew's name and looks
+  for a template of exactly that id, falling back to ``default`` when there is none --
+  so this file is selected because it is named for the ``kirocrew-conductor`` crew.
+  ``test_the_board_template_id_is_reachable_through_crew_selection`` asserts this id
+  against the real selection function, so a rename fails there.
+
+  A BODY FRAGMENT, not a document. The drawer wraps it with the strict CSP and the
+  theme variables, so no doctype/html/head/body wrapper here.
+
+  Every field the script reads off the data island is a leaf of the TypedDict
+  ``ConductorBoardPanel`` in ``kiro_crew.conductor_board_contract``, and
+  ``test/test_conductor_board_contract_parity.py`` asserts the read set equals the
+  declared set in both directions, and that STATES / STEPS below equal the contract's
+  ``TASK_STATES`` / ``STEPS``. That test strips comments first.
+
+  Rules held here:
+    values reach the page as text only (textContent), never as markup.
+    no links: the crew webview sandbox withholds allow-popups, so a new-tab link is a
+      dead click and a bare link navigates the frame away. A PR number with a valid
+      top-level `repo` is a <button> that posts kirocrew-dashboard:open to the host,
+      which opens only a github.com pull-request URL; without `repo` it is text.
+    no network: the frame CSP closes egress anyway; nothing here asks for any.
+    theme variables only, each with a fallback for a frame that forwards none.
+    ALL motion stops under prefers-reduced-motion.
+    readable at 320px: one column, nothing with a fixed width.
+-->
+<style>
+  :root{
+    --c-bg:    var(--bg,     #0b0b10);
+    --c-card:  var(--card,   #15151c);
+    --c-ink:   var(--text,   #ececf1);
+    --c-mute:  var(--muted,  #9a9aa8);
+    --c-edge:  var(--border, #2a2a35);
+    --c-acc:   var(--accent, #818cf8);
+    --c-ok:    var(--ok,     #4ade80);
+    --c-warn:  var(--warn,   #fbbf24);
+    --c-bad:   var(--danger, #f87171);
+    --c-info:  var(--info,   #60a5fa);
+  }
+  @media (prefers-color-scheme: light){
+    :root{
+      --c-bg:    var(--bg,     #f3f4f6);
+      --c-card:  var(--card,   #ffffff);
+      --c-ink:   var(--text,   #111827);
+      --c-mute:  var(--muted,  #6b7280);
+      --c-edge:  var(--border, #e5e7eb);
+      --c-acc:   var(--accent, #4f46e5);
+      --c-ok:    var(--ok,     #15803d);
+      --c-warn:  var(--warn,   #b45309);
+      --c-bad:   var(--danger, #b91c1c);
+      --c-info:  var(--info,   #1d4ed8);
+    }
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--c-bg); color:var(--c-ink);
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+    font-size:14px; line-height:1.45; font-variant-numeric:tabular-nums;
+    -webkit-font-smoothing:antialiased;
+  }
+  #page{display:flex; flex-direction:column; gap:12px; padding:12px; max-width:1100px; margin:0 auto}
+
+  /* ---------- floating ghost header ---------- */
+  .ghost{
+    position:sticky; top:0; z-index:2; overflow:hidden;
+    padding:12px 14px; border:1px solid var(--c-edge); border-radius:12px;
+    background:color-mix(in oklab, var(--c-card) 82%, transparent);
+    backdrop-filter:blur(8px);
+    box-shadow:0 8px 24px -12px color-mix(in oklab, var(--c-acc) 45%, transparent);
+    animation:float 6s ease-in-out infinite;
+  }
+  .ghost .mark{
+    position:absolute; right:-6px; bottom:-14px; pointer-events:none;
+    font-size:46px; font-weight:800; letter-spacing:-0.04em; line-height:1;
+    color:var(--c-acc); opacity:.09; white-space:nowrap;
+  }
+  .ghost h1{margin:0; font-size:16px; font-weight:650; letter-spacing:-0.01em}
+  .ghost .meta{margin:2px 0 0; color:var(--c-mute); font-size:12px}
+  @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}
+
+  /* ---------- needs you ---------- */
+  .band{
+    border:1px solid color-mix(in oklab, var(--c-warn) 55%, transparent);
+    border-left:4px solid var(--c-warn); border-radius:10px; padding:10px 12px;
+    background:color-mix(in oklab, var(--c-warn) 14%, var(--c-card));
+    animation:glow 2.6s ease-in-out infinite;
+  }
+  .band .k{display:block; color:var(--c-warn); font-size:11px; font-weight:700;
+    text-transform:uppercase; letter-spacing:.06em}
+  .band .v{margin:2px 0 0; font-size:14px; font-weight:500; overflow-wrap:anywhere}
+  .calm{margin:0; color:var(--c-mute); font-size:12px}
+  .calm::before{content:""; display:inline-block; width:7px; height:7px; border-radius:50%;
+    background:var(--c-ok); margin-right:6px; vertical-align:1px}
+  @keyframes glow{
+    0%,100%{box-shadow:0 0 0 0 color-mix(in oklab, var(--c-warn) 0%, transparent)}
+    50%{box-shadow:0 0 0 4px color-mix(in oklab, var(--c-warn) 22%, transparent)}
+  }
+
+  /* ---------- done-of-total meter ---------- */
+  .meter{display:flex; flex-direction:column; gap:6px}
+  .meter .row{display:flex; justify-content:space-between; gap:8px; font-size:12px; color:var(--c-mute)}
+  .meter .row b{color:var(--c-ink); font-weight:600}
+  .track{height:8px; border-radius:999px; background:var(--c-edge); overflow:hidden}
+  .fill{height:100%; width:0; border-radius:999px;
+    background:linear-gradient(90deg, var(--c-acc), var(--c-ok));
+    transition:width .9s cubic-bezier(.2,.8,.2,1)}
+  .next{margin:0; font-size:13px; overflow-wrap:anywhere}
+  .next .k{color:var(--c-mute)}
+
+  /* ---------- task cards ---------- */
+  .grid{list-style:none; margin:0; padding:0; display:grid; gap:10px;
+    grid-template-columns:repeat(auto-fill, minmax(min(100%, 260px), 1fr))}
+  .card{
+    background:var(--c-card); border:1px solid var(--c-edge); border-radius:12px;
+    padding:10px 12px; display:flex; flex-direction:column; gap:8px; min-width:0;
+    border-top:3px solid var(--tone);
+    animation:pop .42s cubic-bezier(.2,1.4,.4,1) both;
+  }
+  @keyframes pop{from{opacity:0; transform:translateY(6px) scale(.96)}to{opacity:1; transform:none}}
+  .top{display:flex; align-items:flex-start; justify-content:space-between; gap:8px}
+  .card h2{margin:0; font-size:13.5px; font-weight:600; line-height:1.35; overflow-wrap:anywhere}
+  .pill{
+    flex:none; display:inline-flex; align-items:center; gap:5px; white-space:nowrap;
+    border-radius:999px; padding:1px 8px; font-size:11px; font-weight:600;
+    color:var(--tone); border:1px solid color-mix(in oklab, var(--tone) 50%, transparent);
+    background:color-mix(in oklab, var(--tone) 12%, transparent);
+  }
+  .dot{width:6px; height:6px; border-radius:50%; background:var(--tone); animation:blink 1.1s ease-in-out infinite}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
+  .pr{color:var(--c-mute); font-size:12px}
+  button.pr{align-self:flex-start; font:inherit; font-size:12px; padding:0; border:0; background:none;
+    color:var(--c-info); text-decoration:underline; cursor:pointer}
+  button.pr:focus-visible{outline:2px solid var(--c-acc); outline-offset:2px; border-radius:3px}
+  .tone-ok{--tone:var(--c-ok)}
+  .tone-run{--tone:var(--c-acc)}
+  .tone-test{--tone:var(--c-info)}
+  .tone-wait{--tone:var(--c-mute)}
+  .tone-you{--tone:var(--c-warn)}
+  .tone-bad{--tone:var(--c-bad)}
+  .tone-other{--tone:var(--c-mute)}
+
+  /* ---------- 5-step bar ---------- */
+  .steps{list-style:none; margin:0; padding:0; display:grid; grid-template-columns:repeat(5, minmax(0,1fr)); gap:4px}
+  .steps li{display:flex; flex-direction:column; gap:3px; min-width:0}
+  .seg{position:relative; height:5px; border-radius:999px; background:var(--c-edge); overflow:hidden}
+  .past .seg{background:var(--tone)}
+  .now .seg{background:color-mix(in oklab, var(--tone) 45%, var(--c-edge))}
+  .now .seg::after{
+    content:""; position:absolute; inset:0;
+    background:linear-gradient(90deg, transparent, var(--tone), transparent);
+    transform:translateX(-100%); animation:shimmer 1.4s linear infinite;
+  }
+  @keyframes shimmer{to{transform:translateX(100%)}}
+  .lbl{font-size:10.5px; color:var(--c-mute); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .now .lbl{color:var(--c-ink); font-weight:600}
+  .empty{margin:0; color:var(--c-mute); font-size:12px}
+
+  @media (prefers-reduced-motion: reduce){
+    *, *::before, *::after{animation:none !important; transition:none !important}
+  }
+</style>
+<div id="page"></div>
+<!--kirocrew:panel-data-->
+<script>
+(function(){
+  "use strict";
+  /* the contract's TASK_STATES, each mapped to a tone class */
+  var STATES = { "done":"ok", "working":"run", "testing":"test", "waiting":"wait", "needs you":"you", "stuck":"bad" };
+  /* states whose pill carries a blinking dot: work is moving */
+  var LIVE = { run:true, test:true };
+  /* the contract's STEPS, in order */
+  var STEPS = ["Code", "Test", "PR", "CI", "Done"];
+
+  function str(v){
+    if (typeof v === "string") return v.trim();
+    if (typeof v === "number" && isFinite(v)) return String(v);
+    return "";
+  }
+  function el(tag, cls, text){
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text) n.textContent = text;
+    return n;
+  }
+  function stateKey(v){ return str(v).toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " "); }
+  function stepIndex(v){
+    var s = str(v).toLowerCase();
+    for (var i = 0; i < STEPS.length; i++) if (STEPS[i].toLowerCase() === s) return i;
+    return -1;
+  }
+
+  /* THE HOST OPENS IT, never the frame: the sandbox has no popups, and the host
+     opens only an exact github.com pull-request URL from this frame. */
+  var PR_URL = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[0-9]+\/?$/;
+  function openPr(url){
+    try { parent.postMessage({ type: "kirocrew-dashboard:open", url: url }, "*"); }
+    catch (e) { /* no host: the link simply does nothing */ }
+  }
+
+  var page = document.getElementById("page");
+  var isl = document.getElementById("kirocrew-panel-data");
+  var d = null;
+  try { d = JSON.parse(isl ? isl.textContent : "null"); } catch (e) { d = null; }
+  if (!d || typeof d !== "object" || Array.isArray(d)){
+    page.appendChild(el("p", "empty", "Nothing published yet."));
+    return;
+  }
+
+  /* ---------- floating ghost header ---------- */
+  var head = el("header", "ghost");
+  var mark = el("span", "mark", "Task board");
+  mark.setAttribute("aria-hidden", "true");
+  head.appendChild(mark);
+  head.appendChild(el("h1", null, "Task board"));
+  var upd = str(d.updated);
+  head.appendChild(el("p", "meta", upd ? "Updated " + upd : "Not updated yet"));
+  page.appendChild(head);
+
+  /* ---------- needs you, first ---------- */
+  var ask = str(d.needs_you);
+  if (ask){
+    var band = el("section", "band");
+    band.setAttribute("aria-label", "Needs you");
+    band.appendChild(el("span", "k", "Needs you"));
+    band.appendChild(el("p", "v", ask));
+    page.appendChild(band);
+  } else {
+    page.appendChild(el("p", "calm", "Nothing needs you right now."));
+  }
+
+  /* ---------- done-of-total meter ---------- */
+  var doneText = str(d.done);
+  var m = /^(\d+)\s*of\s*(\d+)/i.exec(doneText);
+  var meter = el("div", "meter");
+  var row = el("div", "row");
+  row.appendChild(el("b", null, m ? (m[1] + " of " + m[2] + " done") : (doneText || "Progress not said")));
+  meter.appendChild(row);
+  if (m && Number(m[2]) > 0){
+    var done = Number(m[1]), total = Number(m[2]);
+    var pct = Math.max(0, Math.min(100, (done / total) * 100));
+    var track = el("div", "track");
+    track.setAttribute("role", "progressbar");
+    track.setAttribute("aria-label", "Tasks done");
+    track.setAttribute("aria-valuemin", "0");
+    track.setAttribute("aria-valuemax", String(total));
+    track.setAttribute("aria-valuenow", String(Math.min(done, total)));
+    var fill = el("div", "fill");
+    track.appendChild(fill);
+    meter.appendChild(track);
+    /* set after first paint so the width eases in; reduced motion jumps straight there */
+    requestAnimationFrame(function(){ requestAnimationFrame(function(){ fill.style.width = pct.toFixed(2) + "%"; }); });
+  }
+  page.appendChild(meter);
+
+  var nx = str(d.next);
+  if (nx){
+    var np = el("p", "next");
+    np.appendChild(el("span", "k", "Next: "));
+    np.appendChild(document.createTextNode(nx));
+    page.appendChild(np);
+  }
+
+  /* ---------- one card per task ---------- */
+  var tasks = Array.isArray(d.tasks) ? d.tasks : [];
+  var repo = str(d.repo);
+  var grid = el("ul", "grid");
+  grid.setAttribute("aria-label", "Tasks");
+  var shown = 0;
+  tasks.forEach(function(t){
+    if (!t || typeof t !== "object") return;
+    var rawState = str(t.state);
+    var tone = STATES[stateKey(rawState)] || "other";
+    var card = el("li", "card tone-" + tone);
+    card.style.animationDelay = (Math.min(shown, 12) * 45) + "ms";
+    shown++;
+
+    var top = el("div", "top");
+    top.appendChild(el("h2", null, str(t.task) || "Untitled task"));
+    var pill = el("span", "pill");
+    if (LIVE[tone]){ var dot = el("span", "dot"); dot.setAttribute("aria-hidden", "true"); pill.appendChild(dot); }
+    pill.appendChild(document.createTextNode(rawState || "not said"));
+    top.appendChild(pill);
+    card.appendChild(top);
+
+    var pr = str(t.pr);
+    var prNum = /^#?(\d+)$/.exec(pr);
+    var prUrl = prNum ? "https://github.com/" + repo + "/pull/" + prNum[1] : "";
+    if (prNum && PR_URL.test(prUrl)){
+      var link = el("button", "pr", "PR #" + prNum[1] + " on GitHub \u2197");
+      link.type = "button";
+      link.title = "Open PR #" + prNum[1] + " on GitHub";
+      link.addEventListener("click", function(){ openPr(prUrl); });
+      card.appendChild(link);
+    } else if (pr) card.appendChild(el("span", "pr", (prNum ? "PR #" + prNum[1] : pr)));
+
+    var at = stepIndex(t.step);
+    var finished = (tone === "ok");
+    var steps = el("ol", "steps");
+    steps.setAttribute("aria-label", finished ? "All steps done"
+      : (at >= 0 ? ("Step " + (at + 1) + " of " + STEPS.length + ": " + STEPS[at]) : ("Step: " + (str(t.step) || "not said"))));
+    STEPS.forEach(function(name, i){
+      var cls = (finished || i < at) ? "past" : (i === at ? "now" : "");
+      var li = el("li", cls);
+      li.appendChild(el("span", "seg"));
+      li.appendChild(el("span", "lbl", name));
+      steps.appendChild(li);
+    });
+    card.appendChild(steps);
+    grid.appendChild(card);
+  });
+  if (shown) page.appendChild(grid);
+  else page.appendChild(el("p", "empty", "No tasks yet."));
+})();
+</script>

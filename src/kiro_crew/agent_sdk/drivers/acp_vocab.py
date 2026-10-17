@@ -1,0 +1,102 @@
+"""The ACP driver's vocabulary: names application code reads by VALUE.
+
+Stop classes and the stop-reason classifier, the stop reasons of a turn the
+backend did not finish, the structured-status frame and its wait reasons, the
+terminal tool-call statuses, the session-start and prompt timeouts and the
+native-child marker are backend vocabulary a consumer compares against or
+raises on. The in-flight tool-call tracker is here too: a sub-agent's run
+record builds one as a dataclass field default, so the class has to be bound
+when that module is imported. They reach application code from here, so a
+consumer never names ``kiro_crew.acp`` itself
+(``scripts/check_agent_sdk_boundary.py``).
+
+Unlike :mod:`kiro_crew.agent_sdk.drivers.acp`, the imports here are at MODULE
+scope on purpose: a constant has to exist when the importing module binds it.
+The package ``__init__`` does not import this module, so the boot path stays
+ACP-free (``test_the_boot_path_does_not_import_acp_at_module_scope``); every
+consumer listed below already loaded the ACP package at module scope through
+the import this module replaces.
+"""
+
+from __future__ import annotations
+
+from kiro_crew.acp.client import AcpError, AcpProcessDied, AcpTimeoutError
+from kiro_crew.acp.liveness import InFlightToolTracker
+from kiro_crew.acp.session_handle import NATIVE_CHILD_NOT_RESUMABLE, AcpRequestTimeout
+from kiro_crew.acp.types import (
+    EVENT_STRUCTURED_STATUS,
+    STATUS_EXTENSION_VERSION,
+    STATUS_PHASE_WAITING,
+    STOP_CLASS_CANCELLED,
+    STOP_CLASS_FAILED,
+    STOP_CLASS_RECOVERING,
+    STOP_CLASS_STALLED,
+    STOP_CLASS_SUCCEEDED,
+    STOP_REASON_STALE_RECOVER,
+    STOP_REASON_TIMEOUT,
+    STOP_RECOVERY_MAX_RETRIES,
+    TERMINAL_TOOL_STATUSES,
+    WAIT_REASON_INPUT,
+    StructuredStatus,
+    classify_stop_reason,
+)
+
+__all__ = [
+    "is_runtime_death",
+    "is_user_worded_failure",
+    "EVENT_STRUCTURED_STATUS",
+    "NATIVE_CHILD_NOT_RESUMABLE",
+    "STATUS_EXTENSION_VERSION",
+    "STATUS_PHASE_WAITING",
+    "STOP_CLASS_CANCELLED",
+    "STOP_CLASS_FAILED",
+    "STOP_CLASS_RECOVERING",
+    "STOP_CLASS_STALLED",
+    "STOP_CLASS_SUCCEEDED",
+    "STOP_REASON_STALE_RECOVER",
+    "STOP_REASON_TIMEOUT",
+    "STOP_RECOVERY_MAX_RETRIES",
+    "TERMINAL_TOOL_STATUSES",
+    "WAIT_REASON_INPUT",
+    "AcpRequestTimeout",
+    "AcpTimeoutError",
+    "InFlightToolTracker",
+    "StructuredStatus",
+    "classify_stop_reason",
+]
+
+
+def is_runtime_death(exc: BaseException) -> bool:
+    """Whether *exc* is the runtime dying under a session's in-flight prompt.
+
+    ``AcpSessionHandle._died`` raises ``AcpProcessDied`` into the prompt that
+    was streaming when the runtime was killed, and the session provider maps
+    the runtime's own ``AcpRuntimeDead`` onto the same class. The sub-agent
+    run loop asks this of an exception it caught while a reap it started was
+    in flight -- "is this the echo of my own teardown?" -- and the answer is
+    a class test that application code must not spell itself.
+    """
+    return isinstance(exc, AcpProcessDied)
+
+
+def is_user_worded_failure(exc: BaseException) -> bool:
+    """Whether *exc* is a backend failure whose message Kiro Crew wrote for a person.
+
+    True for an ``AcpError`` with ``user_worded`` set (a curated formatter
+    branch, or a raise site with fixed recovery wording such as an unavailable
+    model or a signed-out harness) whose ``transient`` verdict is not True. An
+    ``AcpPromptBusy`` follows the same bit: its text is the formatter's busy
+    wording only when that curated branch matched, and the fallback's provider
+    text otherwise. A retryable failure keeps a chat surface's generic "try
+    again" reply.
+
+    ``transient`` alone is not the test: it is a retry verdict set on every
+    error frame, including the formatter's fallback that passes the provider's
+    own text or the raw error dict through. Timeouts and process deaths are
+    excluded by type, because their messages are internal detail whatever they
+    carry. A caller that shows the text still redacts, caps and escapes it for
+    its own platform.
+    """
+    if not isinstance(exc, AcpError) or isinstance(exc, (AcpTimeoutError, AcpProcessDied)):
+        return False
+    return exc.user_worded and exc.transient is not True

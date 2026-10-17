@@ -1,0 +1,682 @@
+"""Decides whether a conductor's work ledger changed in a way that needs a turn.
+
+The pure half of the ``work-ledger`` watch. It answers three questions about a
+conductor's items -- is this revision new, does anything in it need the
+conductor, and is the whole goal finished -- and it answers them from values the
+caller already holds. Nothing here reads the dashboard, starts a turn or touches
+:mod:`kiro_crew.irq` state, so the gate's policy can be tested without a gateway
+and a probe defect can never be mistaken for a policy defect.
+
+The generic half is already built and needs no change: :mod:`kiro_crew.irq` owns
+state persistence, per-epoch reset, time-bounded dedupe, the coalescing window
+and the consecutive-failure backstop, and ``autonudge._monitor_tick_is_quiet``
+turns a quiet verdict into a re-arm that spends no model turn.
+
+What this module deliberately does NOT reimplement: the liveness conjunction.
+``work_ledger.is_stale`` already requires the staleness window AND a
+non-running worker AND a last report that leaves the next move with the worker,
+including the case of a ``done`` item its conductor ruled ``verdict: fail`` on
+and left open. Restating any of that here would be a second copy of a rule that
+already has one.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import math
+import os
+import tempfile
+import time
+from typing import Any
+
+from kiro_crew import irq, platform_compat
+from kiro_crew.work_vocab import WORK_WAKE_STATUSES
+
+logger = logging.getLogger(__name__)
+
+#: The store's per-conductor item cap, spelled here as a literal rather than read
+#: from ``work_ledger`` so this module does not import the store for one integer --
+#: importing the whole store to derive a rate bound would spend a store-seam slot
+#: (``_PERMITTED_STORE_IMPORTERS``) for no store access. It must stay equal to
+#: ``work_ledger.MAX_ITEMS_PER_CONDUCTOR``; ``test_probe_work_ledger.py`` asserts
+#: ``_MAX_TRACKED_ITEMS >= work_ledger.MAX_ITEMS_PER_CONDUCTOR``, which fails loudly
+#: if the source cap ever grows past this derivation.
+_MAX_ITEMS_PER_CONDUCTOR = 32
+
+#: Worker statuses whose ARRIVAL needs the conductor, as this gate reads them.
+#:
+#: DERIVED, not restated: ``work_vocab.WORK_WAKE_STATUSES`` is the set, and the
+#: trigger that pulls a conductor's loop forward reads the same tuple. A second
+#: spelling here would let a trigger push for news this gate refuses -- a turn's
+#: worth of latency bought for nothing, and invisible from either side. The import
+#: costs this module nothing it was avoiding: ``work_vocab`` is a leaf with no
+#: imports of its own.
+WAKE_STATUSES = frozenset(WORK_WAKE_STATUSES)
+
+#: Event kinds a worker can produce. Only ``report`` is one -- every other kind in
+#: ``work_ledger.EVENT_KINDS`` (``create``, ``bind``, ``decision``, ``verdict``,
+#: ``close``) is written by the CONDUCTOR itself, and a gate that wakes on its
+#: owner's own writes never sleeps. This is the same rule the RFC states for
+#: Phase 5's ``channel_open`` / ``channel_close``, applied to the kinds that are
+#: actually on this base.
+WORKER_EVENT_KINDS = frozenset({"report"})
+
+#: Wakes one item may cause per hour. Past it the revision still advances and the
+#: board still updates; the wake folds into the next delivered one, so the
+#: conductor sees the newest state rather than a queue of superseded ones. This is
+#: additive to ``irq``'s coalescing window, which bounds a burst rather than a
+#: rate.
+MAX_WAKES_PER_ITEM_PER_HOUR = 12
+
+_RATE_WINDOW_SECS = 3600.0
+
+#: Items one conductor tracks in the rate file. ``work_ledger`` caps a conductor
+#: at ``MAX_ITEMS_PER_CONDUCTOR`` items, so this is derived from that (mirrored as
+#: ``_MAX_ITEMS_PER_CONDUCTOR`` above) rather than guessed, with room for closed
+#: items still in the window.
+_MAX_TRACKED_ITEMS = 4 * _MAX_ITEMS_PER_CONDUCTOR
+
+#: Tokens remembered per item. They are the item's SEEN set: :func:`already_woke`
+#: answers from them, and the probe never re-reports a token found there. Derived, not
+#: guessed: every token the probe can still re-read must fit, and that is one per
+#: report in its eight-event tail plus the newest silence (``note_wake``'s
+#: *replaces* drops the older ones). The hourly budget dominates both that and
+#: everything one window can charge. A smaller bound evicts a token the tail still
+#: holds, and the probe then wakes its conductor again for a report it already
+#: delivered.
+_MAX_REMEMBERED_TOKENS = MAX_WAKES_PER_ITEM_PER_HOUR
+
+#: Watches whose seen sets one item keeps. Each driver polling a ledger -- a loop's
+#: own tick, and the gate's terminal recheck under its own identity -- needs its own
+#: set, for the reason ``irq`` keeps one dedupe memory per driver: a driver that
+#: throws its verdict away must not mark a report delivered for one that does not.
+#: One conductor runs one loop, which brings at most those two, so four leaves room
+#: for a re-armed loop; the oldest-written set goes first.
+_MAX_WATCHERS_PER_ITEM = 4
+
+#: Charge moments stored per item. One more than the budget: the budget's own count
+#: is what the window needs, and the extra slot keeps a moment that arrives while the
+#: item is already at its cap from displacing one that is still inside the window.
+_MAX_STORED_WAKES = MAX_WAKES_PER_ITEM_PER_HOUR + 1
+
+
+def _seen_tokens(entry: Any, watcher: str) -> tuple[str, ...]:
+    """The tokens *watcher* already woke its conductor for on one item, newest first."""
+    if not isinstance(entry, dict):
+        return ()
+    seen = entry.get("seen")
+    raw = seen.get(watcher) if isinstance(seen, dict) else None
+    if isinstance(raw, list):
+        return tuple(str(item) for item in raw if isinstance(item, str))
+    return ()
+
+
+def _wake_times(entry: Any, *, since: float) -> tuple[float, ...]:
+    """One item's charge moments at or after *since*, newest first.
+
+    The window is counted from these rather than from a start-of-window marker plus
+    a tally. A marker-and-tally resets the tally when the marker expires, which caps
+    each hour-long block independently and so permits twice the budget across the
+    boundary between two of them: a full allowance late in one block and another full
+    allowance early in the next both satisfy it, while an hour containing both does
+    not. Counting the moments answers for whichever hour is being asked about.
+
+    Entries that are not usable numbers are dropped by :func:`_as_number`, which reads
+    them as older than every real moment. A file written before this shape existed
+    therefore has no moments to count and reads as an unspent budget, which costs at
+    most one window's wakes once.
+
+    The comparison is strict, so a moment exactly one window old has aged out. That is
+    the boundary the marker-and-tally form had, and keeping it means an item charged to
+    its cap in one instant may spend again exactly one window later rather than one
+    tick after that.
+    """
+    if not isinstance(entry, dict):
+        return ()
+    raw = entry.get("wakes")
+    if not isinstance(raw, list):
+        return ()
+    moments = [_as_number(value) for value in raw]
+    kept = sorted((moment for moment in moments if moment > since), reverse=True)
+    return tuple(kept[:_MAX_STORED_WAKES])
+
+
+#: Refuse to parse the rate file past this size: it is a bounded map of short ids to
+#: a bounded list of moments and a bounded list of tokens, so anything larger is
+#: damage rather than a record to trust.
+_MAX_RATE_BYTES = 256_000
+
+
+def worker_running(slot_table: Any, session_key: str) -> bool:
+    """Whether *session_key*'s slot has a TURN IN FLIGHT, per *slot_table*.
+
+    The gate's liveness question, as a function of a value rather than as a closure
+    inside a gateway constructor. It lives here so it can be tested without a live
+    gateway: the driver binds it to the dashboard's slot table and hands the result
+    to the probe, and nothing in this module imports the dashboard to do it.
+
+    RUNNING, not merely open. A worker whose tab is still there but which stopped
+    without reporting is exactly the case a stall wake exists to surface, so testing
+    existence would never flag it.
+
+    Both slot spellings are tried because a dashboard slot is registered under a
+    prefixed key as well as its bare one -- the same lookup the work ledger's own
+    HTTP reader performs. Anything unreadable answers False, which is the direction
+    that cannot suppress a stall wake.
+    """
+    if slot_table is None or not session_key:
+        return False
+    getter = getattr(slot_table, "get_slot", None)
+    if not callable(getter):
+        return False
+    for candidate in (session_key, f"dashboard_{session_key}"):
+        try:
+            slot = getter(candidate)
+        except Exception:
+            logger.debug("wake gate: slot lookup failed for %s", candidate, exc_info=True)
+            continue
+        if slot is not None:
+            # ``turn_running``, NOT ``running``. The slot's own docstring says so:
+            # ``running`` is an admission predicate, ``turn_running`` the execution
+            # one, and only an executing turn proves a live worker. Here that is the
+            # dangerous direction -- a worker read as
+            # live has its stall wake SUPPRESSED, which is what this module's
+            # docstring forbids an uncertain liveness from doing. A slot that does not
+            # answer this attribute at all is treated as idle for the same reason.
+            return bool(getattr(slot, "turn_running", False))
+    return False
+
+
+def worker_closed(slot_table: Any, session_key: str) -> bool:
+    """Whether *session_key*'s slot is GONE from *slot_table*.
+
+    The other half of the gate's liveness question, and a separate function because it
+    is a separate question: :func:`worker_running` asks whether a turn is in flight, and
+    is False for an idle worker that is still there. This asks whether the session ended.
+    ``is_stale`` makes the window apply to the first and not to the second.
+
+    EXISTENCE, not liveness. A slot answering under either spelling means the session is
+    open, whatever it is doing -- and that includes a slot still under construction,
+    which is why this asks ``slot_exists`` and not ``get_slot``. ``get_slot`` hides a
+    slot being built (so nobody acquires a half-finished session), and a worker that is
+    rehydrating or resuming would then read as closed; for a worker that already
+    reported, that skips the window and records a permanent stall for a live worker.
+
+    Anything unreadable answers False, which is the direction that cannot invent a stall:
+    a slot table this cannot interrogate leaves the staleness window measuring time, which
+    is what shipped. A table with no ``slot_exists`` is unreadable in that sense: no other
+    accessor answers existence for a slot being built. Note the asymmetry with
+    :func:`worker_running`, whose safe direction is also False -- there "unknown" must not
+    SUPPRESS a wake, here it must not CAUSE one, and False happens to be both.
+    """
+    if slot_table is None or not session_key:
+        return False
+    exists = getattr(slot_table, "slot_exists", None)
+    if not callable(exists):
+        return False
+    for candidate in (session_key, f"dashboard_{session_key}"):
+        try:
+            found = bool(exists(candidate))
+        except Exception:
+            # An unreadable table cannot prove a close, so report none rather than
+            # continuing to the next spelling and reading its miss as evidence.
+            logger.debug("wake gate: slot lookup failed for %s", candidate, exc_info=True)
+            return False
+        if found:
+            return False
+    return True
+
+
+def _loop_keys(session_key: str) -> tuple[str, ...]:
+    """The spellings a worker's loop may be bound under, most specific first.
+
+    A dashboard loop binds to the bare slot key; a ledger may carry the prefixed
+    ``dashboard_`` spelling; a channel session binds under its channel key.
+    """
+    from kiro_crew.session_ledger import ledger_key
+
+    keys = [session_key, ledger_key(session_key)]
+    try:
+        from kiro_crew.autonudge import binding_key_for
+
+        channel = binding_key_for(session_key)
+    except Exception:
+        logger.debug("wake gate: binding key lookup failed for %s", session_key, exc_info=True)
+        channel = None
+    if channel:
+        keys.append(channel)
+    return tuple(dict.fromkeys(keys))
+
+
+def worker_looping(nudge_service: Any, session_key: str) -> bool:
+    """Whether *session_key*'s own session holds an ACTIVE loop that will wake it.
+
+    The third liveness input to ``work_ledger.is_stale``. A worker waiting on CI
+    inside its own ``monitor_start`` loop or structured monitor has no turn in flight
+    between cycles, so :func:`worker_running` reads it as idle -- yet the loop is
+    what resumes it. One loop table holds both kinds, so one lookup answers both.
+
+    ACTIVE and able to fire again. A stopped loop, one past its runtime budget or
+    cycle cap, and one held on an unanswered approval wake nobody, so each answers
+    False and the worker stays flaggable.
+
+    Anything unreadable answers False. Here the dangerous direction is True: a worker
+    read as looping has its stall wake SUPPRESSED, which an uncertain answer must not
+    do -- the same rule :func:`worker_running` keeps.
+    """
+    if nudge_service is None or not session_key:
+        return False
+    getter = getattr(nudge_service, "get_by_slot", None)
+    if not callable(getter):
+        return False
+    for candidate in _loop_keys(session_key):
+        try:
+            loop = getter(candidate)
+        except Exception:
+            logger.debug("wake gate: loop lookup failed for %s", candidate, exc_info=True)
+            return False
+        if loop is not None and _loop_can_fire(loop):
+            return True
+    return False
+
+
+def _loop_can_fire(loop: Any) -> bool:
+    """Whether *loop* is active, BOUNDED, and has budget left to wake its session again.
+
+    Bounded means a cycle cap or a wall-clock budget. An unbounded loop would hide a
+    stall for as long as it exists, so it is not counted: the exemption ends no later
+    than the loop's own bound does.
+    """
+    try:
+        from kiro_crew.autonudge_service.model import (
+            _positive_number,
+            budget_elapsed,
+            cap_reached,
+        )
+
+        bounded = bool(
+            _positive_number(getattr(loop, "max_cycles", 0))
+            or (
+                _positive_number(getattr(loop, "max_runtime_secs", 0))
+                and _positive_number(getattr(loop, "created_ts", 0))
+            )
+        )
+        return (
+            bounded
+            and getattr(loop, "active", False) is True
+            and not getattr(loop, "approval_stalled", False)
+            and not budget_elapsed(loop)
+            and not cap_reached(loop)
+        )
+    except Exception:
+        logger.debug("wake gate: loop state unreadable", exc_info=True)
+        return False
+
+
+def revision(newest_event_ids: dict[str, str]) -> str:
+    """The epoch token for one tick: a digest over the newest event id per item.
+
+    ``irq`` wipes its dedupe memory when the epoch changes, so this has to change
+    exactly when something happened and not otherwise. Event ids are
+    content-addressed (``work_ledger.event_id``), which is what makes this stable
+    across a re-read of an unchanged ledger -- a wall clock in the token would
+    make every tick look like a new revision and defeat the dedupe entirely.
+
+    Sorted by item id so the digest does not depend on directory order, and empty
+    for a conductor with no items, which disables epoch resets rather than
+    asserting a revision that describes nothing.
+    """
+    if not newest_event_ids:
+        return ""
+    packed = json.dumps(sorted(newest_event_ids.items()), separators=(",", ":"))
+    return hashlib.sha256(packed.encode("utf-8")).hexdigest()[:16]
+
+
+def is_actionable_event(kind: str, status: str | None) -> bool:
+    """Whether one work-ledger event needs the conductor.
+
+    A worker's ``report`` carrying a waking status, and nothing else. The kind is
+    checked as well as the status because a conductor's own ``verdict`` event also
+    carries a status-shaped field, and a gate woken by its owner's writes would
+    wake on every ruling it made.
+
+    A worker that stopped to wait reports ``progress``, which is not a waking status,
+    so a pause is refused here by the status alone and needs no clause of its own.
+    """
+    if (kind or "").strip() not in WORKER_EVENT_KINDS:
+        return False
+    return (status or "").strip() in WAKE_STATUSES
+
+
+def _rate_path(conductor_key: str):
+    """Where this conductor's wake budget lives: under the WATCH state root.
+
+    Deliberately not ``session_ledger.control_dir``. That directory holds
+    fence-inherited control state which every purge and sweep skips BY DESIGN, so a
+    counter placed there would be actively protected from the cleanup it wants, and
+    would sit among files an operator reads as governing a slot's fold. The budget is
+    the opposite kind of state: worthless once the watch ends, and safe to lose at any
+    moment because losing it costs at most one extra wake.
+
+    ``irq.state_path`` puts it beside the watch state, whose retention it now shares:
+    ``irq`` does NOT delete its state files, and nothing sweeps that directory today,
+    so this file is retained rather than collected. What the move buys is that it is
+    retained somewhere an operator or a future sweeper may freely delete, instead of
+    somewhere deletion is deliberately prevented. The fold/digest naming is reused
+    rather than reinvented. The job id is fixed because the budget is per ITEM per
+    hour across that conductor's watches -- two watches on one ledger share the
+    allowance, since the item they would wake for is the same item.
+    """
+    return irq.state_path("work-ledger-rate", conductor_key, "rate")
+
+
+def _read_rate(conductor_key: str) -> dict[str, Any]:
+    """The rate map, or empty when there is nothing to trust.
+
+    Best-effort by contract: a missing map means nothing has been rate-limited
+    yet, and a damaged one is discarded rather than half-read, which costs at most
+    one extra wake. Never creates the directory -- a read that answers "nothing
+    recorded" needs none, and a reader that made one would leave residue for every
+    conductor anything ever asked about.
+    """
+    try:
+        path = _rate_path(conductor_key)
+        if not path.is_file():
+            return {}
+        if path.stat().st_size > _MAX_RATE_BYTES:
+            logger.warning("wake gate: the rate file is past its own bound; ignoring it")
+            return {}
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        logger.debug("wake gate: reading the rate file failed", exc_info=True)
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _as_number(value: Any) -> float:
+    """*value* as a FINITE float, or ``-1`` when it is not one.
+
+    The file is on disk and its contents are not this module's to promise, so an
+    unusable entry reads as older than every real one instead of raising inside a
+    comparison.
+
+    Three rejections, not one. ``float()`` raises ``TypeError``/``ValueError`` on the
+    obvious junk, ``OverflowError`` on an integer too large to be a float -- which is
+    a plain ``int`` in JSON and so entirely reachable from a stored file -- and it
+    happily RETURNS ``nan`` for ``"nan"``. A NaN is the worst of the three because it
+    does not raise: every comparison against it is false, so the window would neither
+    open nor expire and each actionable tick would fall back to the timer it exists to
+    replace.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return -1.0
+    if not math.isfinite(number):
+        return -1.0
+    return number
+
+
+def within_rate_limit(conductor_key: str, item_id: str, *, now: float | None = None) -> bool:
+    """Whether a wake for *item_id* may fire now.
+
+    Read-only: it answers without spending the budget, so an item refused for some
+    other reason has not used a wake. :func:`note_wake` is what spends it.
+
+    The window is sliding rather than fixed, so an item that was noisy for an hour
+    is not muted for the rest of the run, and no hour anywhere permits more than the
+    budget. A start-of-window marker with a tally would give both: it resets on
+    expiry, so a full allowance just before a reset and another just after it both
+    pass while the hour spanning them holds twice the budget.
+
+    It counts DISTINCT wakes only because the probe asks :func:`already_woke` first:
+    a token already charged never reaches this question, so a re-read of an
+    unchanged fact cannot spend the hour's allowance.
+    """
+    moment = time.time() if now is None else now
+    entry = _read_rate(conductor_key).get(item_id)
+    if not isinstance(entry, dict):
+        return True
+    charged = _wake_times(entry, since=moment - _RATE_WINDOW_SECS)
+    return len(charged) < MAX_WAKES_PER_ITEM_PER_HOUR
+
+
+def already_woke(conductor_key: str, item_id: str, token: str, *, watcher: str = "") -> bool:
+    """Whether *token* already woke the conductor for *item_id*, through *watcher*.
+
+    *watcher* is the polling driver's identity (``irq``'s job id). Each driver keeps
+    its own set; see :data:`_MAX_WATCHERS_PER_ITEM`.
+
+    The probe's own dedupe, and it has no clock. ``irq`` masks a sticky key only for
+    ``realert_secs`` and then forgets it, while the probe re-reads the same events and
+    the same silence on every tick for as long as the item is open. Without this, an
+    open item whose last word was ``blocked`` would wake its conductor again every
+    ``realert_secs`` about a report it read long ago.
+
+    Read-only. A missing or damaged rate file answers False, which costs at most one
+    repeated wake per token rather than a lost one.
+    """
+    if not token:
+        return False
+    return token in _seen_tokens(_read_rate(conductor_key).get(item_id), watcher)
+
+
+def forget_items(conductor_key: str, item_ids: list[str]) -> bool:
+    """Drop *item_ids*' budgets and seen sets; whether the file is as asked.
+
+    The probe calls this for items that closed. A closed item never wakes again, so
+    keeping its tokens only grows the file. Writes only when one of the items is
+    present, so a quiet tick with closed items costs a read and no write.
+    """
+    current = _read_rate(conductor_key)
+    present = [item_id for item_id in item_ids if item_id in current]
+    if not present:
+        return True
+    for item_id in present:
+        current.pop(item_id, None)
+    return _write_rate(conductor_key, current)
+
+
+def note_wake(
+    conductor_key: str,
+    item_id: str,
+    *,
+    token: str = "",
+    replaces: str = "",
+    watcher: str = "",
+    now: float | None = None,
+) -> bool:
+    """Spend one wake from *item_id*'s budget; whether the write landed.
+
+    The budget is shared by every watch on the ledger, because the item it would
+    wake is the same item. *token* joins *watcher*'s seen set only.
+
+    *replaces* is a token prefix whose older tokens can never be read again once
+    *token* exists, so they are dropped from the seen set rather than kept. The
+    probe passes it for a silence: its token carries ``last_report_at``, which only
+    moves forward, so only the newest one can recur. Without it, a worker that
+    keeps reporting ``progress`` mints a silence per report, and those crowd out a
+    report token the event tail still holds.
+
+    Returns False rather than raising: the caller is a probe tick, and a
+    maintenance file it could not persist must not turn a real wake into an error.
+    A caller that treats False as authorization has no bound at all, though, because
+    an unwritable file leaves every later tick reading an unspent budget -- so the
+    probe refuses the wake it could not charge and folds it forward instead.
+    """
+    moment = time.time() if now is None else now
+    current = _read_rate(conductor_key)
+    entry = current.get(item_id)
+    remembered = _seen_tokens(entry, watcher)
+    charged = [moment] + list(_wake_times(entry, since=moment - _RATE_WINDOW_SECS))
+    if not isinstance(entry, dict):
+        entry = {}
+    entry["wakes"] = charged[:_MAX_STORED_WAKES]
+    entry.pop("window_start", None)
+    entry.pop("count", None)
+    entry.pop("recent_tokens", None)
+    if token:
+        # Newest first, bounded by what the probe can still re-read; see
+        # ``_MAX_REMEMBERED_TOKENS``.
+        kept = [t for t in remembered if t != token and not (replaces and t.startswith(replaces))]
+        stored = entry.get("seen")
+        seen = {
+            str(key): value
+            for key, value in (stored.items() if isinstance(stored, dict) else ())
+            if key != watcher and isinstance(value, list)
+        }
+        # Re-inserted last, so dict order is write order and the oldest set goes first.
+        seen[watcher] = [token] + kept[: _MAX_REMEMBERED_TOKENS - 1]
+        entry["seen"] = dict(list(seen.items())[-_MAX_WATCHERS_PER_ITEM:])
+    current[item_id] = entry
+    if len(current) > _MAX_TRACKED_ITEMS:
+        ordered = sorted(
+            current.items(),
+            key=lambda kv: max(_wake_times(kv[1], since=-1.0), default=-1.0),
+            reverse=True,
+        )
+        current = dict(ordered[:_MAX_TRACKED_ITEMS])
+    return _write_rate(conductor_key, current)
+
+
+def _write_rate(conductor_key: str, current: dict[str, Any]) -> bool:
+    """Replace the rate file with *current* atomically; whether the write landed."""
+    try:
+        path = _rate_path(conductor_key)
+        parent = path.parent
+        parent.mkdir(parents=True, exist_ok=True)
+        if platform_compat.is_link_or_junction(parent):
+            # The redirect an unpredictable temporary name does not stop, because it
+            # is one level up. ``mkdir(exist_ok=True)`` succeeds against a symlink to
+            # a directory, and ``mkstemp(dir=...)`` then creates inside whatever it
+            # points at, so the rename lands the rate file in a directory of someone
+            # else's choosing. The destination rename itself does not follow a link
+            # -- ``os.replace`` replaces a symlink at *path* rather than its target --
+            # so the directory is the component that has to be checked. An ancestor
+            # above the watch root belongs to the module that owns that root.
+            #
+            # A Windows directory JUNCTION redirects exactly the same way but is not
+            # a symlink -- ``Path.is_symlink()`` returns False for it -- so a bare
+            # ``is_symlink`` left the redirect open on Windows. ``is_link_or_junction``
+            # screens both, which is the platform-complete form of this guard.
+            logger.warning(
+                "wake gate: the rate file's directory is a symlink or junction; "
+                "refusing to write through it"
+            )
+            return False
+        # UNPREDICTABLE temporary name, not "<name>.tmp". A guessable temporary is
+        # pre-plantable: an actor who can create entries in this directory puts a
+        # symlink there first, and the write below follows it and overwrites the
+        # target. ``mkstemp`` picks a name that cannot be guessed AND creates with
+        # O_EXCL at 0600, so the create fails rather than following anything that
+        # already exists. This is the rule the directory's owner states for its own
+        # state files, and the rate file lives beside them.
+        fd, tmp_name = tempfile.mkstemp(dir=str(parent), prefix=f"{path.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                # Insertion order is kept: a seen map's order is its write order,
+                # which is what its eviction reads.
+                json.dump(current, handle)
+            os.replace(tmp_name, path)
+        except BaseException:
+            # Nothing sweeps this directory, so a temporary left behind by a failed
+            # write is permanent: the cleanup is load-bearing, not boilerplate.
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+    except (OSError, ValueError, TypeError):
+        logger.debug("wake gate: writing the rate file failed", exc_info=True)
+        return False
+    return True
+
+
+def wake_brief(*, item_id: str, status: str) -> str:
+    """One line of operator-facing text for an item that needs the conductor.
+
+    STRUCTURAL ONLY: an item id and a status, never ledger prose. ``irq`` persists
+    an observation's brief into its own watch-state file so a coalescing window
+    survives a restart, and that file is not the work ledger -- it is not under the
+    store's identity-gated read path, and anything able to read the watch directory
+    can read it. A worker's reported summary copied in here would therefore leave
+    the boundary the store's importer allowlist exists to draw, without the
+    server-resolved identity check that path requires.
+
+    Nothing is lost by it. The conductor reads the record with ``work_ledger_read``,
+    which is exactly what the footer tells it to do, so the wake's job is to name
+    WHICH item moved and how, not to restate what the tool returns whole.
+    """
+    return f"[work-ledger wake] item={item_id} status={status or '(unset)'}"
+
+
+def stall_brief(*, item_id: str, status: str | None) -> str:
+    """Text for a SILENCE wake, marked as such.
+
+    A different shape from :func:`wake_brief` because it says the opposite thing:
+    not "this worker reported" but "this worker has reported nothing and is no
+    longer running". A conductor that could not tell them apart would go looking
+    for a report that does not exist.
+
+    Structural only, for the reason :func:`wake_brief` gives.
+    """
+    return f"[work-ledger wake] item={item_id} reason=stall last_status={status or '(none yet)'}"
+
+
+#: Chars the briefs may contribute to a delivered wake. ``irq`` already bounds the
+#: list it joins (``irq._MAX_LIST`` entries, then a "(+n more)" tail) and every brief
+#: this module builds is one short line, so a body past this is a kernel or probe
+#: defect rather than a busy conductor -- and a defect must not be able to push the
+#: read pointer out of the turn it rides with.
+MAX_WAKE_BRIEF_CHARS = 4_000
+
+#: The POINTER that closes a delivered wake: where the conductor goes for the state,
+#: rather than the state itself.
+#:
+#: A wake names what moved and says where to look, and carries no copy of the board.
+#: Inlining the board costs a payload proportional to the WHOLE goal for news that
+#: only ever means that ONE item moved: on a twenty-item board that is tens of
+#: kilobytes of mostly-closed rows per wake, every one of them already read on the
+#: wake before, spent to save a tool call the conductor can make for a fraction of
+#: the context. A pointer is constant in size and leaves the ledger as the single
+#: source of truth rather than something a wake hands out stale copies of.
+#:
+#: Both read shapes are spelled because the two next moves need different reads: the
+#: item that moved is one row, and the conductor's periodic sweep of everything else
+#: is the compact board. The ``<id>`` is deliberately a placeholder -- the ids are on
+#: the brief lines above this one, and one wake can name several.
+WAKE_READ_POINTER = (
+    "[work-ledger] read the ledger before acting: work_ledger_read(item_id=<id>) "
+    "for an item named above, or work_ledger_read(compact=true) for the board."
+)
+
+
+def wake_turn_text(briefs: str) -> str:
+    """The text a work-ledger wake delivers: which items moved, then where to read.
+
+    Assembled here rather than at the delivery site because the ORDER is policy, not
+    plumbing: the briefs name what moved and the pointer says what to do about it, so
+    a conductor reading top-down learns the news before the instruction that acts on
+    it. The delivery site owns where this string goes -- prefixed onto the nudge
+    prompt, or steered into a turn already running -- and both get the same text.
+
+    NO BOARD. The wake is a notification, not a transfer of state: it tells the
+    conductor which item moved and leaves the ledger where the ledger lives, so the
+    cost of a wake does not grow with the size of the goal. ``work_ledger_read`` is
+    the conductor's own identity-gated read and is available to it in that same turn.
+
+    Empty briefs answer ``""`` rather than a pointer to nothing -- a tick that
+    observed no news has no item to point AT, and the caller then delivers the plain
+    nudge.
+
+    The briefs are TRUNCATED rather than dropped at :data:`MAX_WAKE_BRIEF_CHARS`, so
+    an over-long body costs the tail of the list and never the pointer beneath it.
+    """
+    head = (briefs or "").strip()
+    if not head:
+        return ""
+    if len(head) > MAX_WAKE_BRIEF_CHARS:
+        head = head[:MAX_WAKE_BRIEF_CHARS].rstrip() + "\n(brief list truncated)"
+    return f"{head}\n{WAKE_READ_POINTER}"

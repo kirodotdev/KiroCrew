@@ -1,0 +1,116 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Shared Fargate scaffolding for Kiro Crew remote crews in the user's own AWS
+  account: the ECS cluster every crew task runs on and the egress-only security
+  group they are placed in. One stack per account and region. The per-crew roles
+  and log group live in kirocrew-fargate-crew.yaml, one stack per crew, so
+  deleting a crew cannot delete the cluster its siblings run on.
+
+  Its outputs are the configuration home for FargateLaunchSpec.placement:
+  ClusterName, SecurityGroupId and the subnets the operator passed in, plus the
+  CPU architecture the crew image was built for.
+
+# ---------------------------------------------------------------------------
+# Parameters. Networking is taken, never invented: a Fargate task needs a route
+# to pull its image, and whether that is a NAT gateway or a public subnet is a
+# property of the operator's VPC that this stack cannot discover. Passing the
+# subnets in keeps the failure at deploy time with a name attached, instead of a
+# task that reaches RUNNING and then cannot pull.
+# ---------------------------------------------------------------------------
+Parameters:
+  StackTag:
+    Type: String
+    Default: kirocrew
+    # Mirrors the EC2 lane's cap for the same reason: names derived from this tag
+    # are bounded by AWS resource-name limits, and a value that passes template
+    # validation but fails opaquely at resource creation is worse than one
+    # refused here. An ECS cluster name maxes at 255, so 51 is comfortable.
+    AllowedPattern: "[a-zA-Z0-9-]{1,51}"
+    Description: Discovery tag value written as kirocrew:fargate.
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC the crew tasks are placed in.
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: >-
+      Subnets for the tasks' awsvpc network interfaces. Each must be able to
+      reach the container registry, either through a NAT gateway or as a public
+      subnet with assignPublicIp enabled at RunTask.
+
+  CpuArchitecture:
+    Type: String
+    Default: X86_64
+    # Exactly taskdef.CPU_ARCHITECTURES, upper-case as the ECS API spells it.
+    # taskdef._refuse_unknown_architecture rejects anything outside that set, so a
+    # value this stack accepted but the launcher refuses would deploy cleanly and
+    # then never start a crew. A test compares these values against that frozenset
+    # by importing it, so a change on either side reds instead.
+    AllowedValues: [X86_64, ARM64]
+    Description: >-
+      Architecture the crew image was built for. It must match the image: a task
+      whose runtime platform disagrees with its image fails at start.
+
+Resources:
+  # --- The cluster. Named from the stack tag so a launcher can derive it rather
+  #     than discover it, which is what lets Placement.cluster be stated instead
+  #     of searched for. Naming it explicitly also keeps it out of the account's
+  #     implicit `default` cluster, which runtask.py refuses to assume.
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "kirocrew-crew-${StackTag}"
+      ClusterSettings:
+        - Name: containerInsights
+          Value: disabled
+      Tags:
+        - { Key: "kirocrew:managed", Value: "true" }
+        - { Key: "kirocrew:fargate", Value: !Ref StackTag }
+
+  # --- Security group: no ingress at all. The crew's control surface is reached
+  #     outbound-authenticated, so nothing needs to dial in, and an empty ingress
+  #     list is the difference between a crew that is reachable by its owner and
+  #     one that is reachable by the internet. Egress is open so the task can
+  #     pull its image and reach the model endpoint.
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "Kiro Crew Fargate crews ${StackTag} - egress only, no inbound"
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound
+      Tags:
+        - { Key: "kirocrew:managed", Value: "true" }
+        - { Key: "kirocrew:fargate", Value: !Ref StackTag }
+
+Outputs:
+  ClusterName:
+    Description: ECS cluster name for FargateLaunchSpec.placement.cluster.
+    Value: !Ref Cluster
+  ClusterArn:
+    Description: ECS cluster ARN.
+    Value: !GetAtt Cluster.Arn
+  SecurityGroupId:
+    Description: Security group id for FargateLaunchSpec.placement.security_groups.
+    Value: !Ref TaskSecurityGroup
+  SubnetIds:
+    Description: >-
+      Subnets for FargateLaunchSpec.placement.subnets, echoed back so the launch
+      spec reads every placement field from stack outputs rather than half from a
+      stack and half from whatever the operator typed.
+    Value: !Join [",", !Ref SubnetIds]
+  CpuArchitecture:
+    Description: >-
+      Architecture for FargateLaunchSpec.cpu_architecture, echoed back for the
+      same reason as SubnetIds: every launch-spec field is read from a stack
+      output rather than half from a stack and half from the operator's memory.
+    Value: !Ref CpuArchitecture
+  Region:
+    Description: Region the stack was deployed to.
+    Value: !Ref AWS::Region
+  StackTag:
+    Description: The kirocrew:fargate discovery tag value.
+    Value: !Ref StackTag

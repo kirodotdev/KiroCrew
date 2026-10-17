@@ -1,0 +1,418 @@
+"""Portability API handlers — export/import KiroCrew state as zip."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import tempfile
+import uuid
+from pathlib import Path
+
+from aiohttp import web
+from aiohttp.multipart import BodyPartReader
+
+from kiro_crew.dashboard import part_stream
+from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.portability import (
+    apply_import_zip,
+    create_export_zip,
+    is_agent_template_stem,
+    manifest_is_memory_only,
+    preview_agent_templates,
+    unbundled_agent_templates,
+    validate_import_zip,
+)
+from kiro_crew.sel import sel as _sel_fn  # circular import — sel imports lazily
+from kiro_crew.snapshot import NamedStoresInUse, SourceComponentUnsound
+
+logger = logging.getLogger(__name__)
+
+#: Ceiling for an uploaded state archive, aligned with the bomb guard that
+#: already governs this path: `portability._MAX_IMPORT_UNCOMPRESSED` admits 2 GiB
+#: *uncompressed*, so a compressed archive under 2 GiB cannot be refused here
+#: without the two limits contradicting each other.
+#:
+#: A tighter ceiling (512 MB, say) is a NEW restriction rather than a restored
+#: one -- the upload streams to disk, so nothing downstream needs it -- and it
+#: would 413 a legitimate export exactly when the source machine may be gone.
+#: The cap exists only so an unbounded upload cannot fill the disk, and 2 GiB is
+#: the largest value consistent with the guard downstream.
+_MAX_IMPORT_BYTES = 2 * 1024**3
+
+#: Export response header naming the agent templates the bundle does not carry.
+UNBUNDLED_TEMPLATES_HEADER = "X-Kirocrew-Unbundled-Templates"
+
+#: Export response header: how many chats were left out so the archive stays within
+#: what import accepts (`portability._export_sessions`). A bare non-negative integer.
+SESSIONS_SKIPPED_SIZE_HEADER = "X-Kirocrew-Sessions-Skipped-Size"
+
+
+def _sel():
+    return _sel_fn()
+
+
+def _requested_components(
+    request: web.Request,
+) -> tuple[list[str] | None, web.Response | None]:
+    """The ``?components=`` selector: absent means the whole install, ``memory`` memory only.
+
+    Only those two are offered from the dashboard, so anything else is refused with a
+    code rather than silently widened to the whole install.
+    """
+    raw = request.query.get("components")
+    if raw is None or raw == "":
+        return None, None
+    if raw == "memory":
+        return ["memory"], None
+    return None, web.json_response(
+        {"error": "components must be 'memory'", "code": "invalid_components"}, status=400
+    )
+
+
+#: Most bundled agent templates one import request may pick.
+_MAX_PICKED_TEMPLATES = 200
+
+
+def _requested_agent_templates(
+    request: web.Request,
+) -> tuple[tuple[str, ...], web.Response | None]:
+    """The ``?agent_templates=`` pick: comma-separated bundled template names to
+    install. Absent or empty installs none; a name that is not a plain file name is
+    refused rather than dropped."""
+    raw = request.query.get("agent_templates", "")
+    names = tuple(name for name in raw.split(",") if name) if raw else ()
+    if len(names) > _MAX_PICKED_TEMPLATES or not all(is_agent_template_stem(n) for n in names):
+        return (), web.json_response(
+            {
+                "error": "agent_templates must name bundled templates",
+                "code": "invalid_agent_templates",
+            },
+            status=400,
+        )
+    return names, None
+
+
+async def _read_upload_file(request: web.Request) -> tuple[Path | None, web.Response | None]:
+    """Read a multipart file upload into a temp file. Returns (path, None) or (None, error_response)."""
+    reader = await request.multipart()
+    part = await reader.next()
+    if part is None or not isinstance(part, BodyPartReader) or part.name != "file":
+        return None, web.json_response(
+            {"error": "file field required", "code": "file_field_required"}, status=400
+        )
+
+    # A single path rather than a scratch directory: the callers below already
+    # own the returned file and unlink it in their `finally`, so a directory
+    # would be a second thing to clean and nobody is cleaning it.
+    dest = Path(tempfile.gettempdir()) / f"kc_import_{uuid.uuid4().hex}.zip"
+    try:
+        await part_stream.stream_part_to_file(part, dest, max_bytes=_MAX_IMPORT_BYTES)
+    except part_stream.PartTooLarge:
+        limit_mb = _MAX_IMPORT_BYTES // (1024 * 1024)
+        return None, web.json_response(
+            {
+                "error": f"archive too large (max {limit_mb} MB)",
+                "code": "import_archive_too_large",
+            },
+            status=413,
+        )
+    return dest, None
+
+
+async def api_portability_export(request: web.Request) -> web.Response:
+    """GET /api/portability/export — download Kiro Crew state as zip.
+
+    Owner-only. The archive is the whole install -- config, every workspace file, the
+    default store's memory and every named store's memory -- so a dashboard
+    subject that is not the owner (an allow-listed messaging user holding a
+    ``!dashboard`` token, say) must not be able to pull it. This aggregate export
+    requires owner permission independently of member memory visibility.
+
+    ``?include_sessions=true`` adds the persistent dashboard chats
+    (`portability._export_sessions`); without it the archive carries none.
+    ``?include_agent_templates=true`` adds the agent templates the crews name, with
+    their MCP server ``env`` and ``headers`` values replaced by a placeholder
+    (`portability.bundled_agent_templates`); without it the archive carries none.
+    """
+    if "user" not in request or not request["user"]:
+        return web.json_response(
+            {"error": "authentication required", "code": "auth_required"}, status=401
+        )
+    denied = await require_owner_dashboard_request(request, "portability.export")
+    if denied is not None:
+        return denied
+    caller = request["user"]
+    # Opt-in per export: chats ride only when this request asks for them.
+    include_sessions = request.query.get("include_sessions", "").lower() in ("1", "true")
+    include_agent_templates = request.query.get("include_agent_templates", "").lower() in (
+        "1",
+        "true",
+    )
+    components, bad = _requested_components(request)
+    if bad is not None:
+        return bad
+    memory_only = components == ["memory"]
+    if memory_only:
+        include_sessions = False
+        include_agent_templates = False
+    # Passed only when asked, so an export without the choice is the same call as before.
+    extra = {"include_agent_templates": True} if include_agent_templates else {}
+    try:
+        zip_bytes, manifest = await asyncio.to_thread(
+            create_export_zip,
+            include_sessions=include_sessions,
+            memory_only=memory_only,
+            **extra,
+        )
+    except Exception as e:
+        logger.exception("Export failed")
+        _sel().log_api_access(
+            caller=caller,
+            operation="portability.export",
+            outcome="error",
+            error=str(e),
+        )
+        return web.json_response({"error": "Export failed", "code": "export_failed"}, status=500)
+
+    ts = manifest.get("created_at", "unknown").replace(":", "").replace("-", "")
+    filename = f"kirocrew-{'memory-' if memory_only else ''}export-{ts}.zip"
+
+    contents = manifest.get("contents", {})
+    skipped_size = contents.get("sessions_skipped_size", 0)
+    if not isinstance(skipped_size, int) or isinstance(skipped_size, bool) or skipped_size < 0:
+        skipped_size = 0
+    _sel().log_api_access(
+        caller=caller,
+        operation="portability.export",
+        outcome="ok",
+        resources=f"size={len(zip_bytes)}"
+        + (",components=memory" if memory_only else "")
+        + (
+            f",sessions={contents.get('session_count', 0)},sessions_skipped_size={skipped_size}"
+            if include_sessions
+            else ""
+        )
+        + (
+            f",agent_templates={contents.get('agent_template_count', 0)}"
+            if include_agent_templates
+            else ""
+        ),
+    )
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Content-Length": str(len(zip_bytes)),
+    }
+    # The body is the archive, so the warning rides a header: the agent templates
+    # the crews name that the bundle does not carry. JSON with ASCII escapes, so
+    # a hand-edited name cannot break the header line.
+    # Bounded upstream (count and length), so the header stays small; the left-out
+    # count rides along as a trailing "+N".
+    # A memory export carries no crews or config, so the template warning does not apply.
+    # The templates the archive carries are not warned about: filtered before the
+    # bound is applied, so the "+N" count covers only templates still left out.
+    bundled = [s for s in manifest.get("agent_templates") or [] if isinstance(s, str)]
+    unbundled: list[str]
+    if memory_only:
+        unbundled, more = [], 0
+    elif bundled:
+        unbundled, more = await asyncio.to_thread(unbundled_agent_templates, bundled)
+    else:
+        unbundled, more = await asyncio.to_thread(unbundled_agent_templates)
+    # Templates the walk reached past the bundle cap that no crew names directly.
+    past_cap = contents.get("agent_templates_past_cap", 0)
+    if isinstance(past_cap, int) and not isinstance(past_cap, bool) and past_cap > 0:
+        more += past_cap
+    if unbundled or more:
+        headers[UNBUNDLED_TEMPLATES_HEADER] = json.dumps(unbundled + ([f"+{more}"] if more else []))
+    if include_sessions:
+        headers[SESSIONS_SKIPPED_SIZE_HEADER] = str(skipped_size)
+    return web.Response(body=zip_bytes, content_type="application/zip", headers=headers)
+
+
+async def api_portability_import(request: web.Request) -> web.Response:
+    """POST /api/portability/import — upload and apply a Kiro Crew export zip.
+
+    Owner-only, like the export: an import rewrites the install's memory -- every named
+    store's included -- and its config. Merge (the default) never overwrites a settings
+    document this install has; see `portability._merge_settings`.
+    """
+    if "user" not in request or not request["user"]:
+        return web.json_response(
+            {"error": "authentication required", "code": "auth_required"}, status=401
+        )
+    denied = await require_owner_dashboard_request(request, "portability.import")
+    if denied is not None:
+        return denied
+    caller = request["user"]
+    mode = request.query.get("mode", "merge")
+    if mode not in ("merge", "replace"):
+        return web.json_response(
+            {"error": "mode must be 'merge' or 'replace'", "code": "invalid_import_mode"},
+            status=400,
+        )
+    components, bad = _requested_components(request)
+    if bad is not None:
+        return bad
+    memory_only = components == ["memory"]
+    if memory_only and mode != "merge":
+        return web.json_response(
+            {"error": "a memory-only import is merge only", "code": "memory_only_merge_only"},
+            status=400,
+        )
+    picked_templates, bad = _requested_agent_templates(request)
+    if bad is not None:
+        return bad
+
+    zip_path, err_resp = await _read_upload_file(request)
+    if err_resp is not None:
+        return err_resp
+    assert zip_path is not None
+
+    try:
+        ok, error, manifest = await asyncio.to_thread(validate_import_zip, zip_path)
+        if not ok:
+            _sel().log_api_access(
+                caller=caller,
+                operation="portability.import",
+                outcome="denied",
+                error=error,
+            )
+            return web.json_response(
+                {"ok": False, "error": error, "code": "import_archive_invalid"}, status=400
+            )
+        # A memory bundle carries nothing else, so a Replace from it would reset every
+        # other component to absent. Merge is the only mode that makes sense for it.
+        if mode != "merge" and manifest_is_memory_only(manifest):
+            _sel().log_api_access(
+                caller=caller,
+                operation="portability.import",
+                outcome="denied",
+                error="memory-only archive with mode=replace",
+            )
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": "this archive holds memory only; import it with Merge",
+                    "code": "memory_only_merge_only",
+                },
+                status=400,
+            )
+
+        # The running gateway's notification-settings store, so restored mutes apply at
+        # once instead of being written back over by its in-memory copy.
+        channel_settings = getattr(request.app.get("state"), "notification_channel_settings", None)
+        summary = await asyncio.to_thread(
+            apply_import_zip,
+            zip_path,
+            mode,
+            channel_settings=channel_settings,
+            memory_only=memory_only or manifest_is_memory_only(manifest),
+            **({"agent_templates": picked_templates} if picked_templates else {}),
+        )
+
+        # `staging` is recorded here, not only returned. Nothing renders it, and
+        # whether an import was pinned, mixed or unpinned is a security property of the
+        # operation, so the audit trail is where it belongs more than a UI badge does. The
+        # response still carries it for whatever renders it later.
+        #
+        # A refused component merge (the cron merge can refuse and import nothing)
+        # is logged as `partial`, not `ok` -- a flat ok would make the audit trail
+        # agree with a summary that claims a merge that never happened.
+        refused = summary.get("refused_merges") or []
+        _sel().log_api_access(
+            caller=caller,
+            operation="portability.import",
+            outcome="partial" if refused else "ok",
+            resources=(
+                f"mode={mode},items={len(summary.get('items', []))},"
+                f"staging={summary.get('staging', 'unknown')}"
+                + (",components=memory" if summary.get("components") == ["memory"] else "")
+                + (
+                    f",agent_templates_installed={len(summary['agent_templates_installed'])}"
+                    if summary.get("agent_templates_installed")
+                    else ""
+                )
+                + (f",refused={';'.join(refused)}" if refused else "")
+            ),
+        )
+
+        return web.json_response({"ok": True, "summary": summary, "manifest": manifest})
+    except (SourceComponentUnsound, NamedStoresInUse) as e:
+        # A refusal, not a failure: both are raised before anything moves (a torn database
+        # in the archive; a named store open in some process), and the operator needs the
+        # sentence that says which. A 500 "Import failed" would read as the tool breaking
+        # rather than the archive or the moment being wrong. The `code` tells the two apart
+        # without parsing the sentence: one is retried after stopping what holds the store,
+        # the other needs a different archive.
+        code = "named_store_in_use" if isinstance(e, NamedStoresInUse) else "import_source_unsound"
+        _sel().log_api_access(
+            caller=caller,
+            operation="portability.import",
+            outcome="denied",
+            error=str(e),
+        )
+        return web.json_response({"ok": False, "code": code, "error": str(e)}, status=409)
+    except Exception as e:
+        logger.exception("Import failed")
+        _sel().log_api_access(
+            caller=caller,
+            operation="portability.import",
+            outcome="error",
+            error=str(e),
+        )
+        return web.json_response(
+            {"ok": False, "error": "Import failed", "code": "import_failed"}, status=500
+        )
+    finally:
+        zip_path.unlink(missing_ok=True)
+
+
+async def api_portability_preview(request: web.Request) -> web.Response:
+    """POST /api/portability/preview — validate and preview a zip without applying."""
+    if "user" not in request or not request["user"]:
+        return web.json_response(
+            {"error": "authentication required", "code": "auth_required"}, status=401
+        )
+    caller = request["user"]
+
+    zip_path, err_resp = await _read_upload_file(request)
+    if err_resp is not None:
+        return err_resp
+    assert zip_path is not None
+
+    try:
+        ok, error, manifest = await asyncio.to_thread(validate_import_zip, zip_path)
+        if not ok:
+            _sel().log_api_access(
+                caller=caller,
+                operation="portability.preview",
+                outcome="denied",
+                error=error,
+            )
+            return web.json_response({"ok": False, "error": error})
+
+        _sel().log_api_access(
+            caller=caller,
+            operation="portability.preview",
+            outcome="ok",
+        )
+        templates, more_templates = await asyncio.to_thread(preview_agent_templates, zip_path)
+        body: dict = {"ok": True, "manifest": manifest, "agent_templates": templates}
+        if more_templates:
+            body["agent_templates_more"] = more_templates
+        return web.json_response(body)
+    except Exception as e:
+        logger.exception("Preview failed")
+        _sel().log_api_access(
+            caller=caller,
+            operation="portability.preview",
+            outcome="error",
+            error=str(e),
+        )
+        return web.json_response(
+            {"ok": False, "error": "Preview failed", "code": "preview_failed"}, status=500
+        )
+    finally:
+        zip_path.unlink(missing_ok=True)

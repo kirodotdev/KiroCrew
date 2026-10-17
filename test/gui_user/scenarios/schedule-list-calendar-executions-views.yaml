@@ -1,0 +1,40 @@
+# Smoke: the three views of the Schedule page read against the `rich` fixture,
+# whose `crons.json` ships two jobs -- `daily rich fixture ping` (enabled,
+# `0 9 * * *`) and `paused weekly recap` (disabled, `0 17 * * 5`). The lane's
+# gateway runs with --no-crons, so nothing ever fires: the List view's Status
+# column is deterministic ("Ready" for the enabled job because it has never run,
+# "Paused" for the disabled one, a dash in the paused job's Next Run cell), the
+# Executions view is always its empty state, and the Calendar view's week grid
+# places the daily job's dot in one hour row near the top of the grid. The view
+# switcher is a List / Calendar / Executions segmented control in the page
+# header; the page opens on List and does not remember the last view.
+#
+# The harness keeps only the newest three screenshots (harness.KEEP_IMAGES), so
+# the flow is exactly three actions -- Executions, Calendar, List -- and the
+# three surviving screenshots are one per view, the last one being the List the
+# final expectations read. The Calendar legend sits below the fold and is not
+# asserted: reaching it costs a scroll, which is the fourth image that would
+# drop the Executions screenshot.
+name: schedule-list-calendar-executions-views
+tier: smoke
+feature: schedule
+user_story: >-
+  As a user with cron jobs, I want list, calendar, and execution-history
+  views, so that I can see when jobs run and what happened.
+docs_url: docs/feature-map/README.md
+summary: Switch the Schedule page through its Executions, Calendar and List views and read the seeded jobs in each
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /schedule
+steps:
+  - You are on the Schedule page in its List view. In the page header, next to the title "Schedule", find the view switcher with three segments labelled "List", "Calendar" and "Executions". Click "Executions" and read the body that replaces the table. Do not scroll or click anything else.
+  - Click "Calendar" in the same switcher. A week grid appears (one column per weekday, one row per hour starting at 00:00) with a "Render in" time-zone dropdown above it. Read the top part of the grid without scrolling.
+  - Click "List" in the same switcher to return to the table, and read its two rows.
+expectations:
+  - The "List" segment is highlighted as the active view and a table of jobs is showing.
+  - The table has exactly two rows, "daily rich fixture ping" with the status "Ready" and a relative time in its Next Run cell (such as "in 5h 12m"), and "paused weekly recap" with the status "Paused" and a dash in its Next Run cell.
+  - In the screenshot taken right after you clicked "Calendar", the week grid with its hour rows was visible and at least one small coloured dot sat inside an hour row.
+  - In the screenshot taken right after you clicked "Executions", the body read "No execution history yet" and listed no runs.
+max_steps: 10
+max_seconds: 300

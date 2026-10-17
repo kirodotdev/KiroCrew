@@ -1,0 +1,67 @@
+[
+  {
+    "config_options": [
+      {
+        "currentValue": "local",
+        "id": "provider",
+        "name": "Provider",
+        "options": [
+          {
+            "name": "Local",
+            "value": "local"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "currentValue": "local",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "name": "Local",
+            "value": "local"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "currentValue": "local",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "Local",
+            "value": "local"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "currentValue": "local",
+        "id": "thinking_effort",
+        "name": "Thinking effort",
+        "options": [
+          {
+            "name": "Local",
+            "value": "local"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "approve",
+      "ids": [
+        "auto",
+        "approve",
+        "smart_approve",
+        "chat"
+      ]
+    },
+    "session_id": "goose-session-1"
+  }
+]

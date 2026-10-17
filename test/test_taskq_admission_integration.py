@@ -1,0 +1,1777 @@
+"""SubagentManager admission on top of the durable task queue.
+
+Real ``SubagentManager`` admission and drain; the run itself is a fake worker
+that finishes at once. No kiro-cli, no sockets, tmp ``KIROCREW_HOME``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import sqlite3
+import time
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from overload_fakes import settle_depth_emits, settle_store_writes
+
+import kiro_crew.subagent as subagent_mod
+from kiro_crew.dashboard import chat_utils
+from kiro_crew.subagent import SubagentInfo, SubagentManager
+from kiro_crew.subagent_manager.admission import (
+    TASK_STORE_UNAVAILABLE_CODE,
+    SpawnAdmissionCoordinator,
+)
+from kiro_crew.taskq import model
+from kiro_crew.taskq.store import TaskStore, TaskStoreUnavailable
+from kiro_crew.testing.wait import async_wait_until, await_until
+from kiro_crew.testing.wait import finished as _finished
+
+pytestmark = pytest.mark.usefixtures("healthy_host_memory")
+
+
+def _sessions() -> MagicMock:
+    sessions = MagicMock()
+    sessions.get_pid = MagicMock(return_value=None)
+    sessions.get_approval_policy = MagicMock(return_value="auto")
+    sessions.get_agent = MagicMock(return_value="")
+    sessions.get_agent_selection = MagicMock(return_value=("template", ""))
+    sessions.has_session = MagicMock(return_value=True)
+    sessions.release = MagicMock()
+    sessions.reset = AsyncMock()
+    return sessions
+
+
+def _ctx() -> MagicMock:
+    ctx = MagicMock()
+    ctx.hooks.auto_approve_subagent_spawn = True
+    return ctx
+
+
+async def _manager(max_concurrent: int = 2, **kw) -> SubagentManager:
+    mgr = SubagentManager(
+        sessions=_sessions(), ctx_builder=_ctx(), max_concurrent=max_concurrent, **kw
+    )
+    await mgr.wait_taskq_ready()
+    mgr._spawn_stagger_secs = 0.0
+    mgr._last_spawn_ts = 0.0
+    return mgr
+
+
+def _store_path() -> Path:
+    return Path(os.environ["KIROCREW_HOME"]) / "tasks" / "tasks.db"
+
+
+async def _fake_run(mgr: SubagentManager, info: SubagentInfo, *, fail: bool = False) -> None:
+    """The smallest honest worker: finish, report once, free the slot, pump."""
+    await asyncio.sleep(0)
+    info.done = True
+    if fail:
+        info.error = "boom"
+    info.result = "ok"
+    mgr._claim_finalize(info)
+    if mgr._release_slot(info):
+        mgr._running_count -= 1
+        mgr._drain_queue()
+
+
+#: Wall-clock BACKSTOP for the drain, and only that. The drain below is paced by
+#: completions, so the time it needs is whatever a row costs on the host: an idle
+#: dev Linux box drains the whole set in ~18 s, the same box with its core
+#: contended took ~4.4 minutes, and the rate a Windows shard measured (648 rows in
+#: 60 s) puts the set near 3 minutes there. Sized well above the slowest of those
+#: because a host slower still is a slow host, not a broken queue -- a queue that
+#: has genuinely stopped is caught sooner and far more cheaply by
+#: :data:`_STALLED_PASSES`. Deliberately BELOW the per-test timeout the drain
+#: test's marker raises, with room to spare for the submission phase this does NOT
+#: wrap, so reaching it fails as an assertion naming the state counts rather than
+#: as a killed xdist worker -- on Windows pytest-timeout has no SIGALRM and takes
+#: the whole worker with it.
+_DRAIN_CEILING_SECS = 720.0
+
+#: Passes that move no row before the queue is declared stalled. Progress resets
+#: it, so this bounds a STALL, not the drain: a pass that only settles the drain
+#: task advances nothing, which is normal, and returning here lets the state-count
+#: assertion report what was left rather than spinning to the ceiling.
+_STALLED_PASSES = 100
+
+
+async def _drain_until_terminal(mgr: SubagentManager, store: TaskStore, *, total: int) -> None:
+    """Pump until the STORE says every row is done, waiting on the work itself.
+
+    Paced by completions, never by a clock. A row costs ~9 ms of real store work
+    here and around ten times that on a Windows runner sharing four cores with
+    the rest of ``-n auto``, so any fixed budget for the whole drain encodes one
+    host's speed: the 60 s one this replaces expired with two thirds of the rows
+    still queued. The wait is on the drain task and the in-flight runs, which is
+    the completion signal itself -- measured, the timer floor was NOT the limit
+    (quantising every sleep to Windows's 15.6 ms tick still drained all 2000 rows
+    in 23 s), so it is the per-row cost that has to be waited out rather than
+    budgeted for.
+    """
+    stalled = 0
+    settled = store.count(state=model.DONE)
+    while settled < total and stalled < _STALLED_PASSES:
+        pending = [
+            task
+            for task in (getattr(mgr, "_drain_task", None), *mgr._tasks.values())
+            if task is not None and not task.done()
+        ]
+        if pending:
+            await asyncio.wait(pending)
+        else:
+            # Nothing in flight to wait on: only a fresh pass can move the queue.
+            mgr._drain_queue()
+            await asyncio.sleep(0)
+        moved = store.count(state=model.DONE)
+        stalled = 0 if moved > settled else stalled + 1
+        settled = moved
+
+
+@pytest.fixture
+def quiet():
+    with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+        yield
+
+
+async def _settle(store: TaskStore) -> None:
+    """Barrier for the loop's posted store work: a pump pass posts more work from
+    the callback of the work before it, so each round settles one link."""
+    await settle_store_writes(store, rounds=12)
+
+
+# ── write-before-ack ──────────────────────────────────────────────────────────
+
+
+def test_manager_opens_store_under_home(quiet) -> None:
+    mgr = SubagentManager(sessions=_sessions(), ctx_builder=_ctx())
+    assert mgr._taskq is not None
+    assert mgr._taskq.path == _store_path()
+    assert _store_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_spawn_persists_before_returning_id(quiet) -> None:
+    mgr = await _manager(max_concurrent=1)
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        started = mgr.spawn("first", parent_session_key="dash:1")
+        queued = mgr.spawn("second", parent_session_key="dash:1")
+    assert started is not None and not started.queued
+    assert queued is not None and queued.queued
+    store: TaskStore = mgr._taskq
+    assert store.state_of(started.id) == model.STARTING
+    assert store.state_of(queued.id) == model.QUEUED
+    row = store.get(queued.id)
+    assert row.params["task"] == "second" and row.params["_preassigned_id"] == queued.id
+    assert row.session_key == "dash:1" and row.kind == model.KIND_SUBAGENT
+    assert [e.kind for e in store.events(started.id)][:3] == ["accepted", "claimed", "transition"]
+
+
+@pytest.mark.asyncio
+async def test_store_write_failure_refuses_with_typed_code_and_no_row(quiet) -> None:
+    mgr = await _manager()
+
+    def boom(*a, **k):
+        raise TaskStoreUnavailable("disk full")
+
+    with (
+        patch.object(mgr._taskq, "accept_one", side_effect=boom),
+        patch.object(SubagentManager, "_run", new=AsyncMock()),
+    ):
+        info = mgr.spawn("x", parent_session_key="dash:1")
+    assert info is not None and info.done and info.error
+    assert info.error_code == TASK_STORE_UNAVAILABLE_CODE
+    assert "task store unavailable" in info.error
+    assert info.id not in mgr._agents
+    assert mgr._taskq.count() == 0
+    assert mgr._running_count == 0
+
+
+@pytest.mark.asyncio
+async def test_policy_refusals_leave_no_row(quiet) -> None:
+    mgr = await _manager()
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        empty = mgr.spawn("   ", parent_session_key="dash:1")
+        bad_cwd = mgr.spawn("t", parent_session_key="dash:1", cwd="/definitely/not/allowed")
+    assert empty.done and bad_cwd.done and bad_cwd.error
+    assert mgr._taskq.count() == 0
+
+
+# ── memory pressure defers ────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_memory_pressure_defers_instead_of_refusing(
+    quiet, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mgr = await _manager()
+    # Scoped, NOT ``monkeypatch.setattr`` + ``monkeypatch.undo()``: pytest hands
+    # the test and ``healthy_host_memory`` the SAME ``monkeypatch`` instance, so
+    # a blanket undo also reverts the fixture's pins and the drain below then
+    # reads the runner's real free memory. On a macos-15 nightly shard that read
+    # 2.58 GB, under the 4.5 GB floor, so the pump deferred the row a second
+    # time and the STARTING assertion failed as ``'queued' == 'starting'``.
+    # Leaving this block restores the fixture's healthy readings, not the host's.
+    with monkeypatch.context() as pressure:
+        pressure.setattr(subagent_mod, "check_memory_available", lambda *a, **k: (False, 0.5))
+        with patch.object(SubagentManager, "_run", new=AsyncMock()):
+            info = mgr.spawn("later", parent_session_key="dash:1")
+        assert info is not None
+        assert info.queued is True and info.done is False and not info.error
+        store: TaskStore = mgr._taskq
+        row = store.get(info.id)
+        assert row.state == model.QUEUED
+        assert row.next_run_at is not None and row.next_run_at > store.now()
+        assert [e.kind for e in store.events(info.id)] == ["accepted", "deferred"]
+        assert info.id not in mgr._agents and mgr._running_count == 0
+        # not in the window either: it is not eligible yet
+        assert mgr._queue == []
+        assert mgr.queued_count_for("dash:1") == 1
+    # pressure lifts and the clock passes: the pump starts it
+    store._clock = lambda: time.time() + 3600
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        mgr._drain_queue()
+    assert store.state_of(info.id) == model.STARTING
+    assert info.id in mgr._agents
+
+
+@pytest.mark.asyncio
+async def test_low_memory_floor_defers_too(quiet, monkeypatch: pytest.MonkeyPatch) -> None:
+    mgr = await _manager()
+    monkeypatch.setattr(
+        subagent_mod, "check_memory_available", lambda min_gb=None, path=None: (False, 0.2)
+    )
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        info = mgr.spawn("later", parent_session_key="dash:1")
+    assert info.queued and not info.done
+    assert mgr._taskq.state_of(info.id) == model.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_without_store_pressure_queues_in_memory(
+    quiet, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No store to defer into is no reason to refuse: the window holds the start."""
+    mgr = await _manager()
+    mgr._taskq = None
+    monkeypatch.setattr(
+        subagent_mod, "check_memory_available", lambda min_gb=None, path=None: (False, 0.2)
+    )
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        info = mgr.spawn("now", parent_session_key="dash:1")
+    assert info.queued and not info.done and not info.error
+    assert info.queued_reason == "low_memory"
+    assert [p["_preassigned_id"] for p in mgr._queue] == [info.id]
+    assert info.id not in mgr._agents and mgr._running_count == 0
+
+
+# ── bounded window / drain from store ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_window_bounded_and_fifo_across_boundary(quiet) -> None:
+    mgr = await _manager(max_concurrent=1)
+    mgr._taskq._window = 3
+    ids = []
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        for i in range(8):
+            ids.append(mgr.spawn(f"t{i}", parent_session_key="dash:1").id)
+    # one started, 7 queued: 3 in the window, 4 store-only
+    assert len(mgr._queue) == 3
+    assert [p["_preassigned_id"] for p in mgr._queue] == ids[1:4]
+    assert mgr._admission.taskq_overflow() == 4
+    assert mgr.queued_count_for("dash:1") == 7
+    assert mgr._taskq.count(state=model.QUEUED) == 7
+    # a completion frees the slot: the drain takes the OLDEST row and refills
+    order: list[str] = []
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        mgr._running_count = 0
+        mgr._drain_queue()
+    started = [i for i in ids[1:] if mgr._taskq.state_of(i) == model.STARTING]
+    assert started == [ids[1]]
+    assert len(mgr._queue) == 3
+    assert [p["_preassigned_id"] for p in mgr._queue] == ids[2:5]
+    del order
+
+
+@pytest.mark.timeout(900)
+@pytest.mark.asyncio
+async def test_2000_submissions_all_complete_window_never_exceeds_64(quiet) -> None:
+    """2000 rows really are drained to DONE, and the in-memory window never grows.
+
+    The only test here that pays the whole burst as real store work, so its wall
+    time is the host's per-row cost: ~18 s of drain on an idle dev Linux box, ~4.4
+    minutes on the same box with its core contended.
+
+    Two independent bounds, and which one fires names the failure. A queue that has
+    stopped moving returns after :data:`_STALLED_PASSES` idle passes, and the
+    state-count assertion below reports what was left -- that is the fast signal,
+    and it is the one a real defect trips. Only a host still making progress
+    reaches :data:`_DRAIN_CEILING_SECS`, which raises those same counts as an
+    assertion rather than a bare ``TimeoutError``.
+
+    So the ceiling is a backstop on WALL TIME, not a poll count raised until a
+    race stops firing: it wraps no assertion, so no value of it can make a wrong
+    answer pass -- it can only stop a slow-but-correct host from being reported as
+    a broken queue. The marker sits above the ceiling plus the submission phase,
+    which the ceiling does not wrap, so on a slow host the ceiling is what fires;
+    the Windows shard's ``--timeout=180`` would otherwise kill the worker, and
+    with ``--max-worker-restart=0`` that is a lost run, not a named failure.
+    """
+    # Four slots, not eight: every start here is an unsettled dedicated one
+    # (the fake run is never sampled), so eight in flight would owe the floor
+    # plus eight unlearned starts -- more than the pinned 8 GB host has, and the
+    # burst would park behind the memory guard instead of draining. Four fit.
+    mgr = await _manager(max_concurrent=4)
+    store: TaskStore = mgr._taskq
+    assert store.window == 64
+    peak_window = {"n": 0}
+
+    async def run(self, info):
+        peak_window["n"] = max(peak_window["n"], len(mgr._queue))
+        await _fake_run(mgr, info)
+
+    with patch.object(SubagentManager, "_run", new=run):
+        ids = [mgr.spawn(f"task {i}", parent_session_key="dash:1").id for i in range(2000)]
+        assert len(set(ids)) == 2000
+        assert store.count() == 2000
+        assert len(mgr._queue) <= 64
+        try:
+            await asyncio.wait_for(
+                _drain_until_terminal(mgr, store, total=2000), _DRAIN_CEILING_SECS
+            )
+        except asyncio.TimeoutError as exc:
+            # Report the state the ceiling interrupted, in the same terms the
+            # assertions below use: a bare TimeoutError says only "slow", while
+            # these counts separate "still draining, host is slow" from "rows are
+            # parked in a non-terminal state".
+            raise AssertionError(
+                f"the drain did not settle every row within {_DRAIN_CEILING_SECS:.0f}s: "
+                f"states={store.count_by_state()}, window={len(mgr._queue)}, "
+                f"running={mgr._running_count}"
+            ) from exc
+    by_state = store.count_by_state()
+    assert by_state == {model.DONE: 2000}, by_state
+    assert peak_window["n"] <= 64
+    assert len(mgr._queue) == 0
+    assert mgr._running_count == 0
+    assert mgr.queued_count_for("dash:1") == 0
+    # every id is done exactly once: one terminal transition event each
+    sample = store.events(ids[1234])
+    assert [e.kind for e in sample].count("transition") == 2  # starting, done (fake run)
+    assert sample[-1].data["to"] == model.DONE
+
+
+@pytest.mark.asyncio
+async def test_an_ad_hoc_auto_approval_is_never_persisted_on_the_row(quiet) -> None:
+    """One request's consent is not a property of the row it accepted.
+
+    ``approval_mode="auto"`` skips the spawn gate AND pre-approves the run's
+    tools, and the pump respawns a recovered row by forwarding its params
+    verbatim -- so a persisted copy would let a restart start work and run tools
+    on an authorisation nobody renewed. The row still RECORDS it in ``scope_ref``,
+    which the schema defines as references rather than grants and which no start
+    path reads.
+    """
+    mgr = await _manager(max_concurrent=2)
+    store: TaskStore = mgr._taskq
+    record = mgr._admission.taskq_build_record(
+        "sa-auto",
+        {
+            "task": "t",
+            "parent_session_key": "dash:1",
+            "approval_mode": "auto",
+            "_agent_prevalidated": True,
+        },
+        parent_session_key="dash:1",
+        memory_store="",
+        app="",
+        model="",
+        allowed_tools=None,
+        approval_mode="auto",
+    )
+
+    assert "approval_mode" not in record.params, "one request's consent was persisted"
+    assert "_agent_prevalidated" not in record.params
+    # Recorded as a reference, so an operator reading the row still sees what was
+    # asked for; nothing on the start path reads it.
+    assert record.scope_ref["approval_mode"] == "auto"
+
+    store.accept([record])
+    reloaded = store.get("sa-auto")
+    assert reloaded is not None and "approval_mode" not in reloaded.params
+    await mgr.cancel_all()
+
+
+@pytest.mark.asyncio
+async def test_a_row_on_disk_carrying_auto_approval_faces_the_spawn_gate(quiet) -> None:
+    """The read side strips the grant too, so the disk cannot hand one back.
+
+    A row is written by one build and started by another, and a row that still
+    carries ``approval_mode`` is a request's consent replayed after the process
+    that received it is gone -- the spawn gate skipped and the run's tools
+    pre-approved on an authorisation nobody renewed. So the window entry drops
+    it beside ``_agent_prevalidated`` rather than trusting the row.
+    """
+    mgr = await _manager(max_concurrent=1)
+    store: TaskStore = mgr._taskq
+    mgr._sessions.get_approval_policy = MagicMock(return_value="ask")
+    mgr._ctx_builder.hooks.auto_approve_subagent_spawn = False
+    approvals = AsyncMock(return_value=True)
+    mgr._on_spawn_approval = approvals
+    store.accept_one(
+        model.TaskRecord(
+            id="sa-legacy",
+            kind=model.KIND_SUBAGENT,
+            session_key="dash:1",
+            params={"task": "t", "parent_session_key": "dash:1", "approval_mode": "auto"},
+        )
+    )
+    assert "approval_mode" not in mgr._admission._window_entry(store.get("sa-legacy"))
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        mgr._drain_queue()
+        await _settle(store)
+    assert "sa-legacy" in mgr._agents
+    assert approvals.await_count == 1, "the spawn gate was skipped on a replayed grant"
+    await mgr.cancel_all()
+
+
+# ── terminal writes ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_completion_and_failure_settle_store_rows(quiet) -> None:
+    mgr = await _manager(max_concurrent=4)
+    outcomes = {"a": False, "b": True}
+
+    async def run(self, info):
+        await _fake_run(mgr, info, fail=outcomes[info.task])
+
+    with patch.object(SubagentManager, "_run", new=run):
+        a = mgr.spawn("a", parent_session_key="dash:1")
+        b = mgr.spawn("b", parent_session_key="dash:1")
+        await asyncio.gather(mgr._tasks[a.id], mgr._tasks[b.id])
+    assert mgr._taskq.state_of(a.id) == model.DONE
+    assert mgr._taskq.state_of(b.id) == model.FAILED
+    ev = mgr._taskq.events(b.id)[-1]
+    assert ev.data["error"] == "boom"
+    assert mgr._taskq.get(a.id).result_ref.endswith("result.txt")
+
+
+@pytest.mark.asyncio
+async def test_user_stop_settles_as_cancelled(quiet) -> None:
+    mgr = await _manager()
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        a = mgr.spawn("a", parent_session_key="dash:1")
+    info = mgr._agents[a.id]
+    info.user_stopped = True
+    info.done = True
+    assert mgr._claim_finalize(info) is True
+    assert mgr._taskq.state_of(a.id) == model.CANCELLED
+    # a second reporter cannot flip it
+    info.user_stopped = False
+    info.error = "late"
+    assert mgr._claim_finalize(info) is False
+    assert mgr._taskq.state_of(a.id) == model.CANCELLED
+
+
+async def _parent_parked_on_one_child(
+    mgr: SubagentManager, store: TaskStore
+) -> tuple[SubagentInfo, SubagentInfo]:
+    """A live parent parked in ``waiting_children`` on ONE live child.
+
+    Stated once so the settle pins below cannot disagree about what the park
+    is. A wait is never reachable from ``starting``, so the parent's own
+    ``running`` mark has to have landed before it can yield for its children.
+    """
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        parent = mgr.spawn("P", parent_session_key="dash:1")
+        live_parent = mgr._agents[parent.id]
+        mgr._admission.taskq_mark(live_parent, "running")
+        await _settle(store)
+        assert store.state_of(parent.id) == model.RUNNING
+        live_parent._inflight_tool = SimpleNamespace(
+            tool_name="@kirocrew-core/spawn_sub_agents", title="call"
+        )
+        child = mgr.spawn("C", parent_session_key=f"subagent:{parent.id}")
+        await _settle(store)
+    assert live_parent._slot_released is True
+    assert store.state_of(parent.id) == model.WAITING_CHILDREN
+    return live_parent, mgr._agents[child.id]
+
+
+@pytest.mark.parametrize("failure", [TaskStoreUnavailable("disk full"), ValueError("schema drift")])
+@pytest.mark.parametrize("pump_off_loop", [False, True])
+@pytest.mark.asyncio
+async def test_a_terminal_write_the_store_refused_still_resumes_the_parent(
+    quiet, monkeypatch: pytest.MonkeyPatch, pump_off_loop: bool, failure: Exception
+) -> None:
+    """A child's failed terminal write is not its parent's sentence.
+
+    ``_claim_finalize`` is one-shot, so the propagation the terminal write
+    carries -- a waiting parent's ``request_resume``, and a cancelled parent's
+    ``cancel_tree`` -- gets no second attempt from anywhere: run it only when
+    the write commits and a transient outage parks the whole tree on a wait no
+    wake will ever end. Both settle paths, because each one catches the failure
+    in a frame of its own: the inline write, and the one posted to the writer
+    thread (``pump_off_loop``, production's).
+
+    Both FAILURE CLASSES on each path, because the token is already spent when
+    ``taskq_settle`` runs: an exception that leaves it loses the propagation AND
+    the terminal report -- ``_claim_finalize`` never returns True, so its caller
+    reports nothing and no second claimer can, which is strictly more harm than
+    the outage this guards. ``ValueError`` stands for the class no arm names on
+    purpose (a schema drift, a driver bug), so the pin is about the ESCAPE and
+    not about ``TaskStoreUnavailable`` being spelled twice.
+    """
+    from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
+
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "pump_off_loop", pump_off_loop)
+    mgr = await _manager(max_concurrent=2)
+    store: TaskStore = mgr._taskq
+    live_parent, live_child = await _parent_parked_on_one_child(mgr, store)
+    live_child.done = True
+    live_child.result = "ok"
+    with (
+        patch.object(SubagentManager, "_run", new=AsyncMock()),
+        patch.object(store, "finish", side_effect=failure),
+    ):
+        assert mgr._claim_finalize(live_child) is True
+        await _settle(store)
+    assert store.state_of(live_child.id) != model.DONE, "the failure did not refuse the write"
+    assert live_parent._slot_released is False, "the parent was left parked on its wait"
+    assert store.state_of(live_parent.id) == model.RUNNING
+    await mgr.cancel_all()
+
+
+@pytest.mark.parametrize("superseded_by", ["a_live_replacement", "a_terminal_owner"])
+@pytest.mark.parametrize("pump_off_loop", [False, True])
+@pytest.mark.asyncio
+async def test_a_fenced_settle_propagates_unless_a_live_owner_holds_the_row(
+    quiet, monkeypatch: pytest.MonkeyPatch, pump_off_loop: bool, superseded_by: str
+) -> None:
+    """A generation the row has moved past is not by itself a reason to stay quiet.
+
+    ``WaitLedger.on_child_terminal`` adds the reported child to the terminal set
+    UNCONDITIONALLY -- the report is the evidence, not the row -- so propagating
+    from a reporter the fence rejected tells the parent its last awaited child
+    ended. Both halves are load-bearing and they pull opposite ways, which is
+    why the predicate is the row's LIVENESS and not its generation:
+
+    * ``a_live_replacement`` -- the row runs under a newer generation. A
+      replacement owns the outcome and holds a ``_claim_finalize`` token of its
+      own, so propagating here wakes the parent while its child is still
+      running. It must stay parked.
+    * ``a_terminal_owner`` -- the generation moved AND the row ended, the shape
+      of an operator cancel through ``/api/tasks`` (``store.cancel`` bumps the
+      generation). Nobody will report it again and ``WaitLedger.rebuild`` only
+      reconciles at boot, so a guard written as "my generation is stale" would
+      park this parent until the next restart. It must be woken.
+
+    Both settle paths, because each reads the row in a frame of its own: the
+    inline write, and the one posted to the writer thread (production's).
+    """
+    from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
+    from kiro_crew.taskq.waits import WaitRecord
+
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "pump_off_loop", pump_off_loop)
+    mgr = await _manager(max_concurrent=4)
+    store: TaskStore = mgr._taskq
+    live_parent, live_child = await _parent_parked_on_one_child(mgr, store)
+    stale_gen = int(live_child._taskq_generation or 0)
+    assert stale_gen, "the child never held a generation to be fenced on"
+
+    if superseded_by == "a_live_replacement":
+        # Re-dispatch the child through a wait: the wake makes the row claimable
+        # and a second claim starts it, so the newer generation is LIVE on it.
+        mgr._admission.taskq_mark(live_child, "running")
+        await _settle(store)
+        record = WaitRecord.input("call-1", since=store.now())
+        assert store.enter_wait(live_child.id, record.to_dict())
+        assert store.wake_wait(live_child.id, reason="answered") is not None
+        assert store.claim(live_child.id) is not None
+        assert store.transition(live_child.id, model.STARTING)
+        assert store.transition(live_child.id, model.RUNNING)
+    else:
+        assert store.cancel(live_child.id, reason="operator") is not None
+    fenced = store.get(live_child.id)
+    assert fenced.generation > stale_gen
+    assert fenced.terminal is (superseded_by == "a_terminal_owner")
+
+    live_child.done = True
+    live_child.result = "ok"
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        assert mgr._claim_finalize(live_child) is True
+        await _settle(store)
+    assert store.state_of(live_child.id) == fenced.state, "the generation fence did not hold"
+
+    if superseded_by == "a_live_replacement":
+        assert live_parent._slot_released is True, "the parent was woken by a fenced reporter"
+        assert live_parent._resume_pending is False
+        assert store.state_of(live_parent.id) == model.WAITING_CHILDREN
+    else:
+        assert live_parent._slot_released is False, "the parent was left parked on its wait"
+        assert store.state_of(live_parent.id) == model.RUNNING
+    await mgr.cancel_all()
+
+
+@pytest.mark.asyncio
+async def test_stale_generation_from_superseded_dispatch_is_ignored(quiet) -> None:
+    mgr = await _manager()
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        a = mgr.spawn("a", parent_session_key="dash:1")
+    store: TaskStore = mgr._taskq
+    old_info = mgr._agents[a.id]
+    old_gen = old_info._taskq_generation
+    # the runtime is lost and the row is re-dispatched under a new generation
+    assert store.transition(a.id, model.RECOVERING, generation=old_gen)
+    mgr._agents.pop(a.id)
+    mgr._running_count = 0
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        mgr._drain_queue()
+    new_info = mgr._agents[a.id]
+    assert new_info._taskq_generation == old_gen + 1
+    assert store.state_of(a.id) == model.STARTING
+    # the OLD worker reports failure: fenced
+    old_info.done = True
+    old_info.error = "late failure"
+    mgr._admission.taskq_settle(old_info)
+    assert store.state_of(a.id) == model.STARTING
+    assert any(e.kind == "stale_result" for e in store.events(a.id))
+
+
+# ── cancel vs drain ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_cancel_store_only_queued_row_never_starts(quiet) -> None:
+    mgr = await _manager(max_concurrent=1)
+    mgr._taskq._window = 1
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        first = mgr.spawn("run", parent_session_key="dash:1")
+        in_window = mgr.spawn("w", parent_session_key="dash:1")
+        outside = mgr.spawn("o", parent_session_key="dash:1")
+    assert [p["_preassigned_id"] for p in mgr._queue] == [in_window.id]
+    assert mgr._taskq.state_of(outside.id) == model.QUEUED
+    reported: list[SubagentInfo] = []
+    mgr._report_queued_stop = lambda params, **_kw: reported.append(  # type: ignore[method-assign]
+        params
+    )
+    assert await mgr.cancel(outside.id) is True
+    assert mgr._taskq.state_of(outside.id) == model.CANCELLED
+    assert reported and reported[0]["_preassigned_id"] == outside.id
+    # drain everything: the cancelled row is never started
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        mgr._running_count = 0
+        mgr._drain_queue()
+        mgr._running_count = 0
+        mgr._drain_queue()
+    assert mgr._taskq.state_of(in_window.id) == model.STARTING
+    assert mgr._taskq.state_of(outside.id) == model.CANCELLED
+    assert outside.id not in mgr._agents
+    del first
+
+
+@pytest.mark.asyncio
+async def test_a_queued_row_the_drain_started_is_not_cancelled_under_the_spawn(
+    quiet, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``taskq_cancel_queued`` judges the row it read and writes under that read's
+    generation, so a drain that claimed and STARTED the row in between keeps it.
+
+    The interleaving is forced inside the read itself -- a real ``claim`` plus the
+    real ``starting`` write, no sleeps -- because that is the whole window: a
+    cancel landing after it would leave a ``cancelled`` row with a live spawn
+    under it whose own later writes the generation bump fences out.
+    """
+    mgr = await _manager(max_concurrent=1)
+    mgr._taskq._window = 1
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        first = mgr.spawn("run", parent_session_key="dash:1")
+        outside = mgr.spawn("o", parent_session_key="dash:1")
+    store = mgr._taskq
+    assert store.state_of(outside.id) == model.QUEUED
+    real_get = store.get
+
+    def _drain_between(task_id: str):
+        rec = real_get(task_id)
+        if task_id == outside.id and store.state_of(task_id) == model.QUEUED:
+            assert store.claim(task_id) is not None
+            assert store.transition(task_id, model.STARTING)
+        return rec
+
+    monkeypatch.setattr(store, "get", _drain_between)
+    assert mgr._admission.taskq_cancel_queued(outside.id) is None
+    assert store.state_of(outside.id) == model.STARTING
+    del first
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parked_in", [model.QUEUED, model.RETRY_WAIT])
+async def test_a_stop_whose_generation_moved_under_an_unstarted_row_still_cancels(
+    quiet, monkeypatch: pytest.MonkeyPatch, parked_in: str
+) -> None:
+    """A generation bump that leaves the row UNSTARTED does not lose the stop.
+
+    Between ``taskq_cancel_queued``'s read and its cancel a concurrent claim moves
+    the row to ``admitted`` under generation+1. A cancel fenced on the read's
+    generation was refused as ``stale_result``, leaving a ``retry_wait`` row that
+    the boot reconciler never examines and the parent's queued count kept
+    attached, so the stop stayed lost. ``only_from`` alone must let it land.
+    """
+    mgr = await _manager(max_concurrent=1)
+    mgr._taskq._window = 1
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        first = mgr.spawn("run", parent_session_key="dash:1")
+        outside = mgr.spawn("o", parent_session_key="dash:1")
+    store = mgr._taskq
+    if parked_in == model.RETRY_WAIT:
+        assert store.claim(outside.id) is not None
+        assert store.transition(outside.id, model.STARTING)
+        assert store.transition(outside.id, model.RETRY_WAIT)
+    assert store.state_of(outside.id) == parked_in
+    real_get = store.get
+    raced: list[int] = []
+
+    def _claim_between(task_id: str):
+        rec = real_get(task_id)
+        if task_id == outside.id and not raced:
+            raced.append(rec.generation)
+            assert store.claim(task_id) is not None
+        return rec
+
+    monkeypatch.setattr(store, "get", _claim_between)
+    params = mgr._admission.taskq_cancel_queued(outside.id)
+    assert raced, "the race was never forced"
+    assert params is not None and params["_preassigned_id"] == outside.id
+    assert store.state_of(outside.id) == model.CANCELLED
+    assert raced[0] < store.get(outside.id).generation, "the generation never moved"
+    kinds = [e.kind for e in store.events(outside.id)]
+    assert "stale_result" not in kinds, "the stop was fenced on a stale generation"
+    del first
+
+
+@pytest.mark.asyncio
+async def test_cancel_in_window_marks_store_and_unqueues(quiet) -> None:
+    mgr = await _manager(max_concurrent=1)
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        mgr.spawn("run", parent_session_key="dash:1")
+        waiting = mgr.spawn("w", parent_session_key="dash:1")
+    mgr._report_queued_stop = MagicMock()  # type: ignore[method-assign]
+    assert await mgr.cancel(waiting.id) is True
+    assert mgr._queue == []
+    assert mgr._taskq.state_of(waiting.id) == model.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_cancel_landing_between_claim_and_start_stops_the_spawn(quiet) -> None:
+    """A row cancelled in the store after the window popped it: the drain's
+    fenced claim fails and nothing registers."""
+    mgr = await _manager(max_concurrent=1)
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        mgr.spawn("run", parent_session_key="dash:1")
+        waiting = mgr.spawn("w", parent_session_key="dash:1")
+    mgr._taskq.cancel(waiting.id, reason="user_stop")  # e.g. an external cancel
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        mgr._running_count = 0
+        mgr._drain_queue()
+    assert waiting.id not in mgr._agents
+    assert mgr._running_count == 0
+    assert mgr._taskq.state_of(waiting.id) == model.CANCELLED
+
+
+@pytest.mark.asyncio
+def _no_store_read(store: TaskStore):
+    """Fail the test if anything takes the store's connection.
+
+    ``is_queued`` runs on the gateway loop (the serial-lock done-probe), so it
+    must answer from memory. ``_c`` is the one accessor every SQLite read goes
+    through, so patching it catches any read, not only ``state_of``.
+    """
+    return patch.object(store, "_c", side_effect=AssertionError("store read on the loop"))
+
+
+def _probe_says_done(mgr: SubagentManager, agent_id: str) -> bool:
+    from kiro_crew.apps.spawn_sdk import build_done_probe
+
+    return build_done_probe(mgr)(agent_id)
+
+
+def _assert_pending_off_every_manager_list(mgr: SubagentManager, agent_id: str) -> None:
+    """The row is on disk only: neither windowed, popped nor registered. Only
+    the store can still name it."""
+    assert agent_id not in mgr._agents
+    assert not any(p.get("_preassigned_id") == agent_id for p in mgr._queue)
+    assert agent_id not in mgr._dispatch_window_ids
+    assert mgr._taskq.state_of(agent_id) == model.QUEUED
+    with _no_store_read(mgr._taskq):
+        assert mgr.is_queued(agent_id) is True
+        assert _probe_says_done(mgr, agent_id) is False
+
+
+@pytest.mark.asyncio
+async def test_is_queued_names_a_store_only_overflow_row(quiet) -> None:
+    """A row accepted on disk past the in-memory window lives ONLY in the task
+    store, so only the store's unstarted index can name it. The answer comes
+    from memory (no SQLite read on the loop). A cancel unnames it, so a row
+    that never ran cannot hold the guard forever."""
+    mgr = await _manager(max_concurrent=1)
+    store: TaskStore = mgr._taskq
+    overflow_id = "sa-overflow"
+    record = mgr._admission.taskq_build_record(
+        overflow_id,
+        {"task": "t", "parent_session_key": "dash:ovf"},
+        parent_session_key="dash:ovf",
+        memory_store="",
+        app="",
+        model="",
+        allowed_tools=None,
+        approval_mode="",
+    )
+    store.accept([record])  # QUEUED on disk, in no manager list
+    _assert_pending_off_every_manager_list(mgr, overflow_id)
+
+    await store.run(mgr._admission.taskq_cancel_queued, overflow_id)
+    assert mgr.is_queued(overflow_id) is False
+    assert _probe_says_done(mgr, overflow_id) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("via_async", [False, True])
+async def test_is_queued_follows_a_row_across_every_store_only_transition(quiet, via_async) -> None:
+    """Both ways a cap-queued row becomes store-only keep it pending: the gate
+    queueing it past a full window (from ``spawn`` and from ``spawn_async``,
+    the app SpawnSDK's entry), and the refill EVICTING a windowed row back to
+    disk to make room. The refill that brings it into the window again hands
+    it to ``_queue``. Driven through the real gate and eviction, so a path
+    that moves a row on disk without naming it fails."""
+    mgr = await _manager(max_concurrent=1)
+    store: TaskStore = mgr._taskq
+    store._window = 1
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        mgr.spawn("occupy", parent_session_key="dash:busy")
+        windowed = mgr.spawn("windowed", parent_session_key="dash:w")
+        if via_async:
+            on_disk = await mgr.spawn_async("on disk", parent_session_key="dash:d")
+        else:
+            on_disk = mgr.spawn("on disk", parent_session_key="dash:d")
+    assert on_disk is not None and on_disk.queued and not on_disk.done, on_disk
+    assert [p["_preassigned_id"] for p in mgr._queue] == [windowed.id]
+    _assert_pending_off_every_manager_list(mgr, on_disk.id)  # the cap's store-only branch
+
+    assert mgr._admission._evict_for_lanes(1) == 1
+    assert not mgr._queue
+    _assert_pending_off_every_manager_list(mgr, windowed.id)  # evicted back to disk
+
+    rows = store.fetch_dispatchable_fair(
+        model.KIND_SUBAGENT,
+        limit=1,
+        scheduler=mgr._admission.lane_refill_scheduler(),
+        exclude_ids=[on_disk.id],
+    )
+    mgr._admission._refill_apply(rows)
+    assert [p["_preassigned_id"] for p in mgr._queue] == [windowed.id]
+    assert mgr.is_queued(windowed.id) is True  # now named by _queue
+
+
+def _press_memory(pressure: pytest.MonkeyPatch) -> None:
+    """Make the next admission defer: the low-memory floor. Spawns do not read
+    the posture tier, so the floor is the only memory guard that defers one."""
+    pressure.setattr(
+        subagent_mod, "check_memory_available", lambda min_gb=None, path=None: (False, 0.2)
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("via_async", [False, True])
+async def test_is_queued_holds_for_a_spawn_deferred_at_accept(
+    quiet, monkeypatch: pytest.MonkeyPatch, via_async: bool
+) -> None:
+    """A pressure deferral at accept (the gate's ``_deferred``) leaves the row
+    QUEUED on disk with no window entry and no ``_agents`` row. That holds for
+    the sync ``spawn`` and for ``spawn_async``, the app SpawnSDK's entry. The
+    done-probe must keep the caller's serial guard for it."""
+    mgr = await _manager()
+    with monkeypatch.context() as pressure:
+        _press_memory(pressure)
+        with patch.object(SubagentManager, "_run", new=AsyncMock()):
+            if via_async:
+                info = await mgr.spawn_async("later", parent_session_key="dash:1")
+            else:
+                info = mgr.spawn("later", parent_session_key="dash:1")
+    assert info is not None and info.queued and not info.done, info
+    _assert_pending_off_every_manager_list(mgr, info.id)
+
+
+@pytest.mark.asyncio
+async def test_is_queued_holds_for_a_row_deferred_at_drain_time(
+    quiet, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pump pops a windowed row and the gate parks it on memory pressure
+    (``park_defer``). The attempt's dispatch mark is dropped and the row is back
+    on disk, deferred. The done-probe must still keep the guard for it."""
+    mgr = await _manager(max_concurrent=1)
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        mgr.spawn("occupy", parent_session_key="dash:busy")
+        waiting = mgr.spawn("waiting", parent_session_key="dash:1")
+    assert [p["_preassigned_id"] for p in mgr._queue] == [waiting.id]
+    mgr._running_count = 0  # the slot frees; the next pass picks the row
+    with monkeypatch.context() as pressure:
+        _press_memory(pressure)
+        with patch.object(SubagentManager, "_run", new=AsyncMock()):
+            await mgr._drain_queue_pass()
+            await _settle(mgr._taskq)
+    row = mgr._taskq.get(waiting.id)
+    assert row.next_run_at is not None and row.next_run_at > mgr._taskq.now()
+    assert "deferred" in [e.kind for e in mgr._taskq.events(waiting.id)]
+    _assert_pending_off_every_manager_list(mgr, waiting.id)
+
+
+@pytest.mark.asyncio
+async def test_is_queued_releases_a_store_only_row_ended_without_running(quiet) -> None:
+    """A store-only row the store ends before it ever ran must stop holding the guard.
+    If it stayed named, the probe would hold the caller's serial lock until its
+    timeout for work that will never run."""
+    mgr = await _manager(max_concurrent=1)
+    store: TaskStore = mgr._taskq
+    store._window = 1
+    parent = "dash:ended"
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        mgr.spawn("occupy", parent_session_key="dash:busy")
+        mgr.spawn("windowed", parent_session_key="dash:w")
+        on_disk = mgr.spawn("on disk", parent_session_key=parent)
+    _assert_pending_off_every_manager_list(mgr, on_disk.id)
+
+    mgr._admission._cancel_live_or_row(on_disk.id, reason="parent cancelled")
+    await _settle(store)
+
+    assert store.state_of(on_disk.id) == model.CANCELLED
+    with _no_store_read(store):
+        assert mgr.is_queued(on_disk.id) is False
+        assert _probe_says_done(mgr, on_disk.id) is True
+
+
+@pytest.mark.asyncio
+async def test_claim_revalidation_outage_retains_generation_and_slot_until_retry(quiet) -> None:
+    """An admitted generation stays owned until its durable check can finish."""
+    mgr = await _manager(max_concurrent=1)
+    store: TaskStore = mgr._taskq
+    parent = "dash:claim-outage"
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        mgr.spawn("occupy", parent_session_key=parent)
+        waiting = mgr.spawn("waiting", parent_session_key=parent)
+    params = mgr._queue.pop(0)
+    # The pump marks a row dispatching at pop time (SubagentManager._queue ->
+    # _dispatching_ids/_dispatch_window_ids); replicate it so the retained-claim
+    # guard operates on the same state the real drain pass sees.
+    mgr._dispatching_ids.add(waiting.id)
+    mgr._dispatch_window_ids.add(waiting.id)
+    mgr._running_count = 0
+    real_run = store.run
+    taskq_revalidate = mgr._admission.taskq_claim_still_current
+    revalidation_attempts = 0
+
+    async def _fail_first_revalidation(fn, /, *args, **kwargs):
+        nonlocal revalidation_attempts
+        if fn == taskq_revalidate:
+            revalidation_attempts += 1
+            if revalidation_attempts == 1:
+                return None
+        return await real_run(fn, *args, **kwargs)
+
+    with (
+        patch.object(store, "run", side_effect=_fail_first_revalidation),
+        patch.object(SubagentManager, "_run", new=AsyncMock()),
+    ):
+        first = await mgr._admission._dispatch_async_impl(params)
+        admitted = await store.run(store.get, waiting.id)
+        assert first is not None and first.queued and not first.done
+        assert admitted is not None and admitted.state == model.ADMITTED
+        assert admitted.generation == 1
+        assert mgr._running_count == 1
+        assert mgr._retained_claims[waiting.id][1] == admitted.generation
+        assert waiting.id not in mgr._agents
+        # While the claim is retained the row is in neither _queue nor _agents,
+        # but it is still pending work: is_queued must report it so the serial
+        # done-probe keeps the caller's guard rather than reading it as done
+        # (the gap GPT F1 named -- the outer drain-pass cleanup must not erase
+        # _dispatch_window_ids for a still-retained claim).
+        assert waiting.id in mgr._dispatch_window_ids
+        assert mgr.is_queued(waiting.id) is True
+
+        await mgr._drain_queue_pass()
+
+    assert revalidation_attempts == 2
+    assert waiting.id not in mgr._retained_claims
+    assert mgr._retained_claim_retry_handle is None
+    assert waiting.id in mgr._agents
+    # Once the retry registers the run, the retention window closes: the row is
+    # an _agents entry now, so is_queued stops naming it.
+    assert waiting.id not in mgr._dispatch_window_ids
+    assert mgr.is_queued(waiting.id) is False
+    assert await store.run(store.state_of, waiting.id) == model.STARTING
+    assert mgr._running_count == 1
+
+
+_STOP_PARENT = "dash:stop-after-claim"
+
+
+async def _park_run(_self: SubagentManager, _info: SubagentInfo) -> None:
+    """A run that holds its slot until it is stopped: a start is visible as a live task."""
+    await asyncio.Event().wait()
+
+
+async def _popped_row(monkeypatch: pytest.MonkeyPatch) -> tuple[SubagentManager, dict]:
+    """A real manager on the production (writer-thread) pump, holding one row
+    for :data:`_STOP_PARENT` that the pump has just popped from the window: the
+    state the pump is in when it hands the row to ``_dispatch_async``."""
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "pump_off_loop", True)
+    mgr = await _manager(max_concurrent=1)
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        # Another parent's run takes the one slot, so this parent's row queues.
+        mgr.spawn("occupy", parent_session_key="dash:elsewhere")
+        waiting = mgr.spawn("waiting", parent_session_key=_STOP_PARENT)
+    assert waiting.queued and not waiting.done
+    params = mgr._queue.pop(0)
+    assert params["_preassigned_id"] == waiting.id
+    mgr._running_count = 0
+    return mgr, params
+
+
+def _record_depths(mgr: SubagentManager) -> list[int]:
+    """Every ``subagent_queued`` depth published for :data:`_STOP_PARENT`."""
+    depths: list[int] = []
+
+    async def on_event(etype: str, info: Any, extra: dict) -> None:
+        if etype == "subagent_queued" and info.parent_session_key == _STOP_PARENT:
+            depths.append(int(extra["queued"]))
+
+    mgr._on_event = on_event
+    return depths
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("stop_lands", ["read_before_claim", "after_claim", "after_reread"])
+async def test_stop_all_between_claim_and_start_keeps_the_row_stopped(
+    quiet, monkeypatch: pytest.MonkeyPatch, stop_lands: str
+) -> None:
+    """A row Stop all stops after the pump claimed it, and before the pump
+    registered it, ends stopped: it never starts, and the parent's depth is 0.
+
+    The pump's claim is a writer-thread hop, so Stop all can run while the
+    pump is suspended on it. Explicit barriers, no sleeps, put Stop all in
+    each place it can land:
+
+    * ``read_before_claim``: its store read lists the row while it is still
+      queued, and its cancel lands after the claim made it ``admitted``.
+    * ``after_claim``: the whole Stop all runs after the claim landed, so its
+      read finds a CLAIMED row no run is registered for yet.
+    * ``after_reread``: the whole Stop all runs after the pump's post-claim
+      re-read answered and before the pump resumed to register.
+
+    Without the re-read the pump registered the row over the queued-stop
+    record: a live run the parent had been told was stopped, which the
+    running sweep never sees.
+    """
+    from kiro_crew.taskq import KIND_SUBAGENT
+
+    mgr, params = await _popped_row(monkeypatch)
+    store: TaskStore = mgr._taskq
+    agent_id = params["_preassigned_id"]
+    depths = _record_depths(mgr)
+    real_run = store.run
+    taskq_claim = mgr._admission.taskq_claim
+    taskq_revalidate = mgr._admission.taskq_claim_still_current
+    at_claim, release_claim = asyncio.Event(), asyncio.Event()
+    claimed, resume_after_claim = asyncio.Event(), asyncio.Event()
+    reread, resume_after_reread = asyncio.Event(), asyncio.Event()
+    listed, release_stop = asyncio.Event(), asyncio.Event()
+
+    async def _gated(fn, /, *args, **kwargs):
+        if fn == taskq_claim:
+            at_claim.set()
+            await release_claim.wait()
+            result = await real_run(fn, *args, **kwargs)
+            claimed.set()
+            await resume_after_claim.wait()
+            return result
+        if fn == taskq_revalidate:
+            result = await real_run(fn, *args, **kwargs)
+            reread.set()
+            await resume_after_reread.wait()
+            return result
+        if fn == store.list_pending and kwargs.get("session_key") == _STOP_PARENT:
+            result = await real_run(fn, *args, **kwargs)
+            listed.set()
+            await release_stop.wait()
+            return result
+        return await real_run(fn, *args, **kwargs)
+
+    try:
+        with (
+            patch.object(store, "run", side_effect=_gated),
+            patch.object(SubagentManager, "_run", new=_park_run),
+        ):
+            dispatch = asyncio.create_task(mgr._admission._dispatch_async_impl(params))
+            await await_until(at_claim, what="the dispatch reaching its claim")
+            if stop_lands == "read_before_claim":
+                stop = asyncio.create_task(mgr.cancel_for_parent(_STOP_PARENT))
+                await await_until(listed, what="the stop listing the parent's rows")
+                assert store.state_of(agent_id) == model.QUEUED
+                release_claim.set()
+                await await_until(claimed, what="the claim landing")
+                assert store.state_of(agent_id) == model.ADMITTED
+                release_stop.set()
+                stopped = await await_until(stop, what="the stop finishing")
+                resume_after_claim.set()
+                resume_after_reread.set()
+            elif stop_lands == "after_claim":
+                release_claim.set()
+                await await_until(claimed, what="the claim landing")
+                assert store.state_of(agent_id) == model.ADMITTED
+                release_stop.set()
+                stopped = await _finished(mgr.cancel_for_parent(_STOP_PARENT), "the stop")
+                resume_after_claim.set()
+                resume_after_reread.set()
+            else:
+                release_claim.set()
+                resume_after_claim.set()
+                await await_until(reread, what="the claim's re-read landing")
+                assert store.state_of(agent_id) == model.ADMITTED
+                release_stop.set()
+                stopped = await _finished(mgr.cancel_for_parent(_STOP_PARENT), "the stop")
+                resume_after_reread.set()
+            result = await await_until(dispatch, what="the dispatch finishing")
+        await settle_store_writes(store, rounds=4)
+        await settle_depth_emits(mgr)
+
+        # Stopped, and counted as the queued row it was.
+        assert stopped == (0, 1)
+        assert result is not None and result.done and result.user_stopped
+        # Never started: no run task, and the record is the queued-stop one.
+        assert agent_id not in mgr._tasks
+        terminal = mgr._agents[agent_id]
+        assert terminal.queued and terminal.user_stopped
+        assert store.state_of(agent_id) == model.CANCELLED
+        # The slot the claim reserved went back.
+        assert mgr._running_count == 0 and mgr._startup_reservations == 0
+        # Depth 0: in the store, in the manager's count, and on the card.
+        assert store.count_pending(KIND_SUBAGENT, session_key=_STOP_PARENT) == 0
+        assert await mgr.queued_count_for_async(_STOP_PARENT) == 0
+        assert depths and depths[-1] == 0
+    finally:
+        await mgr.cancel_all()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+async def test_a_row_registered_during_stop_alls_read_is_reaped_not_replaced(
+    quiet, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stop all read the row while it was queued; the pump then claimed AND
+    registered it before Stop all resumed. The row is a live run now, so Stop
+    all reaps it as one: its ``_agents`` record is the run's own, never a
+    queued-stop record laid over it, and its store row is not cancelled out
+    from under the run. The run's ``admitted -> starting`` mark is held, which
+    is the moment a registered run's row is still ``admitted``. The pass's
+    writer-thread cancel job never names the run's row: the running sweep's
+    reap is its only stop.
+    """
+    mgr, params = await _popped_row(monkeypatch)
+    store: TaskStore = mgr._taskq
+    agent_id = params["_preassigned_id"]
+    real_run = store.run
+    real_post = store.post
+    listed, release_stop = asyncio.Event(), asyncio.Event()
+    batched: list[str] = []
+    real_batch = SpawnAdmissionCoordinator.taskq_post_cancel_queued
+
+    def _record_batch(self: Any, ids: Any) -> Any:
+        batched.extend(ids)
+        return real_batch(self, ids)
+
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "taskq_post_cancel_queued", _record_batch)
+    held_marks: list[tuple[Any, tuple, dict, asyncio.Future]] = []
+
+    async def _gated(fn, /, *args, **kwargs):
+        if fn == store.list_pending and kwargs.get("session_key") == _STOP_PARENT:
+            result = await real_run(fn, *args, **kwargs)
+            listed.set()
+            await release_stop.wait()
+            return result
+        return await real_run(fn, *args, **kwargs)
+
+    def _hold_starting_mark(fn, /, *args, **kwargs):
+        if getattr(fn, "__name__", "") == "taskq_advance" and args[:2] == (agent_id, "starting"):
+            future = asyncio.get_running_loop().create_future()
+            held_marks.append((fn, args, kwargs, future))
+            return future
+        return real_post(fn, *args, **kwargs)
+
+    async def _land_held_marks() -> None:
+        for fn, args, kwargs, future in held_marks:
+            if not future.done():
+                future.set_result(
+                    await _finished(real_post(fn, *args, **kwargs), "the held mark landing")
+                )
+
+    try:
+        with (
+            patch.object(store, "run", side_effect=_gated),
+            patch.object(store, "post", side_effect=_hold_starting_mark),
+            patch.object(SubagentManager, "_run", new=_park_run),
+        ):
+            stop = asyncio.create_task(mgr.cancel_for_parent(_STOP_PARENT))
+            await await_until(listed, what="the stop listing the parent's rows")
+            started = await _finished(mgr._admission._dispatch_async_impl(params), "the dispatch")
+            assert started is not None and mgr._agents[agent_id] is started
+            assert agent_id in mgr._tasks and held_marks
+            assert store.state_of(agent_id) == model.ADMITTED
+            release_stop.set()
+            stopped = await await_until(stop, what="the stop finishing")
+            await _land_held_marks()
+        await settle_store_writes(store, rounds=4)
+
+        assert stopped == (1, 0), "a registered run is stopped as the running run it is"
+        assert agent_id not in batched, "the queued pass's cancel job left the run's row out"
+        assert mgr._agents[agent_id] is started
+        assert started.reaped and started.user_stopped and not started.queued
+        assert agent_id not in mgr._tasks
+        assert store.state_of(agent_id) == model.CANCELLED
+    finally:
+        await _land_held_marks()
+        await mgr.cancel_all()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("claim_joins", [True, False], ids=["claim_joins", "start_unjoined"])
+async def test_a_claim_resumed_between_stop_alls_post_and_answer_refuses_the_start(
+    quiet, monkeypatch: pytest.MonkeyPatch, claim_joins: bool
+) -> None:
+    """The pump's post-claim re-read is queued ahead of Stop all's batched
+    cancel, so it answers "still current"; the claimer resumes after the job
+    is posted and before its answer comes back, when no queued-stop record
+    exists yet. Explicit barriers, no sleeps: the re-read's answer is held
+    until the job is posted, and the job's answer until the claimer has
+    either looked up the batch's answer for its row or registered.
+
+    * ``claim_joins``: the claimer waits for the batch's answer and re-reads
+      behind the cancel, so it refuses the start. The row is stopped once,
+      as the queued row it was: ``(0, 1)``, as on main, where the synchronous
+      cancel installed the record before the claimer resumed.
+    * ``start_unjoined``: a start that does not join (the join disabled)
+      registers the run before the answer. The batch neither counts nor
+      reports that row; the running sweep reaps and counts it: ``(1, 0)``.
+
+    Before the claimer joined, it registered the run, the cancel ended it
+    under the run, and Stop all counted the one agent twice: ``(1, 1)``.
+    """
+    mgr, params = await _popped_row(monkeypatch)
+    store: TaskStore = mgr._taskq
+    agent_id = params["_preassigned_id"]
+    real_run = store.run
+    taskq_revalidate = mgr._admission.taskq_claim_still_current
+    if not claim_joins:
+        monkeypatch.setattr(
+            SpawnAdmissionCoordinator, "_batched_stop_of", lambda _self, _id: None, raising=False
+        )
+    reread, posted, looked = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    release_answer = asyncio.Event()
+    rereads: list[tuple] = []
+    batched: list[str] = []
+    real_batch = SpawnAdmissionCoordinator.taskq_post_cancel_queued
+
+    def _hold_answer(self: Any, ids: Any) -> Any:
+        job = real_batch(self, ids)
+        batched.extend(ids)
+        posted.set()
+
+        async def _answer_later() -> Any:
+            answer = await job
+            await release_answer.wait()
+            return answer
+
+        return asyncio.ensure_future(_answer_later())
+
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "taskq_post_cancel_queued", _hold_answer)
+
+    class _WatchedJoins(dict):
+        def get(self, key: Any, default: Any = None) -> Any:
+            found = super().get(key, default)
+            if key == agent_id and found is not None:
+                looked.set()
+            return found
+
+    mgr._batched_stops = _WatchedJoins()
+
+    async def _gated(fn, /, *args, **kwargs):
+        result = await real_run(fn, *args, **kwargs)
+        if fn == taskq_revalidate:
+            rereads.append(args)
+            if len(rereads) == 1:
+                reread.set()
+                await posted.wait()
+        return result
+
+    try:
+        with (
+            patch.object(store, "run", side_effect=_gated),
+            patch.object(SubagentManager, "_run", new=_park_run),
+        ):
+            dispatch = asyncio.create_task(mgr._admission._dispatch_async_impl(params))
+            await await_until(reread, what="the claim's re-read landing")
+            assert store.state_of(agent_id) == model.ADMITTED
+            stop = asyncio.create_task(mgr.cancel_for_parent(_STOP_PARENT))
+            await await_until(posted, what="the batch's cancel being posted")
+            assert agent_id in batched
+            await async_wait_until(
+                lambda: dispatch.done() or looked.is_set(),
+                describe=lambda: f"dispatch done={dispatch.done()} looked={looked.is_set()}",
+            )
+            release_answer.set()
+            stopped = await await_until(stop, what="the stop finishing")
+            result = await await_until(dispatch, what="the dispatch finishing")
+        await settle_store_writes(store, rounds=4)
+
+        assert store.state_of(agent_id) == model.CANCELLED
+        assert agent_id not in mgr._tasks
+        assert mgr._running_count == 0 and mgr._startup_reservations == 0
+        if claim_joins:
+            assert stopped == (0, 1), "stopped once, as the queued row it was"
+            assert len(rereads) == 2, "the start was decided by a re-read behind the cancel"
+            assert result is not None and result.done and result.user_stopped
+            terminal = mgr._agents[agent_id]
+            assert terminal.queued and terminal.user_stopped
+        else:
+            assert stopped == (1, 0), "a registered run is stopped as the running run it is"
+            assert result is not None and mgr._agents[agent_id] is result
+            assert result.reaped and result.user_stopped and not result.queued
+    finally:
+        release_answer.set()
+        await mgr.cancel_all()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+async def test_a_store_only_cancel_between_claim_and_start_refuses_the_start(
+    quiet, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancel that reaches the row through the store alone (an orphan
+    cancel or reconcile installs no ``_agents`` record) while the pump is
+    suspended on its claim still refuses the start: the post-claim re-read
+    finds the row cancelled rather than ``admitted``, and the
+    reservation goes back. The loop check cannot catch this one, since
+    nothing in the loop records the stop."""
+    mgr, params = await _popped_row(monkeypatch)
+    store: TaskStore = mgr._taskq
+    agent_id = params["_preassigned_id"]
+    real_run = store.run
+    taskq_claim = mgr._admission.taskq_claim
+    claimed, resume_after_claim = asyncio.Event(), asyncio.Event()
+
+    async def _gated(fn, /, *args, **kwargs):
+        if fn == taskq_claim:
+            result = await real_run(fn, *args, **kwargs)
+            claimed.set()
+            await resume_after_claim.wait()
+            return result
+        return await real_run(fn, *args, **kwargs)
+
+    try:
+        with (
+            patch.object(store, "run", side_effect=_gated),
+            patch.object(SubagentManager, "_run", new=_park_run),
+        ):
+            dispatch = asyncio.create_task(mgr._admission._dispatch_async_impl(params))
+            await await_until(claimed, what="the claim landing")
+            assert store.state_of(agent_id) == model.ADMITTED
+            assert store.cancel(agent_id, reason="store_only_cancel") == model.ADMITTED
+            assert agent_id not in mgr._agents
+            resume_after_claim.set()
+            await await_until(dispatch, what="the dispatch finishing")
+        await settle_store_writes(store, rounds=4)
+
+        assert agent_id not in mgr._tasks, "a row cancelled in the store never starts"
+        assert mgr._running_count == 0 and mgr._startup_reservations == 0
+        assert store.state_of(agent_id) == model.CANCELLED
+    finally:
+        resume_after_claim.set()
+        await mgr.cancel_all()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+async def test_a_claim_of_a_row_the_store_never_saw_still_starts(
+    quiet, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``taskq_claim`` lets a row the store never saw (a legacy in-memory
+    entry) proceed at generation 0. That claim has no row to re-read, so the
+    post-claim re-read is skipped and the run starts, as the spec states;
+    re-reading it would find nothing and end the spawn as stopped."""
+    mgr, params = await _popped_row(monkeypatch)
+    store: TaskStore = mgr._taskq
+    legacy_id = "legacy-entry-no-row"
+    params["_preassigned_id"] = legacy_id
+    assert store.get(legacy_id) is None
+    real_run = store.run
+    taskq_revalidate = mgr._admission.taskq_claim_still_current
+    rereads: list[tuple] = []
+
+    async def _spy(fn, /, *args, **kwargs):
+        if fn == taskq_revalidate:
+            rereads.append(args)
+        return await real_run(fn, *args, **kwargs)
+
+    try:
+        with (
+            patch.object(store, "run", side_effect=_spy),
+            patch.object(SubagentManager, "_run", new=_park_run),
+        ):
+            started = await _finished(mgr._admission._dispatch_async_impl(params), "the dispatch")
+
+        assert started is not None and not started.done and not started.queued
+        assert mgr._agents[legacy_id] is started and legacy_id in mgr._tasks
+        assert rereads == []
+    finally:
+        await mgr.cancel_all()
+
+
+@pytest.mark.asyncio
+async def test_a_queued_stop_never_replaces_a_registered_record(quiet) -> None:
+    """``_report_queued_stop`` is the one place a synthetic "stopped before
+    start" record is installed. Over a registered run's record it would leave
+    the run executing behind a stopped card that no sweep reaps, so it leaves
+    that record alone and reports nothing. What this process kept for that
+    run's start (a memory-pressure hold it may still be waiting under) stays
+    with the run's own start too."""
+    mgr = await _manager(max_concurrent=1)
+    try:
+        live = SubagentInfo(id="registered", task="real work", parent_session_key=_STOP_PARENT)
+        mgr._agents[live.id] = live
+        mgr._pressure_holds[live.id] = 1.0
+        reported: list[str] = []
+        mgr._spawn_terminal_report = lambda info, **_kw: reported.append(info.id)  # type: ignore[method-assign]
+
+        mgr._report_queued_stop({"_preassigned_id": live.id, "parent_session_key": _STOP_PARENT})
+
+        assert mgr._agents[live.id] is live
+        assert not live.done and not live.queued and not live.user_stopped
+        assert reported == []
+        assert mgr._pressure_holds.get(live.id) == 1.0
+    finally:
+        await mgr.cancel_all()
+
+
+@pytest.mark.asyncio
+async def test_cancel_for_parent_reaches_store_only_rows(quiet) -> None:
+    mgr = await _manager(max_concurrent=1)
+    mgr._taskq._window = 1
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        mgr.spawn("run", parent_session_key="dash:1")
+        w = mgr.spawn("w", parent_session_key="dash:1")
+        o1 = mgr.spawn("o1", parent_session_key="dash:1")
+        o2 = mgr.spawn("o2", parent_session_key="dash:2")  # other parent
+    mgr._report_queued_stop = MagicMock()  # type: ignore[method-assign]
+    mgr._force_reap = AsyncMock()  # type: ignore[method-assign]
+    running, queued = await mgr.cancel_for_parent("dash:1")
+    assert queued == 2
+    assert mgr._taskq.state_of(w.id) == model.CANCELLED
+    assert mgr._taskq.state_of(o1.id) == model.CANCELLED
+    assert mgr._taskq.state_of(o2.id) == model.QUEUED
+    del running
+
+
+# ── restart survival ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_queued_stop_carries_the_origin_its_caller_named(quiet) -> None:
+    """A stop the user never pressed is announced with the caller's own origin."""
+    mgr = await _manager(max_concurrent=1)
+    published: list[SubagentInfo] = []
+    with patch.object(
+        SubagentManager,
+        "_spawn_terminal_report",
+        new=lambda _self, info, **_kw: published.append(info),
+    ):
+        mgr._report_queued_stop(
+            {
+                "_preassigned_id": "retired-row",
+                "task": "t",
+                "parent_session_key": "dash:p",
+                "_stop_origin": "queued by chat Autopilot, which was removed",
+            }
+        )
+        mgr._report_queued_stop(
+            {"_preassigned_id": "user-row", "task": "t", "parent_session_key": "dash:p"}
+        )
+
+    origins = {info.id: info._stop_origin for info in published}
+    assert origins == {
+        "retired-row": "queued by chat Autopilot, which was removed",
+        "user-row": "",
+    }
+    await mgr.cancel_all()
+
+
+@pytest.mark.parametrize("off_loop", [False, True], ids=["inline", "off-loop"])
+@pytest.mark.asyncio
+async def test_a_row_with_an_empty_stage_owner_still_refills_and_starts(
+    quiet,
+    monkeypatch,
+    off_loop: bool,
+) -> None:
+    """Rows written before the owner token was removed carry it as ``""``."""
+    first = await _manager(max_concurrent=1)
+    parent = "dash:old-row"
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        first.spawn("occupy", parent_session_key=parent)
+        old = first.spawn("pre-upgrade-row", parent_session_key=parent)
+    assert first._taskq.state_of(old.id) == model.QUEUED
+    first._taskq.close()
+    del first
+    conn = sqlite3.connect(_store_path())
+    with conn:
+        conn.execute(
+            "UPDATE tasks SET params_json=json_set(params_json, '$._stage_boundary_owner', '')"
+            " WHERE id=?",
+            (old.id,),
+        )
+    conn.close()
+
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "pump_off_loop", off_loop)
+    second = await _manager(max_concurrent=2)
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        if off_loop:
+            await second._drain_queue_pass()
+        else:
+            second._drain_queue()
+        await asyncio.sleep(0)
+
+    assert old.id in second._agents, "the pre-upgrade row never started"
+    assert second._taskq.state_of(old.id) != model.CANCELLED
+    await second.cancel_all()
+
+
+def test_a_store_outage_mid_retirement_still_reports_every_committed_cancel() -> None:
+    """Rows cancelled before the outage are reported; no stage row is dispatched."""
+    from kiro_crew.subagent_manager.admission.taskq_bridge import _TaskqBridgeMixin
+
+    def _row(row_id: str, owner: str = "") -> SimpleNamespace:
+        params = {"task": row_id, "_stage_boundary_owner": owner} if owner else {"task": row_id}
+        return SimpleNamespace(id=row_id, generation=1, params=params)
+
+    calls: list[str] = []
+
+    def _cancel(row_id: str, **_kw):
+        calls.append(row_id)
+        if len(calls) > 1:
+            raise TaskStoreUnavailable("disk gone")
+        return model.QUEUED
+
+    store = SimpleNamespace(cancel=_cancel)
+    rows = [_row("stage-1", "o"), _row("plain-1"), _row("stage-2", "o"), _row("stage-3", "o")]
+
+    kept, retired, stranded = _TaskqBridgeMixin._retire_legacy_stage_rows(store, rows)
+
+    assert [rec.id for rec in kept] == ["plain-1"]
+    assert [params["_preassigned_id"] for params in retired] == ["stage-1"]
+    assert calls == ["stage-1", "stage-2"], "cancelling stops at the outage"
+    assert stranded, "the uncancelled stage rows are flagged for a retry pass"
+
+
+def test_a_stage_row_an_outage_left_queued_arms_a_retry_pass() -> None:
+    """The retry wake is armed even when the rest of the refill touches no store."""
+    from kiro_crew.subagent_manager.admission.taskq_bridge import _TaskqBridgeMixin
+
+    wakes: list[float] = []
+    reported: list[dict] = []
+    bridge = SimpleNamespace(
+        _manager=SimpleNamespace(_report_queued_stop=reported.append),
+        taskq_admit_wait_secs=lambda: 30.0,
+        _refill_schedule_wake=lambda _store, at: wakes.append(at),
+    )
+    store = SimpleNamespace(now=lambda: 100.0)
+
+    _TaskqBridgeMixin._report_retired_stage_rows(bridge, store, [], True)
+    assert wakes == [130.0]
+
+    wakes.clear()
+    _TaskqBridgeMixin._report_retired_stage_rows(bridge, store, [{"_preassigned_id": "r"}], False)
+    assert wakes == [], "a clean pass arms no retry"
+    assert [p["_preassigned_id"] for p in reported] == ["r"]
+
+
+@pytest.mark.parametrize("off_loop", [False, True], ids=["inline", "off-loop"])
+@pytest.mark.asyncio
+async def test_restart_refill_stops_a_row_a_retired_autopilot_stage_queued(
+    quiet,
+    monkeypatch,
+    off_loop: bool,
+) -> None:
+    """A durable row that names a stage owner is stopped at refill, never run."""
+    first = await _manager(max_concurrent=1)
+    parent = "dash:retired-stage"
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        first.spawn("occupy", parent_session_key=parent)
+        stale = first.spawn("stale-stage-row", parent_session_key=parent)
+        fresh = first.spawn("ordinary-row", parent_session_key=parent)
+    assert first._taskq.state_of(stale.id) == model.QUEUED
+    first._taskq.close()
+    del first
+    # The shape a row written by the retired Autopilot stage loop has on disk.
+    conn = sqlite3.connect(_store_path())
+    with conn:
+        conn.execute(
+            "UPDATE tasks SET params_json=json_set(params_json, '$._stage_boundary_owner', ?)"
+            " WHERE id=?",
+            ("owner-a", stale.id),
+        )
+    conn.close()
+
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "pump_off_loop", off_loop)
+    second = await _manager(max_concurrent=2)
+    store: TaskStore = second._taskq
+    second._report_queued_stop = MagicMock()  # type: ignore[method-assign]
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        if off_loop:
+            await second._drain_queue_pass()
+        else:
+            second._drain_queue()
+
+    assert store.state_of(stale.id) == model.CANCELLED
+    assert stale.id not in second._agents
+    assert all(row.get("_preassigned_id") != stale.id for row in second._queue)
+    reported = [call.args[0] for call in second._report_queued_stop.call_args_list]
+    assert [row.get("_preassigned_id") for row in reported] == [stale.id]
+    assert "chat Autopilot, which was removed" in reported[0]["_stop_origin"]
+    assert store.state_of(fresh.id) != model.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_queued_rows_survive_restart_and_redispatch(quiet) -> None:
+    first = await _manager(max_concurrent=1)
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        running = first.spawn("running", parent_session_key="dash:1")
+        q1 = first.spawn("q1", parent_session_key="dash:1")
+        q2 = first.spawn("q2", parent_session_key="dash:1")
+    first._taskq.close()  # crash: no terminal writes, in-memory queue gone
+    del first
+    second = await _manager(max_concurrent=2)
+    store: TaskStore = second._taskq
+    # reconcile settled the lost run (subagent default class: unknown)
+    assert store.state_of(running.id) == model.UNKNOWN_SIDE_EFFECT
+    assert store.state_of(q1.id) == model.QUEUED and store.state_of(q2.id) == model.QUEUED
+    assert second._queue == []
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        second._drain_queue()
+        second._drain_queue()
+    assert store.state_of(q1.id) == model.STARTING
+    assert store.state_of(q2.id) == model.STARTING
+    assert set(second._agents) == {q1.id, q2.id}
+    assert second._agents[q1.id].task == "q1"
+
+
+@pytest.mark.asyncio
+async def test_batch_pending_sees_store_only_members(quiet) -> None:
+    mgr = await _manager(max_concurrent=1)
+    mgr._taskq._window = 1
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        a = mgr.spawn("a", batch_id="wv", batch_total=3, parent_session_key="dash:1")
+        mgr.spawn("b", batch_id="wv", batch_total=3, parent_session_key="dash:1")
+        c = mgr.spawn("c", batch_id="wv", batch_total=3, parent_session_key="dash:1")
+    assert mgr.batch_members_pending("wv") is True
+    mgr._agents[a.id].done = True
+    mgr._queue.clear()  # window member gone; store-only member c still holds the wave
+    assert mgr._taskq.state_of(c.id) == model.QUEUED
+    assert mgr.batch_members_pending("wv") is True
+    mgr._taskq.cancel(c.id)
+    (
+        mgr._taskq.cancel([r.id for r in mgr._taskq.list_pending(model.KIND_SUBAGENT)][0])
+        if mgr._taskq.list_pending(model.KIND_SUBAGENT)
+        else None
+    )
+    assert mgr.batch_members_pending("wv") is False
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_batch_read_holds_the_wave_open(quiet) -> None:
+    """An unreadable batch is unknown members, never no members.
+
+    The wave's bookkeeping is PRUNED when the digest closes, so a digest that
+    closes early over store-only members is not one wrong message: a second
+    digest can then fire for the same batch.
+    """
+    mgr = await _manager(max_concurrent=1)
+    store: TaskStore = mgr._taskq
+    store._window = 1
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        a = mgr.spawn("a", batch_id="wv", batch_total=3, parent_session_key="dash:1")
+        mgr.spawn("b", batch_id="wv", batch_total=3, parent_session_key="dash:1")
+        c = mgr.spawn("c", batch_id="wv", batch_total=3, parent_session_key="dash:1")
+    mgr._agents[a.id].done = True
+    mgr._queue.clear()  # only the store knows c is still queued
+    assert store.state_of(c.id) == model.QUEUED
+    with patch.object(store, "fetch_pending_by_batch", side_effect=TaskStoreUnavailable("locked")):
+        assert mgr.batch_members_pending("wv") is True
+        assert await mgr.batch_members_pending_async("wv") is True
+    await mgr.cancel_all()
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_overflow_keeps_the_attached_children_guard_closed(quiet) -> None:
+    """An unreadable queue is unknown children, never zero children.
+
+    A session reset or teardown that reads "no children pending" over a
+    store-only queued child strands that child's completion on a cold-started
+    replacement session, so the count answers "some" while the store cannot be
+    read -- which is the arm ``subagents_attached`` already documents and could
+    never reach while the count answered 0.
+    """
+    mgr = await _manager(max_concurrent=1)
+    store: TaskStore = mgr._taskq
+    store._window = 1
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        mgr.spawn("live", parent_session_key="dash:other")
+        mgr.spawn("w", parent_session_key="dash:other")
+        outside = mgr.spawn("o", parent_session_key="dash:1")
+    assert store.state_of(outside.id) == model.QUEUED
+    assert mgr.running_agents_for("dash:1") == []
+    state = SimpleNamespace(subagents=mgr)
+    assert mgr._admission.taskq_overflow("dash:1") == 1
+    assert await chat_utils.subagents_attached_async(state, None, "dash:1", "reset") is True
+    with patch.object(store, "count_pending", side_effect=TaskStoreUnavailable("locked")):
+        assert chat_utils.subagents_attached(state, None, "dash:1", "reset") is True
+        assert await chat_utils.subagents_attached_async(state, None, "dash:1", "reset") is True
+        assert mgr.has_pending_work_for("dash:1") is True
+        assert mgr._admission.taskq_overflow("dash:1") > 0
+        assert await mgr._admission.taskq_overflow_async("dash:1") > 0
+    await mgr.cancel_all()
+
+
+@pytest.mark.asyncio
+async def test_task_queue_disabled_keeps_legacy_queue(
+    quiet, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    real_load = KiroCrewConfig.load
+
+    def load_disabled(*a, **k):
+        cfg = real_load(*a, **k)
+        cfg.agent.task_queue_enabled = False
+        return cfg
+
+    monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(load_disabled))
+    mgr = await _manager(max_concurrent=1)
+    assert mgr._taskq is None
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        mgr.spawn("a", parent_session_key="dash:1")
+        q = mgr.spawn("b", parent_session_key="dash:1")
+    assert q.queued and len(mgr._queue) == 1
+    assert not (Path(os.environ["KIROCREW_HOME"]) / "tasks").exists()

@@ -1,0 +1,721 @@
+/**
+ * FolderPanel's recursive, files-only search.
+ *
+ * The behaviours pinned here are the ones a refactor can silently break without
+ * failing anything else: that search goes to `/api/file-search` scoped to the
+ * CURRENT directory with `kinds=files` (a filter over `browseFiles` could only
+ * ever match the level already on screen), that a directory hit from an older
+ * gateway is still not rendered, that navigating or re-targeting clears the
+ * query, and that the truncation note appears only on a full page.
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, waitFor, within, fireEvent } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import FolderPanel from '../pages/chat/FolderPanel'
+import { api, ApiError } from '../api/client'
+import { consumeChatHandoff, __resetErrorJournalForTests, recordError } from '../utils/errorReport'
+
+const ROOT = '/proj'
+
+function listing() {
+  return {
+    path: ROOT,
+    parent: '/',
+    dirs: [{ name: 'src', path: `${ROOT}/src` }],
+    files: [{ name: 'README.md', path: `${ROOT}/README.md` }],
+  }
+}
+
+function hit(rel: string) {
+  const path = `${ROOT}/${rel}`
+  return { path, name: rel.split('/').pop() as string, size: 10, mtime: 1, kind: 'file' as const }
+}
+
+function renderPanel(props: Partial<Parameters<typeof FolderPanel>[0]> = {}) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(
+    <QueryClientProvider client={client}>
+      <FolderPanel path={ROOT} onClose={() => {}} {...props} />
+    </QueryClientProvider>,
+  )
+}
+
+beforeEach(() => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  vi.spyOn(api, 'browseFiles').mockResolvedValue(listing() as never)
+  vi.spyOn(api, 'revealPath').mockResolvedValue(undefined as never)
+})
+
+afterEach(() => {
+  vi.useRealTimers()
+  vi.restoreAllMocks()
+})
+
+async function type(text: string) {
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+  await user.type(screen.getByLabelText('Search files'), text)
+  return user
+}
+
+describe('FolderPanel search', () => {
+  it('searches the current directory recursively, files only', async () => {
+    const search = vi.spyOn(api, 'fileSearch').mockResolvedValue({
+      results: [hit('src/deep/nested/App.tsx')], root: ROOT,
+    } as never)
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('app')
+
+    await waitFor(() => expect(search).toHaveBeenCalled())
+    // Scoped to cwd, and files-only, both server-side.
+    expect(search).toHaveBeenCalledWith('app', ROOT, expect.anything(), 'files', 15)
+
+    // The subfolder is shown, so a hit outside the current level is locatable.
+    const row = await screen.findByTitle(`${ROOT}/src/deep/nested/App.tsx`)
+    expect(within(row).getByText('App.tsx')).toBeInTheDocument()
+    expect(within(row).getByText('src/deep/nested')).toBeInTheDocument()
+  })
+
+  it('does not dispatch a request for a one-character query', async () => {
+    const search = vi.spyOn(api, 'fileSearch').mockResolvedValue({ results: [], root: ROOT } as never)
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('a')
+
+    await vi.advanceTimersByTimeAsync(500)
+    expect(search).not.toHaveBeenCalled()
+    // The listing stays put rather than being replaced by an empty result set.
+    expect(screen.getByText('README.md')).toBeInTheDocument()
+  })
+
+  it('keeps the last rows under the notice when a refetch of the SAME query fails', async () => {
+    // Error and data coexist: a query that succeeded keeps its rows when a later refetch of
+    // the same key fails. They are still clickable answers, so the notice annotates them.
+    const search = vi.spyOn(api, 'fileSearch')
+      .mockResolvedValueOnce({ results: [hit('src/App.tsx')], root: ROOT } as never)
+      .mockRejectedValue(new Error('gateway wedged'))
+    renderPanel()
+    await type('App')
+    expect(await screen.findByText('App.tsx')).toBeInTheDocument()
+
+    const calls = search.mock.calls.length
+    fireEvent.click(screen.getByLabelText('Refresh'))           // same key, now failing
+    await waitFor(() => expect(search.mock.calls.length).toBeGreaterThan(calls))
+    expect(await screen.findByText(/^Search failed/)).toBeInTheDocument()
+    expect(screen.getByText('App.tsx')).toBeInTheDocument()
+  })
+
+  it('refetches only the ACTIVE search page on Refresh, not every cached (query, limit) variant', async () => {
+    // Each keystroke past the floor leaves a cached page behind. A prefix-keyed refetch
+    // re-ran all of them -- N concurrent bounded walks for one press, N-1 of them for
+    // rows no one is looking at -- so Refresh names the active key exactly.
+    const search = vi.spyOn(api, 'fileSearch').mockResolvedValue({ results: [hit('src/App.tsx')], root: ROOT } as never)
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <FolderPanel path={ROOT} onClose={() => {}} />
+      </QueryClientProvider>,
+    )
+    await screen.findByText('README.md')
+    const user = await type('Ap')
+    await waitFor(() => expect(search).toHaveBeenCalledWith('Ap', ROOT, expect.anything(), 'files', 15))
+    await user.type(screen.getByLabelText('Search files'), 'p')
+    await waitFor(() => expect(search).toHaveBeenCalledWith('App', ROOT, expect.anything(), 'files', 15))
+    // More than one page is cached under the prefix (the disabled sub-floor keys count too).
+    expect(client.getQueryCache().findAll({ queryKey: ['folder-file-search', ROOT] }).length).toBeGreaterThanOrEqual(2)
+
+    const refetch = vi.spyOn(client, 'refetchQueries')
+    const before = search.mock.calls.length
+    fireEvent.click(screen.getByLabelText('Refresh'))
+    await waitFor(() => expect(search.mock.calls.length).toBeGreaterThan(before))
+
+    expect(refetch.mock.calls.map(c => c[0]).filter(f => (f as { queryKey: unknown[] }).queryKey[0] === 'folder-file-search'))
+      .toEqual([{ queryKey: ['folder-file-search', ROOT, 'App', 15], exact: true }])
+    // One press, one search request: the stale 'Ap' page stays cached and untouched.
+    await vi.advanceTimersByTimeAsync(50)
+    expect(search.mock.calls.length).toBe(before + 1)
+    expect(search).toHaveBeenLastCalledWith('App', ROOT, expect.anything(), 'files', 15)
+  })
+
+  it('hides a directory hit from a gateway that ignores kinds=files', async () => {
+    vi.spyOn(api, 'fileSearch').mockResolvedValue({
+      results: [hit('src/App.tsx'), { path: `${ROOT}/apps`, name: 'apps', size: 0, mtime: 1, kind: 'dir' }],
+      root: ROOT,
+    } as never)
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('app')
+
+    await screen.findByText('App.tsx')
+    expect(screen.queryByText('apps')).not.toBeInTheDocument()
+  })
+
+  it('opens a hit by its absolute path', async () => {
+    vi.spyOn(api, 'fileSearch').mockResolvedValue({
+      results: [hit('src/App.tsx')], root: ROOT,
+    } as never)
+    const onFileOpen = vi.fn()
+
+    renderPanel({ onFileOpen })
+    await screen.findByText('README.md')
+    const user = await type('app')
+
+    await user.click(await screen.findByTitle(`${ROOT}/src/App.tsx`))
+    expect(onFileOpen).toHaveBeenCalledWith(`${ROOT}/src/App.tsx`)
+  })
+
+  it('clears the query when the tab is re-targeted at another directory', async () => {
+    vi.spyOn(api, 'fileSearch').mockResolvedValue({
+      results: [hit('src/App.tsx')], root: ROOT,
+    } as never)
+
+    const { rerender } = renderPanel()
+    await screen.findByText('README.md')
+    await type('app')
+    await screen.findByText('App.tsx')
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    rerender(
+      <QueryClientProvider client={client}>
+        <FolderPanel path="/other" onClose={() => {}} />
+      </QueryClientProvider>,
+    )
+
+    // A query typed for the previous directory must not survive the re-target.
+    await waitFor(() => expect(screen.getByLabelText('Search files')).toHaveValue(''))
+    expect(screen.queryByText('App.tsx')).not.toBeInTheDocument()
+  })
+
+  it('notes truncation only when the page is full', async () => {
+    const full = Array.from({ length: 15 }, (_, i) => hit(`src/f${i}.ts`))
+    vi.spyOn(api, 'fileSearch').mockResolvedValue({ results: full, root: ROOT } as never)
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('f')  // one char: no request
+    await type('s')  // now two
+
+    // The notice is the expand control: a real <button> whose accessible name
+    // is the notice text itself (#5639), not an inert <div>.
+    expect(await screen.findByRole('button', { name: /Showing the first 15 matches/ })).toBeInTheDocument()
+  })
+
+  it('expands to the next tier when the notice is activated', async () => {
+    // The server honours `limit`: 15 -> a full page, 30 -> 25 matches (no longer
+    // truncated). Match 16+ must become reachable after activating the control.
+    const all = Array.from({ length: 25 }, (_, i) => hit(`src/f${String(i).padStart(2, '0')}.ts`))
+    const search = vi.spyOn(api, 'fileSearch').mockImplementation(
+      (_q, _p, _s, _k, limit) => Promise.resolve({ results: all.slice(0, limit ?? 15), root: ROOT } as never),
+    )
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('fs')
+
+    const expand = await screen.findByRole('button', { name: /Showing the first 15 matches/ })
+    expect(screen.queryByTitle(`${ROOT}/src/f15.ts`)).not.toBeInTheDocument()
+
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    await user.click(expand)
+
+    // The next tier is requested from the SERVER (the cap is server-side
+    // truncation, not a client render ceiling)...
+    await waitFor(() => expect(search).toHaveBeenCalledWith('fs', ROOT, expect.anything(), 'files', 30))
+    // ...and a match past the old cap is now reachable.
+    expect(await screen.findByTitle(`${ROOT}/src/f15.ts`)).toBeInTheDocument()
+    expect(screen.getByTitle(`${ROOT}/src/f24.ts`)).toBeInTheDocument()
+    // 25 < 30: the page is no longer truncated, so no notice and no control.
+    await waitFor(() => expect(screen.queryByText(/Showing the first/)).not.toBeInTheDocument())
+  })
+
+  it('keeps the control mounted and focusable while the wider page loads', async () => {
+    // Regression (UX review on #5830): unmounting the notice mid-fetch made the
+    // list read as complete ("no notice" is this panel's untruncated state) and
+    // dropped keyboard focus to <body> on every activation. Inertness is
+    // aria-disabled + an in-handler guard, NOT `disabled`, which blurs the
+    // focused element in real browsers.
+    const all = Array.from({ length: 25 }, (_, i) => hit(`src/f${String(i).padStart(2, '0')}.ts`))
+    let releaseWider: (() => void) | undefined
+    vi.spyOn(api, 'fileSearch').mockImplementation((_q, _p, _s, _k, limit) => {
+      if ((limit ?? 15) > 15) {
+        return new Promise(resolve => {
+          releaseWider = () => resolve({ results: all.slice(0, limit), root: ROOT } as never)
+        })
+      }
+      return Promise.resolve({ results: all.slice(0, 15), root: ROOT } as never)
+    })
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('fs')
+
+    const expand = await screen.findByRole('button', { name: /Showing the first 15 matches/ })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    await user.click(expand)
+
+    // Mid-fetch: still mounted, inert, label still honest about the 15 rows on
+    // screen, and focus still on the control.
+    const pending = screen.getByRole('button', { name: /Showing the first 15 matches/ })
+    expect(pending).toHaveAttribute('aria-disabled', 'true')
+    expect(pending).toHaveFocus()
+    expect(screen.getByTitle(`${ROOT}/src/f00.ts`)).toBeInTheDocument()
+    // A second activation while in flight is guarded: no extra request.
+    const callsBefore = (api.fileSearch as ReturnType<typeof vi.fn>).mock.calls.length
+    await user.click(pending)
+    expect((api.fileSearch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsBefore)
+
+    releaseWider!()
+    // 25 < 30: once the wider page lands the set is untruncated, so the notice goes.
+    await waitFor(() => expect(screen.queryByText(/Showing the first/)).not.toBeInTheDocument())
+    expect(screen.getByTitle(`${ROOT}/src/f24.ts`)).toBeInTheDocument()
+  })
+
+  it('renders the notice as plain text once the server ceiling is reached', async () => {
+    // Every tier comes back full: 15 -> 30 -> 60 (the server clamp). At 60 a
+    // button could not fetch more, so the notice must degrade to text rather
+    // than recreate the inert-affordance bug.
+    const all = Array.from({ length: 60 }, (_, i) => hit(`src/f${String(i).padStart(2, '0')}.ts`))
+    vi.spyOn(api, 'fileSearch').mockImplementation(
+      (_q, _p, _s, _k, limit) => Promise.resolve({ results: all.slice(0, limit ?? 15), root: ROOT } as never),
+    )
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('fs')
+
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    await user.click(await screen.findByRole('button', { name: /Showing the first 15 matches/ }))
+    await user.click(await screen.findByRole('button', { name: /Showing the first 30 matches/ }))
+
+    // Ceiling tier: honest count, but no button.
+    expect(await screen.findByText(/Showing the first 60 matches/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Showing the first/ })).not.toBeInTheDocument()
+  })
+
+  it('resets to the default tier when the query changes', async () => {
+    const all = Array.from({ length: 40 }, (_, i) => hit(`src/f${String(i).padStart(2, '0')}.ts`))
+    const search = vi.spyOn(api, 'fileSearch').mockImplementation(
+      (_q, _p, _s, _k, limit) => Promise.resolve({ results: all.slice(0, limit ?? 15), root: ROOT } as never),
+    )
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('fs')
+
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    await user.click(await screen.findByRole('button', { name: /Showing the first 15 matches/ }))
+    await waitFor(() => expect(search).toHaveBeenCalledWith('fs', ROOT, expect.anything(), 'files', 30))
+
+    // Typing more is a NEW search: it must start back at the default tier, not
+    // inherit the expansion of the set the user was previously looking at.
+    await type('x')
+    await waitFor(() => expect(search).toHaveBeenCalledWith('fsx', ROOT, expect.anything(), 'files', 15))
+  })
+
+  it('says so when nothing matches', async () => {
+    vi.spyOn(api, 'fileSearch').mockResolvedValue({ results: [], root: ROOT } as never)
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('zzz')
+
+    expect(await screen.findByText('No files match')).toBeInTheDocument()
+  })
+
+  it('surfaces a refused search instead of showing an empty list', async () => {
+    // A refusal is actionable in a way a timeout is not, so it gets its own
+    // copy — keyed on the handler's `code`, never on the human error string.
+    vi.spyOn(api, 'fileSearch').mockRejectedValue(
+      new ApiError(403, 'Access denied', JSON.stringify({ error: 'Access denied', code: 'access_denied' })),
+    )
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('app')
+
+    expect(await screen.findByText('No access to this folder')).toBeInTheDocument()
+    expect(screen.queryByText(/^Search failed/)).not.toBeInTheDocument()
+  })
+
+  it('falls back to the generic copy for a cause it has no string for', async () => {
+    // An unrecognised code must not leak the raw reason, and must not claim a
+    // permission problem it has no evidence of.
+    vi.spyOn(api, 'fileSearch').mockRejectedValue(
+      new ApiError(500, 'boom', JSON.stringify({ error: 'boom', code: 'something_new' })),
+    )
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('app')
+
+    expect(await screen.findByText(/^Search failed/)).toBeInTheDocument()
+    expect(screen.queryByText(/boom/)).not.toBeInTheDocument()
+  })
+
+  it('does not blame the folder when a 403 is really a session expiry', async () => {
+    // `authRequired` marks a dashboard-auth 403, which says nothing about this
+    // path — claiming "access denied to this folder" there would be a new lie.
+    // The body CARRIES the refusal code on purpose: that is what makes the
+    // `authRequired` gate the only thing standing between this error and the
+    // denied copy. A codeless body passed here whether or not the gate existed.
+    vi.spyOn(api, 'fileSearch').mockRejectedValue(
+      new ApiError(403, 'Access denied', JSON.stringify({ error: 'Access denied', code: 'access_denied' }), true),
+    )
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('app')
+
+    expect(await screen.findByText(/^Search failed/)).toBeInTheDocument()
+    expect(screen.queryByText('No access to this folder')).not.toBeInTheDocument()
+  })
+
+  /**
+   * The remedy is the header's icon-only Refresh, whose retry behaviour is invisible until
+   * clicked, so a notice stating only the cause leaves recovery undiscoverable.
+   */
+  it('names Refresh in the notice when the search can actually be retried', async () => {
+    vi.spyOn(api, 'fileSearch').mockRejectedValue(
+      Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' }),
+    )
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('app')
+
+    expect(await screen.findByRole('alert'))
+      .toHaveTextContent('Search timed out — Refresh to retry')
+  })
+
+  /**
+   * Naming a control the user cannot see is the mismatch: the header button renders as a bare
+   * RotateCw icon, so while the copy names "Refresh" that button has to carry the word visibly.
+   */
+  it('gives the header control a VISIBLE Refresh label while the copy names it', async () => {
+    vi.spyOn(api, 'fileSearch').mockRejectedValue(
+      Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' }),
+    )
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('app')
+    await screen.findByRole('alert')
+
+    const label = screen.getByRole('button', { name: 'Refresh' }).querySelector('span')
+    expect(label).not.toHaveClass('invisible')
+  })
+
+  /**
+   * Reserved only while a retryable failure is plausible, so the growth is spent while the read is
+   * still in flight rather than under a cursor already reaching for the control.
+   */
+  it('keeps the header control compact while the panel is healthy and idle', async () => {
+    renderPanel()
+    await screen.findByText('README.md')
+
+    const refresh = screen.getByRole('button', { name: 'Refresh' })
+    expect(refresh.querySelector('span')).toBeNull()
+    expect(refresh).toHaveClass('w-[26px]')
+  })
+
+  /**
+   * One press awaits the listing AND the active search page (and, at the project root, a
+   * recoverable tree read -- see FolderPanel.tree.test.tsx). Keying the busy state on the
+   * listing's own fetching flag stopped the spinner the moment the one-level listing landed,
+   * while the bounded search walk pressed alongside it could run on for its whole deadline: a
+   * control reading idle over live work, inviting a second press that restarts that walk.
+   */
+  it('stays busy, and inert, until the search refetch a Refresh press started has settled', async () => {
+    const page = { results: [hit('src/App.tsx')], root: ROOT }
+    let hold = false
+    let release: (() => void) | undefined
+    const search = vi.spyOn(api, 'fileSearch').mockImplementation(() => (hold
+      ? new Promise(resolve => { release = () => resolve(page as never) })
+      : Promise.resolve(page as never)))
+    const browse = api.browseFiles as unknown as ReturnType<typeof vi.fn>
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <FolderPanel path={ROOT} onClose={() => {}} />
+      </QueryClientProvider>,
+    )
+    await screen.findByText('README.md')
+    await type('App')
+    await screen.findByText('App.tsx')
+    const refresh = screen.getByRole('button', { name: 'Refresh' })
+    const icon = () => refresh.querySelector('svg')
+    expect(icon()).not.toHaveClass('animate-spin')
+
+    hold = true
+    const browseCalls = browse.mock.calls.length
+    const searchCalls = search.mock.calls.length
+    fireEvent.click(refresh)
+    await waitFor(() => expect(search.mock.calls.length).toBe(searchCalls + 1))
+    expect(browse.mock.calls.length).toBe(browseCalls + 1)
+    // The listing has LANDED; the search walk it was pressed with is still out.
+    await waitFor(() => expect(client.getQueryState(['browse-files', ROOT])?.fetchStatus).toBe('idle'))
+    expect(client.getQueryState(['folder-file-search', ROOT, 'App', 15])?.fetchStatus).toBe('fetching')
+    expect(icon()).toHaveClass('animate-spin')
+    expect(refresh).toHaveAttribute('aria-disabled', 'true')
+
+    // A second press while busy dispatches nothing: no restart of the walk, no second listing.
+    fireEvent.click(refresh)
+    await vi.advanceTimersByTimeAsync(50)
+    expect(search.mock.calls.length).toBe(searchCalls + 1)
+    expect(browse.mock.calls.length).toBe(browseCalls + 1)
+
+    release!()
+    await waitFor(() => expect(icon()).not.toHaveClass('animate-spin'))
+    expect(refresh).toHaveAttribute('aria-disabled', 'false')
+  })
+
+  /**
+   * Reserved for the whole span the box holds a searchable query, not per in-flight read:
+   * keying the width on the search's own fetching flag made the control grow on each
+   * keystroke's read and shrink when it landed -- twitch even when nothing failed. `refreshing`
+   * covers a Refresh PRESS's reads, never a typed search, so it cannot reintroduce that; the
+   * query-present span strictly contains every in-flight search, so the width is already taken
+   * when a timeout lands (see FolderPanel.deadline.test.tsx).
+   */
+  it('holds the Refresh label width steady across keystrokes while a query is present', async () => {
+    const settlers: Array<(v: never) => void> = []
+    const search = vi.spyOn(api, 'fileSearch').mockImplementation(
+      () => new Promise<never>(resolve => { settlers.push(resolve) }),
+    )
+
+    renderPanel()
+    await screen.findByText('README.md')
+    const refresh = screen.getByRole('button', { name: 'Refresh' })
+
+    // Below the search threshold nothing is reserved: no read can be dispatched for it.
+    const user = await type('a')
+    expect(refresh).toHaveClass('w-[26px]')
+
+    // The second character makes the query searchable, and the width is taken at once -- BEFORE
+    // the debounce dispatches anything. Label held, not shown: nothing names the control yet.
+    await user.type(screen.getByLabelText('Search files'), 'p')
+    expect(refresh).not.toHaveClass('w-[26px]')
+    expect(refresh.querySelector('span')).toHaveClass('invisible')
+    expect(search).not.toHaveBeenCalled()
+
+    // A read goes out and stays in flight; a further keystroke aborts it and dispatches another.
+    // The width does not move through any of it.
+    await screen.findByText('Searching…')
+    expect(refresh).not.toHaveClass('w-[26px]')
+    await user.type(screen.getByLabelText('Search files'), 'p')
+    await waitFor(() => expect(search).toHaveBeenCalledTimes(2))
+    expect(refresh).not.toHaveClass('w-[26px]')
+
+    // A search that LANDS does not release it either: the query is still there, and the next
+    // keystroke's read could still fail.
+    settlers.at(-1)!({ results: [hit('src/App.tsx')], root: ROOT } as never)
+    await screen.findByText('App.tsx')
+    expect(refresh).not.toHaveClass('w-[26px]')
+    expect(refresh.querySelector('span')).toHaveClass('invisible')
+
+    // Clearing the query is what releases it: no search can fail for an empty box.
+    await user.clear(screen.getByLabelText('Search files'))
+    await waitFor(() => expect(refresh).toHaveClass('w-[26px]'))
+    expect(refresh.querySelector('span')).toBeNull()
+  })
+
+  /**
+   * The width is held only for a window the USER opened -- a press, a searchable query -- and
+   * while a failure names the control. Keying it on the spinner's flag instead reserved it for
+   * every listing read: the first mount, each subdirectory click and every background refetch
+   * grew the control and shrank it back when the read landed, shifting the header on ordinary
+   * navigation that no notice was ever going to name.
+   */
+  it('keeps the Refresh control compact through listing reads the user did not ask for', async () => {
+    let release: (v: unknown) => void = () => {}
+    const hold = () => new Promise(r => { release = r })
+    const browse = vi.spyOn(api, 'browseFiles').mockImplementation(hold as never)
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <FolderPanel path={ROOT} onClose={() => {}} />
+      </QueryClientProvider>,
+    )
+    const refresh = screen.getByRole('button', { name: 'Refresh' })
+    const spinning = () => expect(refresh.querySelector('svg')).toHaveClass('animate-spin')
+    const compact = () => {
+      expect(refresh).toHaveClass('w-[26px]')
+      expect(refresh.querySelector('span')).toBeNull()
+    }
+
+    // First mount: the listing is out (the icon spins for it) with an empty search box.
+    await waitFor(spinning)
+    compact()
+    release(listing())
+    await screen.findByText('README.md')
+    compact()
+
+    // Navigation into a subdirectory: a new key, a new in-flight listing, still nothing to name.
+    fireEvent.click(screen.getByText('src'))
+    await waitFor(() => expect(browse).toHaveBeenLastCalledWith(`${ROOT}/src`, expect.any(AbortSignal)))
+    await waitFor(spinning)
+    compact()
+    release({ path: `${ROOT}/src`, parent: ROOT, dirs: [], files: [{ name: 'a.ts', path: `${ROOT}/src/a.ts` }] })
+    await screen.findByText('a.ts')
+    compact()
+
+    // A background refetch of the listing (window focus, an invalidation): not this button's press.
+    void client.refetchQueries({ queryKey: ['browse-files', `${ROOT}/src`], exact: true })
+    await waitFor(() => expect(client.getQueryState(['browse-files', `${ROOT}/src`])?.fetchStatus).toBe('fetching'))
+    await waitFor(spinning)
+    compact()
+    release({ path: `${ROOT}/src`, parent: ROOT, dirs: [], files: [{ name: 'a.ts', path: `${ROOT}/src/a.ts` }] })
+    await waitFor(() => expect(refresh.querySelector('svg')).not.toHaveClass('animate-spin'))
+    compact()
+  })
+
+  /**
+   * The control for the test above: a PRESS is a window the user opened, so its width is taken
+   * for the whole press -- ahead of any notice -- and a timeout that then names the control only
+   * reveals the label. Same box, same classes across the whole span.
+   */
+  it('reserves the Refresh label width for a pressed Refresh and holds it when a timeout names it', async () => {
+    renderPanel()
+    await screen.findByText('README.md')
+    const refresh = screen.getByRole('button', { name: 'Refresh' })
+    expect(refresh).toHaveClass('w-[26px]')
+
+    let reject: (e: unknown) => void = () => {}
+    const browse = vi.spyOn(api, 'browseFiles').mockImplementation(
+      (() => new Promise((_resolve, r) => { reject = r })) as never,
+    )
+    const calls = browse.mock.calls.length
+    fireEvent.click(refresh)
+    await waitFor(() => expect(browse.mock.calls.length).toBe(calls + 1))
+
+    // Reserved for the press: label span laid out, held invisible, spinner running.
+    await waitFor(() => expect(refresh).not.toHaveClass('w-[26px]'))
+    expect(refresh.querySelector('span')).toHaveClass('invisible')
+    expect(refresh.querySelector('svg')).toHaveClass('animate-spin')
+    const reserved = refresh.className
+
+    reject(Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Folder listing timed out — Refresh to retry')
+    // The notice landing moved nothing but the label's visibility.
+    expect(refresh.className).toBe(reserved)
+    expect(refresh.querySelector('span')).not.toHaveClass('invisible')
+    await waitFor(() => expect(refresh.querySelector('svg')).not.toHaveClass('animate-spin'))
+    expect(refresh.className).toBe(reserved)
+  })
+
+  it('names a REFUSED listing by its cause, not the generic unable-to-list copy', async () => {
+    // A permissions refusal was indistinguishable from a transient outage except by the Retry
+    // button's absence, which is not a reason a user can read.
+    vi.spyOn(api, 'browseFiles').mockRejectedValue(
+      new ApiError(403, 'Access denied', JSON.stringify({ error: 'Access denied', code: 'access_denied' })),
+    )
+
+    renderPanel()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('No access to this folder')
+    expect(screen.queryByText(/^Unable to list folder/)).not.toBeInTheDocument()
+    // A refusal names no remedy: re-asking returns the same answer.
+    expect(screen.queryByText(/Refresh to retry|Refresh to retry/)).not.toBeInTheDocument()
+  })
+
+  it('names a MISSING root in the listing arm too', async () => {
+    vi.spyOn(api, 'browseFiles').mockRejectedValue(
+      new ApiError(404, 'nope', JSON.stringify({ error: 'nope', code: 'project_not_found' })),
+    )
+
+    renderPanel()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Folder not found')
+  })
+
+  it('names the remedy on a timed-out LISTING too, not only on a failed search', async () => {
+    vi.spyOn(api, 'browseFiles').mockRejectedValue(
+      Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' }),
+    )
+
+    renderPanel()
+
+    expect(await screen.findByRole('alert'))
+      .toHaveTextContent('Folder listing timed out — Refresh to retry')
+    const label = screen.getByRole('button', { name: 'Refresh' }).querySelector('span')
+    expect(label).not.toHaveClass('invisible')
+  })
+
+  it.each([
+    ['a refusal', new ApiError(403, 'Access denied',
+      JSON.stringify({ error: 'Access denied', code: 'access_denied' }))],
+    ['a missing root', new ApiError(404, 'not found',
+      JSON.stringify({ error: 'not found', code: 'project_not_found' }))],
+  ])('withholds the Refresh hint from %s, which re-asking cannot fix', async (_label, err) => {
+    vi.spyOn(api, 'fileSearch').mockRejectedValue(err)
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('app')
+
+    const notice = await screen.findByRole('alert')
+    expect(notice).not.toHaveTextContent('Refresh to retry')
+  })
+})
+
+/**
+ * The journal is keyed on the RAW server sentence, so translating the notice moved the
+ * displayed text off that key and `Ask the agent` fell back to a bare message — the
+ * endpoint, status and backend code never reached the agent. These pin the hand-off
+ * payload rather than the copy, so a future `report=` removal fails here and not only
+ * in review. (The tree notice's hand-off is pinned in FolderPanel.tree.test.tsx.)
+ */
+describe('FolderPanel hands the agent the structured report, not the translated copy', () => {
+  function journalled403(endpoint: string) {
+    recordError({
+      source: 'api',
+      message: 'Access denied',
+      status: 403,
+      code: 'access_denied',
+      endpoint,
+    })
+    return new ApiError(403, 'Access denied', JSON.stringify({ code: 'access_denied' }))
+  }
+
+  beforeEach(() => {
+    __resetErrorJournalForTests()
+    sessionStorage.clear()
+  })
+
+  it('carries endpoint, status and code from a refused search', async () => {
+    vi.spyOn(api, 'fileSearch').mockRejectedValue(journalled403('/api/file-search'))
+
+    renderPanel()
+    await screen.findByText('README.md')
+    const user = await type('app')
+    const notice = await screen.findByRole('alert')
+    expect(notice).toHaveTextContent('No access to this folder')
+    await user.click(within(notice).getByRole('button', { name: /ask the agent/i }))
+
+    const prompt = consumeChatHandoff() ?? ''
+    expect(prompt).toContain('/api/file-search')
+    expect(prompt).toContain('HTTP 403')
+    expect(prompt).toContain('access_denied')
+    expect(prompt).not.toContain('No access to this folder')
+  })
+
+  it('carries them from a refused listing too', async () => {
+    vi.spyOn(api, 'browseFiles').mockRejectedValue(journalled403('/api/browse-files'))
+
+    renderPanel()
+    const notice = await screen.findByRole('alert')
+    expect(notice).toHaveTextContent('No access to this folder')
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    await user.click(within(notice).getByRole('button', { name: /ask the agent/i }))
+
+    const prompt = consumeChatHandoff() ?? ''
+    expect(prompt).toContain('/api/browse-files')
+    expect(prompt).toContain('HTTP 403')
+    expect(prompt).toContain('access_denied')
+    expect(prompt).not.toContain('No access to this folder')
+  })
+})

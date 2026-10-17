@@ -1,0 +1,45 @@
+# Smoke: reaching the memory browser. It is a drill-in of Settings > Overview:
+# the Overview grid carries a "Memory" summary card whose "View details" link
+# swaps the grid for the browser, with an "Overview" back link above it. The
+# `rich` seed's config leaves the memory settings at their defaults, so the
+# browser's "Memory Settings" card reads 3 consolidation idle hours on every
+# run.
+#
+# What the fake target cannot show, and what this scenario therefore does not
+# judge: the gateway's boot-time memory migration flips `memory.migrated` in
+# the background, and that flag hides the "History retention (days)" field and
+# adds a "Semantic memory active" note, so neither is asserted -- the tester
+# may or may not see them. The seed's preferences, projects and daily-history
+# text cards (and the Lessons table) are hidden whenever the vector store is
+# active, which the always-on embedding provider makes true here, and the
+# vector / embedding-model cards' status depends on a model the runner never
+# downloads. The assertions are the navigation and the one settings field that
+# renders regardless, all in the frame the drill-in lands on, with no
+# scrolling. Nothing is saved or summarized, so a retry meets the same page.
+name: memory-open-browser-from-overview
+tier: smoke
+feature: memory
+user_story: >-
+  As a user, I want to browse preferences, projects, history, lessons and the
+  vector store, so that I know what the agent remembers about me.
+docs_url: docs/feature-map/README.md
+summary: Open the memory browser from the Overview page's Memory card and read its settings card
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /settings/overview
+steps:
+  - You are on the Settings page with its "Overview" tab selected. Among the cards find the one titled "Memory" (brain icon); its text starts with "Summarizes chats into memory after" and at its top right is a small link reading "View details". Click "View details".
+  - The grid is replaced by the memory browser. At its top is a link with a left arrow reading "Overview" and beneath it the heading "Memory". Do not click the link and do not scroll.
+  - >-
+    Read the first card, titled "Memory Settings". It holds a number field labelled
+    "Consolidation idle (hours)", a "Save" button and a "Summarize now" button; it may also
+    show a "History retention (days)" field or a note that semantic memory is active -- either
+    is fine. Do not press any button and do not change the number.
+expectations:
+  - A back link reading "Overview" (with a left arrow) is visible above a heading that reads "Memory", and the "Overview" tab is still highlighted in the Settings navigation.
+  - The "Memory Settings" card is visible and its "Consolidation idle (hours)" field reads 3.
+  - The card's "Save" and "Summarize now" buttons are visible and no confirmation or error text is shown next to them.
+  - No red error banner is visible on the page.
+max_steps: 8
+max_seconds: 240

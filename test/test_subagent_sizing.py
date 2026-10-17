@@ -1,0 +1,1898 @@
+"""Tests for sub-agent cap sizing (``subagent.compute/resolve_max_subagents``)
+and the memory-sized TaskRunner figure (``compute_memory_sized_parallel_cap``).
+
+The subagent auto cap is ``agent.subagent_auto_max`` as written -- memory bounds
+each start through the spawn floor, not the count -- so the memory arithmetic and
+its worked examples now pin the TaskRunner's auto parallel-step figure, whose
+steps no per-start floor prices. Costs are fallback costs; effective memory is
+fed directly via the patched ``_available_memory_gb``.
+"""
+
+from __future__ import annotations
+
+import time
+import types
+from io import StringIO
+from typing import Any
+
+import pytest
+from _clock_isolation import assert_clock_is_private
+from overload_fakes import settle_depth_emits
+
+import kiro_crew.subagent as subagent
+from conftest import absent_sysconf
+from kiro_crew.constants import DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS
+from kiro_crew.subagent import (
+    compute_max_subagents,
+    compute_memory_sized_parallel_cap,
+    resolve_max_subagents,
+)
+from kiro_crew.testing.clock import ManualClock
+
+# ``SubagentManager.spawn`` refuses -- registering no task -- while the host
+# looks short of memory, which is the runner's state, not this test's input.
+pytestmark = pytest.mark.usefixtures("healthy_host_memory")
+
+
+@pytest.fixture(autouse=True)
+def _no_learned_cost(monkeypatch):
+    """Isolate from the machine's learned-cost store (~/.kirocrew/subagents/
+    cost_samples.jsonl). compute_memory_sized_parallel_cap prefers read_cap_costs over
+    the cfg fallback, so on a dev box with a populated store these tests would
+    read the real mem_gb/cpu_cores instead of the per-case fallback costs and
+    assert against the wrong cap. These cases exercise the fallback path by
+    design, so force the learned lookup to miss."""
+    monkeypatch.setattr(subagent, "read_cap_costs", lambda *a, **k: (None, None))
+
+
+@pytest.fixture(autouse=True)
+def _close_subagent_managers(close_subagent_managers):
+    """Every manager built here is closed at teardown; the body is in ``conftest``."""
+
+
+def _cfg(
+    *,
+    max_subagents: int = 0,
+    buffer_pct: int = 20,
+    mem_cost: float = 0.315,
+    cpu_cost: float = 0.8,
+    hard_cap: int = 16,
+    pool_size: int = 0,
+) -> types.SimpleNamespace:
+    """Minimal duck-typed stand-in for KiroCrewConfig (agent + session)."""
+    return types.SimpleNamespace(
+        agent=types.SimpleNamespace(
+            max_subagents=max_subagents,
+            subagent_mem_buffer_pct=buffer_pct,
+            subagent_cost_gb=mem_cost,
+            subagent_cpu_cost_cores=cpu_cost,
+            subagent_auto_max=hard_cap,
+        ),
+        session=types.SimpleNamespace(pool_size=pool_size),
+    )
+
+
+@pytest.fixture
+def patch_host(monkeypatch):
+    """Patch available memory + cpu_count to deterministic values."""
+
+    def _apply(avail_gb: float, cpu_count: int) -> None:
+        monkeypatch.setattr(subagent, "_available_memory_gb", lambda: avail_gb)
+        monkeypatch.setattr(subagent.os, "cpu_count", lambda: cpu_count)
+
+    return _apply
+
+
+# --- memory is the only host term ------------------------------------------
+
+
+class TestTheSubagentAutoCapIsACountCeiling:
+    """``compute_max_subagents`` is ``subagent_auto_max``, whatever the host holds.
+
+    Memory bounds each start through the spawn floor; a count sized from the same
+    memory on top of it made one chat's wave hold the slots another chat's
+    subagents waited for while memory was still free.
+    """
+
+    @pytest.mark.parametrize("avail_gb", [2.0, 8.0, 16.0, 174.7])
+    def test_host_memory_does_not_size_it(self, patch_host, avail_gb) -> None:
+        patch_host(avail_gb, 8)
+        assert compute_max_subagents(_cfg(mem_cost=0.5, hard_cap=32, pool_size=5)) == 32
+
+    def test_it_never_drops_below_three(self, patch_host) -> None:
+        patch_host(174.7, 8)
+        assert compute_max_subagents(_cfg(hard_cap=2)) == 3
+
+    def test_unreadable_memory_falls_back_to_three(self, patch_host) -> None:
+        patch_host(-1.0, 8)
+        assert compute_max_subagents(_cfg(hard_cap=32)) == 3
+
+    @pytest.mark.parametrize("floor_gb", [0.0, -1.0])
+    def test_a_disabled_floor_sizes_the_cap_from_host_memory(self, patch_host, floor_gb) -> None:
+        # The disabled floor admits every start, so the count is the only bound
+        # left: 8 GB at a 0.5 GB cost is floor(8*0.8/0.5) = 12, not the 32 ceiling.
+        patch_host(8.0, 8)
+        cfg = _cfg(mem_cost=0.5, hard_cap=32)
+        cfg.agent.spawn_min_memory_gb = floor_gb
+        assert compute_max_subagents(cfg) == 12
+        assert compute_max_subagents(cfg) == compute_memory_sized_parallel_cap(cfg)
+
+    def test_an_enabled_floor_keeps_the_ceiling(self, patch_host) -> None:
+        patch_host(8.0, 8)
+        cfg = _cfg(mem_cost=0.5, hard_cap=32)
+        cfg.agent.spawn_min_memory_gb = 4.0
+        assert compute_max_subagents(cfg) == 32
+
+    def test_the_floor_switch_and_its_memory_terms_are_sizing_inputs(self) -> None:
+        from kiro_crew.subagent import SubagentManager
+
+        assert SubagentManager.SIZING_CONFIG_PATHS == (
+            "agent.max_subagents",
+            "agent.subagent_auto_max",
+            "agent.spawn_min_memory_gb",
+            "agent.subagent_mem_buffer_pct",
+            "agent.subagent_cost_gb",
+            "session.pool_size",
+        )
+        assert set(SubagentManager.SIZING_CONFIG_PATHS) <= set(SubagentManager.LIVE_CONFIG_PATHS)
+
+
+class TestMemoryIsTheOnlyHostTerm:
+    """``compute_memory_sized_parallel_cap`` sizes from memory alone.
+
+    Over-committing memory ends in the OOM killer, an unrecoverable hard
+    failure, so it is sized up front. Over-committing CPU only slows work down,
+    and the adaptive controller already backs off on the pressure that slowness
+    produces; a static CPU term stacked on that loop priced every slot at the
+    busiest agent's one-minute burst and pinned a 32-core host at 4.
+    """
+
+    def test_cpu_count_and_cpu_cost_do_not_bind(self, patch_host) -> None:
+        # 174.7 GB with the §3.3 memory cost: mem_term=443, clamp(443,3,64) = 64
+        # whether the host has 1 core or 48, and whatever the CPU cost says.
+        patch_host(174.7, 1)
+        cfg = _cfg(mem_cost=0.315, cpu_cost=100.0, hard_cap=64)
+        assert compute_memory_sized_parallel_cap(cfg) == 64
+        patch_host(174.7, 48)
+        assert compute_memory_sized_parallel_cap(cfg) == 64
+
+    def test_memory_still_binds(self, patch_host) -> None:
+        patch_host(8.0, 64)  # mem_term = floor(8*0.8/0.5) = 12
+        cfg = _cfg(mem_cost=0.5, cpu_cost=1.0, hard_cap=64)
+        assert compute_memory_sized_parallel_cap(cfg) == 12
+
+    def test_the_deprecated_cpu_cost_key_is_not_a_sizing_input(self) -> None:
+        from kiro_crew.subagent import SubagentManager
+
+        assert "agent.subagent_cpu_cost_cores" not in SubagentManager.SIZING_CONFIG_PATHS
+        assert "agent.subagent_cpu_cost_cores" not in SubagentManager.LIVE_CONFIG_PATHS
+
+
+# --- Worked examples from dynamic-subagent-sizing.md §3.3 -------------------
+
+
+def test_example_a_hard_cap_binds(patch_host) -> None:
+    # 174.7 GB: mem_term=443, clamp(443,3,16) = 16
+    patch_host(174.7, 48)
+    cfg = _cfg(mem_cost=0.315, cpu_cost=0.8, hard_cap=16)
+    assert compute_memory_sized_parallel_cap(cfg) == 16
+
+
+def test_example_b_floor(patch_host) -> None:
+    # 2 GB, fallback cost: mem_term = floor(2*0.8/0.5) = 3, floor = 3
+    patch_host(2.0, 4)
+    cfg = _cfg(mem_cost=0.5, cpu_cost=1.0, hard_cap=16)
+    assert compute_memory_sized_parallel_cap(cfg) == 3
+
+
+def test_example_c_pool_reservation_binds(patch_host) -> None:
+    # 8 GB, pool=5: mem_term = floor((8*0.8 - 5*0.4)/0.4) = 11, clamp(11,3,16) = 11
+    patch_host(8.0, 12)
+    cfg = _cfg(mem_cost=0.4, cpu_cost=0.8, hard_cap=16, pool_size=5)
+    assert compute_memory_sized_parallel_cap(cfg) == 11
+
+
+def test_example_d_memory_binds(patch_host) -> None:
+    # Effective 4 GB (cgroup headroom fed directly): mem_term=10
+    patch_host(4.0, 48)
+    cfg = _cfg(mem_cost=0.315, cpu_cost=0.8, hard_cap=16)
+    assert compute_memory_sized_parallel_cap(cfg) == 10
+
+
+def test_shared_marginal_cost_binds_on_provider_ceiling(patch_host) -> None:
+    # Stage 1: with the session-shared marginal memory cost (≈0.05 GB), even a
+    # modest 8 GB host is not RAM-bound — the cap rises to the provider ceiling
+    # (hard_cap) instead of the legacy floor of 3.
+    # mem_term = floor((8*0.8)/0.05) = 128; clamp(128, 3, 16) = 16.
+    patch_host(8.0, 4)
+    cfg = _cfg(mem_cost=0.05, cpu_cost=0.25, hard_cap=16)
+    assert compute_memory_sized_parallel_cap(cfg) == 16
+
+
+# --- Edge cases ------------------------------------------------------------
+
+
+def test_pool_reservation_reduces_memory_budget(patch_host) -> None:
+    # Same host, with vs without a warm pool: reservation lowers mem_term.
+    patch_host(20.0, 64)
+    no_pool = compute_memory_sized_parallel_cap(
+        _cfg(mem_cost=0.5, cpu_cost=0.1, pool_size=0, hard_cap=100)
+    )
+    with_pool = compute_memory_sized_parallel_cap(
+        _cfg(mem_cost=0.5, cpu_cost=0.1, pool_size=10, hard_cap=100)
+    )
+    # no_pool: floor(20*0.8/0.5)=32 ; with_pool: floor((16-5)/0.5)=22
+    assert no_pool == 32
+    assert with_pool == 22
+
+
+def test_hard_cap_clamps_high(patch_host) -> None:
+    patch_host(174.7, 48)
+    cfg = _cfg(mem_cost=0.315, cpu_cost=0.8, hard_cap=8)
+    assert compute_memory_sized_parallel_cap(cfg) == 8
+
+
+def test_floor_never_below_three(patch_host) -> None:
+    patch_host(1.0, 1)  # tiny host
+    cfg = _cfg(mem_cost=0.5, cpu_cost=1.0, hard_cap=16)
+    assert compute_memory_sized_parallel_cap(cfg) == 3
+
+
+def test_hard_cap_below_floor_is_raised_to_three(patch_host) -> None:
+    # A misconfigured subagent_auto_max < 3 does not drop the cap below 3:
+    # compute_max_subagents enforces a hard floor of 3 (the loader also clamps
+    # subagent_auto_max up to 3, but compute defends independently).
+    patch_host(174.7, 48)
+    cfg = _cfg(hard_cap=2)
+    assert compute_memory_sized_parallel_cap(cfg) == 3
+
+
+def test_unreadable_memory_fails_open_to_legacy_default(patch_host) -> None:
+    patch_host(-1.0, 48)  # /proc/meminfo unreadable
+    cfg = _cfg(hard_cap=16)
+    assert compute_memory_sized_parallel_cap(cfg) == 3
+
+
+# --- Sentinel routing ------------------------------------------------------
+
+
+def test_resolve_explicit_value_bypasses_compute(patch_host) -> None:
+    patch_host(174.7, 48)
+    cfg = _cfg(max_subagents=5, hard_cap=16)
+    assert resolve_max_subagents(cfg) == 5  # explicit, not the computed 16
+
+
+def test_resolve_zero_sentinel_triggers_compute(patch_host) -> None:
+    patch_host(174.7, 48)
+    cfg = _cfg(max_subagents=0, mem_cost=0.315, cpu_cost=0.8, hard_cap=16)
+    assert resolve_max_subagents(cfg) == 16
+
+
+def test_resolve_floors_explicit_pin_below_three(patch_host) -> None:
+    # A stray explicit pin of 1 or 2 (e.g. from a directly-constructed config
+    # that bypassed the loader/API clamps) is floored to 3 at resolve time — it
+    # must never drop the runtime cap below the legacy default. 0 stays "auto".
+    patch_host(174.7, 48)
+    assert resolve_max_subagents(_cfg(max_subagents=1)) == 3
+    assert resolve_max_subagents(_cfg(max_subagents=2)) == 3
+    # A valid explicit pin (>= 3) is returned unchanged, not auto-computed.
+    assert resolve_max_subagents(_cfg(max_subagents=5, hard_cap=16)) == 5
+
+
+# --- Gateway wiring contract (Stage 3) -------------------------------------
+
+
+def test_manager_reports_resolved_cap_for_auto_sentinel(patch_host) -> None:
+    """The cap the gateway feeds SubagentManager is what `.max_concurrent` reports."""
+    from unittest.mock import MagicMock
+
+    from kiro_crew.subagent import SubagentManager
+
+    patch_host(174.7, 48)
+    cfg = _cfg(max_subagents=0, mem_cost=0.315, cpu_cost=0.8, hard_cap=16)
+    cap = resolve_max_subagents(cfg)
+    assert cap == 16  # computed, not the raw 0 sentinel
+
+    mgr = SubagentManager(
+        sessions=MagicMock(),
+        ctx_builder=MagicMock(),
+        max_concurrent=cap,
+    )
+    assert mgr.max_concurrent == 16  # live manager is the source of truth (§5.2)
+
+
+def test_manager_effective_cap_sits_under_the_resolved_ceiling(patch_host) -> None:
+    """The adaptive controller's ``set_effective_cap`` bounds the live value
+    beneath the resolved cap; the resolved cap stays readable as the ceiling
+    and is never written by the bound."""
+    from unittest.mock import MagicMock
+
+    from kiro_crew.subagent import SubagentManager
+
+    patch_host(174.7, 48)
+    cap = resolve_max_subagents(_cfg(max_subagents=0, mem_cost=0.315, cpu_cost=0.8, hard_cap=16))
+    mgr = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock(), max_concurrent=cap)
+    assert mgr.set_effective_cap(4) == 4  # a bound beneath the ceiling (a cut)
+    assert mgr.max_concurrent == 4
+    assert mgr.user_max_concurrent == 16
+    assert mgr.set_effective_cap(40) == 16  # ceiling binds
+    assert mgr.set_effective_cap(None) == 16
+
+
+# ---------------------------------------------------------------------------
+# Unified spawn staggering (Stage 4, dynamic-subagent-sizing.md §5.3)
+# ---------------------------------------------------------------------------
+
+
+def _mgr(*, running: int, max_concurrent: int, last_ts: float, stagger: float = 2.0):
+    """Build a SubagentManager with stagger state set, mock heavy deps."""
+    from unittest.mock import MagicMock
+
+    from kiro_crew.subagent import SubagentManager
+
+    sessions = MagicMock()
+    sessions.get_agent_selection.return_value = ("template", "")
+    m = SubagentManager(
+        sessions=sessions,
+        ctx_builder=MagicMock(),
+        max_concurrent=max_concurrent,
+    )
+    m._running_count = running
+    m._last_spawn_ts = last_ts
+    m._spawn_stagger_secs = stagger
+    return m
+
+
+class _PinnedClock:
+    """``time`` stand-in whose ``monotonic()`` is frozen; everything else forwards."""
+
+    def __init__(self, now: float) -> None:
+        self._now = now
+
+    def monotonic(self) -> float:
+        return self._now
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(time, name)
+
+
+def _pin_pump_clock(monkeypatch, now: float) -> None:
+    """Freeze the clock the spawn gate and the drain pump read at ``now``.
+
+    Both read ``time.monotonic()`` through ``kiro_crew.subagent``'s globals (the
+    admission ``*_impl`` functions are rebound onto that namespace), so swapping
+    that one ``time`` name pins them. The process-wide module stays untouched:
+    ``asyncio.run()`` keeps reading it for its own scheduling, and ``_mgr()`` may
+    take seconds of real I/O on a loaded runner without moving this clock.
+    """
+    monkeypatch.setattr(subagent, "time", _PinnedClock(now))
+
+
+class TestStaggerGate:
+    """_should_stagger_queue: capacity + stagger gate (initial-fill burst guard)."""
+
+    def test_at_capacity_always_queues(self) -> None:
+        import time as _t
+
+        m = _mgr(running=4, max_concurrent=4, last_ts=0.0)
+        should_queue, slot_free = m._should_stagger_queue(_t.monotonic())
+        assert should_queue is True
+        assert slot_free is False
+
+    def test_slot_free_but_too_soon_queues(self) -> None:
+        import time as _t
+
+        now = _t.monotonic()
+        m = _mgr(running=1, max_concurrent=16, last_ts=now)  # just spawned
+        should_queue, slot_free = m._should_stagger_queue(now)
+        assert should_queue is True  # stagger gate
+        assert slot_free is True
+
+    def test_slot_free_and_interval_elapsed_starts(self) -> None:
+        import time as _t
+
+        now = _t.monotonic()
+        m = _mgr(running=1, max_concurrent=16, last_ts=now - 5.0, stagger=2.0)
+        should_queue, _ = m._should_stagger_queue(now)
+        assert should_queue is False  # ok to start now
+
+    def test_first_ever_spawn_starts_immediately(self) -> None:
+        import time as _t
+
+        m = _mgr(running=0, max_concurrent=16, last_ts=0.0)
+        should_queue, _ = m._should_stagger_queue(_t.monotonic())
+        assert should_queue is False  # last_ts=0 → interval long elapsed
+
+
+class TestDrainPump:
+    """_drain_queue: one start per interval, reschedules when too soon."""
+
+    def test_too_soon_does_not_pop(self, monkeypatch) -> None:
+        import asyncio
+        from unittest.mock import MagicMock
+
+        now = 1_000.0
+        _pin_pump_clock(monkeypatch, now)
+
+        async def run() -> None:
+            m = _mgr(running=0, max_concurrent=16, last_ts=now, stagger=2.0)
+            m._queue = [
+                {
+                    "task": "task",
+                    "parent_session_key": "",
+                    "agent": "",
+                    "max_turns": 0,
+                    "model": None,
+                    "allowed_tools": None,
+                    "bare": False,
+                    "cwd": "",
+                    "approval_mode": None,
+                    "silent": False,
+                }
+            ]
+            m.spawn = MagicMock()  # type: ignore[method-assign]
+            m._drain_queue()
+            m.spawn.assert_not_called()  # too soon → no burst
+            assert len(m._queue) == 1  # item retained
+
+        asyncio.run(run())
+
+    def test_ready_pops_and_spawns_one(self) -> None:
+        import asyncio
+        import time as _t
+        from unittest.mock import MagicMock
+
+        async def run() -> None:
+            now = _t.monotonic()
+            m = _mgr(running=0, max_concurrent=16, last_ts=now - 5.0, stagger=2.0)
+            m._queue = [
+                {
+                    "task": "task-a",
+                    "parent_session_key": "",
+                    "agent": "",
+                    "max_turns": 0,
+                    "model": None,
+                    "allowed_tools": None,
+                    "bare": False,
+                    "cwd": "",
+                    "approval_mode": None,
+                    "silent": False,
+                },
+                {
+                    "task": "task-b",
+                    "parent_session_key": "",
+                    "agent": "",
+                    "max_turns": 0,
+                    "model": None,
+                    "allowed_tools": None,
+                    "bare": False,
+                    "cwd": "",
+                    "approval_mode": None,
+                    "silent": False,
+                },
+            ]
+            m.spawn = MagicMock()  # type: ignore[method-assign]
+            m._drain_queue()
+            assert m.spawn.call_count == 1  # exactly one per pump cycle
+            assert len(m._queue) == 1  # one popped
+
+        asyncio.run(run())
+
+    def test_at_capacity_does_not_pop(self) -> None:
+        import asyncio
+        import time as _t
+        from unittest.mock import MagicMock
+
+        async def run() -> None:
+            m = _mgr(running=16, max_concurrent=16, last_ts=_t.monotonic() - 99, stagger=2.0)
+            m._queue = [
+                {
+                    "task": "task",
+                    "parent_session_key": "",
+                    "agent": "",
+                    "max_turns": 0,
+                    "model": None,
+                    "allowed_tools": None,
+                    "bare": False,
+                    "cwd": "",
+                    "approval_mode": None,
+                    "silent": False,
+                }
+            ]
+            m.spawn = MagicMock()  # type: ignore[method-assign]
+            m._drain_queue()
+            m.spawn.assert_not_called()
+            assert len(m._queue) == 1
+
+        asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# Learned-cost sampling (Stage 6, dynamic-subagent-sizing.md §4.1)
+# ---------------------------------------------------------------------------
+
+
+class TestQueuedDepthEmission:
+    """_queued_depth / _emit_queue_depth: advisory 'waiting to start' count
+    surfaced to the UI as subagent_queued events so the chip can show queued
+    agents, not only running/completed ones."""
+
+    def test_queued_depth_counts_per_parent(self) -> None:
+        import time as _t
+
+        m = _mgr(running=0, max_concurrent=4, last_ts=_t.monotonic())
+        m._queue = [
+            {"task": "a", "parent_session_key": "dashboard:s1"},
+            {"task": "b", "parent_session_key": "dashboard:s1"},
+            {"task": "c", "parent_session_key": "dashboard:s2"},
+        ]
+        assert m._queued_depth("dashboard:s1") == 2
+        assert m._queued_depth("dashboard:s2") == 1
+        assert m._queued_depth("dashboard:absent") == 0
+
+    def test_emit_queue_depth_fires_event_with_count(self) -> None:
+        import asyncio
+        import time as _t
+
+        events: list = []
+
+        async def on_event(etype, info, extra):
+            events.append((etype, info.parent_session_key, dict(extra)))
+
+        async def run() -> None:
+            m = _mgr(running=0, max_concurrent=4, last_ts=_t.monotonic())
+            m._on_event = on_event
+            m._queue = [
+                {"task": "a", "parent_session_key": "dashboard:s1"},
+                {"task": "b", "parent_session_key": "dashboard:s1"},
+            ]
+            m._emit_queue_depth("dashboard:s1")
+            # scheduled via create_task — yield so it runs
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        asyncio.run(run())
+        assert ("subagent_queued", "dashboard:s1", {"queued": 2}) in events
+
+    def test_emit_queue_depth_zero_when_parent_drained(self) -> None:
+        import asyncio
+        import time as _t
+
+        events: list = []
+
+        async def on_event(etype, info, extra):
+            events.append((etype, extra.get("queued")))
+
+        async def run() -> None:
+            m = _mgr(running=0, max_concurrent=4, last_ts=_t.monotonic())
+            m._on_event = on_event
+            # only a *different* parent has items queued — the drained parent
+            # reports 0 so the chip clears its "waiting" count.
+            m._queue = [{"task": "c", "parent_session_key": "dashboard:other"}]
+            m._emit_queue_depth("dashboard:s1")
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        asyncio.run(run())
+        assert ("subagent_queued", 0) in events
+
+
+class TestQueuedDepthWiring:
+    """The two producer call-sites are wired: spawn()'s queue branch and
+    _drain_queue() each emit subagent_queued. Guards against silently
+    reverting the wiring (which would reintroduce the invisible-queue bug
+    while helper-only tests stayed green)."""
+
+    def test_spawn_queue_branch_emits_depth(self, monkeypatch) -> None:
+        import asyncio
+        import time as _t
+
+        import kiro_crew.subagent as sub
+
+        # Bypass governance so we deterministically reach the queue branch.
+        monkeypatch.setattr(sub, "_vet_spawn_governance", lambda *a, **k: None)
+
+        events: list = []
+
+        async def on_event(etype, info, extra):
+            if etype == "subagent_queued":
+                events.append((info.parent_session_key, extra.get("queued")))
+
+        async def run() -> None:
+            # At capacity → the spawn must be queued, not started.
+            m = _mgr(running=2, max_concurrent=2, last_ts=_t.monotonic())
+            m._on_event = on_event
+            info = m.spawn(task="x", parent_session_key="dashboard:s1")
+            assert info is not None and info.queued is True  # queued, not started
+            assert len(m._queue) == 1  # actually appended
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        asyncio.run(run())
+        assert ("dashboard:s1", 1) in events
+
+    def test_drain_emits_queued_depth_on_pop(self) -> None:
+        import asyncio
+        import time as _t
+        from unittest.mock import MagicMock
+
+        events: list = []
+
+        async def on_event(etype, info, extra):
+            if etype == "subagent_queued":
+                events.append((info.parent_session_key, extra.get("queued")))
+
+        async def run() -> None:
+            now = _t.monotonic()
+            m = _mgr(running=0, max_concurrent=16, last_ts=now - 5.0, stagger=2.0)
+            m._on_event = on_event
+            m.spawn = MagicMock()  # type: ignore[method-assign]
+            m._queue = [
+                {"task": "a", "parent_session_key": "dashboard:s1"},
+                {"task": "b", "parent_session_key": "dashboard:s1"},
+            ]
+            m._drain_queue()  # pops one → s1's remaining depth is 1
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        asyncio.run(run())
+        assert ("dashboard:s1", 1) in events
+
+
+class TestQueuedReasonOnTheEvent:
+    """``subagent_queued`` names WHY the rows wait. The count alone made every
+    UI say "queued behind the concurrency limit", including for a row the
+    memory guard parked (F20). The gate's verdicts are untouched: each branch
+    only labels the wait it already decided on."""
+
+    @staticmethod
+    def _capture(m) -> list:
+        events: list = []
+
+        async def on_event(etype, info, extra):
+            if etype == "subagent_queued":
+                events.append(dict(extra))
+
+        m._on_event = on_event
+        return events
+
+    def test_capacity_queue_is_labelled_concurrency_limit(self, monkeypatch) -> None:
+        import asyncio
+        import time as _t
+
+        import kiro_crew.subagent as sub
+
+        monkeypatch.setattr(sub, "_vet_spawn_governance", lambda *a, **k: None)
+
+        async def run() -> list:
+            m = _mgr(running=2, max_concurrent=2, last_ts=_t.monotonic())
+            events = self._capture(m)
+            info = m.spawn(task="x", parent_session_key="dashboard:s1")
+            assert info is not None and info.queued is True
+            assert info.queued_reason == "concurrency_limit"
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            return events
+
+        events = asyncio.run(run())
+        assert events and events[-1] == {"queued": 1, "reason": "concurrency_limit"}
+
+    def test_a_cap_of_zero_has_no_pause_label_of_its_own(self, monkeypatch) -> None:
+        """The adaptive controller never pauses the execution cap (it reads no
+        memory or loop lag), so there is no pause kind: a cap a caller pinned to 0
+        is labelled as the ordinary capacity wait, with no prose."""
+        import asyncio
+        import time as _t
+
+        import kiro_crew.subagent as sub
+
+        monkeypatch.setattr(sub, "_vet_spawn_governance", lambda *a, **k: None)
+
+        async def run() -> list:
+            m = _mgr(running=0, max_concurrent=4, last_ts=_t.monotonic() - 10.0)
+            m.set_effective_cap(0)
+            events = self._capture(m)
+            info = m.spawn(task="x", parent_session_key="dashboard:s1")
+            assert info is not None and info.queued is True
+            assert info.queued_reason == "concurrency_limit"
+            assert not info.queued_reason_detail
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            return events
+
+        events = asyncio.run(run())
+        assert events and events[-1]["reason"] == "concurrency_limit"
+
+    def test_a_re_emit_keeps_the_last_reason_until_the_parent_drains(self) -> None:
+        """The drain re-emits the depth with no verdict of its own. It must not
+        flip a memory-deferred wave back to the concurrency text, and a depth of
+        0 must carry no reason at all -- an old client reads a bare count and a
+        new one must not show a stale one."""
+        import asyncio
+        import time as _t
+
+        async def run() -> tuple[list, list]:
+            m = _mgr(running=0, max_concurrent=4, last_ts=_t.monotonic())
+            events = self._capture(m)
+            m._queue = [{"task": "a", "parent_session_key": "dashboard:s1"}]
+            m._emit_queue_depth(
+                "dashboard:s1",
+                wait={"reason": "low_memory", "available_gb": 3.2, "required_gb": 4.5},
+            )
+            await settle_depth_emits(m)
+            m._emit_queue_depth("dashboard:s1")  # a drain-style re-emit, no verdict
+            await settle_depth_emits(m)
+            m._queue = []
+            m._emit_queue_depth("dashboard:s1")  # parent drained
+            await settle_depth_emits(m)
+            # The same three requests in one step are one read, after all of
+            # them, and the label it carries is the one the burst left.
+            burst = self._capture(m)
+            m._queue = [{"task": "b", "parent_session_key": "dashboard:s1"}]
+            m._emit_queue_depth("dashboard:s1", wait={"reason": "posture_critical"})
+            m._emit_queue_depth("dashboard:s1")
+            m._emit_queue_depth("dashboard:s1")
+            await settle_depth_emits(m)
+            return events, burst
+
+        events, burst = asyncio.run(run())
+        low_memory = {
+            "queued": 1,
+            "reason": "low_memory",
+            "available_gb": 3.2,
+            "required_gb": 4.5,
+            # A memory wait names its live bound (the default, on a fresh manager).
+            "max_wait_secs": DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS,
+        }
+        assert events[:3] == [low_memory, low_memory, {"queued": 0}]
+        assert burst == [{"queued": 1, "reason": "posture_critical"}]
+
+
+class TestQueuedIdentityRoundTrip:
+    """A queued member must START under the id its caller was handed.
+
+    Without this, spawn() returns a throwaway ``q<n>`` sentinel for any
+    spawn that hits the stagger/concurrency gate, and _drain_queue mints a FRESH
+    uuid when it actually starts the agent. With the default 2s stagger that is
+    every wave member after the first, so ``spawn_run``'s printed wave roster
+    listed one real id plus N placeholders no agent ever had — the inline
+    SubagentRunCard, which resolves a wave by matching those ids against live
+    per-agent events, could never observe more than one member and reported
+    "1 agent running" for a 2-agent wave the sidebar counted correctly.
+    """
+
+    def test_drained_spawn_reuses_the_announced_id(self, monkeypatch) -> None:
+        import re
+        from unittest.mock import MagicMock
+
+        import kiro_crew.subagent as sub
+
+        monkeypatch.setattr(sub, "_vet_spawn_governance", lambda *a, **k: None)
+
+        now = 1_000.0
+        _pin_pump_clock(monkeypatch, now)
+        m = _mgr(running=1, max_concurrent=16, last_ts=now, stagger=2.0)
+        info = m.spawn(task="x", parent_session_key="dashboard:s1")
+
+        assert info is not None and info.queued is True
+        assert re.fullmatch(r"[0-9a-f]{16}", info.id), "queued id must be a real agent id"
+
+        # Drain: the gate is open now (stagger elapsed, slot free), so the
+        # popped entry must be re-spawned under the SAME id.
+        m._last_spawn_ts = now - 10.0
+        m.spawn = MagicMock()  # type: ignore[method-assign]
+        m._drain_queue()
+
+        assert m.spawn.call_count == 1
+        kwargs = m.spawn.call_args.kwargs
+        assert kwargs["_preassigned_id"] == info.id
+        assert kwargs["_from_queue"] is True
+
+    def test_requeue_preserves_the_id(self, monkeypatch) -> None:
+        """A drained spawn that hits the gate AGAIN keeps the same id."""
+        import time as _t
+
+        import kiro_crew.subagent as sub
+
+        monkeypatch.setattr(sub, "_vet_spawn_governance", lambda *a, **k: None)
+
+        m = _mgr(running=2, max_concurrent=2, last_ts=_t.monotonic(), stagger=2.0)
+        first = m.spawn(task="x", parent_session_key="dashboard:s1")
+        assert first is not None
+
+        # Re-enter spawn() with the id already assigned (what _drain_queue does)
+        # while the gate is still closed → queued a second time, id unchanged.
+        m._queue.clear()
+        again = m.spawn(
+            task="x",
+            parent_session_key="dashboard:s1",
+            _from_queue=True,
+            _preassigned_id=first.id,
+        )
+        assert again is not None and again.queued is True
+        assert again.id == first.id
+        assert m._queue[0]["_preassigned_id"] == first.id
+
+    def test_rejection_on_drain_uses_the_announced_id(self, monkeypatch) -> None:
+        """A member REJECTED when its queued spawn drains is announced under the
+        id its caller was handed, not a fresh one.
+
+        The guards that refuse a spawn (empty task, low memory, bad cwd,
+        governance, bad agent name) re-run on the drain pass, so a spawn accepted
+        at queue time can still be refused when it starts. Minting a fresh uuid
+        there would announce the failure under an id the caller never saw — the
+        same identity break this class of bug is about, just on the error path.
+        """
+        import time as _t
+
+        import kiro_crew.subagent as sub
+
+        monkeypatch.setattr(sub, "_vet_spawn_governance", lambda *a, **k: None)
+        # Refuse on memory so the guard fires ahead of the queue gate.
+        monkeypatch.setattr(sub, "check_memory_available", lambda min_gb=0: (False, 0.5))
+
+        m = _mgr(running=1, max_concurrent=16, last_ts=_t.monotonic(), stagger=2.0)
+        announced = "deadbeef"
+        info = m.spawn(
+            task="x",
+            parent_session_key="dashboard:s1",
+            _from_queue=True,
+            _preassigned_id=announced,
+        )
+
+        assert info is not None
+        assert info.done and "memory" in info.error
+        assert info.id == announced
+
+
+class TestSubtreeCpuJiffies:
+    """_subtree_cpu_jiffies: sums pid + descendants.
+
+    The parser and the walk itself live in ``platform_compat`` and are pinned in
+    ``test_proc_subtree_sample.py``; this covers the wrapper the Sessions rows
+    call.
+    """
+
+    def test_sums_tree(self, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        # tree: 1 -> [2, 3]; 2 -> [4]
+        children = {1: [2, 3], 2: [4], 3: [], 4: []}
+        jiffies = {1: 100, 2: 50, 3: 25, 4: 10}
+        monkeypatch.setattr(
+            sub.platform_compat, "_proc_children", lambda pid: children.get(pid, [])
+        )
+        monkeypatch.setattr(
+            sub.platform_compat, "_proc_cpu_jiffies", lambda pid: jiffies.get(pid, 0)
+        )
+        assert sub._subtree_cpu_jiffies(1) == 185
+
+
+def test_another_thread_keeps_the_real_sleep_and_clock(monkeypatch) -> None:
+    clock = ManualClock()
+    clock.install(monkeypatch, subagent)
+    assert_clock_is_private(clock, subagent)
+
+
+class TestSampleLiveCosts:
+    """_sample_live_costs: high-water RSS/CPU tracking across polls."""
+
+    def _agent(self):
+        from kiro_crew.subagent import SubagentInfo
+
+        info = SubagentInfo(id="a1", task="t", agent="kirocrew")
+        info._pid = 4242
+        return info
+
+    @staticmethod
+    def _sample(rss_kb: int = -1, jiffies: int = 0):
+        """The one subtree reading the sweep takes per agent."""
+        from kiro_crew.platform_compat import SubtreeSample
+
+        return SubtreeSample(rss_kb, jiffies, None, None)
+
+    def test_rss_high_water(self, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        info = self._agent()
+        m._agents = {"a1": info}
+        # Two polls: 2 GB then 1 GB — peak must stick at 2.
+        rss_seq = iter([2 * 1024 * 1024, 1 * 1024 * 1024])
+        monkeypatch.setattr(
+            sub, "_proc_subtree_sample", lambda pid, **kw: self._sample(rss_kb=next(rss_seq))
+        )
+        m._sample_live_costs()
+        m._sample_live_costs()
+        assert info.peak_rss_gb == pytest.approx(2.0, abs=0.01)
+
+    def test_cpu_high_water_uses_delta(self, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        info = self._agent()
+        m._agents = {"a1": info}
+        monkeypatch.setattr(sub, "_CLK_TCK", 100)
+
+        # Control the sampling clock: poll1 t=10, poll2 t=11 (dt=1s). On the
+        # subagent module's own ``time`` binding, which the sampler reads; that
+        # binding IS the stdlib module, so a stub on ``sub.time.monotonic`` was
+        # read by every other thread, asyncio and pytest included.
+        clock = ManualClock(monotonic_start=10.0)
+        clock.install(monkeypatch, sub)
+        # jiffies: 1000 then 1100 → 100 jiffies / (100 tck * 1s) = 1.0 core.
+        # RSS stays -1 so only the CPU half of the sample is under test.
+        jiff = iter([1000, 1100])
+        monkeypatch.setattr(
+            sub, "_proc_subtree_sample", lambda pid, **kw: self._sample(jiffies=next(jiff))
+        )
+
+        m._sample_live_costs()  # seeds baseline, no delta
+        assert info.peak_cpu_cores == 0.0
+        clock.advance(1.0)
+        m._sample_live_costs()  # delta → 1.0 core
+        assert info.peak_cpu_cores == pytest.approx(1.0, abs=0.01)
+
+    def test_done_or_pidless_agents_skipped(self, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        done = self._agent()
+        done.done = True
+        m._agents = {"d": done}
+        called = {"n": 0}
+
+        def _walk(pid, **kw):
+            called["n"] += 1
+            return self._sample(rss_kb=1024 * 1024)
+
+        monkeypatch.setattr(sub, "_proc_subtree_sample", _walk)
+        m._sample_live_costs()
+        assert called["n"] == 0  # done agent not sampled
+        assert done.peak_rss_gb == 0.0
+
+    def test_session_shared_agents_record_averaged_share(self, monkeypatch) -> None:
+        """Shared subagents share ONE runtime PID; each must be charged the
+        measured RSS/CPU divided by the number of live shared sessions on that
+        PID (an empirical per-session average), not the whole shared process."""
+        import kiro_crew.subagent as sub
+        from kiro_crew.subagent import SubagentInfo
+
+        m = _mgr(running=2, max_concurrent=16, last_ts=0.0)
+        # Two shared subagents on the SAME runtime PID.
+        a = SubagentInfo(id="a1", task="t", agent="kirocrew")
+        a._pid = 4242
+        a._session_sharing = True
+        b = SubagentInfo(id="a2", task="t", agent="kirocrew")
+        b._pid = 4242
+        b._session_sharing = True
+        m._agents = {"a1": a, "a2": b}
+
+        # Shared runtime measures 4 GB RSS; with 2 live shared sessions each
+        # agent is charged 2 GB, never the full 4 GB.
+        monkeypatch.setattr(
+            sub, "_proc_subtree_sample", lambda pid, **kw: self._sample(rss_kb=4 * 1024 * 1024)
+        )
+        m._sample_live_costs()
+
+        assert a.peak_rss_gb == pytest.approx(2.0, abs=0.01)
+        assert b.peak_rss_gb == pytest.approx(2.0, abs=0.01)
+        # Single shared session → full measured RSS (divisor 1).
+        b.done = True
+        monkeypatch.setattr(
+            sub, "_proc_subtree_sample", lambda pid, **kw: self._sample(rss_kb=3 * 1024 * 1024)
+        )
+        m._sample_live_costs()
+        assert a.peak_rss_gb == pytest.approx(3.0, abs=0.01)
+
+
+# ---------------------------------------------------------------------------
+# Settled-runtime reading: what a dedicated runtime holds once it is up, which
+# the admission gate's dedicated start projection learns from; the cap divisor
+# is unchanged.
+# ---------------------------------------------------------------------------
+
+
+class TestSettledRuntimeReading:
+    def _agent(self, **kw):
+        from kiro_crew.subagent import SubagentInfo
+
+        info = SubagentInfo(id=kw.pop("id", "a1"), task="t", agent="kirocrew")
+        info._pid = 4242
+        for k, v in kw.items():
+            setattr(info, k, v)
+        return info
+
+    @staticmethod
+    def _sample(rss_kb: int = -1, jiffies: int = 0):
+        from kiro_crew.platform_compat import SubtreeSample
+
+        return SubtreeSample(rss_kb, jiffies, None, None)
+
+    @staticmethod
+    def _tool():
+        from kiro_crew.acp.liveness import ToolCallState
+
+        return ToolCallState(title="bash", command="pytest", dispatch_ts=0.0, dispatch_boot_ts=0.0)
+
+    def test_the_first_clean_post_startup_reading_is_held(self, monkeypatch) -> None:
+        """Captured once after the session answered with no tool in flight, then
+        held: it must not climb to a later build peak the way ``peak_rss_gb`` does."""
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        info = self._agent(_first_stream_started=1.0)
+        m._agents = {"a1": info}
+        rss = iter([int(0.5 * 1024 * 1024), int(132.3 * 1024 * 1024)])
+        monkeypatch.setattr(
+            subagent, "_proc_subtree_sample", lambda pid, **kw: self._sample(rss_kb=next(rss))
+        )
+        m._sample_live_costs()
+        m._sample_live_costs()
+
+        assert info.peak_rss_gb == pytest.approx(132.3, abs=0.1)
+        assert info.settled_rss_gb == pytest.approx(0.5, abs=0.01)
+        assert info._settled_rss_generation == info._rss_generation
+
+    def test_nothing_is_captured_during_startup(self, monkeypatch) -> None:
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        info = self._agent()  # its own session has not answered yet
+        m._agents = {"a1": info}
+        monkeypatch.setattr(
+            subagent,
+            "_proc_subtree_sample",
+            lambda pid, **kw: self._sample(rss_kb=int(0.5 * 1024 * 1024)),
+        )
+        m._sample_live_costs()
+        assert info.settled_rss_gb == 0.0
+        assert info.peak_rss_gb == pytest.approx(0.5, abs=0.01)
+
+    def test_a_sweep_with_a_tool_in_flight_is_skipped(self, monkeypatch) -> None:
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        info = self._agent(_first_stream_started=1.0, _inflight_tool=self._tool())
+        m._agents = {"a1": info}
+        rss = iter([int(132.3 * 1024 * 1024), int(0.5 * 1024 * 1024)])
+        monkeypatch.setattr(
+            subagent, "_proc_subtree_sample", lambda pid, **kw: self._sample(rss_kb=next(rss))
+        )
+        m._sample_live_costs()
+        assert info.settled_rss_gb == 0.0
+        info._inflight_tool = None
+        m._sample_live_costs()
+        assert info.settled_rss_gb == pytest.approx(0.5, abs=0.01)
+
+    def test_a_tool_that_cleared_during_the_read_voids_it(self, monkeypatch) -> None:
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        info = self._agent(_first_stream_started=1.0, _inflight_tool=self._tool())
+        m._agents = {"a1": info}
+
+        def _read(pid, **kw):
+            subagent.SubagentManager._clear_tool_dispatch(info)
+            return self._sample(rss_kb=int(132.3 * 1024 * 1024))
+
+        monkeypatch.setattr(subagent, "_proc_subtree_sample", _read)
+        m._sample_live_costs()
+        assert info.settled_rss_gb == 0.0
+
+    def test_a_tool_that_started_and_finished_during_the_read_voids_it(self, monkeypatch) -> None:
+        """Quiet at both ends is not quiet across the read: a tool that came and
+        went while the subtree was walked was inside it (``_stall_gen`` moved)."""
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        info = self._agent(_first_stream_started=1.0)
+        m._agents = {"a1": info}
+
+        def _read(pid, **kw):
+            info._inflight_tool = self._tool()
+            subagent.SubagentManager._clear_tool_dispatch(info)
+            return self._sample(rss_kb=int(132.3 * 1024 * 1024))
+
+        monkeypatch.setattr(subagent, "_proc_subtree_sample", _read)
+        m._sample_live_costs()
+        assert info._inflight_tool is None
+        assert info.settled_rss_gb == 0.0
+
+    def test_the_reading_is_taken_in_pss_when_the_host_has_it(self, monkeypatch) -> None:
+        """Summed RSS counts pages a tree of processes shares once per process."""
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        info = self._agent(_first_stream_started=1.0)
+        m._agents = {"a1": info}
+        from kiro_crew.platform_compat import SubtreeSample
+
+        asked: list[bool] = []
+
+        def _walk(pid, **kw):
+            asked.append(kw.get("pss", False))
+            return SubtreeSample(int(1.45 * 1024 * 1024), 0, None, None, int(0.9 * 1024 * 1024))
+
+        monkeypatch.setattr(subagent, "_proc_subtree_sample", _walk)
+        m._sample_live_costs()
+        assert asked == [True], "PSS comes from the sweep's one walk"
+        assert info.peak_rss_gb == pytest.approx(1.45, abs=0.01)
+        assert info.settled_rss_gb == pytest.approx(0.9, abs=0.01)
+        m._sample_live_costs()
+        assert asked == [True, False], "once captured, no costly PSS read"
+
+    def test_a_dedicated_run_hosting_shared_children_is_not_captured(self, monkeypatch) -> None:
+        """Its tree holds its children's per-session MCP servers too."""
+        m = _mgr(running=2, max_concurrent=16, last_ts=0.0)
+        parent = self._agent(_first_stream_started=1.0)
+        child = self._agent(id="c1", _session_sharing=True, parent_session_key="subagent:a1")
+        m._agents = {"a1": parent, "c1": child}
+        monkeypatch.setattr(
+            subagent,
+            "_proc_subtree_sample",
+            lambda pid, **kw: self._sample(rss_kb=int(2.5 * 1024 * 1024)),
+        )
+        m._sample_live_costs()
+        assert parent.settled_rss_gb == 0.0
+
+    def test_a_shared_session_is_never_captured(self, monkeypatch) -> None:
+        """A shared pid's tree holds the other tenants and the parent's own tools."""
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        info = self._agent(_first_stream_started=1.0, _session_sharing=True)
+        m._agents = {"a1": info}
+        monkeypatch.setattr(
+            subagent,
+            "_proc_subtree_sample",
+            lambda pid, **kw: self._sample(rss_kb=int(3.0 * 1024 * 1024)),
+        )
+        m._sample_live_costs()
+        assert info.peak_rss_gb == pytest.approx(3.0, abs=0.01)
+        assert info.settled_rss_gb == 0.0
+
+    @pytest.mark.asyncio
+    async def test_a_respawn_keeps_the_reading_until_its_replacement(self, monkeypatch) -> None:
+        """The real cancel-recovery respawn re-arms capture through the generation
+        bump without discarding the dead process's reading."""
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from test_subagent_reap_race import _info, _make_manager, _noop_reset
+
+        mgr = _make_manager()
+        mgr._sessions.reset = _noop_reset
+        info = _info(
+            _session_sharing=False,
+            started=time.time() - 5.0,
+            _pid=4242,
+            _first_stream_started=1.0,
+            settled_rss_gb=0.5,
+            _settled_rss_generation=0,
+            peak_rss_gb=132.3,
+            last_rss_gb=132.3,
+            _rss_samples=7,
+        )
+        mgr._agents[info.id] = info
+        mgr._running_count = 1
+        gen_before = info._rss_generation
+        mgr._run = AsyncMock()
+
+        async def _arm() -> None:
+            mgr._schedule_cancel_recovery(info)
+
+        await asyncio.create_task(_arm())
+        recovery = mgr._tasks.get(f"{info.id}:recovery")
+        assert recovery is not None, "recovery task was not registered"
+        await asyncio.wait_for(recovery, timeout=5)
+
+        assert info._rss_generation == gen_before + 1
+        assert info._rss_samples == 0
+        assert info.settled_rss_gb == pytest.approx(0.5, abs=0.01)
+        assert info._settled_rss_generation == gen_before
+
+        assert not info.done and info._pid, "respawned run must be live for a sweep"
+        mgr._agents = {info.id: info}
+        monkeypatch.setattr(
+            subagent,
+            "_proc_subtree_sample",
+            lambda pid, **kw: self._sample(rss_kb=int(0.6 * 1024 * 1024)),
+        )
+        mgr._sample_live_costs()
+        assert info.settled_rss_gb == pytest.approx(0.6, abs=0.01)
+        assert info._settled_rss_generation == info._rss_generation
+
+    def test_record_cost_keeps_the_peak_and_adds_the_settled_reading(self, monkeypatch) -> None:
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        info = self._agent(peak_rss_gb=132.3, settled_rss_gb=0.5, peak_cpu_cores=4.0)
+        calls: list = []
+        monkeypatch.setattr(subagent, "append_cost_sample", lambda *a, **k: calls.append((a, k)))
+        m._learned_settled_dirty = False
+        m._record_cost(info)
+        assert calls == [(("kirocrew", 132.3, 4.0), {"shared": False, "settled_gb": 0.5})]
+        assert m._learned_settled_dirty is True, "a new settled reading re-arms the refresh"
+
+    def test_the_settled_map_is_refreshed_whole_or_merged_when_the_read_is_partial(
+        self, monkeypatch
+    ) -> None:
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        m._learned_settled_gb = {"kept": 1.0, "kirocrew": 0.4}
+        monkeypatch.setattr(
+            subagent, "read_learned_costs_checked", lambda *a, **k: ({"kirocrew": 0.6}, False)
+        )
+        m._learned_settled_dirty = True
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {"kept": 1.0, "kirocrew": 0.6}
+        monkeypatch.setattr(
+            subagent, "read_learned_costs_checked", lambda *a, **k: ({"kirocrew": 0.7}, True)
+        )
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {"kept": 1.0, "kirocrew": 0.6}, "clean: not re-read"
+        m._learned_settled_dirty = True
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {"kirocrew": 0.7}
+
+        def _boom(*_a, **_k):
+            raise OSError("unreadable")
+
+        monkeypatch.setattr(subagent, "read_learned_costs_checked", _boom)
+        m._learned_settled_dirty = True
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {"kirocrew": 0.7}, "a failed read keeps the map"
+
+    def test_a_stale_settled_figure_ages_out_without_a_new_run(self, monkeypatch, tmp_path) -> None:
+        """A bucket priced out by a figure learned under a heavier roster records
+        no new readings, so the figure must expire with time alone: the next
+        re-read drops it and the bucket is priced at the unlearned default."""
+        import json
+
+        from kiro_crew import subagent_cost as sc
+
+        log = tmp_path / "cost_samples.jsonl"
+        monkeypatch.setattr(sc, "_cost_log_path", lambda: log)
+        wall = [1_000_000_000.0]
+        mono = [5_000.0]
+        log.write_text(
+            "".join(
+                json.dumps({"agent": "kirocrew", "mem_gb": 3.0, "settled_gb": 1.9, "ts": wall[0]})
+                + "\n"
+                for _ in range(3)
+            ),
+            encoding="utf-8",
+        )
+        m = _mgr(running=0, max_concurrent=16, last_ts=0.0)
+        clock = types.SimpleNamespace(time=lambda: wall[0], monotonic=lambda: mono[0])
+        monkeypatch.setattr(subagent, "time", clock)
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {"kirocrew": pytest.approx(1.9)}
+        assert subagent._dedicated_start_price_gb(0.5, m._learned_settled_gb, "") == (
+            pytest.approx(1.9)
+        )
+
+        # Eight days later nothing has run, so no reading was recorded; the map is
+        # re-read on time alone, hourly.
+        wall[0] += 8 * 24 * 3600
+        mono[0] += 3599
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {"kirocrew": pytest.approx(1.9)}, "not re-read yet"
+        mono[0] += 2
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {}
+        assert subagent._dedicated_start_price_gb(0.5, m._learned_settled_gb, "") == (
+            subagent._UNLEARNED_DEDICATED_START_GB
+        )
+
+    def test_an_incomplete_read_keeps_a_figure_only_within_the_horizon(self, monkeypatch) -> None:
+        """A log with an unreadable record makes every read incomplete, and an
+        incomplete read keeps what it could not confirm -- but not past the
+        horizon, or a figure it can never re-check would hold for good."""
+        m = _mgr(running=0, max_concurrent=16, last_ts=0.0)
+        m._learned_settled_gb = {"kirocrew": 1.9}
+        mono = [5_000.0]
+        clock = types.SimpleNamespace(time=lambda: 1_000_000_000.0, monotonic=lambda: mono[0])
+        monkeypatch.setattr(subagent, "time", clock)
+        monkeypatch.setattr(
+            subagent, "read_learned_costs_checked", lambda *a, **k: ({"light": 0.4}, False)
+        )
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {"kirocrew": 1.9, "light": 0.4}
+        mono[0] += 6 * 24 * 3600
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {"kirocrew": 1.9, "light": 0.4}, "inside the horizon"
+        mono[0] += 2 * 24 * 3600
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {"light": 0.4}, "rebuilt from what the read saw"
+
+        def _boom(*_a, **_k):
+            raise OSError("unreadable")
+
+        monkeypatch.setattr(subagent, "read_learned_costs_checked", _boom)
+        mono[0] += 8 * 24 * 3600
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {}, "a failed read keeps nothing past the horizon"
+
+
+# ---------------------------------------------------------------------------
+# Container / cgroup hardening (Stage 8, dynamic-subagent-sizing.md §9)
+# ---------------------------------------------------------------------------
+
+
+class TestReadIntFile:
+    def test_reads_int(self, tmp_path) -> None:
+        from kiro_crew.subagent import _read_int_file
+
+        p = tmp_path / "v"
+        p.write_text("12345\n")
+        assert _read_int_file(str(p)) == 12345
+
+    def test_max_returns_none(self, tmp_path) -> None:
+        from kiro_crew.subagent import _read_int_file
+
+        p = tmp_path / "v"
+        p.write_text("max\n")
+        assert _read_int_file(str(p)) is None
+
+    def test_missing_and_garbage_return_none(self, tmp_path) -> None:
+        from kiro_crew.subagent import _read_int_file
+
+        assert _read_int_file(str(tmp_path / "nope")) is None
+        g = tmp_path / "g"
+        g.write_text("not-a-number\n")
+        assert _read_int_file(str(g)) is None
+
+
+class TestCgroupAvailable:
+    @pytest.fixture(autouse=True)
+    def cgroup_files(self, monkeypatch):
+        """All kernel inputs are synthetic, including membership and mounts."""
+        files = {}
+
+        def read(path, **kwargs):
+            value = files.get(str(path))
+            if value is None:
+                raise FileNotFoundError(path)
+            if isinstance(value, Exception):
+                raise value
+            return StringIO(str(value))
+
+        monkeypatch.setattr(subagent, "open", read, raising=False)
+        return files
+
+    def test_v2_headroom(self, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        vals = {
+            "/sys/fs/cgroup/memory.max": 16 * 1024**3,
+            "/sys/fs/cgroup/memory.current": 2 * 1024**3,
+        }
+        monkeypatch.setattr(sub, "_read_int_file", lambda p: vals.get(p))
+        assert sub._cgroup_available_gb() == pytest.approx(14.0, abs=0.01)
+
+    def test_v2_unlimited_max_falls_through_to_minus_one(self, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        # memory.max == 'max' → _read_int_file None; v1 absent → -1.0 (unlimited)
+        monkeypatch.setattr(sub, "_read_int_file", lambda p: None)
+        assert sub._cgroup_available_gb() == -1.0
+
+    def test_sentinel_large_limit_is_unlimited(self, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        vals = {"/sys/fs/cgroup/memory.max": sub._CGROUP_UNLIMITED + 1}
+        monkeypatch.setattr(sub, "_read_int_file", lambda p: vals.get(p))
+        assert sub._cgroup_available_gb() == -1.0
+
+    def test_v1_headroom(self, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        vals = {
+            "/sys/fs/cgroup/memory.max": None,  # v2 absent
+            "/sys/fs/cgroup/memory/memory.limit_in_bytes": 8 * 1024**3,
+            "/sys/fs/cgroup/memory/memory.usage_in_bytes": 3 * 1024**3,
+        }
+        monkeypatch.setattr(sub, "_read_int_file", lambda p: vals.get(p))
+        assert sub._cgroup_available_gb() == pytest.approx(5.0, abs=0.01)
+
+    def test_v2_inactive_page_cache_is_headroom(self, cgroup_files, monkeypatch) -> None:
+        """A container whose usage is mostly cold page cache is not full: the
+        kernel drops inactive file pages before it OOM-kills anything."""
+        import kiro_crew.subagent as sub
+
+        gib = 1024**3
+        vals = {
+            "/sys/fs/cgroup/memory.max": 16 * gib,
+            "/sys/fs/cgroup/memory.current": 15 * gib,
+        }
+        monkeypatch.setattr(sub, "_read_int_file", lambda p: vals.get(p))
+        cgroup_files["/sys/fs/cgroup/memory.stat"] = (
+            f"anon {3 * gib}\nfile {12 * gib}\nactive_file {2 * gib}\n"
+            f"inactive_file {10 * gib}\n"
+        )
+        assert sub._cgroup_available_gb() == pytest.approx(11.0, abs=0.01)
+
+    def test_v1_reads_the_hierarchical_inactive_cache(self, cgroup_files, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        gib = 1024**3
+        vals = {
+            "/sys/fs/cgroup/memory/memory.limit_in_bytes": 8 * gib,
+            "/sys/fs/cgroup/memory/memory.usage_in_bytes": 7 * gib,
+        }
+        monkeypatch.setattr(sub, "_read_int_file", lambda p: vals.get(p))
+        # v1's local ``inactive_file`` excludes children; only the total counts.
+        cgroup_files["/sys/fs/cgroup/memory/memory.stat"] = (
+            f"inactive_file {1 * gib}\ntotal_inactive_file {4 * gib}\n"
+        )
+        assert sub._cgroup_available_gb() == pytest.approx(5.0, abs=0.01)
+
+    @pytest.mark.parametrize("used_gb", [2, 3])
+    def test_nested_exhaustion_blocks_admission(self, monkeypatch, cgroup_files, used_gb):
+        monkeypatch.setattr(subagent.platform_compat, "IS_LINUX", True)
+        cgroup_files.update(
+            {
+                "/proc/meminfo": "MemAvailable: 67108864 kB\n",
+                "/proc/self/cgroup": "0::/user.slice/crew.service\n",
+                "/proc/self/mountinfo": "31 20 0:28 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n",
+                "/sys/fs/cgroup/user.slice/crew.service/memory.max": 2 * 1024**3,
+                "/sys/fs/cgroup/user.slice/crew.service/memory.current": used_gb * 1024**3,
+            }
+        )
+        # Explicit production path gets past the file's healthy-host fixture.
+        assert subagent.check_memory_available(min_gb=1.0, path="/proc/meminfo") == (False, 0.0)
+
+    def test_parent_usage_includes_siblings(self, cgroup_files):
+        cgroup_files.update(
+            {
+                "/proc/self/cgroup": "0::/slice/crew\n",
+                "/proc/self/mountinfo": "31 20 0:28 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n",
+                "/sys/fs/cgroup/slice/crew/memory.max": 8 * 1024**3,
+                "/sys/fs/cgroup/slice/crew/memory.current": 1024**3,
+                "/sys/fs/cgroup/slice/memory.max": 16 * 1024**3,
+                "/sys/fs/cgroup/slice/memory.current": 15 * 1024**3,
+            }
+        )
+        # The looser parent ceiling still has less headroom due to siblings.
+        assert subagent._cgroup_available_gb() == 1.0
+
+    @pytest.mark.parametrize("usage", [None, PermissionError(), "garbage", "max", -1])
+    @pytest.mark.parametrize("v2", [True, False])
+    def test_unknown_usage_does_not_become_zero(self, cgroup_files, usage, v2):
+        base = "/sys/fs/cgroup" if v2 else "/sys/fs/cgroup/memory"
+        limit = "memory.max" if v2 else "memory.limit_in_bytes"
+        current = "memory.current" if v2 else "memory.usage_in_bytes"
+        cgroup_files.update({f"{base}/{limit}": 8 * 1024**3, f"{base}/{current}": usage})
+        assert subagent._cgroup_available_gb() == 0.0
+
+    @pytest.mark.parametrize("v2", [True, False])
+    @pytest.mark.parametrize("unknown_at_parent", [True, False])
+    @pytest.mark.parametrize("parent_limit_gb", [4, 16])
+    def test_known_constraint_survives_unknown_usage_at_either_level(
+        self, cgroup_files, v2, unknown_at_parent, parent_limit_gb
+    ):
+        membership = "0::" if v2 else "5:memory:"
+        filesystem = "cgroup2 cgroup rw" if v2 else "cgroup cgroup rw,memory"
+        limit = "memory.max" if v2 else "memory.limit_in_bytes"
+        usage = "memory.current" if v2 else "memory.usage_in_bytes"
+        cgroup_files.update(
+            {
+                "/proc/self/cgroup": f"{membership}/crew\n",
+                "/proc/self/mountinfo": f"31 20 0:28 / /mem rw - {filesystem}\n",
+                f"/mem/crew/{limit}": 8 * 1024**3,
+                f"/mem/crew/{usage}": 1024**3 if unknown_at_parent else None,
+                f"/mem/{limit}": parent_limit_gb * 1024**3,
+                f"/mem/{usage}": None if unknown_at_parent else 1024**3,
+                "/mem/memory.use_hierarchy": 1,
+            }
+        )
+        assert subagent._cgroup_available_gb() == 0.0
+
+    @pytest.mark.parametrize("limit", [None, "max", "garbage", -1, 1 << 62])
+    def test_absent_or_unlimited_limit_preserves_unknown(self, cgroup_files, limit):
+        cgroup_files["/sys/fs/cgroup/memory.max"] = limit
+        assert subagent._cgroup_available_gb() == -1.0
+
+    @pytest.mark.parametrize(
+        "meminfo",
+        ["MemAvailable: 33554432 kB\n", None, PermissionError(), "MemAvailable: bad\n", ""],
+    )
+    @pytest.mark.parametrize("usage, expected", [(None, 0.0), (0, 2.0), (1024**3, 1.0)])
+    def test_finite_limit_binds_admission_and_autosizing(
+        self, monkeypatch, cgroup_files, meminfo, usage, expected
+    ):
+        monkeypatch.setattr(subagent.platform_compat, "IS_LINUX", True)
+        monkeypatch.setattr(subagent.os, "cpu_count", lambda: 64)
+        cgroup_files.update(
+            {
+                "/proc/meminfo": meminfo,
+                "/sys/fs/cgroup/memory.max": 2 * 1024**3,
+                "/sys/fs/cgroup/memory.current": usage,
+            }
+        )
+        # Route the healthy-host fixture through the real reader for sizing too.
+        check = subagent.check_memory_available
+        monkeypatch.setattr(
+            subagent,
+            "check_memory_available",
+            lambda min_gb=0.0: check(min_gb=min_gb, path="/proc/meminfo"),
+        )
+        assert subagent.check_memory_available(min_gb=expected) == (True, expected)
+        assert subagent.check_memory_available(min_gb=expected + 0.01) == (False, expected)
+        assert subagent._available_memory_gb() == expected
+        cfg = _cfg(buffer_pct=0, mem_cost=0.25, cpu_cost=1.0, hard_cap=32)
+        assert compute_memory_sized_parallel_cap(cfg) == max(3, int(expected / 0.25))
+
+    @pytest.mark.parametrize("limit", [None, "max"])
+    @pytest.mark.parametrize(
+        "meminfo, expected", [(None, -1.0), ("MemAvailable: 33554432 kB\n", 32.0)]
+    )
+    def test_no_finite_limit_keeps_host_fallback(
+        self, monkeypatch, cgroup_files, limit, meminfo, expected
+    ):
+        monkeypatch.setattr(subagent.platform_compat, "IS_LINUX", True)
+        cgroup_files.update({"/proc/meminfo": meminfo, "/sys/fs/cgroup/memory.max": limit})
+        assert subagent.check_memory_available(min_gb=1.0, path="/proc/meminfo") == (True, expected)
+
+    @pytest.mark.parametrize("usage", [None, "max"])
+    def test_unknown_child_keeps_known_parent_constraint(self, cgroup_files, usage):
+        cgroup_files.update(
+            {
+                "/proc/self/cgroup": "0::/slice/crew\n",
+                "/proc/self/mountinfo": "31 20 0:28 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n",
+                "/sys/fs/cgroup/slice/crew/memory.max": 8 * 1024**3,
+                "/sys/fs/cgroup/slice/crew/memory.current": usage,
+                "/sys/fs/cgroup/slice/memory.max": 4 * 1024**3,
+                "/sys/fs/cgroup/slice/memory.current": 4 * 1024**3,
+            }
+        )
+        assert subagent._cgroup_available_gb() == 0.0
+
+    @pytest.mark.parametrize("v2", [True, False])
+    def test_bind_mount_root_and_escaped_mountpoint(self, cgroup_files, v2):
+        membership = "0::" if v2 else "5:cpu,memory:"
+        filesystem = "cgroup2 cgroup rw" if v2 else "cgroup cgroup rw,cpu,memory"
+        limit = "memory.max" if v2 else "memory.limit_in_bytes"
+        usage = "memory.current" if v2 else "memory.usage_in_bytes"
+        cgroup_files.update(
+            {
+                "/proc/self/cgroup": f"{membership}/tenant/crew\n",
+                "/proc/self/mountinfo": f"31 20 0:28 /tenant /mounted\\040group rw - {filesystem}\n",
+                f"/mounted group/crew/{limit}": 8 * 1024**3,
+                f"/mounted group/crew/{usage}": 1024**3,
+                f"/mounted group/{limit}": 4 * 1024**3,
+                f"/mounted group/{usage}": 3 * 1024**3,
+                "/mounted group/memory.use_hierarchy": 1,
+                # Outside the mount and unrelated conventional roots cannot bind.
+                f"/{limit}": 0,
+                f"/{usage}": 0,
+                "/sys/fs/cgroup/memory.max": 0,
+                "/sys/fs/cgroup/memory.current": 0,
+            }
+        )
+        assert subagent._cgroup_available_gb() == 1.0
+
+    def test_v1_nonhierarchical_parent_does_not_bind(self, cgroup_files):
+        cgroup_files.update(
+            {
+                "/proc/self/cgroup": "5:memory:/crew\n",
+                "/proc/self/mountinfo": "31 20 0:28 / /mem rw - cgroup cgroup rw,memory\n",
+                "/mem/crew/memory.limit_in_bytes": 8 * 1024**3,
+                "/mem/crew/memory.usage_in_bytes": 1024**3,
+                "/mem/memory.limit_in_bytes": 4 * 1024**3,
+                "/mem/memory.usage_in_bytes": 4 * 1024**3,
+                "/mem/memory.use_hierarchy": 0,
+            }
+        )
+        assert subagent._cgroup_available_gb() == 7.0
+
+    def test_namespaced_root_with_zero_usage(self, cgroup_files):
+        cgroup_files.update(
+            {
+                "/proc/self/cgroup": "0::/\n",
+                "/proc/self/mountinfo": "31 20 0:28 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n",
+                "/sys/fs/cgroup/memory.max": 8 * 1024**3,
+                "/sys/fs/cgroup/memory.current": 0,
+            }
+        )
+        assert subagent._cgroup_available_gb() == 8.0
+
+
+class TestAvailableMemoryClamp:
+    def test_clamps_to_cgroup_when_smaller(self, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        # Force the Linux branch so the clamp logic runs regardless of test host.
+        monkeypatch.setattr(sub.platform_compat, "IS_LINUX", True)
+        monkeypatch.setattr(sub.platform_compat, "IS_MACOS", False)
+        monkeypatch.setattr(sub, "check_memory_available", lambda **k: (True, 100.0))
+        monkeypatch.setattr(sub, "_cgroup_available_gb", lambda: 14.0)
+        assert sub._available_memory_gb() == pytest.approx(14.0, abs=0.01)
+
+    def test_unconstrained_uses_host(self, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        monkeypatch.setattr(sub.platform_compat, "IS_LINUX", True)
+        monkeypatch.setattr(sub.platform_compat, "IS_MACOS", False)
+        monkeypatch.setattr(sub, "check_memory_available", lambda **k: (True, 100.0))
+        monkeypatch.setattr(sub, "_cgroup_available_gb", lambda: -1.0)
+        assert sub._available_memory_gb() == pytest.approx(100.0, abs=0.01)
+
+    def test_linux_unreadable_fails_open(self, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        monkeypatch.setattr(sub.platform_compat, "IS_LINUX", True)
+        monkeypatch.setattr(sub.platform_compat, "IS_MACOS", False)
+        monkeypatch.setattr(sub, "check_memory_available", lambda **k: (True, -1.0))
+        # cgroup not even consulted when host is unreadable
+        assert sub._available_memory_gb() == -1.0
+
+    def test_cgroup_clamp_lowers_computed_cap(self, monkeypatch) -> None:
+        """End-to-end: a 4 GB cgroup headroom on a big host caps the memory-sized figure."""
+        import kiro_crew.subagent as sub
+
+        monkeypatch.setattr(sub.platform_compat, "IS_LINUX", True)
+        monkeypatch.setattr(sub.platform_compat, "IS_MACOS", False)
+        monkeypatch.setattr(sub, "check_memory_available", lambda **k: (True, 174.7))
+        monkeypatch.setattr(sub, "_cgroup_available_gb", lambda: 4.0)  # headroom 4 GB
+        monkeypatch.setattr(sub.os, "cpu_count", lambda: 48)
+        cfg = _cfg(mem_cost=0.315, cpu_cost=0.8, hard_cap=16)
+        # mem_term = floor(4*0.8/0.315)=10 ; cpu_term=48 → min 10, clamp(10,3,16)=10
+        assert compute_memory_sized_parallel_cap(cfg) == 10
+
+    # --- platform dispatch -------------------------------------------------
+
+    def test_macos_branch_uses_macos_probe(self, monkeypatch) -> None:
+        """On macOS, dispatch delegates to the vm_stat probe (not /proc)."""
+        import kiro_crew.subagent as sub
+
+        monkeypatch.setattr(sub.platform_compat, "IS_LINUX", False)
+        monkeypatch.setattr(sub.platform_compat, "IS_MACOS", True)
+        monkeypatch.setattr(sub, "_macos_available_memory_gb", lambda: 42.0)
+        assert sub._available_memory_gb() == 42.0
+
+    def test_windows_reads_the_shared_host_probe(self, monkeypatch) -> None:
+        """Windows reads memory through ``platform_compat.host_available_mib``."""
+        import kiro_crew.subagent as sub
+
+        monkeypatch.setattr(sub.platform_compat, "IS_LINUX", False)
+        monkeypatch.setattr(sub.platform_compat, "IS_MACOS", False)
+        monkeypatch.setattr(sub.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(sub.platform_compat, "host_available_mib", lambda: 16384)
+        assert sub._available_memory_gb() == 16.0
+
+    def test_unsupported_platform_fails_open(self, monkeypatch) -> None:
+        """A platform with no probe yet fails open to -1.0."""
+        import kiro_crew.subagent as sub
+
+        monkeypatch.setattr(sub.platform_compat, "IS_LINUX", False)
+        monkeypatch.setattr(sub.platform_compat, "IS_MACOS", False)
+        monkeypatch.setattr(sub.platform_compat, "IS_WINDOWS", False)
+        assert sub._available_memory_gb() == -1.0
+
+
+# ---------------------------------------------------------------------------
+# Queued-spawn parameter preservation + reap-drains-queue (round-2 bugfix)
+# ---------------------------------------------------------------------------
+
+
+class TestMacosMemoryProbe:
+    """macOS available-memory calc, exercised via the mockable page-count seam.
+
+    The Mach ``host_statistics64`` reader itself is macOS-only (pragma: no
+    cover, validated live against vm_stat); these tests drive the surrounding
+    GB math + failure handling deterministically on any host.
+    """
+
+    def test_computes_available_gb_from_pages(self, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        real_sysconf = getattr(sub.os, "sysconf", absent_sysconf)
+        monkeypatch.setattr(
+            sub.os,
+            "sysconf",
+            lambda n: 16384 if n == "SC_PAGE_SIZE" else real_sysconf(n),  # 16 KiB pages
+        )
+        monkeypatch.setattr(sub, "_macos_vm_reclaimable_pages", lambda: 200000)
+        expected = round(200000 * 16384 / (1024**3), 2)
+        assert sub._macos_available_memory_gb() == pytest.approx(expected, abs=0.01)
+
+    def test_none_page_count_fails_open(self, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        real_sysconf = getattr(sub.os, "sysconf", absent_sysconf)
+        monkeypatch.setattr(
+            sub.os, "sysconf", lambda n: 16384 if n == "SC_PAGE_SIZE" else real_sysconf(n)
+        )
+        monkeypatch.setattr(sub, "_macos_vm_reclaimable_pages", lambda: None)
+        assert sub._macos_available_memory_gb() == -1.0
+
+    def test_zero_page_count_fails_open(self, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        real_sysconf = getattr(sub.os, "sysconf", absent_sysconf)
+        monkeypatch.setattr(
+            sub.os, "sysconf", lambda n: 16384 if n == "SC_PAGE_SIZE" else real_sysconf(n)
+        )
+        monkeypatch.setattr(sub, "_macos_vm_reclaimable_pages", lambda: 0)
+        assert sub._macos_available_memory_gb() == -1.0
+
+    def test_sysconf_error_fails_open(self, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        real_sysconf = getattr(sub.os, "sysconf", absent_sysconf)
+
+        def _boom(n):
+            if n == "SC_PAGE_SIZE":
+                raise ValueError("SC_PAGE_SIZE unavailable")
+            return real_sysconf(n)
+
+        monkeypatch.setattr(sub.os, "sysconf", _boom)
+        assert sub._macos_available_memory_gb() == -1.0
+
+    def test_nonpositive_page_size_fails_open(self, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        real_sysconf = getattr(sub.os, "sysconf", absent_sysconf)
+        monkeypatch.setattr(
+            sub.os, "sysconf", lambda n: 0 if n == "SC_PAGE_SIZE" else real_sysconf(n)
+        )
+        # _macos_vm_reclaimable_pages must not even be consulted
+        monkeypatch.setattr(
+            sub, "_macos_vm_reclaimable_pages", lambda: pytest.fail("should not run")
+        )
+        assert sub._macos_available_memory_gb() == -1.0
+
+
+class TestQueuedSpawnParamsPreserved:
+    """A queued spawn must drain with ALL its spawn() kwargs intact.
+
+    Storing only (task, parent, agent, max_turns, cwd) would make a drained
+    spawn silently lose approval_mode / silent / model / allowed_tools /
+    bare — an auto (headless) spawn would hit the deny-by-default gate and a silent
+    spawn would start emitting output.
+    """
+
+    def test_drain_forwards_all_spawn_kwargs(self) -> None:
+        import time as _t
+        from unittest.mock import MagicMock
+
+        m = _mgr(running=0, max_concurrent=16, last_ts=_t.monotonic() - 100.0, stagger=2.0)
+        # Seed the queue exactly as spawn() now does, with non-default kwargs.
+        m._queue.append(
+            {
+                "task": "do work",
+                "parent_session_key": "p1",
+                "agent": "kirocrew",
+                "max_turns": 7,
+                "model": "claude-x",
+                "allowed_tools": ["fs_read"],
+                "bare": True,
+                "cwd": "/tmp/ws",
+                "approval_mode": "auto",
+                "silent": True,
+            }
+        )
+        captured = {}
+        m.spawn = MagicMock(side_effect=lambda **kw: captured.update(kw))  # type: ignore[method-assign]
+        m._drain_queue()
+        m.spawn.assert_called_once()
+        # Every parameter survives the queue round-trip.
+        assert captured["approval_mode"] == "auto"
+        assert captured["silent"] is True
+        assert captured["model"] == "claude-x"
+        assert captured["allowed_tools"] == ["fs_read"]
+        assert captured["bare"] is True
+        assert captured["max_turns"] == 7
+        assert captured["cwd"] == "/tmp/ws"
+        assert captured["parent_session_key"] == "p1"
+
+
+class TestForceReapDrainsQueue:
+    """_force_reap frees a slot; it must pump the queue so a queued spawn starts.
+
+    Without the pump, _force_reap would decrement _running_count but never call
+    _drain_queue, so queued spawns stay stranded until an unrelated agent
+    finishes normally or a new spawn arrives.
+    """
+
+    @pytest.mark.asyncio
+    async def test_force_reap_calls_drain_queue(self) -> None:
+        import time as _t
+        from unittest.mock import MagicMock
+
+        from kiro_crew.subagent import SubagentInfo
+
+        m = _mgr(running=3, max_concurrent=3, last_ts=_t.monotonic() - 100.0)
+        m._queue.append(
+            {
+                "task": "queued",
+                "parent_session_key": "",
+                "agent": "",
+                "max_turns": 0,
+                "model": None,
+                "allowed_tools": None,
+                "bare": False,
+                "cwd": "",
+                "approval_mode": None,
+                "silent": False,
+            }
+        )
+        m._drain_queue = MagicMock()  # type: ignore[method-assign]
+        m._sessions = MagicMock()
+        m._write_tombstone = MagicMock()  # type: ignore[method-assign]
+        m._record_cost = MagicMock()  # type: ignore[method-assign]
+
+        info = SubagentInfo(id="a1", task="running", agent="")
+        await m._force_reap("a1", info, elapsed=999.0)
+
+        assert m._running_count == 2  # slot freed
+        m._drain_queue.assert_called_once()  # queue pumped
+
+
+class TestLastSampleAndMemoryRows:
+    """The task-manager surface needs the CURRENT sample, which a high-water mark
+    cannot express: a peak never comes back down, so a task that grew and then
+    released memory would read as still holding it."""
+
+    def _agent(self, **kw):
+        from kiro_crew.subagent import SubagentInfo
+
+        info = SubagentInfo(id=kw.pop("id", "a1"), task=kw.pop("task", "t"), agent="kirocrew")
+        info._pid = 4242
+        for k, v in kw.items():
+            setattr(info, k, v)
+        return info
+
+    def test_last_rss_follows_down_while_peak_holds(self, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        info = self._agent()
+        m._agents = {"a1": info}
+        rss_seq = iter([2 * 1024 * 1024, 1 * 1024 * 1024])
+        monkeypatch.setattr(
+            sub,
+            "_proc_subtree_sample",
+            lambda pid, **kw: sub.platform_compat.SubtreeSample(next(rss_seq), 0, None, None),
+        )
+        m._sample_live_costs()
+        m._sample_live_costs()
+
+        assert info.peak_rss_gb == pytest.approx(2.0, abs=0.01)
+        assert info.last_rss_gb == pytest.approx(1.0, abs=0.01)
+
+    def test_shared_agents_report_a_divided_last_sample(self, monkeypatch) -> None:
+        """Sharing agents all report the SAME runtime pid, so the per-agent figure
+        is the runtime's measurement split between them."""
+        import kiro_crew.subagent as sub
+
+        m = _mgr(running=2, max_concurrent=16, last_ts=0.0)
+        a = self._agent(id="a1", _session_sharing=True)
+        b = self._agent(id="a2", _session_sharing=True)
+        m._agents = {"a1": a, "a2": b}
+        monkeypatch.setattr(
+            sub,
+            "_proc_subtree_sample",
+            lambda pid, **kw: sub.platform_compat.SubtreeSample(2 * 1024 * 1024, 0, None, None),
+        )
+        m._sample_live_costs()
+
+        assert a.last_rss_gb == pytest.approx(1.0, abs=0.01)
+
+    def test_memory_rows_expose_the_samples_in_mb(self) -> None:
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        info = self._agent(last_rss_gb=1.5, peak_rss_gb=2.0, last_cpu_cores=0.25)
+        info.parent_session_key = "dashboard:a"
+        m._agents = {"a1": info}
+
+        (row,) = m.task_memory_rows()
+        assert row["rss_mb"] == pytest.approx(1536.0)
+        assert row["peak_rss_mb"] == pytest.approx(2048.0)
+        assert row["cpu_cores"] == pytest.approx(0.25)
+        assert row["parent"] == "dashboard:a"
+        assert row["sampled"] is True
+
+    def test_never_sampled_task_is_marked_unsampled(self) -> None:
+        """0 MB and "not measured yet" are different claims; the reaper may not
+        have swept a fresh task, and rendering that as 0 would be a lie."""
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        m._agents = {"a1": self._agent()}
+
+        (row,) = m.task_memory_rows()
+        assert row["sampled"] is False
+
+    def test_done_and_queued_agents_are_excluded(self) -> None:
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        m._agents = {
+            "a1": self._agent(id="a1", done=True),
+            "a2": self._agent(id="a2", queued=True),
+            "a3": self._agent(id="a3", last_rss_gb=0.5),
+        }
+
+        assert [r["id"] for r in m.task_memory_rows()] == ["a3"]

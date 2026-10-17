@@ -1,0 +1,86 @@
+[
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "current_mode_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "current_mode_update"
+  },
+  {
+    "config_options": [
+      {
+        "currentValue": "local",
+        "id": "provider",
+        "name": "Provider",
+        "options": [
+          {
+            "name": "Local",
+            "value": "local"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "currentValue": "local",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "name": "Local",
+            "value": "local"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "currentValue": "local",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "Local",
+            "value": "local"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "currentValue": "local",
+        "id": "thinking_effort",
+        "name": "Thinking effort",
+        "options": [
+          {
+            "name": "Local",
+            "value": "local"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 6,
+    "modes": {
+      "advertised": true,
+      "current": "chat",
+      "ids": [
+        "auto",
+        "approve",
+        "smart_approve",
+        "chat"
+      ]
+    }
+  },
+  {
+    "error": {
+      "code": -32601,
+      "message": "Method not found"
+    },
+    "frame": "response",
+    "id": 7
+  }
+]

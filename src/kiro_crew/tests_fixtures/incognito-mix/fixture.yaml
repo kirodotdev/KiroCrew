@@ -1,0 +1,11 @@
+schema-version: 2026-04-28
+fixture-name: incognito-mix
+description: |
+  Three sessions differ only in memory_mode: persistent, incognito, and temporary.
+  The production privacy classifier treats incognito and temporary as private,
+  making this fixture suitable for exclusion tests without hand-built records.
+  Because the three transcripts are byte-identical except for memory_mode, a
+  passing privacy assertion cannot be explained by incidental differences.
+  Use case: verify incognito/temporary behavior natively against a known mix --
+  e.g. a default-open-incognito toggle, where an agent seeds this scenario and
+  checks which of the three sessions surface in history, memory, and search.

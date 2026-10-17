@@ -1,0 +1,52 @@
+# Smoke: the Artifacts library read against the three artifacts the `rich`
+# seed ships (the same set as the `artifacts-library` fixture): "Release
+# checklist" (widget, version 2), "Pagination design note" (markdown) and
+# "Queue badge" (svg). The page opens in the Gallery view; the tester switches
+# to the Table view and narrows it with the kind filter, which is the daily
+# "find the thing an agent made" path. Both controls are client-side over the
+# already-loaded list, so the rows are deterministic.
+#
+# The Gallery / Table choice persists per browser (`mc-artifacts-view`), so a
+# retry finds "Table" already selected and is told to leave it; the kind
+# filter does not persist and starts at "all kinds" on every attempt. Nothing
+# is starred, opened, moved or deleted. The harness keeps the newest three
+# screenshots, so the gallery frame the tester reads first is not judged; the
+# final expectations describe the filtered table alone.
+name: artifacts-library-table-and-kind-filter
+tier: smoke
+feature: artifacts
+user_story: >-
+  As a user, I want saved widgets, HTML and documents organised in versioned
+  folders with gallery and table views and a kind filter, so that I can find
+  and reuse what agents produced.
+docs_url: docs/system-specs/modules/artifacts.md
+summary: Switch the Artifacts library to its Table view and filter it to the one markdown artifact
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /artifacts
+steps:
+  - >-
+    You are on the Artifacts page (title "Artifacts"). Its toolbar has a filter box, two
+    dropdowns reading "all kinds" and "all tags", a "Starred | All" toggle with "All" selected,
+    and a "Gallery | Table" view switcher. The library shows three artifacts named "Release
+    checklist", "Pagination design note" and "Queue badge". Do not open any of them.
+  - >-
+    Click "Table" in the "Gallery | Table" switcher (if "Table" is already highlighted, leave
+    it). The artifacts become rows of a table with the columns Name, Slug, Kind, Source, Ver,
+    Tags, Updated and Actions.
+  - >-
+    Click the dropdown reading "all kinds" and, in the list that opens, pick the entry
+    "kind: markdown".
+  - Wait a second for the table to update.
+expectations:
+  - The "Table" segment of the view switcher is highlighted and the artifacts are shown as a table, not as preview tiles.
+  - >-
+    The kind dropdown reads "kind: markdown".
+  - >-
+    The table has exactly one artifact row, "Pagination design note", whose Slug cell reads
+    "pagination-design", whose Kind cell shows a "markdown" badge and whose Ver cell reads "v1".
+  - Neither "Release checklist" nor "Queue badge" is listed any more.
+  - No red error banner is visible on the page.
+max_steps: 10
+max_seconds: 300

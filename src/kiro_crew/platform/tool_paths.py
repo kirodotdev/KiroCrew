@@ -1,0 +1,614 @@
+"""Shared, bounded, depth-aware extraction of a tool call's target file paths.
+
+This module is the SINGLE source of the traversal that both the sensitive-path
+keystone in :mod:`kiro_crew.hooks` (hard-deny plane) and the governance
+intersection plane in :mod:`kiro_crew.platform.governance` (permit-by-default
+plane) rely on. It lives BELOW both on purpose: ``hooks`` imports FROM
+``platform.governance``, so ``governance`` cannot import ``hooks`` without a
+cycle, and both need the same walk. Keeping it here — and depending on nothing
+but the stdlib and :mod:`collections.abc` — lets either caller import it with no
+cycle and no heavy transitive dependency.
+
+The two callers apply DIFFERENT fail semantics to the ``truncated`` flag (the
+keystone hard-denies an unverifiable scan; governance denies only the scopes the
+tool kind implies, per its permit-by-default contract), but the extraction
+itself is identical and must not drift between them.
+"""
+
+from __future__ import annotations
+
+import ntpath
+import os
+import re
+from collections.abc import Mapping
+from types import MappingProxyType, ModuleType
+
+#: EVERY argument name a tool may carry its target file path under. Public because
+#: it is shared with the consent prompt in ``cli_chat``: a prompt that disclosed a
+#: path the gate did not inspect would let the two disagree about what the target
+#: is, and the surface asking a human would be reading the weaker field. One tuple
+#: is what makes that parity structural instead of a comment claiming it.
+#:
+#: The camel-case spelling is not hypothetical -- ``_SEARCH_DENY_ARG_KEYS`` has
+#: accepted it for the search plane all along, while the sensitive-path keystone
+#: below read only the two snake_case forms. ``targetFile`` is the KAS
+#: ``delete_file`` built-in's one argument (``tools/delete-file.ts``); a spec
+#: that names it on the kas backend mounts it (``kas_agents``), and a delete
+#: whose path the keystone never read would be the one filesystem write the
+#: sensitive-path floor did not see.
+TARGET_PATH_KEYS: tuple[str, ...] = ("path", "file_path", "filePath", "targetFile")
+
+
+#: Cap on the number of DISTINCT candidate paths collected below. The extractor
+#: runs synchronously on the gateway event loop for every tool call, and each
+#: collected path costs the keystone an ``is_sensitive_path`` resolution (two
+#: symlink-following syscall chains) — so an attacker-shaped batch carrying tens
+#: of thousands of paths could stall the loop. The cap does NOT fail open: hitting
+#: it sets ``TargetPaths.truncated`` and the gate DENIES an unverifiable call
+#: (same deny-by-default shape as the unrecoverable-shell-command branch).
+#: Generous on purpose: no legitimate tool schema names hundreds of files in one
+#: call, and a denied call merely falls to the human with a clear reason.
+_TARGET_PATH_MAX_PATHS = 256
+
+#: Budget of container nodes (dicts/lists) the walk will visit, bounding total
+#: traversal work independently of how the paths are arranged. Exceeding it also
+#: sets ``TargetPaths.truncated`` → deny. High enough that any real tool call is
+#: orders of magnitude below it.
+_TARGET_PATH_MAX_NODES = 10_000
+
+# A patch is a document, not a path-valued argument. Bound the header walk
+# independently of the number of paths so a large body cannot stall the gate.
+_PATCH_TEXT_MAX_CHARS = 256_000
+_PATCH_HEADERS = ("*** Add File: ", "*** Update File: ", "*** Delete File: ")
+_PATCH_MOVE_HEADER = "*** Move to: "
+#: The characters JS ``String.prototype.trim()`` strips: ECMAScript WhiteSpace
+#: plus LineTerminator. The applier trims each header path with it. It holds
+#: U+FEFF, which ``str.strip`` keeps, and lacks ``\x1c``-``\x1f`` and ``\x85``,
+#: which ``str.strip`` drops.
+_JS_TRIM_CHARS = (
+    "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006"
+    "\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
+
+
+class TargetPaths(list):
+    """The collected paths, plus whether collection had to stop early.
+
+    A ``list`` subclass so every existing consumer (iteration in the gate loops,
+    ``found[0]`` in the consent prompt, truthiness, equality in tests) works
+    unchanged. ``truncated`` is True when the walk hit ``_TARGET_PATH_MAX_PATHS``
+    or ``_TARGET_PATH_MAX_NODES``, meaning the returned list may be INCOMPLETE —
+    a security consumer must treat that as "the call could not be verified" and
+    deny, never as "everything present was checked".
+
+    ``unanchored`` is True when :func:`edit_target_candidates` was handed a
+    write-plane target -- a diff content block path or a params path spelling --
+    that is still relative after ``~``/env expansion, or a patch header path that
+    is not absolute as written. Such a
+    path resolves against the PROCESS working directory — the gateway's, not the
+    agent workspace's — so no gate can establish what file it actually names
+    (a workspace symlink can point it at a protected file). A security consumer
+    must deny on this flag exactly like ``truncated``: the target set could not
+    be verified.
+    """
+
+    truncated: bool = False
+    unanchored: bool = False
+
+
+def target_paths(raw_params: Mapping | None) -> TargetPaths:
+    """Every non-empty string path in *raw_params*, under any accepted spelling,
+    at ANY nesting depth.
+
+    Returns ALL of them rather than the first match, and callers deny if ANY is
+    forbidden. That is deliberately different from "normalize the aliases onto one
+    key and reject conflicts": a conflict rule has to decide which spelling wins,
+    and picking wrong is how a sensitive path slips past. Checking every value
+    present cannot be gamed by adding a second, innocent-looking alias, and needs
+    no adjudication.
+
+    Nesting is walked for the same ground-truth reason: a batch-shaped tool
+    carries its real targets inside an array argument (e.g.
+    ``{"operations": [{"mode": "Line", "path": …}]}``), so an extraction that
+    read only the top-level keys never surfaced those paths to the
+    sensitive-path keystone — the call was then evaluated as having no target
+    at all and could auto-approve a read the flat spelling of the same path
+    would have denied. The walk is ITERATIVE and EXHAUSTIVE — there is no depth
+    bound that a sufficiently nested path could hide beyond, and no
+    ``RecursionError`` can escape into the gate — visits every dict/list value,
+    collects strings under ``TARGET_PATH_KEYS`` wherever they appear (including
+    a list of strings directly under such a key), and stays extract-only: no
+    sensitivity decision is made here, order of first appearance is preserved,
+    and duplicates collapse (set-backed, so collection is linear). The only
+    limits are the ``_TARGET_PATH_MAX_PATHS`` / ``_TARGET_PATH_MAX_NODES``
+    work caps, and those fail CLOSED: the result is marked ``truncated`` and
+    the gate denies the call as unverifiable rather than trusting a partial
+    scan. Over-extraction is the safe direction, since callers deny on ANY hit
+    and the consent prompt merely discloses more.
+    """
+    found = TargetPaths()
+    if not isinstance(raw_params, Mapping):
+        return found
+    seen: set[str] = set()
+    nodes = 0
+    # Explicit LIFO stack, entries pushed in reverse so traversal matches
+    # document order: at each mapping the accepted spellings are collected in
+    # ``TARGET_PATH_KEYS`` order first (preserving the flat extraction's
+    # historical ordering), then every value is walked in insertion order.
+    stack: list[object] = [raw_params]
+    while stack:
+        if len(found) >= _TARGET_PATH_MAX_PATHS or nodes >= _TARGET_PATH_MAX_NODES:
+            found.truncated = True
+            return found
+        node = stack.pop()
+        nodes += 1
+        if isinstance(node, Mapping):
+            for key in TARGET_PATH_KEYS:
+                _collect_path_strings(node.get(key), found, seen)
+            stack.extend(reversed(list(node.values())))
+        elif isinstance(node, (list, tuple)):
+            stack.extend(reversed(node))
+    return found
+
+
+#: ACP ``kind`` values that put a call on the WRITE plane. ``edit`` is the
+#: file-write tool on every engine; ``delete`` is KAS's ``delete_file``
+#: (``tools/delete-file.ts`` emits the ACP ``delete`` kind). A delete has the
+#: write plane's effect -- the file is gone -- so it is judged by the same
+#: write-protected-config tier and ``filesystem.write`` scope an edit is; before
+#: this, ``delete_file {"targetFile": "~/.kiro/crew/config.json"}`` declared a
+#: kind neither gate routed and the always-on config hard-deny never ran.
+WRITE_PLANE_KINDS: frozenset[str] = frozenset({"edit", "delete"})
+
+#: The write-plane kinds whose PARAMS path is the call's ONLY target evidence.
+#: An ``edit`` also names its file in the ``{"type": "diff"}`` content block --
+#: the evidence :func:`is_edit_call` routes on, and the one spelling whose
+#: relative form has always been withheld as unverifiable -- so its params
+#: spellings are judged verbatim as they always were. A ``delete`` (KAS's
+#: ``delete_file``) carries no diff block: its one ``targetFile`` is the whole
+#: target, and :func:`edit_target_candidates` withholds a relative one and sets
+#: ``unanchored`` exactly as it does a relative diff path. Read off the ACP
+#: ``kind``, never off the backend (harness-parity H13).
+PARAMS_ONLY_TARGET_KINDS: frozenset[str] = frozenset({"delete"})
+
+
+def is_edit_call(tool_kind: str, diff_path: str = "") -> bool:
+    """Whether a tool call is on the WRITE plane: it declared a write-plane
+    kind (:data:`WRITE_PLANE_KINDS` -- ``edit``, or ``delete`` for KAS's
+    ``delete_file``), OR its tool_call frame carried a ``{"type": "diff"}``
+    content block naming a path (*diff_path*).
+
+    The diff content block is the edit's target of record, and its PRESENCE is
+    what routes a call onto the write plane — the ACP ``kind`` field is
+    spec-optional, agent-influenced on permission frames, and can arrive empty
+    or as ``read`` on a call whose content block declares a file change. The
+    ``diff_path`` cache is written only when a tool_call frame's content
+    includes a diff block with a nonempty path, so no legitimate non-edit call
+    carries one. This is the routing predicate the hook edit gate and
+    governance classification share, so those two planes cannot disagree on
+    what counts as an edit; the always-enforced tier
+    (``llm_helpers._resolve_permission``) composes the same two facts with its
+    client-derived provenance flags before rerouting, so its route is this
+    predicate NARROWED, never a different reading of what an edit is. The read
+    allowance is keyed on the ABSENCE of a diff block: a read
+    emits none, which is exactly what makes it a read.
+
+    A non-string *tool_kind* (a harness could stamp a list or a number on the
+    frame) is not on the plane by kind; only the diff block can route it. A
+    membership test on an unhashable value would raise instead of classify.
+    """
+    return (isinstance(tool_kind, str) and tool_kind in WRITE_PLANE_KINDS) or bool(diff_path)
+
+
+def is_workspace_edit_call(tool_kind: str, diff_path: str = "") -> bool:
+    """Whether a tool call is a plain file EDIT -- the ``edit`` kind or a diff
+    content block -- and NOT a delete.
+
+    :func:`is_edit_call` is the WRITE-PLANE routing predicate and, since
+    ``delete`` joined :data:`WRITE_PLANE_KINDS`, answers True for a deletion too:
+    the right reading for the gates, which must fence what a delete removes
+    exactly as they fence what an edit overwrites. It is the wrong reading for
+    the ``tool.risk`` ``caution``-badge carve-out, whose ground is that a
+    workspace edit is "easy to put back"; a deletion is not, so the badge must
+    keep printing on one. This predicate is that narrower reading, so the badge
+    consumer does not carry a private notion of an edit keyed on the ``kind``
+    alone (the diff block still routes a kindless edit here) and the gates keep
+    theirs. Two readings, one module, both named for what they decide.
+    """
+    return tool_kind == "edit" or bool(diff_path)
+
+
+def _is_literal_absolute(path: str) -> bool:
+    """Whether a patch header *path*, read as the literal string the applier
+    resolves, is absolute.
+
+    No ``~`` or ``$VAR`` expansion: the applier does none, so ``~/x`` and
+    ``$HOME/x`` are relative to it. An absolute path that variable expansion
+    would change is refused too, because the sensitivity matcher expands
+    variables and would judge a different file. A ``$`` that names no set
+    variable (``users.$id.tsx``) expands to itself and is judged as written.
+    """
+    return os.path.isabs(path) and os.path.expandvars(path) == path
+
+
+def _patch_targets(text: str, candidates: TargetPaths) -> None:
+    """Collect the paths a complete apply_patch envelope can write or remove.
+
+    Unknown control lines and incomplete envelopes are unverifiable, even if a
+    separate ``path`` argument names a harmless file. No patch body text is
+    interpreted as a shell command or as a path.
+
+    Lines are split on ``\n`` only, the one break the applier splits on. One
+    trailing ``\r`` per line is dropped, because the applier trims every marker
+    and header path it reads, so a CRLF patch names the same files. A line that
+    still holds any other break character (``\r``, ``\x1c``, ``\x85``,
+    ``\u2028``, ...) would be one line to the applier but could read as two to
+    any other splitter, so it is unverifiable. Each header path is judged as the
+    literal string the applier resolves: a path that is not absolute as written,
+    or that variable expansion would change, names a file the gate cannot pin,
+    so it is unanchored. A header path that Python's ``str.strip`` or JS
+    ``trim()`` would change (a trailing U+FEFF, which only JS strips) is
+    unverifiable.
+    """
+    if len(text) > _PATCH_TEXT_MAX_CHARS:
+        candidates.truncated = True
+        return
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        # The newline that ends the last line, not an empty line of its own.
+        lines.pop()
+    lines = [line[:-1] if line.endswith("\r") else line for line in lines]
+    if any(line and line.splitlines() != [line] for line in lines):
+        candidates.truncated = True
+        return
+    if not lines or lines[0] != "*** Begin Patch" or lines[-1] != "*** End Patch":
+        candidates.truncated = True
+        return
+    seen = set(candidates)
+    section = ""
+    moved = False
+    count = 0
+    for line in lines[1:-1]:
+        if line.startswith(_PATCH_HEADERS):
+            header = next(prefix for prefix in _PATCH_HEADERS if line.startswith(prefix))
+            section = header
+            moved = False
+            count += 1
+            path = line[len(header) :]
+        elif line.startswith(_PATCH_MOVE_HEADER) and section == "*** Update File: " and not moved:
+            moved = True
+            path = line[len(_PATCH_MOVE_HEADER) :]
+        elif line == "*** End of File" and section == "*** Update File: ":
+            continue
+        elif line.startswith("*** "):
+            candidates.truncated = True
+            return
+        else:
+            # Only patch-body lines are allowed between file headers. A second
+            # unrecognised control form must never be ignored as harmless text.
+            if not section or not line or not line.startswith(("+", "-", " ", "@@")):
+                candidates.truncated = True
+                return
+            continue
+        # A path either trim would change names a file the gate cannot pin.
+        if not path or path != path.strip() or path != path.strip(_JS_TRIM_CHARS) or "\x00" in path:
+            candidates.truncated = True
+            return
+        if not _is_literal_absolute(path):
+            candidates.unanchored = True
+            return
+        if path not in seen:
+            if len(candidates) >= _TARGET_PATH_MAX_PATHS:
+                candidates.truncated = True
+                return
+            candidates.append(path)
+            seen.add(path)
+    if count == 0:
+        candidates.truncated = True
+
+
+def edit_target_candidates(
+    raw_params: Mapping | None, diff_path: str = "", *, tool_kind: str = ""
+) -> TargetPaths:
+    """The target set a file-EDIT tool call is judged by: the UNION of every
+    accepted path spelling in *raw_params* (via :func:`target_paths`) and
+    *diff_path*, the path the tool_call's ``{"type": "diff"}`` content block
+    named.
+
+    A backend may stream trusted params that carry no path key at all and name
+    the file only in that block, so judging the params alone judges nothing.
+    This is the SINGLE source of that union for BOTH edit gates — the
+    always-enforced tier (``llm_helpers._edit_target_denial``) and the hook tier
+    (``hooks.on_tool_call``'s edit branch) — so the two cannot drift apart on
+    what counts as an edit's target. It lives here for the same layering reason
+    as :func:`target_paths`: ``llm_helpers`` imports ``hooks``, so ``hooks``
+    cannot import the helper from ``llm_helpers`` without a cycle.
+
+    Extraction only, no sensitivity decision: the ``truncated`` flag is carried
+    through from the walk, and a diff-block path that is still relative after
+    ``~``/env expansion sets ``unanchored`` instead of joining the set. That
+    field is a verbatim backend one; a relative value resolves against the
+    gateway process CWD, not the agent workspace, so no consumer can verify
+    what it names. A relative PARAMS spelling is judged as it always was --
+    appended verbatim, beside the diff block's path -- for every write-plane
+    kind but the ones in :data:`PARAMS_ONLY_TARGET_KINDS`: an ``edit`` names
+    its file in the diff block too, and denying its params spelling would
+    refuse every ordinary relative edit on every backend; a ``delete`` (KAS's
+    ``delete_file``) carries no diff block, its one ``targetFile`` spelling IS
+    the target, and ``{"targetFile": "../config.json"}`` judged against the
+    gateway CWD is a verdict about a different file from the one the engine
+    deletes -- so for that kind a relative params path is withheld and sets
+    ``unanchored`` like a relative diff path. *tool_kind* is the ACP ``kind``
+    the consumer routed on (``""`` when unknown: an unknown kind is not a
+    delete, so the params are judged as an edit's). Both consumers keep their
+    HARD-DENY reading of either flag (an unverifiable target set is denied,
+    never trusted). The empty-union verdict also stays with the consumers --
+    an empty return here is the fact, the deny is theirs.
+    """
+    collected = target_paths(raw_params)
+    if collected.truncated:
+        # A truncated walk is already unverifiable and both consumers hard-deny
+        # on the flag before iterating; appending past it would also break the
+        # module contract that the work caps bound the returned set.
+        return collected
+    if tool_kind not in PARAMS_ONLY_TARGET_KINDS:
+        candidates = collected
+    else:
+        candidates = TargetPaths()
+        for path in collected:
+            if _is_anchored(path, require_drive=True):
+                candidates.append(path)
+            else:
+                # Withheld, not appended: the delete's only target spelling
+                # resolves against the process CWD, so any sensitivity verdict
+                # computed from it would be about the wrong file. The flag is
+                # the verdict-carrier; consumers deny on it.
+                candidates.unanchored = True
+    if isinstance(raw_params, Mapping) and "patchText" in raw_params:
+        patch = raw_params["patchText"]
+        if not isinstance(patch, str):
+            candidates.truncated = True
+            return candidates
+        _patch_targets(patch, candidates)
+        if candidates.truncated or candidates.unanchored:
+            return candidates
+    if diff_path:
+        if not _is_anchored(diff_path):
+            candidates.unanchored = True
+            return candidates
+        if diff_path not in candidates:
+            candidates.append(diff_path)
+    return candidates
+
+
+def _is_anchored(path: str, *, require_drive: bool = False, pathmod: ModuleType = os.path) -> bool:
+    """Whether *path* names a file independently of the process CWD: absolute
+    after ``~``/env expansion. The expansion mirrors what the sensitive-path
+    resolvers apply, so ``~/x`` is anchored and ``../x`` is not.
+
+    *require_drive* is set for a delete's params target, its whole target
+    spelling: on Windows a rooted path with no drive (``\\foo``) is relative to
+    the process's CURRENT drive, so the gateway and the engine can read it as two
+    different files, and it is not anchored there. ``pathmod`` is the path module
+    the check reads (``os.path`` in production; a test passes ``ntpath`` to pin
+    the Windows reading on any host).
+    """
+    expanded = pathmod.expanduser(pathmod.expandvars(path))
+    if not pathmod.isabs(expanded):
+        return False
+    if require_drive and pathmod is ntpath:
+        drive, _ = ntpath.splitdrive(expanded)
+        return bool(drive)
+    return True
+
+
+#: Argument names under which a NON-shell tool carries a document BODY: the
+#: text a file write creates, the two halves of a string replacement, the new
+#: text of an insert. A body is prose or source, never a command line or an
+#: address, so it is the one field shape the tool_input deny scan in
+#: ``llm_helpers._resolve_permission`` skips for a tool whose provenance the
+#: client established as non-shell (see ``command_shaped_strings``). Every
+#: spelling names a producer: the kiro-cli file tool's ``create`` /
+#: ``strReplace`` / ``insert`` arguments (``fileText`` / ``oldStr`` /
+#: ``newStr``, plus ``content`` and ``text`` -- the three content keys
+#: ``acp._dispatch._EDIT_CONTENT_KEYS`` reads a created file's body from), the
+#: ACP diff block (``oldText`` / ``newText``), and the Anthropic text-editor
+#: tool shape (``file_text`` / ``old_str`` / ``new_str``) the kiro-cli backend
+#: can present a file edit through. A tool whose frames carry no
+#: ``_meta.kiro.toolName`` (the claude-agent-acp backend) never reaches the
+#: exemption, so its field names are deliberately not listed. Additive only: a
+#: key NOT listed here is scanned.
+DOCUMENT_BODY_KEYS: frozenset[str] = frozenset(
+    {
+        "content",
+        "fileText",
+        "file_text",
+        "text",
+        "newStr",
+        "oldStr",
+        "new_str",
+        "old_str",
+        "newText",
+        "oldText",
+    }
+)
+
+
+#: Built-in tools whose job is to write a document, by the canonical tool name
+#: the client cached from the tool_call frame: the kiro-cli file tool under
+#: both of its names (``fs_write``, and ``write``). The claude-agent-acp
+#: Write / Edit family is not listed: its frames carry no
+#: ``_meta.kiro.toolName``, so the client never caches a name for them and a
+#: row here would match nothing. A tool's OPERATION word (``create``,
+#: ``strReplace``, ``insert`` under the kiro-cli tool's ``command`` argument,
+#: ``str_replace`` under the text-editor tool's) and the ACP semantic kind
+#: (``edit``) are not tool names and are not listed: a name here has to be one
+#: the client caches from ``_meta.kiro.toolName``, or the row matches nothing.
+#: Only a tool on this list has its :data:`DOCUMENT_BODY_KEYS` skipped by the
+#: deny scan. An MCP tool is never on it, whatever it names its fields: a
+#: server-side tool can execute the text it calls ``content``, so the client
+#: cannot know from the shape that the field is inert. Additive only; a name
+#: not listed here keeps the full scan.
+DOCUMENT_WRITING_TOOLS: frozenset[str] = frozenset(
+    {
+        "fs_write",
+        "write",
+    }
+)
+
+
+def is_document_writing_tool(tool_name: str | None, mcp_server_name: str | None) -> bool:
+    """True only for a BUILT-IN tool named in :data:`DOCUMENT_WRITING_TOOLS`.
+
+    *mcp_server_name* non-empty means the identity cache resolved an MCP
+    server for the call; such a tool is never a document writer here, even if
+    its name collides with a built-in's, because its fields execute server-side.
+    """
+    if mcp_server_name:
+        return False
+    return bool(tool_name) and tool_name in DOCUMENT_WRITING_TOOLS
+
+
+#: MCP tool arguments that carry a document BODY, keyed by the trusted
+#: ``(server, tool)`` identity the client cached from ``_meta.kiro``. A body
+#: here is text the tool STORES and never executes, so the tool_input deny scan
+#: in ``llm_helpers._resolve_permission`` reads it with the path tier and the
+#: size ceiling only, never with the command-text rules (the deny list and the
+#: argv floor). Every other argument of a listed tool, and every argument of an
+#: unlisted tool, keeps the full scan. This is the narrow counterpart of
+#: :data:`DOCUMENT_WRITING_TOOLS`, which no MCP tool may join: a server-side
+#: tool can execute whatever it calls ``content``, so a row is admitted only
+#: for a tool of Kiro Crew's own core server whose handler is known to keep
+#: the field as non-executable document text. ``knowledge_add_document``
+#: ingests ``content`` into the knowledge library as the document body.
+#: Additive only.
+MCP_DOCUMENT_BODY_FIELDS: Mapping[tuple[str, str], frozenset[str]] = MappingProxyType(
+    {
+        ("kirocrew-core", "knowledge_add_document"): frozenset({"content"}),
+    }
+)
+
+#: The separator transports put between a server name and a tool name in a
+#: qualified tool id: kiro-cli spells ``<server>___<tool>``, the canonical MCP
+#: prefix form is ``mcp__<server>__<tool>``.
+_MCP_QUALIFIER_SEPARATOR_RE = re.compile(r"_{2,}")
+
+
+def mcp_document_body_keys(tool_name: str | None, mcp_server_name: str | None) -> frozenset[str]:
+    """The :data:`MCP_DOCUMENT_BODY_FIELDS` keys for this call, else empty.
+
+    Both arguments MUST come from the client's trusted identity caches, never
+    the model-authored title; the caller also requires the identity-trusted
+    flag. The SERVER half is the guard: a third-party server that exposes a
+    tool of the same name resolves to a different ``mcp_server_name`` and gets
+    no exemption. A server-qualified *tool_name* resolves only when its
+    qualifier names that same server.
+    """
+    if not tool_name or not mcp_server_name:
+        return frozenset()
+    keys = MCP_DOCUMENT_BODY_FIELDS.get((mcp_server_name, tool_name))
+    if keys is not None:
+        return keys
+    parts = _MCP_QUALIFIER_SEPARATOR_RE.split(tool_name)
+    if len(parts) >= 2 and parts[-2] == mcp_server_name:
+        return MCP_DOCUMENT_BODY_FIELDS.get((mcp_server_name, parts[-1]), frozenset())
+    return frozenset()
+
+
+def split_document_bodies(raw_params: Mapping, body_keys: frozenset[str]) -> tuple[dict, list[str]]:
+    """Split *raw_params* into the non-body arguments and the body strings.
+
+    Only a TOP-LEVEL string under one of *body_keys* is a body; a mapping or a
+    list there, and every other argument, stays in the first half for the full
+    scan.
+    """
+    rest: dict = {}
+    bodies: list[str] = []
+    for key, value in raw_params.items():
+        if key in body_keys and isinstance(value, str):
+            if value:
+                bodies.append(value)
+        else:
+            rest[key] = value
+    return rest, bodies
+
+
+class ScanStrings(list):
+    """The strings a non-shell tool's params offer to the deny scan, plus
+    whether collection had to stop early.
+
+    Same contract as :class:`TargetPaths`: ``truncated`` is True when the walk
+    hit ``_TARGET_PATH_MAX_NODES``, so the list may be INCOMPLETE and a security
+    consumer must deny the call as unverifiable rather than scan the part it
+    has.
+    """
+
+    truncated: bool = False
+
+
+def command_shaped_strings(
+    raw_params: Mapping | None, body_keys: frozenset[str] = DOCUMENT_BODY_KEYS
+) -> ScanStrings:
+    """Every non-empty string in *raw_params* that could be a command or an
+    address -- everything EXCEPT a string sitting directly under one of
+    :data:`DOCUMENT_BODY_KEYS`.
+
+    This is the field-shape half of the tool_input deny scan's scoping. The
+    other half is provenance and belongs to the caller: only a tool the client
+    classified as non-shell from the tool_call frame, with params from that
+    same frame, may have its document bodies skipped; a shell tool keeps the
+    full scan over every string, because for it ``command`` IS what executes.
+    Within that scope the walk is a denylist, not an allowlist: a ``command``
+    subcommand word (``"create"``), every path spelling, a URL, a query, an
+    unknown key -- all still reach the scan, so the only strings that stop
+    being read as shell command lines are the ones the schema names as a body.
+    Only a STRING directly under a body key is skipped; a mapping or list under
+    one is still walked, so a path nested inside a structured ``content`` is
+    not hidden by the key above it. Bounded by ``_TARGET_PATH_MAX_NODES``, and
+    the cap fails CLOSED through ``truncated``. *body_keys* defaults to
+    :data:`DOCUMENT_BODY_KEYS`; an empty set skips nothing and collects every
+    string under the same cap.
+    """
+    found = ScanStrings()
+    if not isinstance(raw_params, Mapping):
+        return found
+    nodes = 0
+    stack: list[object] = [raw_params]
+    while stack:
+        if nodes >= _TARGET_PATH_MAX_NODES:
+            found.truncated = True
+            return found
+        node = stack.pop()
+        nodes += 1
+        if isinstance(node, str):
+            if node:
+                found.append(node)
+        elif isinstance(node, Mapping):
+            for key, value in reversed(list(node.items())):
+                if isinstance(value, str) and key in body_keys:
+                    continue
+                stack.append(value)
+        elif isinstance(node, (list, tuple)):
+            stack.extend(reversed(node))
+    return found
+
+
+def _collect_path_strings(value: object, found: TargetPaths, seen: set[str]) -> None:
+    """Collect *value* (or its items, for a sequence) as candidate paths.
+
+    Handles a string or an arbitrarily nested list/tuple of strings directly
+    under an accepted key, iteratively. Non-string leaves are ignored — the
+    generic walk in ``target_paths`` still descends into any mappings inside.
+    """
+    pending: list[object] = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, str):
+            if item.strip() and item not in seen:
+                if len(found) >= _TARGET_PATH_MAX_PATHS:
+                    found.truncated = True
+                    return
+                seen.add(item)
+                found.append(item)
+        elif isinstance(item, (list, tuple)):
+            pending.extend(reversed(item))

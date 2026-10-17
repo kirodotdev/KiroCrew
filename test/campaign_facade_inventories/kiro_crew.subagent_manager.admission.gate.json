@@ -1,0 +1,15 @@
+{
+ "base_public_names": [
+  "ClaimPoint",
+  "ManagerComponent",
+  "MemoryReadPoint",
+  "PreparedSpawn"
+ ],
+ "note": "gate.py keeps spawn_impl; _GateMixin binds its other members by name from gate_execution, gate_pressure and gate_reporting. It defines no public name of its own, so its surface is the four project names it imports.",
+ "rebound": {
+  "ClaimPoint": "kiro_crew.subagent_manager.admission.types",
+  "ManagerComponent": "kiro_crew.subagent_manager._component",
+  "MemoryReadPoint": "kiro_crew.subagent_manager.admission.types",
+  "PreparedSpawn": "kiro_crew.subagent_manager.admission.types"
+ }
+}

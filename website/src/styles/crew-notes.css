@@ -1,0 +1,90 @@
+/* Readability overrides for the crewmate Notes side-panel ONLY.
+ *
+ * Scoped to `.crew-notes`, a class carried solely by CrewNotesTab's body
+ * wrapper. MarkdownRenderer's heading/strong/list defaults are shared by ~30
+ * other surfaces (chat, PR panels, artifact previews) and must stay untouched,
+ * so nothing here reaches outside `.crew-notes`. Every colour is derived from
+ * the theme tokens (never a hardcoded hex) so all light/dark themes stay
+ * correct. Each `.crew-notes <el>` selector is specificity 0,1,1, which beats
+ * the single-class Tailwind utilities the renderer applies (0,1,0).
+ *
+ * The narrow (~400px) panel and a near-white-on-near-black body drove three
+ * problems this file addresses: bold headings dominate, body text glows and
+ * reads as bold, and the layout is dense with awkwardly wrapping long tokens.
+ */
+
+/* Body: soften toward muted so it stops glowing / reading as bold, and give
+ * long tokens (paths, hashes, branch names) somewhere to break. */
+.crew-notes {
+  color: color-mix(in srgb, var(--text) 82%, var(--muted));
+  line-height: 1.6;
+}
+.crew-notes p,
+.crew-notes li {
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+/* Headings: one step brighter than body for hierarchy, calmer weight, and
+ * h1 sized down for the narrow column. */
+.crew-notes h1,
+.crew-notes h2,
+.crew-notes h3,
+.crew-notes h4,
+.crew-notes h5,
+.crew-notes h6 {
+  color: var(--text);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.crew-notes h1 { font-size: 17px; }
+.crew-notes h2 { font-size: 15px; }
+.crew-notes h3 { font-size: 13.5px; }
+/* Keep the ladder going below h3: h4-h6 never render larger than h3, and step
+ * down in weight/colour so deep headings still read as subordinate. */
+.crew-notes h4,
+.crew-notes h5,
+.crew-notes h6 {
+  font-size: 13px;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--text) 88%, var(--muted));
+}
+
+/* Space above each section, less below, so a heading groups with its content
+ * instead of floating between blocks. The first block never gets a top gap. */
+.crew-notes h1 { margin: 24px 0 6px; }
+.crew-notes h2 { margin: 20px 0 6px; }
+.crew-notes h3 { margin: 14px 0 4px; }
+/* MarkdownRenderer wraps its output in a .group div, so blocks are grandchildren
+ * of .crew-notes; reset the first block's top margin with or without a wrapper. */
+.crew-notes > :first-child,
+.crew-notes > * > :first-child { margin-top: 0; }
+
+/* Strong: brighter than body like headings, so emphasis still reads. */
+.crew-notes strong {
+  color: var(--text);
+}
+
+/* Lists: shallower indent than the renderer's pl-8, a clear gap between
+ * top-level items, and a tighter, slightly-muted nested level. */
+.crew-notes ul,
+.crew-notes ol {
+  padding-left: 1.25rem;
+  margin: 8px 0;
+}
+/* Gap between top-level bullets only; :not(li ul/ol) excludes nested lists and
+ * is independent of MarkdownRenderer's .group wrapper the list sits under. */
+.crew-notes ul:not(li ul) > li + li,
+.crew-notes ol:not(li ol) > li + li {
+  margin-top: 7px;
+}
+.crew-notes li ul,
+.crew-notes li ol {
+  padding-left: 1rem;
+  margin: 4px 0;
+}
+.crew-notes li li {
+  font-size: 12.5px;
+  color: color-mix(in srgb, var(--text) 68%, var(--muted));
+}

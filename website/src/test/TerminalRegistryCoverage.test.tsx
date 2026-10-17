@@ -1,0 +1,1390 @@
+/**
+ * Behavioural coverage for the terminal session registry.
+ *
+ * `terminalRegistry` is module-scope state (the sockets, titles, cwds and
+ * persistent connection managers all live outside React so a terminal tab can
+ * unmount without dropping its PTY). The existing terminal specs mock this
+ * module wholesale, so almost nothing below the enabled-flag block was
+ * exercised. This file drives the real module: the registry/ready-listener
+ * handshake, the send helpers, the two `useSyncExternalStore` hooks, and the
+ * whole `connect` lifecycle (open/message/close/error, exponential backoff and
+ * the retry ceiling) through a WebSocket double.
+ *
+ * Harness note: because the state is module-scope and shared across tests,
+ * every test uses its own session id and `afterEach` disposes the ids it
+ * created — otherwise a leftover reconnect timer from one test would create a
+ * socket during the next one.
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { useState } from 'react'
+import { renderHook, act, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import type { Terminal } from '@xterm/xterm'
+import type { FitAddon } from '@xterm/addon-fit'
+import { TerminalHostContext, useTerminalCommand } from '../hooks/useTerminalCommand'
+import * as bottomTerminal from '../hooks/useBottomTerminal'
+import { RUN_IN_TERMINAL_READY_DEADLINE_MS } from '../utils/fenceShell'
+import ChatInput from '../components/ChatInput'
+import { expandAll, formatToken } from '../utils/pasteTokens'
+import { renderWithProviders } from './helpers'
+import { namedCeiling } from './namedCeiling'
+import {
+  setTerminalEnabledFlag,
+  isTerminalEnabled,
+  useTerminalEnabled,
+  useTerminalTitle,
+  getTerminalCwd,
+  getTerminalShell,
+  getTerminalFenceShells,
+  registerTerminalWs,
+  unregisterTerminalWs,
+  getTerminalWs,
+  getTerminalInputWs,
+  onTerminalReady,
+  sendToTerminalSession,
+  sendRawToTerminalSession,
+  ensureTerminalConnection,
+  disposeTerminalConnection,
+  useTerminalConnStatus,
+  useTerminalManualRetry,
+  useTerminalInvalidCwd,
+  retryTerminalConnection,
+} from '../utils/terminalRegistry'
+
+const WS_INSTANCES: MockWebSocket[] = []
+
+class MockWebSocket {
+  static CONNECTING = 0
+  static OPEN = 1
+  static CLOSING = 2
+  static CLOSED = 3
+  readyState: number = MockWebSocket.CONNECTING
+  binaryType = 'blob'
+  onopen: ((ev: Event) => void) | null = null
+  onmessage: ((ev: MessageEvent) => void) | null = null
+  onclose: ((ev: CloseEvent) => void) | null = null
+  onerror: ((ev: Event) => void) | null = null
+  send = vi.fn<(data: string | ArrayBufferLike | Uint8Array) => void>()
+  close = vi.fn(() => { this.readyState = MockWebSocket.CLOSED })
+
+  constructor(public url: string) { WS_INSTANCES.push(this) }
+
+  simulateOpen() {
+    this.readyState = MockWebSocket.OPEN
+    this.onopen?.(new Event('open'))
+  }
+
+  /** A real socket fires onclose AFTER transitioning; mirror that order. */
+  simulateClose() {
+    this.readyState = MockWebSocket.CLOSED
+    this.onclose?.(new CloseEvent('close'))
+  }
+
+  simulateError() { this.onerror?.(new Event('error')) }
+
+  simulateBinary(bytes: Uint8Array) {
+    const buf = new ArrayBuffer(bytes.length)
+    new Uint8Array(buf).set(bytes)
+    this.onmessage?.(new MessageEvent('message', { data: buf }))
+  }
+
+  simulateText(raw: string) {
+    this.onmessage?.(new MessageEvent('message', { data: raw }))
+  }
+
+  simulateJson(payload: unknown) { this.simulateText(JSON.stringify(payload)) }
+}
+
+/** Minimal xterm double: the registry only reads reset/write/cols/rows/element
+ *  and registers one onData + one onResize listener per connection. */
+class FakeTerm {
+  reset = vi.fn()
+  write = vi.fn<(data: Uint8Array) => void>()
+  cols = 80
+  rows = 24
+  element: { offsetParent: unknown } | undefined = undefined
+  dataCb: ((data: string) => void) | undefined
+  resizeCb: ((size: { cols: number; rows: number }) => void) | undefined
+  onData = (cb: (data: string) => void) => { this.dataCb = cb }
+  onResize = (cb: (size: { cols: number; rows: number }) => void) => { this.resizeCb = cb }
+
+  /** Pretend the tab is laid out, so the open handler takes the fit branch. */
+  layOut() { this.element = { offsetParent: {} } }
+  asTerminal() { return this as unknown as Terminal }
+}
+
+class FakeFit {
+  fit = vi.fn()
+  asFitAddon() { return this as unknown as FitAddon }
+}
+
+const decode = (ws: MockWebSocket, call = 0) => {
+  const arg = ws.send.mock.calls[call][0]
+  return typeof arg === 'string' ? arg : new TextDecoder().decode(arg as Uint8Array)
+}
+
+/** Sockets registered by hand (no Conn behind them) still need clearing. */
+const OWNED: string[] = []
+function session(name: string): string {
+  const id = `term-${name}`
+  OWNED.push(id)
+  return id
+}
+
+/** An open socket wired straight into the registry, no connection manager. */
+function openSocket(sessionId: string): MockWebSocket {
+  const ws = new MockWebSocket(`ws://localhost/api/ws/terminal/${sessionId}`)
+  ws.readyState = MockWebSocket.OPEN
+  registerTerminalWs(sessionId, ws as unknown as WebSocket)
+  return ws
+}
+
+/** The Lexical editor sits behind ChatInput's React.lazy boundary
+ *  (components/chat-input/engine.tsx). A cold import of that chunk on a
+ *  loaded shard outlasts waitFor's 1 s default, so the wait for the editor
+ *  gets a named ceiling. */
+const LAZY_COMPOSER_MOUNT = namedCeiling('LAZY_COMPOSER_MOUNT', 5000)
+
+describe('terminalRegistry', () => {
+  beforeEach(() => {
+    WS_INSTANCES.length = 0
+    OWNED.length = 0
+    vi.stubGlobal('WebSocket', MockWebSocket)
+    // Backoff adds up to 20% jitter; pin it so delays are exact.
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+  })
+
+  afterEach(() => {
+    for (const id of OWNED) {
+      disposeTerminalConnection(id)
+      unregisterTerminalWs(id)
+    }
+    setTerminalEnabledFlag(false)
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  describe('enabled flag', () => {
+    it('publishes the flag through the hook and stops on unmount', () => {
+      const { result, unmount, rerender } = renderHook(() => useTerminalEnabled())
+      expect(result.current).toBe(false)
+
+      act(() => { setTerminalEnabledFlag(true) })
+      rerender()
+      expect(result.current).toBe(true)
+      expect(isTerminalEnabled()).toBe(true)
+
+      unmount()
+      // No listener left to notify — the imperative read still reflects it.
+      act(() => { setTerminalEnabledFlag(false) })
+      expect(isTerminalEnabled()).toBe(false)
+    })
+  })
+
+  describe('socket registry', () => {
+    it('hands back only a socket that is actually open', () => {
+      const id = session('open-check')
+      const ws = openSocket(id)
+      expect(getTerminalWs(id)).toBe(ws as unknown as WebSocket)
+
+      ws.readyState = MockWebSocket.CLOSING
+      expect(getTerminalWs(id)).toBeNull()
+    })
+
+    it('returns null for a session that was never registered', () => {
+      expect(getTerminalWs(session('never'))).toBeNull()
+    })
+
+    it('forgets a session on unregister', () => {
+      const id = session('unregister')
+      openSocket(id)
+      unregisterTerminalWs(id)
+      expect(getTerminalWs(id)).toBeNull()
+    })
+  })
+
+  describe('getTerminalShell', () => {
+    it('records the shell the backend reports in its ready frame', () => {
+      const id = session('shell-report')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+
+      expect(getTerminalShell(id)).toBeUndefined()
+      act(() => { ws.simulateJson({ type: 'ready', shell: '/usr/bin/fish' }) })
+      expect(getTerminalShell(id)).toBe('/usr/bin/fish')
+    })
+
+    it('stays unknown when the ready frame reports no shell', () => {
+      const id = session('shell-absent')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+
+      act(() => { ws.simulateJson({ type: 'ready' }) })
+      expect(getTerminalShell(id)).toBeUndefined()
+    })
+
+    it('has the shell recorded before ready listeners run', () => {
+      const id = session('shell-order')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+
+      // Run-in-terminal reads the shell from inside its ready callback, so a
+      // shell recorded after the drain would arrive too late to be used.
+      let seenFromListener: string | undefined = 'listener did not run'
+      onTerminalReady(id, () => { seenFromListener = getTerminalShell(id) })
+      act(() => { ws.simulateJson({ type: 'ready', shell: '/usr/bin/zsh' }) })
+      expect(seenFromListener).toBe('/usr/bin/zsh')
+    })
+
+    it('records the fence-shell paths the backend resolved', () => {
+      const id = session('fence-shells')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+
+      expect(getTerminalFenceShells(id)).toEqual({})
+      act(() => {
+        ws.simulateJson({
+          type: 'ready',
+          shell: '/usr/bin/bash',
+          fence_shells: { bash: '/usr/bin/bash', fish: '/usr/bin/fish' },
+        })
+      })
+      expect(getTerminalFenceShells(id)).toEqual({
+        bash: '/usr/bin/bash',
+        fish: '/usr/bin/fish',
+      })
+    })
+
+    it('reports no fence shells when the ready frame carries none', () => {
+      const id = session('fence-shells-absent')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+
+      act(() => { ws.simulateJson({ type: 'ready', shell: '/usr/bin/bash' }) })
+      expect(getTerminalFenceShells(id)).toEqual({})
+    })
+  })
+
+  describe('onTerminalReady', () => {
+    it('runs the callback immediately when the socket is already open', () => {
+      const id = session('ready-now')
+      openSocket(id)
+      const cb = vi.fn()
+      const off = onTerminalReady(id, cb)
+      expect(cb).toHaveBeenCalledTimes(1)
+      // The unsubscribe for the already-fired case is a no-op, not a throw.
+      expect(() => off()).not.toThrow()
+    })
+
+    it('defers every waiter until the socket registers, then drains once', () => {
+      const id = session('ready-later')
+      const first = vi.fn()
+      const second = vi.fn()
+      onTerminalReady(id, first)
+      onTerminalReady(id, second)
+      expect(first).not.toHaveBeenCalled()
+
+      openSocket(id)
+      expect(first).toHaveBeenCalledTimes(1)
+      expect(second).toHaveBeenCalledTimes(1)
+
+      // The waiter set is dropped on drain, so a later socket does not re-fire.
+      openSocket(id)
+      expect(first).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not run a waiter that unsubscribed before the socket opened', () => {
+      const id = session('ready-cancel')
+      const cb = vi.fn()
+      onTerminalReady(id, cb)()
+      openSocket(id)
+      expect(cb).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('send helpers', () => {
+    it('sends a trimmed line with one trailing newline', () => {
+      const id = session('send-line')
+      const ws = openSocket(id)
+      expect(sendToTerminalSession(id, 'echo hi   \n\n')).toBe(true)
+      expect(decode(ws)).toBe('echo hi\n')
+    })
+
+    it.each([
+      'echo tail\\ ',
+      'echo first\necho second\necho tail\\ ',
+    ])('preserves trailing whitespace in the encoded command when requested: %j', code => {
+      const id = session('send-preserved')
+      const ws = openSocket(id)
+      expect(sendToTerminalSession(id, code, { preserveTrailingWhitespace: true })).toBe(true)
+      expect(ws.send).toHaveBeenCalledExactlyOnceWith(new TextEncoder().encode(code + '\n'))
+      expect(decode(ws)).toBe(code + '\n')
+    })
+
+    it.each([
+      'read -r name\n',
+      'read -r name\r',
+      'read -r name\r\n',
+      'echo tail \t\n\n',
+    ])('does not append input after an already terminated command: %j', code => {
+      const id = session('send-terminated')
+      const ws = openSocket(id)
+      expect(sendToTerminalSession(id, code, { preserveTrailingWhitespace: true })).toBe(true)
+      expect(ws.send).toHaveBeenCalledExactlyOnceWith(new TextEncoder().encode(code))
+      expect(decode(ws)).toBe(code)
+    })
+
+    it('sends raw data without appending a newline', () => {
+      const id = session('send-raw')
+      const ws = openSocket(id)
+      expect(sendRawToTerminalSession(id, '/tmp/pa')).toBe(true)
+      expect(decode(ws)).toBe('/tmp/pa')
+    })
+
+    it('reports failure when the session has no open socket', () => {
+      const id = session('send-closed')
+      expect(sendToTerminalSession(id, 'ls')).toBe(false)
+      expect(sendRawToTerminalSession(id, 'ls')).toBe(false)
+    })
+
+    it('reports failure when the socket throws on send', () => {
+      const id = session('send-throws')
+      const ws = openSocket(id)
+      ws.send.mockImplementation(() => { throw new Error('socket gone') })
+      expect(sendToTerminalSession(id, 'ls')).toBe(false)
+      expect(sendRawToTerminalSession(id, 'ls')).toBe(false)
+    })
+  })
+
+  /**
+   * The two input tiers, and the session state that separates them (#7657).
+   *
+   * A login profile that ASSIGNS `PROMPT_COMMAND` replaces the hook the `ready`
+   * frame rides on, so that frame never arrives: the socket is open, the shell
+   * is usable, and the execution barrier stays shut for the life of the session.
+   * Typing must keep working there -- `term.onData` already writes hand-typed
+   * keystrokes to the same socket -- while newline-terminated dispatch must not.
+   */
+  describe('input tiers on a session with no ready frame', () => {
+    /** Open socket, no `ready` frame: the clobbered-hook state. */
+    function openUnreadySession(sessionId: string): MockWebSocket {
+      ensureTerminalConnection(
+        sessionId, new FakeTerm().asTerminal(), new FakeFit().asFitAddon(),
+      )
+      const ws = WS_INSTANCES[WS_INSTANCES.length - 1]
+      ws.simulateOpen()
+      return ws
+    }
+
+    it('types an accepted completion into a session that never went ready', () => {
+      const id = session('unready-typing')
+      const ws = openUnreadySession(id)
+      // Precondition, or this proves nothing: the barrier is genuinely shut, so
+      // the session is in the clobbered state rather than simply ready.
+      expect(getTerminalWs(id)).toBeNull()
+
+      expect(getTerminalInputWs(id)).not.toBeNull()
+      expect(sendRawToTerminalSession(id, '/loc')).toBe(true)
+      expect(decode(ws)).toBe('/loc')
+    })
+
+    it.each([undefined, { preserveTrailingWhitespace: true }])('keeps newline-terminated dispatch waiting on that same session: %j', options => {
+      const id = session('unready-execution')
+      const ws = openUnreadySession(id)
+      const waiter = vi.fn()
+      onTerminalReady(id, waiter)
+
+      expect(sendToTerminalSession(id, 'ls', options)).toBe(false)
+      expect(waiter).not.toHaveBeenCalled()
+      expect(ws.send).not.toHaveBeenCalled()
+    })
+
+    it('refuses to type a payload that would submit a line', () => {
+      const id = session('no-submit')
+      const ws = openSocket(id)
+      // A directory entry may legally hold a newline (`touch $'evil\nrm -rf x'`).
+      // The typing tier is allowed to run before `ready` only because it cannot
+      // execute anything, so a newline or carriage return is refused here even
+      // on a ready session.
+      expect(sendRawToTerminalSession(id, 'evil\nrm -rf x')).toBe(false)
+      expect(sendRawToTerminalSession(id, 'evil\rrm -rf x')).toBe(false)
+      expect(sendRawToTerminalSession(id, '\n')).toBe(false)
+      expect(ws.send).not.toHaveBeenCalled()
+    })
+
+    it('does not type into a socket that has not finished dialing', () => {
+      const id = session('dialing')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[WS_INSTANCES.length - 1]
+
+      expect(ws.readyState).toBe(MockWebSocket.CONNECTING)
+      expect(getTerminalInputWs(id)).toBeNull()
+      expect(sendRawToTerminalSession(id, '/loc')).toBe(false)
+      expect(ws.send).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('useTerminalTitle', () => {
+    it('starts undefined and follows the backend title frames', () => {
+      const id = session('title')
+      const term = new FakeTerm()
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+
+      let renders = 0
+      const { result, rerender } = renderHook(() => {
+        renders += 1
+        return useTerminalTitle(id)
+      })
+      expect(result.current).toBeUndefined()
+
+      act(() => { ws.simulateJson({ type: 'title', text: 'npm run dev' }) })
+      rerender()
+      expect(result.current).toBe('npm run dev')
+
+      const afterFirst = renders
+      // Same title again: setSessionTitle short-circuits, so no notification.
+      act(() => { ws.simulateJson({ type: 'title', text: 'npm run dev' }) })
+      expect(renders).toBe(afterFirst)
+    })
+
+    it('ignores title frames without string text', () => {
+      const id = session('title-shape')
+      const term = new FakeTerm()
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+
+      const { result, rerender } = renderHook(() => useTerminalTitle(id))
+      act(() => { ws.simulateJson({ type: 'title', text: 42 }) })
+      rerender()
+      expect(result.current).toBeUndefined()
+    })
+
+    it('tracks separate sessions independently', () => {
+      const a = session('title-a')
+      const b = session('title-b')
+      ensureTerminalConnection(a, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      ensureTerminalConnection(b, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const [wsA, wsB] = WS_INSTANCES
+
+      const hookA = renderHook(() => useTerminalTitle(a))
+      const hookB = renderHook(() => useTerminalTitle(b))
+      act(() => {
+        wsA.simulateJson({ type: 'title', text: 'build' })
+        wsB.simulateJson({ type: 'title', text: 'tests' })
+      })
+      hookA.rerender()
+      hookB.rerender()
+      expect(hookA.result.current).toBe('build')
+      expect(hookB.result.current).toBe('tests')
+    })
+  })
+
+  describe('cwd frames', () => {
+    it('records the live cwd and ignores frames with a non-string path', () => {
+      const id = session('cwd')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+      expect(getTerminalCwd(id)).toBeUndefined()
+
+      ws.simulateJson({ type: 'cwd', path: '/home/builder/kiro-crew' })
+      expect(getTerminalCwd(id)).toBe('/home/builder/kiro-crew')
+
+      ws.simulateJson({ type: 'cwd', path: null })
+      expect(getTerminalCwd(id)).toBe('/home/builder/kiro-crew')
+    })
+  })
+
+  describe('connection lifecycle', () => {
+    it('dials the session endpoint and requests binary frames', () => {
+      const id = session('dial')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      expect(WS_INSTANCES).toHaveLength(1)
+      expect(WS_INSTANCES[0].url).toBe(`ws://localhost:6776/api/ws/terminal/${id}`)
+      expect(WS_INSTANCES[0].binaryType).toBe('arraybuffer')
+    })
+
+    it('passes an encoded spawn cwd as a query parameter', () => {
+      const id = session('dial-cwd')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon(), '/home/me/my repo')
+      expect(WS_INSTANCES[0].url).toContain('?cwd=%2Fhome%2Fme%2Fmy%20repo')
+    })
+
+    it('is idempotent — a second mount reuses the first socket', () => {
+      const id = session('idempotent')
+      const first = new FakeTerm()
+      const second = new FakeTerm()
+      ensureTerminalConnection(id, first.asTerminal(), new FakeFit().asFitAddon())
+      ensureTerminalConnection(id, second.asTerminal(), new FakeFit().asFitAddon())
+      expect(WS_INSTANCES).toHaveLength(1)
+      expect(second.dataCb).toBeUndefined()
+    })
+
+    it('waits for the shell-ready frame before releasing queued commands', () => {
+      const id = session('open')
+      const term = new FakeTerm()
+      const fit = new FakeFit()
+      const waiter = vi.fn()
+      onTerminalReady(id, waiter)
+      ensureTerminalConnection(id, term.asTerminal(), fit.asFitAddon())
+      const ws = WS_INSTANCES[0]
+
+      ws.simulateOpen()
+      expect(term.reset).toHaveBeenCalledTimes(1)
+      expect(getTerminalWs(id)).toBeNull()
+      expect(waiter).not.toHaveBeenCalled()
+
+      ws.simulateJson({ type: 'ready' })
+      expect(getTerminalWs(id)).toBe(ws as unknown as WebSocket)
+      expect(waiter).toHaveBeenCalledTimes(1)
+      // Hidden tab: fit() would measure 0x0, so no fit and no resize frame.
+      expect(fit.fit).not.toHaveBeenCalled()
+      expect(ws.send).not.toHaveBeenCalled()
+    })
+
+    it('fits and ships dimensions when the tab is laid out', () => {
+      const id = session('open-laid-out')
+      const term = new FakeTerm()
+      term.layOut()
+      term.cols = 120
+      term.rows = 40
+      const fit = new FakeFit()
+      ensureTerminalConnection(id, term.asTerminal(), fit.asFitAddon())
+      const ws = WS_INSTANCES[0]
+
+      ws.simulateOpen()
+      expect(fit.fit).toHaveBeenCalledTimes(1)
+      expect(JSON.parse(decode(ws))).toEqual({ type: 'resize', cols: 120, rows: 40 })
+    })
+
+    it('writes binary frames straight to the terminal', () => {
+      const id = session('binary')
+      const term = new FakeTerm()
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon())
+      const bytes = new TextEncoder().encode('hello from the PTY')
+
+      WS_INSTANCES[0].simulateBinary(bytes)
+      expect(term.write).toHaveBeenCalledTimes(1)
+      expect(new TextDecoder().decode(term.write.mock.calls[0][0])).toBe('hello from the PTY')
+    })
+
+    it('swallows a control frame that is not JSON', () => {
+      const id = session('bad-json')
+      const term = new FakeTerm()
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon())
+      expect(() => WS_INSTANCES[0].simulateText('not json at all')).not.toThrow()
+      expect(term.write).not.toHaveBeenCalled()
+    })
+
+    it('forwards keystrokes and resizes only while the socket is open', () => {
+      const id = session('io')
+      const term = new FakeTerm()
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+
+      // Still CONNECTING: both listeners must drop the payload.
+      term.dataCb?.('early')
+      term.resizeCb?.({ cols: 10, rows: 5 })
+      expect(ws.send).not.toHaveBeenCalled()
+
+      ws.simulateOpen()
+      term.dataCb?.('ls -al')
+      term.resizeCb?.({ cols: 100, rows: 30 })
+      expect(decode(ws, 0)).toBe('ls -al')
+      expect(JSON.parse(decode(ws, 1))).toEqual({ type: 'resize', cols: 100, rows: 30 })
+    })
+
+    it('closes the socket from the error handler without reconnecting itself', () => {
+      const id = session('error')
+      vi.useFakeTimers()
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+
+      ws.simulateError()
+      expect(ws.close).toHaveBeenCalledTimes(1)
+      // The error path only closes; the reconnect belongs to onclose.
+      vi.advanceTimersByTime(60_000)
+      expect(WS_INSTANCES).toHaveLength(1)
+    })
+  })
+
+  describe('reconnect backoff', () => {
+    it('unregisters and redials with a doubling delay', () => {
+      const id = session('backoff')
+      vi.useFakeTimers()
+      const term = new FakeTerm()
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon())
+
+      const ws1 = WS_INSTANCES[0]
+      ws1.simulateOpen()
+      ws1.simulateJson({ type: 'ready' })
+      expect(getTerminalWs(id)).not.toBeNull()
+
+      ws1.simulateClose()
+      expect(getTerminalWs(id)).toBeNull()
+      vi.advanceTimersByTime(999)
+      expect(WS_INSTANCES).toHaveLength(1)
+      vi.advanceTimersByTime(1)
+      expect(WS_INSTANCES).toHaveLength(2)
+
+      // Second drop without an intervening open: the delay doubles.
+      WS_INSTANCES[1].simulateClose()
+      vi.advanceTimersByTime(1999)
+      expect(WS_INSTANCES).toHaveLength(2)
+      vi.advanceTimersByTime(1)
+      expect(WS_INSTANCES).toHaveLength(3)
+    })
+
+    it('resets the delay after a successful reconnect', () => {
+      const id = session('backoff-reset')
+      vi.useFakeTimers()
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+
+      WS_INSTANCES[0].simulateClose()
+      vi.advanceTimersByTime(1000)
+      WS_INSTANCES[1].simulateOpen()   // retries back to 0
+      WS_INSTANCES[1].simulateClose()
+      vi.advanceTimersByTime(1000)
+      expect(WS_INSTANCES).toHaveLength(3)
+    })
+
+    it('stops redialling at the retry ceiling', () => {
+      const id = session('ceiling')
+      vi.useFakeTimers()
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+
+      // Ten drops with no successful open in between: the tenth schedules a
+      // redial that then refuses to dial, so the socket count stops at ten.
+      for (let close = 1; close <= 10; close += 1) {
+        const latest = WS_INSTANCES[WS_INSTANCES.length - 1]
+        if (latest.readyState !== MockWebSocket.CLOSED) latest.simulateClose()
+        vi.advanceTimersByTime(60_000)
+      }
+      expect(WS_INSTANCES).toHaveLength(10)
+    })
+  })
+
+  describe('invalid working directory', () => {
+    function openingSession(id: string): MockWebSocket {
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon(), '/missing/project')
+      const ws = WS_INSTANCES[WS_INSTANCES.length - 1]
+      ws.simulateOpen()
+      return ws
+    }
+
+    const failure = { type: 'error', code: 'terminal_invalid_cwd' }
+
+    it('reports failure immediately, settles waiters once, and ignores a late ready frame', () => {
+      const id = session('cwd-failure')
+      const ready = vi.fn()
+      const failed = vi.fn()
+      onTerminalReady(id, ready, failed)
+      const ws = openingSession(id)
+      const { result } = renderHook(() => ({
+        status: useTerminalConnStatus(id),
+        invalidCwd: useTerminalInvalidCwd(id),
+      }))
+
+      act(() => { ws.simulateJson(failure) })
+      expect(result.current).toEqual({ status: 'disconnected', invalidCwd: true })
+      expect(failed).toHaveBeenCalledExactlyOnceWith()
+      expect(ready).not.toHaveBeenCalled()
+      act(() => { ws.simulateJson(failure); ws.simulateJson({ type: 'ready' }) })
+      expect(failed).toHaveBeenCalledTimes(1)
+      expect(getTerminalWs(id)).toBeNull()
+      expect(sendToTerminalSession(id, 'echo stale')).toBe(false)
+    })
+
+    it('immediately reports an already-known failure to a later subscriber', () => {
+      const id = session('cwd-late-subscriber')
+      const ws = openingSession(id)
+      ws.simulateJson(failure)
+      const ready = vi.fn()
+      const failed = vi.fn()
+      const off = onTerminalReady(id, ready, failed)
+      expect(failed).toHaveBeenCalledExactlyOnceWith()
+      expect(ready).not.toHaveBeenCalled()
+      off()
+    })
+
+    it('unsubscribes from both outcomes and fails remaining waiters on disposal', () => {
+      const id = session('cwd-unsubscribed')
+      const ready = vi.fn()
+      const failed = vi.fn()
+      onTerminalReady(id, ready, failed)()
+      const ws = openingSession(id)
+      ws.simulateJson(failure)
+      expect(failed).not.toHaveBeenCalled()
+      disposeTerminalConnection(id)
+      const { result } = renderHook(() => useTerminalInvalidCwd(id))
+      expect(result.current).toBe(false)
+
+      onTerminalReady(id, ready, failed)
+      const next = openingSession(id)
+      disposeTerminalConnection(id)
+      expect(failed).toHaveBeenCalledExactlyOnceWith()
+      // An already-queued frame from a disposed socket has no waiter to settle.
+      next.simulateJson(failure)
+      expect(failed).toHaveBeenCalledTimes(1)
+      openSocket(id)
+      expect(ready).not.toHaveBeenCalled()
+    })
+
+    it('parks through backoff timers, online events, and visibility revival', () => {
+      const id = session('cwd-park')
+      vi.useFakeTimers()
+      const ws = openingSession(id)
+      ws.simulateJson(failure)
+      ws.simulateClose()
+      vi.advanceTimersByTime(600_000)
+      window.dispatchEvent(new Event('online'))
+      Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+      document.dispatchEvent(new Event('visibilitychange'))
+      vi.advanceTimersByTime(600_000)
+      expect(WS_INSTANCES).toHaveLength(1)
+      expect(vi.getTimerCount()).toBe(0)
+    })
+
+    it('allows explicit recovery in the same cwd without replaying failed commands', () => {
+      const id = session('cwd-recovery')
+      vi.useFakeTimers()
+      const stale = vi.fn()
+      const legacy = vi.fn()
+      const failed = vi.fn()
+      onTerminalReady(id, stale, failed)
+      onTerminalReady(id, legacy)
+      const ws = openingSession(id)
+      ws.simulateJson(failure)
+      ws.simulateClose()
+      const { result } = renderHook(() => useTerminalInvalidCwd(id))
+
+      act(() => { retryTerminalConnection(id) })
+      expect(result.current).toBe(false)
+      expect(WS_INSTANCES).toHaveLength(2)
+      const recovered = WS_INSTANCES[1]
+      expect(recovered.url).toBe(ws.url)
+      const fresh = vi.fn(() => sendToTerminalSession(id, 'echo fresh'))
+      onTerminalReady(id, fresh)
+      act(() => { recovered.simulateOpen(); recovered.simulateJson({ type: 'ready' }) })
+      expect(fresh).toHaveBeenCalledTimes(1)
+      expect(decode(recovered)).toBe('echo fresh\n')
+      expect(stale).not.toHaveBeenCalled()
+      expect(legacy).not.toHaveBeenCalled()
+      expect(failed).toHaveBeenCalledTimes(1)
+    })
+
+    it('coordinates an explicit retry with the rejected socket still closing', () => {
+      const id = session('cwd-closing-retry')
+      vi.useFakeTimers()
+      const ws = openingSession(id)
+      ws.simulateJson(failure)
+      ws.readyState = MockWebSocket.CLOSING
+      retryTerminalConnection(id)
+      expect(WS_INSTANCES).toHaveLength(1)
+      ws.simulateClose()
+      vi.advanceTimersByTime(1000)
+      expect(WS_INSTANCES).toHaveLength(2)
+      WS_INSTANCES[1].simulateOpen()
+      WS_INSTANCES[1].simulateJson({ type: 'ready' })
+      vi.advanceTimersByTime(600_000)
+      expect(WS_INSTANCES).toHaveLength(2)
+    })
+
+    it.each([false, true])('explicitly uses the starting directory without replay (closing=%s)', (closing) => {
+      const id = session('cwd-default-recovery')
+      vi.useFakeTimers()
+      const stale = vi.fn(() => sendToTerminalSession(id, 'echo old-project'))
+      onTerminalReady(id, stale)
+      const ws = openingSession(id)
+      ws.simulateJson(failure)
+      if (closing) ws.readyState = MockWebSocket.CLOSING
+      else ws.simulateClose()
+
+      retryTerminalConnection(id, true, '')
+      if (closing) {
+        expect(WS_INSTANCES).toHaveLength(1)
+        ws.simulateClose()
+        vi.advanceTimersByTime(1000)
+      }
+      expect(WS_INSTANCES).toHaveLength(2)
+      const recovered = WS_INSTANCES[1]
+      expect(new URL(recovered.url).search).toBe('')
+      recovered.simulateOpen()
+      recovered.simulateJson({ type: 'ready' })
+      expect(stale).not.toHaveBeenCalled()
+      expect(recovered.send).not.toHaveBeenCalled()
+      expect(sendToTerminalSession(id, 'pwd')).toBe(true)
+      expect(decode(recovered)).toBe('pwd\n')
+    })
+  })
+
+  describe('displacement by a newer window', () => {
+    // The server closes a displaced socket on purpose after one
+    // `{type:'error', code:'displaced'}` frame. Redialing would take the PTY
+    // straight back from the window that just claimed it, so the session parks.
+    it('parks as disconnected without a redial when the server reports displacement', () => {
+      const id = session('displaced-park')
+      vi.useFakeTimers()
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const { result } = renderHook(() => useTerminalConnStatus(id))
+      const ws = WS_INSTANCES[0]
+      act(() => { ws.simulateOpen(); ws.simulateJson({ type: 'ready' }) })
+      expect(result.current).toBe('connected')
+
+      act(() => {
+        ws.simulateJson({ type: 'error', code: 'displaced', message: 'Another connection owns this terminal session' })
+        ws.simulateClose()
+      })
+      expect(result.current).toBe('disconnected')
+      act(() => { vi.advanceTimersByTime(120_000) })
+      expect(WS_INSTANCES).toHaveLength(1)
+      expect(getTerminalWs(id)).toBeNull()
+    })
+
+    it('ignores online and visibility revives while displaced', () => {
+      const id = session('displaced-revive')
+      vi.useFakeTimers()
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+      ws.simulateOpen()
+      ws.simulateJson({ type: 'error', code: 'displaced' })
+      ws.simulateClose()
+
+      window.dispatchEvent(new Event('online'))
+      Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+      document.dispatchEvent(new Event('visibilitychange'))
+      vi.advanceTimersByTime(60_000)
+      expect(WS_INSTANCES).toHaveLength(1)
+    })
+
+    it('lets a manual Reconnect take the terminal back and clears the parked state', () => {
+      const id = session('displaced-manual')
+      vi.useFakeTimers()
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const { result } = renderHook(() => useTerminalConnStatus(id))
+      const ws = WS_INSTANCES[0]
+      act(() => {
+        ws.simulateOpen()
+        ws.simulateJson({ type: 'error', code: 'displaced' })
+        ws.simulateClose()
+      })
+      expect(result.current).toBe('disconnected')
+
+      act(() => { retryTerminalConnection(id) })
+      expect(WS_INSTANCES).toHaveLength(2)
+      act(() => { WS_INSTANCES[1].simulateOpen() })
+      expect(result.current).toBe('connected')
+
+      // An ordinary drop afterwards redials normally again: the parked state
+      // did not outlive the manual retry.
+      act(() => { WS_INSTANCES[1].simulateClose() })
+      expect(result.current).toBe('reconnecting')
+      act(() => { vi.advanceTimersByTime(1000) })
+      expect(WS_INSTANCES).toHaveLength(3)
+    })
+
+    it('reconnects after a generic startup error without sending the failed command', () => {
+      const id = session('displaced-other-error')
+      vi.useFakeTimers()
+      const failed = vi.fn()
+      const send = vi.fn(() => sendToTerminalSession(id, 'echo confirmed'))
+      const legacySend = vi.fn(() => sendToTerminalSession(id, 'echo legacy'))
+      onTerminalReady(id, send, failed)
+      onTerminalReady(id, legacySend)
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+      ws.simulateOpen()
+      ws.simulateJson({ type: 'error', message: 'Failed to start terminal' })
+      ws.simulateClose()
+      vi.advanceTimersByTime(1000)
+      expect(WS_INSTANCES).toHaveLength(2)
+      const recovered = WS_INSTANCES[1]
+      recovered.simulateOpen()
+      recovered.simulateJson({ type: 'ready' })
+      expect(failed).toHaveBeenCalledExactlyOnceWith()
+      expect(send).not.toHaveBeenCalled()
+      expect(legacySend).not.toHaveBeenCalled()
+      expect(recovered.send).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('disposeTerminalConnection', () => {
+    it('tears down the socket, the timer and every per-session record', () => {
+      const id = session('dispose')
+      vi.useFakeTimers()
+      const term = new FakeTerm()
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+      ws.simulateOpen()
+      ws.simulateJson({ type: 'title', text: 'vitest' })
+      ws.simulateJson({ type: 'cwd', path: '/srv/app' })
+
+      disposeTerminalConnection(id)
+      expect(ws.close).toHaveBeenCalledTimes(1)
+      expect(ws.onclose).toBeNull()
+      expect(getTerminalWs(id)).toBeNull()
+      expect(getTerminalCwd(id)).toBeUndefined()
+
+      const { result } = renderHook(() => useTerminalTitle(id))
+      expect(result.current).toBeUndefined()
+
+      // Nothing reconnects afterwards, and a second dispose is a no-op.
+      vi.advanceTimersByTime(60_000)
+      expect(WS_INSTANCES).toHaveLength(1)
+      expect(() => disposeTerminalConnection(id)).not.toThrow()
+      expect(ws.close).toHaveBeenCalledTimes(1)
+    })
+
+    it('cancels a pending reconnect timer', () => {
+      const id = session('dispose-pending')
+      vi.useFakeTimers()
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      WS_INSTANCES[0].simulateClose()
+
+      disposeTerminalConnection(id)
+      vi.advanceTimersByTime(60_000)
+      expect(WS_INSTANCES).toHaveLength(1)
+    })
+
+    it.each([false, true])('settles waiters on disposal with a connection already created: %s', connected => {
+      const id = session('dispose-waiters')
+      const waiter = vi.fn()
+      const failed = vi.fn()
+      const legacy = vi.fn()
+      const unsubscribed = vi.fn()
+      onTerminalReady(id, waiter, failed)
+      onTerminalReady(id, legacy)
+      onTerminalReady(id, unsubscribed, unsubscribed)()
+      if (connected) ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      disposeTerminalConnection(id)
+      expect(failed).toHaveBeenCalledExactlyOnceWith()
+      disposeTerminalConnection(id)
+      expect(failed).toHaveBeenCalledTimes(1)
+
+      // A later session reusing the id must not inherit any old waiter.
+      openSocket(id)
+      expect(waiter).not.toHaveBeenCalled()
+      expect(legacy).not.toHaveBeenCalled()
+      expect(unsubscribed).not.toHaveBeenCalled()
+    })
+
+    it('does not fail an already-delivered readiness subscription', () => {
+      const id = session('dispose-ready')
+      const ready = vi.fn()
+      const failed = vi.fn()
+      onTerminalReady(id, ready, failed)
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+      ws.simulateOpen()
+      ws.simulateJson({ type: 'ready' })
+      expect(ready).toHaveBeenCalledExactlyOnceWith()
+      disposeTerminalConnection(id)
+      expect(failed).not.toHaveBeenCalled()
+    })
+
+    it('cleans the old connection before notifying and preserves a reentrant fresh waiter', () => {
+      const id = session('dispose-reentrant')
+      const term = new FakeTerm()
+      const fit = new FakeFit()
+      const fresh = vi.fn()
+      const stale = vi.fn()
+      const failed = vi.fn(() => {
+        expect(getTerminalCwd(id)).toBeUndefined()
+        expect(getTerminalWs(id)).toBeNull()
+        expect(old.close).toHaveBeenCalledOnce()
+        ensureTerminalConnection(id, term.asTerminal(), fit.asFitAddon())
+        onTerminalReady(id, fresh)
+      })
+      onTerminalReady(id, stale, failed)
+      ensureTerminalConnection(id, term.asTerminal(), fit.asFitAddon())
+      const old = WS_INSTANCES[0]
+      old.simulateOpen()
+      old.simulateJson({ type: 'cwd', path: '/old/workspace' })
+      disposeTerminalConnection(id)
+      expect(failed).toHaveBeenCalledExactlyOnceWith()
+      expect(WS_INSTANCES).toHaveLength(2)
+      const next = WS_INSTANCES[1]
+      next.simulateOpen()
+      next.simulateJson({ type: 'ready' })
+      expect(fresh).toHaveBeenCalledExactlyOnceWith()
+      expect(stale).not.toHaveBeenCalled()
+    })
+
+    it.each(['disposal', 'startup error'] as const)('releases a composer handoff on %s without replaying it', failure => {
+      vi.useFakeTimers()
+      setTerminalEnabledFlag(true)
+      const id = session('composer-disposed')
+      const retryId = session('composer-retry')
+      vi.spyOn(bottomTerminal, 'addTab').mockReturnValueOnce(id).mockReturnValueOnce(retryId)
+      const { result, unmount } = renderHook(() => useTerminalCommand({
+        value: '! echo pending',
+        slotId: 'chat-1',
+        project: '/work/selected',
+        target: 'local',
+        hasAttachments: false,
+        expand: text => text,
+      }), {
+        wrapper: ({ children }) => <TerminalHostContext.Provider value="docked">{children}</TerminalHostContext.Provider>,
+      })
+      act(() => { result.current.run() })
+      act(() => { result.current.confirm() })
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon(), '/work/selected')
+      const ws = WS_INSTANCES[0]
+      ws.simulateOpen()
+      expect(result.current.pending).toBe(true)
+      expect(ws.send).not.toHaveBeenCalled()
+
+      act(() => {
+        if (failure === 'disposal') disposeTerminalConnection(id)
+        else ws.simulateJson({ type: 'error', message: 'Failed to start terminal' })
+      })
+      expect(result.current.pending).toBe(false)
+      expect(result.current.blocked).toBeNull()
+      expect(result.current.failure).toBe('failed')
+      ws.simulateJson({ type: 'ready' })
+      let later: MockWebSocket
+      if (failure === 'disposal') later = openSocket(id)
+      else {
+        act(() => { ws.simulateClose(); vi.advanceTimersByTime(1000) })
+        later = WS_INSTANCES[1]
+        act(() => { later.simulateOpen(); later.simulateJson({ type: 'ready' }) })
+      }
+      act(() => { vi.advanceTimersByTime(RUN_IN_TERMINAL_READY_DEADLINE_MS) })
+      expect(ws.send).not.toHaveBeenCalled()
+      expect(later.send).not.toHaveBeenCalled()
+
+      act(() => { result.current.run() })
+      expect(result.current.confirmation?.code).toBe('echo pending')
+      act(() => { result.current.confirm() })
+      ensureTerminalConnection(retryId, new FakeTerm().asTerminal(), new FakeFit().asFitAddon(), '/work/selected')
+      const retry = WS_INSTANCES[WS_INSTANCES.length - 1]
+      act(() => { retry.simulateOpen(); retry.simulateJson({ type: 'ready' }) })
+      expect(retry.send).toHaveBeenCalledOnce()
+      expect(decode(retry)).toBe('echo pending\n')
+      expect(result.current.pending).toBe(false)
+      expect(result.current.failure).toBeNull()
+      unmount()
+    })
+
+    it.each([false, true])('retains the command and paste when queued bytes are lost (Lexical: %s)', async lexicalComposer => {
+      setTerminalEnabledFlag(true)
+      const id = session(`composer-queued-${lexicalComposer}`)
+      vi.spyOn(bottomTerminal, 'addTab').mockReturnValue(id)
+      const onSend = vi.fn()
+      const block = {
+        id: 'queued-paste', seq: 1, lines: 3,
+        content: 'echo first\necho second\nprintf tail\\ ',
+      }
+      const original = `! ${formatToken(block)}`
+      let current = { value: original, blocks: [block] }
+      let disconnect = () => {}
+      function Composer() {
+        const [value, setValue] = useState(original)
+        const [blocks, setBlocks] = useState([block])
+        const [connected, setConnected] = useState(true)
+        current = { value, blocks }
+        disconnect = () => setConnected(false)
+        return <TerminalHostContext.Provider value="docked">
+          <ChatInput
+            value={value} onChange={setValue} pasteBlocks={blocks} onPasteBlocksChange={setBlocks}
+            terminalCommands="local" project="/work/selected" onSend={onSend}
+            lexicalComposer={lexicalComposer} connected={connected}
+          />
+        </TerminalHostContext.Provider>
+      }
+      renderWithProviders(<Composer />)
+      const input = await waitFor(() => {
+        const element = screen.getByLabelText('Message input')
+        if (lexicalComposer) expect(element).toHaveAttribute('contenteditable', 'true')
+        else expect(element.tagName).toBe('TEXTAREA')
+        return element
+      }, LAZY_COMPOSER_MOUNT)
+      fireEvent.click(screen.getByRole('button', { name: 'Review terminal command' }))
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /^Run(?: anyway)?$/ }))
+      // The socket accepts the bytes locally but delivers nothing to a shell.
+      let queued!: MockWebSocket
+      act(() => { queued = openSocket(id) })
+      expect(queued.send).toHaveBeenCalledOnce()
+      expect(decode(queued)).toBe(block.content + '\n')
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      expect(current.value).toBe(original)
+      expect(current.blocks).toEqual([block])
+      expect(expandAll(current.value, current.blocks)).toBe('! ' + block.content)
+      if (lexicalComposer) expect(within(input).getByTestId('paste-token-1')).toHaveTextContent('Paste #1 · 3 lines')
+      else expect(input).toHaveValue(original)
+
+      act(() => { queued.simulateClose(); unregisterTerminalWs(id); disconnect() })
+      let reconnected!: MockWebSocket
+      act(() => { reconnected = openSocket(id) })
+      expect(reconnected.send).not.toHaveBeenCalled()
+      expect(queued.send).toHaveBeenCalledOnce()
+      expect(current.value).toBe(original)
+      expect(current.blocks).toEqual([block])
+      expect(onSend).not.toHaveBeenCalled()
+      expect(bottomTerminal.addTab).toHaveBeenCalledOnce()
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
+
+    it('is a no-op for a session that never had a connection', () => {
+      expect(() => disposeTerminalConnection(session('dispose-unknown'))).not.toThrow()
+    })
+  })
+
+  describe('connection status', () => {
+    it('starts reconnecting, flips to connected on open, and publishes through the hook', () => {
+      const id = session('status-open')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+
+      const { result, rerender } = renderHook(() => useTerminalConnStatus(id))
+      expect(result.current).toBe('reconnecting')
+
+      act(() => { ws.simulateOpen() })
+      rerender()
+      expect(result.current).toBe('connected')
+    })
+
+    it('goes disconnected only after the retry ceiling, and reconnecting on each drop before it', () => {
+      const id = session('status-ceiling')
+      vi.useFakeTimers()
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      // Observe status through the public hook, not the (now module-internal)
+      // imperative getter.
+      const { result } = renderHook(() => useTerminalConnStatus(id))
+
+      // Each drop before the ceiling schedules a redial and stays reconnecting.
+      // After the tenth socket's close, its scheduled redial runs connect() with
+      // retries at the ceiling, which is what flips the status to disconnected.
+      for (let close = 1; close <= 10; close += 1) {
+        const latest = WS_INSTANCES[WS_INSTANCES.length - 1]
+        act(() => {
+          if (latest.readyState !== MockWebSocket.CLOSED) latest.simulateClose()
+        })
+        expect(result.current).toBe('reconnecting')
+        act(() => { vi.advanceTimersByTime(60_000) })
+      }
+      expect(result.current).toBe('disconnected')
+      expect(WS_INSTANCES).toHaveLength(10)
+    })
+
+    it('drops the status listener set on dispose', () => {
+      const id = session('status-dispose')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      disposeTerminalConnection(id)
+      const { result } = renderHook(() => useTerminalConnStatus(id))
+      expect(result.current).toBeUndefined()
+    })
+  })
+
+  describe('retryTerminalConnection', () => {
+    it('re-arms a dead socket at the retry ceiling and dials again', () => {
+      const id = session('retry-dead')
+      vi.useFakeTimers()
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const { result } = renderHook(() => useTerminalConnStatus(id))
+
+      // Drive the backoff chain to exhaustion: ten drops, each followed by its
+      // redial timer, ends with the ceiling reached and no socket left dialing.
+      for (let close = 1; close <= 10; close += 1) {
+        const latest = WS_INSTANCES[WS_INSTANCES.length - 1]
+        act(() => {
+          if (latest.readyState !== MockWebSocket.CLOSED) latest.simulateClose()
+          vi.advanceTimersByTime(60_000)
+        })
+      }
+      expect(WS_INSTANCES).toHaveLength(10)
+      expect(result.current).toBe('disconnected')
+
+      act(() => { retryTerminalConnection(id) })
+      expect(WS_INSTANCES).toHaveLength(11)
+      expect(result.current).toBe('reconnecting')
+    })
+
+    it('cancels a pending backoff timer and dials immediately', () => {
+      const id = session('retry-pending')
+      vi.useFakeTimers()
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      WS_INSTANCES[0].simulateClose() // schedules a backoff redial
+
+      retryTerminalConnection(id)
+      expect(WS_INSTANCES).toHaveLength(2)
+      // The cancelled timer must not fire a third dial later.
+      vi.advanceTimersByTime(60_000)
+      expect(WS_INSTANCES).toHaveLength(2)
+    })
+
+    it('is a no-op while the socket is OPEN or CONNECTING', () => {
+      const id = session('retry-live')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      // CONNECTING right after ensure.
+      retryTerminalConnection(id)
+      expect(WS_INSTANCES).toHaveLength(1)
+      WS_INSTANCES[0].simulateOpen()
+      retryTerminalConnection(id)
+      expect(WS_INSTANCES).toHaveLength(1)
+    })
+
+    it('defers to the imminent onclose while the socket is CLOSING', () => {
+      const id = session('retry-closing')
+      vi.useFakeTimers()
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const { result } = renderHook(() => useTerminalConnStatus(id))
+      // Exhaust the budget so onclose alone would give up, then put the
+      // socket in CLOSING: the revive must not dial alongside the pending
+      // onclose (two competing PTY attachments), but its budget reset must
+      // still let that onclose schedule the redial.
+      for (let close = 1; close <= 10; close += 1) {
+        const latest = WS_INSTANCES[WS_INSTANCES.length - 1]
+        act(() => {
+          if (latest.readyState !== MockWebSocket.CLOSED) latest.simulateClose()
+          vi.advanceTimersByTime(60_000)
+        })
+      }
+      expect(result.current).toBe('disconnected')
+      retryTerminalConnection(id) // dials socket #11
+      const latest = WS_INSTANCES[WS_INSTANCES.length - 1]
+      latest.readyState = MockWebSocket.CLOSING
+      const before = WS_INSTANCES.length
+
+      retryTerminalConnection(id)
+      // No competing dial while CLOSING.
+      expect(WS_INSTANCES).toHaveLength(before)
+
+      // The deferred close now fires; the reset budget redials on schedule.
+      latest.simulateClose()
+      vi.advanceTimersByTime(60_000)
+      expect(WS_INSTANCES.length).toBeGreaterThan(before)
+    })
+
+    it('is a no-op for a disposed or unmanaged session', () => {
+      const id = session('retry-none')
+      expect(() => retryTerminalConnection(id)).not.toThrow()
+      expect(WS_INSTANCES).toHaveLength(0)
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      disposeTerminalConnection(id)
+      retryTerminalConnection(id)
+      // Only the pre-dispose dial exists; nothing new after dispose.
+      expect(WS_INSTANCES).toHaveLength(1)
+    })
+  })
+
+  describe('manual retry state (useTerminalManualRetry)', () => {
+    it('marks a user-initiated retry, then clears it when the socket connects', () => {
+      const id = session('manual-connect')
+      vi.useFakeTimers()
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      // Exhaust to the ceiling so the session is genuinely disconnected.
+      for (let close = 1; close <= 10; close += 1) {
+        const latest = WS_INSTANCES[WS_INSTANCES.length - 1]
+        act(() => {
+          if (latest.readyState !== MockWebSocket.CLOSED) latest.simulateClose()
+          vi.advanceTimersByTime(60_000)
+        })
+      }
+      const { result } = renderHook(() => useTerminalManualRetry(id))
+      expect(result.current).toBe(false)
+
+      // User clicks Reconnect: the flag flips on while the dial is in flight.
+      act(() => { retryTerminalConnection(id) })
+      expect(result.current).toBe(true)
+
+      // A successful open resolves the attempt and clears the flag.
+      act(() => { WS_INSTANCES[WS_INSTANCES.length - 1].simulateOpen() })
+      expect(result.current).toBe(false)
+    })
+
+    it('clears the manual flag when the manual dial fails all the way to the ceiling', () => {
+      const id = session('manual-fail')
+      vi.useFakeTimers()
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      for (let close = 1; close <= 10; close += 1) {
+        const latest = WS_INSTANCES[WS_INSTANCES.length - 1]
+        act(() => {
+          if (latest.readyState !== MockWebSocket.CLOSED) latest.simulateClose()
+          vi.advanceTimersByTime(60_000)
+        })
+      }
+      const { result } = renderHook(() => useTerminalManualRetry(id))
+
+      act(() => { retryTerminalConnection(id) })
+      expect(result.current).toBe(true)
+
+      // The redialled socket never opens; the chain runs back to the ceiling
+      // and flips to disconnected, which clears the manual flag.
+      for (let close = 1; close <= 10; close += 1) {
+        const latest = WS_INSTANCES[WS_INSTANCES.length - 1]
+        act(() => {
+          if (latest.readyState !== MockWebSocket.CLOSED) latest.simulateClose()
+          vi.advanceTimersByTime(60_000)
+        })
+      }
+      expect(result.current).toBe(false)
+    })
+
+    it('does NOT mark an automatic revive as a manual retry', () => {
+      const id = session('manual-auto')
+      vi.useFakeTimers()
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      for (let close = 1; close <= 10; close += 1) {
+        const latest = WS_INSTANCES[WS_INSTANCES.length - 1]
+        act(() => {
+          if (latest.readyState !== MockWebSocket.CLOSED) latest.simulateClose()
+          vi.advanceTimersByTime(60_000)
+        })
+      }
+      const { result } = renderHook(() => useTerminalManualRetry(id))
+      expect(result.current).toBe(false)
+
+      // The 'online' revive redials but must stay bannerless (no manual flag).
+      act(() => { window.dispatchEvent(new Event('online')) })
+      expect(result.current).toBe(false)
+    })
+
+    it('is false for an unmanaged session', () => {
+      const { result } = renderHook(() => useTerminalManualRetry(session('manual-none')))
+      expect(result.current).toBe(false)
+    })
+  })
+
+  describe('revive listeners', () => {
+    it('redials a dead session when the tab regains network', () => {
+      const id = session('revive-online')
+      vi.useFakeTimers()
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      // Drive the backoff chain to exhaustion: ten drops, each followed by its
+      // redial timer, ends with the ceiling reached and no socket left dialing.
+      for (let close = 1; close <= 10; close += 1) {
+        const latest = WS_INSTANCES[WS_INSTANCES.length - 1]
+        if (latest.readyState !== MockWebSocket.CLOSED) latest.simulateClose()
+        vi.advanceTimersByTime(60_000)
+      }
+      expect(WS_INSTANCES).toHaveLength(10)
+
+      window.dispatchEvent(new Event('online'))
+      expect(WS_INSTANCES).toHaveLength(11)
+    })
+
+    it('redials when a backgrounded tab returns to the foreground', () => {
+      const id = session('revive-visible')
+      vi.useFakeTimers()
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      // Drive the backoff chain to exhaustion: ten drops, each followed by its
+      // redial timer, ends with the ceiling reached and no socket left dialing.
+      for (let close = 1; close <= 10; close += 1) {
+        const latest = WS_INSTANCES[WS_INSTANCES.length - 1]
+        if (latest.readyState !== MockWebSocket.CLOSED) latest.simulateClose()
+        vi.advanceTimersByTime(60_000)
+      }
+      expect(WS_INSTANCES).toHaveLength(10)
+
+      // Hidden → no revive; visible → revive.
+      Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+      document.dispatchEvent(new Event('visibilitychange'))
+      expect(WS_INSTANCES).toHaveLength(10)
+
+      Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+      document.dispatchEvent(new Event('visibilitychange'))
+      expect(WS_INSTANCES).toHaveLength(11)
+    })
+  })
+})

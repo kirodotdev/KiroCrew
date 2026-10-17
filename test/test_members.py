@@ -1,0 +1,706 @@
+"""Tests for the per-crew-member space (``$KIROCREW_HOME/members/<slug>/``).
+
+``KIROCREW_HOME`` is pinned to a per-test tmp dir by the autouse
+``_isolate_kirocrew_home`` fixture, so every path here resolves under tmp.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+
+import pytest
+
+from kiro_crew.crew_log.schema import KIND_MEMBER
+from kiro_crew.crew_log.store import crew_log_path
+from kiro_crew.members import (
+    ACTIVITY_FILE_NAME,
+    DM_SLOT_MODE,
+    MEMBER_NAME_MAX_CHARS,
+    MemberNameError,
+    MemberSlugError,
+    is_dispatchable_member_name,
+    is_readable_member_name,
+    member_dir,
+    member_pin_matches,
+    members_root,
+    read_activity,
+    record_activity,
+    slug_for_name,
+    validate_member_name,
+    validate_slug,
+)
+from kiro_crew.validation import (
+    _AGENT_NAME_RE,
+    TEMPLATE_NAME_RE,
+    WORKSPACE_NAME_RE,
+    normalize_unicode,
+)
+
+
+def _log_path(slug: str):
+    """Where a member's append-only log lives: inside the fenced ``crew-log`` tree.
+
+    Asked of the store rather than composed here. The directory under it is a
+    readable-plus-digest fold of the slug, so a hand-built path would be wrong,
+    and asking means these tests follow the layout instead of pinning a copy of it.
+    """
+    return crew_log_path(KIND_MEMBER, slug)
+
+
+class TestSlugForName:
+    def test_normalizes_spaces_and_case(self):
+        assert slug_for_name("Code Review") == "code-review"
+
+    def test_strips_accents_to_ascii(self):
+        assert slug_for_name("Café Crew") == "cafe-crew"
+
+    def test_collapses_punctuation_runs_to_single_hyphen(self):
+        assert slug_for_name("PR   triage!!! (fast)") == "pr-triage-fast"
+
+    def test_punctuation_only_name_falls_back_to_member(self):
+        # Not "artifact": the fallback noun must read as a member, since the
+        # shared slugify() belongs to the artifact store.
+        assert slug_for_name("!!!") == "member"
+
+    def test_non_ascii_name_still_falls_back_to_member(self):
+        # slugify() hash-falls-back for all-non-ASCII names; the member
+        # contract keeps the constant so data stored under "member" stays
+        # addressable.
+        assert slug_for_name("\u4f1a\u8bae\u7eaa\u8981") == "member"
+
+    def test_traversal_shaped_display_name_is_derived_not_interpreted(self):
+        slug = slug_for_name("../../etc/passwd")
+        assert slug == "etc-passwd"
+        assert member_dir(slug).parent == members_root().resolve()
+
+    def test_result_always_satisfies_the_slug_pattern(self):
+        for name in ("Code Review", "Café Crew", "!!!", "a" * 200, "-leading", "trailing-"):
+            validate_slug(slug_for_name(name))
+
+    def test_long_name_is_truncated_without_trailing_hyphen(self):
+        slug = slug_for_name("x" * 100)
+        assert len(slug) <= 80
+        assert not slug.endswith("-")
+
+
+class TestMemberName:
+    @pytest.mark.parametrize(
+        "name",
+        ["dr. eggbot", "Review & QA", "アシスタント", "family 👨\u200d👩\u200d👧"],
+    )
+    def test_accepts_bounded_display_text(self, name):
+        assert validate_member_name(name) == name
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "",
+            " leading",
+            "trailing ",
+            "line\nbreak",
+            "tab\tname",
+            "nul\x00name",
+            "hidden\u200bname",
+            "bidi\u202ename",
+            "line\u2028separator",
+            "bad\ud800text",
+            "x" * (MEMBER_NAME_MAX_CHARS + 1),
+            # URL path segments a browser normalizes away: unaddressable once created.
+            ".",
+            "..",
+            "...",
+        ],
+    )
+    def test_rejects_unsafe_or_unbounded_text(self, name):
+        with pytest.raises(MemberNameError):
+            validate_member_name(name)
+
+
+class TestMemberPinMatches:
+    @pytest.mark.parametrize(
+        ("mode", "current", "requested", "expected"),
+        [
+            (DM_SLOT_MODE, "dr. eggbot", "dr. eggbot", True),
+            (DM_SLOT_MODE, "AKIAIOSFODNN7EXAMPLE", "AKIAIOSFODNN7EXAMPLE", False),
+            (DM_SLOT_MODE, "crew password=shortvalue", "crew password=shortvalue", False),
+            (DM_SLOT_MODE, "dr. eggbot", "other", False),
+            ("", "dr. eggbot", "dr. eggbot", False),
+            (DM_SLOT_MODE, None, "dr. eggbot", False),
+            (DM_SLOT_MODE, "dr. eggbot", None, False),
+        ],
+    )
+    def test_accepts_only_the_exact_existing_member_pin(self, mode, current, requested, expected):
+        assert member_pin_matches(mode, current, requested) is expected
+
+    def test_nfd_pin_matches_only_the_exact_nfd_spelling(self):
+        nfd = "Cafe\u0301"
+        nfc = normalize_unicode(nfd)
+        assert nfd != nfc
+        assert member_pin_matches(DM_SLOT_MODE, nfd, nfd) is True
+        assert member_pin_matches(DM_SLOT_MODE, nfd, nfc) is False
+
+
+class TestDispatchableLegacyNfcName:
+    NFD = "Cafe\u0301"
+
+    def test_nfd_is_rejected_by_validation_but_dispatchable(self):
+        with pytest.raises(MemberNameError):
+            validate_member_name(self.NFD)
+        assert is_dispatchable_member_name(self.NFD) is True
+
+    @pytest.mark.parametrize(
+        "unsafe",
+        [
+            " Cafe\u0301",
+            "Cafe\u0301 ",
+            "Caf\u200be\u0301",
+            "Cafe\u0301\tQA",
+            "Cafe\u0301\nQA",
+            "e\u0301" * 251,
+        ],
+    )
+    def test_nfd_with_an_unsafe_addition_stays_non_dispatchable(self, unsafe):
+        assert is_dispatchable_member_name(unsafe) is False
+
+    def test_raw_only_redaction_makes_the_name_non_dispatchable(self, monkeypatch):
+        monkeypatch.setattr(
+            "kiro_crew.members.external_text_requires_redaction",
+            lambda text: text == self.NFD,
+        )
+        assert is_dispatchable_member_name(self.NFD) is False
+
+    def test_nfc_only_redaction_makes_the_name_non_dispatchable(self, monkeypatch):
+        nfc = normalize_unicode(self.NFD)
+        monkeypatch.setattr(
+            "kiro_crew.members.external_text_requires_redaction",
+            lambda text: text == nfc,
+        )
+        assert is_dispatchable_member_name(self.NFD) is False
+
+
+class TestReadableMemberName:
+    NFD = "Cafe\u0301"
+    CREDENTIAL_SHAPED = "".join(["AKIA", "IOSFODNN7", "EXAMPLE"])
+
+    def test_readable_member_accepts_a_safe_nfd_name(self):
+        assert is_readable_member_name(self.NFD) is True
+
+    def test_readable_member_accepts_a_credential_shaped_name_not_dispatchable(self):
+        assert is_dispatchable_member_name(self.CREDENTIAL_SHAPED) is False
+        assert is_readable_member_name(self.CREDENTIAL_SHAPED) is True
+
+    @pytest.mark.parametrize(
+        "malformed",
+        [
+            " Cafe\u0301",
+            "Cafe\u0301 ",
+            "Cafe\u0301\nQA",
+            "Cafe\u0301\tQA",
+            "Caf\u200be\u0301",
+            "e\u0301" * 251,
+            "bad\ud800surrogate",
+            b"bytes",
+            None,
+        ],
+    )
+    def test_readable_member_rejects_malformed_names(self, malformed):
+        assert is_readable_member_name(malformed) is False
+
+    @pytest.mark.parametrize("name", ["QA", "Cafe\u0301", "code-review"])
+    def test_every_dispatchable_name_is_a_readable_member_name(self, name):
+        assert is_dispatchable_member_name(name) is True
+        assert is_readable_member_name(name) is True
+
+
+class TestStrictIdentifierPatterns:
+    def test_workspace_names_share_the_agent_name_grammar(self):
+        assert WORKSPACE_NAME_RE is _AGENT_NAME_RE
+
+    def test_rejects_a_trailing_newline(self):
+        assert _AGENT_NAME_RE.match("valid-name") is not None
+        assert _AGENT_NAME_RE.match("valid-name\n") is None
+
+    def test_template_names_allow_dots_but_not_display_name_spaces(self):
+        assert TEMPLATE_NAME_RE.fullmatch("reviewer.v2") is not None
+        assert TEMPLATE_NAME_RE.fullmatch("dr. eggbot") is None
+
+
+class TestValidateSlug:
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "",
+            "Has-Upper",
+            "has space",
+            "has/slash",
+            "has.dot",
+            "..",
+            "-leading",
+            "trailing-",
+            "a" * 81,
+        ],
+    )
+    def test_rejects_unsafe_or_malformed(self, bad):
+        with pytest.raises(MemberSlugError):
+            validate_slug(bad)
+
+    @pytest.mark.parametrize("good", ["a", "1", "code-review", "a" * 80])
+    def test_accepts_well_formed(self, good):
+        assert validate_slug(good) == good
+
+    def test_rejects_non_string(self):
+        with pytest.raises(MemberSlugError):
+            validate_slug(None)  # type: ignore[arg-type]
+
+
+class TestMemberDir:
+    def test_resolves_under_members_root(self):
+        assert member_dir("code-review").parent == members_root().resolve()
+
+    def test_does_not_create_the_directory(self):
+        assert not member_dir("code-review").exists()
+
+    @pytest.mark.parametrize("attempt", ["../escape", "..", "a/../../b", "/etc"])
+    def test_refuses_traversal_shaped_names(self, attempt):
+        # The slug pattern is the primary defence; this asserts the boundary
+        # holds rather than trusting the caller to have validated first.
+        with pytest.raises(MemberSlugError):
+            member_dir(attempt)
+
+
+class TestRecordActivity:
+    def test_writes_a_pointer_entry(self):
+        assert record_activity(
+            "Code Review", "dashboard_chat-1", "persistent", project="/repo", via="chat"
+        )
+        rows = read_activity("code-review")
+        assert len(rows) == 1
+        assert rows[0]["session"] == "dashboard_chat-1"
+        assert rows[0]["project"] == "/repo"
+        assert rows[0]["via"] == "chat"
+        assert rows[0]["ts"].endswith("Z")
+
+    def test_entry_carries_the_exact_member_name(self):
+        # Slugification is lossy, so the directory alone cannot identify the
+        # member; attribution has to survive two names sharing one slug.
+        record_activity("Review_Agent", "s1", "persistent")
+        assert read_activity("review-agent")[0]["member"] == "Review_Agent"
+
+    def test_colliding_names_stay_attributable(self):
+        record_activity("Review_Agent", "s1", "persistent")
+        record_activity("review-agent", "s2", "persistent")
+        rows = read_activity("review-agent")
+        assert [(r["member"], r["session"]) for r in rows] == [
+            ("Review_Agent", "s1"),
+            ("review-agent", "s2"),
+        ]
+
+    def test_entry_carries_no_content_only_pointers(self):
+        record_activity(
+            "Code Review", "dashboard_chat-1", "persistent", project="/repo", via="chat"
+        )
+        assert set(read_activity("code-review")[0]) == {"ts", "member", "session", "project", "via"}
+
+    def test_appends_rather_than_overwrites(self):
+        record_activity("M", "s1", "persistent", via="chat")
+        record_activity("M", "s2", "persistent", via="chat")
+        assert [r["session"] for r in read_activity("m")] == ["s1", "s2"]
+
+    def test_creates_the_member_log_on_demand(self):
+        # The member's space is the per-member append-only log, kept as a
+        # ``member``-kind crew log: record_activity ensures it exists with a
+        # header line followed by one activity/record envelope.
+        record_activity("Brand New", "s1", "persistent")
+        log = _log_path("brand-new")
+        assert log.is_file()
+        lines = [ln for ln in log.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        assert len(lines) == 2  # header + one activity/record
+        header = json.loads(lines[0])
+        assert header["type"] == "member"
+        first = json.loads(lines[1])
+        assert first["type"] == "activity/record"
+        assert first["data"]["session"] == "s1"
+
+    def test_omits_empty_optional_fields(self):
+        record_activity("M", "s1", "persistent")
+        assert set(read_activity("m")[0]) == {"ts", "member", "session"}
+
+    @pytest.mark.parametrize("mode", ["incognito", "temporary", "INCOGNITO", " temporary "])
+    def test_no_trace_modes_write_nothing(self, mode):
+        assert record_activity("M", "s1", mode) is False
+        assert read_activity("m") == []
+
+    @pytest.mark.parametrize("mode", ["", "   ", "unknown", "Persistent-ish", "PERSISTENT_v2"])
+    def test_unrecognized_mode_fails_closed(self, mode):
+        # Allowlist, not denylist: a brand-new session whose metadata has not
+        # flushed yet reports an empty mode, and that must not be treated as
+        # traceable just because it is not spelled "incognito".
+        assert record_activity("M", "s1", mode) is False
+        assert read_activity("m") == []
+
+    def test_persistent_mode_still_writes(self):
+        assert record_activity("M", "s1", "persistent") is True
+
+    @pytest.mark.parametrize("mode", ["PERSISTENT", " persistent "])
+    def test_persistent_match_is_case_and_space_insensitive(self, mode):
+        assert record_activity("M", "s1", mode) is True
+
+    def test_dedupe_suppresses_a_repeat_session_pointer(self):
+        # The chat site's `is_new` tracks the PROVIDER session, so a dead
+        # provider cold-starting the same conversation would append twice and
+        # inflate the counts this log feeds.
+        assert record_activity("M", "s1", "persistent", via="chat", dedupe_session=True) is True
+        assert record_activity("M", "s1", "persistent", via="chat", dedupe_session=True) is False
+        assert len(read_activity("m")) == 1
+
+    def test_dedupe_still_allows_a_different_session(self):
+        record_activity("M", "s1", "persistent", dedupe_session=True)
+        assert record_activity("M", "s2", "persistent", dedupe_session=True) is True
+        assert [r["session"] for r in read_activity("m")] == ["s1", "s2"]
+
+    def test_dedupe_is_per_member_not_per_file(self):
+        # Colliding slugs share one file; dedupe must key on member AND session
+        # or one member's entry would suppress the other's.
+        record_activity("Review_Agent", "s1", "persistent", dedupe_session=True)
+        assert record_activity("review-agent", "s1", "persistent", dedupe_session=True) is True
+        assert len(read_activity("review-agent")) == 2
+
+    def test_routing_decisions_are_not_deduped(self):
+        # Each select_crew bind is a distinct event even within one session.
+        record_activity("M", "s1", "persistent", via="select_crew")
+        record_activity("M", "s1", "persistent", via="select_crew")
+        assert len(read_activity("m")) == 2
+
+    def test_routing_decision_uses_a_distinct_session_field(self):
+        # A decision is recorded in the session that MADE it (the parent); the
+        # member runs elsewhere. Filing it under `session` would let a consumer
+        # count a session the member never ran in.
+        record_activity("M", "parent-1", "persistent", via="select_crew")
+        row = read_activity("m")[0]
+        assert row["decided_in"] == "parent-1"
+        assert "session" not in row
+
+    def test_participation_and_decisions_are_countable_apart(self):
+        record_activity("M", "chat-1", "persistent", via="chat")
+        record_activity("M", "parent-1", "persistent", via="select_crew")
+        rows = read_activity("m")
+        assert [r["session"] for r in rows if "session" in r] == ["chat-1"]
+        assert [r["decided_in"] for r in rows if "decided_in" in r] == ["parent-1"]
+
+    def test_memory_mode_cannot_be_omitted(self):
+        # Required positionally so a caller cannot silently log a private
+        # session by forgetting an opt-in keyword.
+        with pytest.raises(TypeError):
+            record_activity("M", "s1")  # type: ignore[call-arg]
+
+    @pytest.mark.parametrize("member,session", [("", "s1"), ("M", ""), ("", "")])
+    def test_requires_both_member_and_session(self, member, session):
+        assert record_activity(member, session, "persistent") is False
+
+    def test_appends_are_fsynced(self, monkeypatch):
+        # Durability is now the contract: the append-only log fsyncs every
+        # committed record, so a crash cannot lose an activity the caller was
+        # told landed. The old best-effort activity.jsonl (no fsync) is gone.
+        calls = []
+        monkeypatch.setattr("os.fsync", lambda fd: calls.append(fd))
+        record_activity("M", "s1", "persistent")
+        assert calls, "record_activity must fsync at least once per record"
+
+    def test_reports_failure_instead_of_raising(self, monkeypatch):
+        # Total by contract: the call sites have no guard, and one of them
+        # (mcp_core) has no logger, so a raise here would surface as a tool error.
+        # Patched at the service lookup because that is the first thing on the
+        # write path now that the log's location comes from the store, not from
+        # member_dir -- a patch on the old path would pass without proving
+        # anything.
+        monkeypatch.setattr(
+            "kiro_crew.eventlog.service.get_service",
+            lambda: (_ for _ in ()).throw(OSError("boom")),
+        )
+        assert record_activity("M", "s1", "persistent") is False
+
+
+class TestReadActivity:
+    def test_missing_member_reads_empty(self):
+        assert read_activity("never-existed") == []
+
+    def test_invalid_slug_reads_empty_rather_than_raising(self):
+        assert read_activity("../escape") == []
+
+    def test_torn_fragment_does_not_swallow_the_next_record(self):
+        # A write interrupted before its newline leaves a fragment on the last
+        # line. The next record must not be glued onto it, or BOTH are lost.
+        record_activity("M", "s1", "persistent")
+        path = member_dir("m") / ACTIVITY_FILE_NAME
+        # The member directory holds only the LEGACY file now -- the log moved
+        # under the fenced crew-log tree -- so nothing has created it yet.
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write('{"ts":"x","session":"torn"')  # no newline: torn write
+        record_activity("M", "s2", "persistent")
+        assert [r["session"] for r in read_activity("m")] == ["s1", "s2"]
+
+    def test_skips_torn_lines_and_keeps_the_rest(self):
+        record_activity("M", "s1", "persistent")
+        path = member_dir("m") / ACTIVITY_FILE_NAME
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("\n{not valid json\n")
+        record_activity("M", "s2", "persistent")
+        assert [r["session"] for r in read_activity("m")] == ["s1", "s2"]
+
+    def test_skips_non_object_rows(self):
+        record_activity("M", "s1", "persistent")
+        path = member_dir("m") / ACTIVITY_FILE_NAME
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("\n" + json.dumps(["not", "a", "dict"]))
+        assert len(read_activity("m")) == 1
+
+    def test_limit_returns_the_most_recent(self):
+        for i in range(5):
+            record_activity("M", f"s{i}", "persistent")
+        assert [r["session"] for r in read_activity("m", limit=2)] == ["s3", "s4"]
+
+
+class TestNoRotationAppendOnly:
+    """The per-member log is append-only: never rotated, never truncated for
+    retention, so no record is ever dropped.
+
+    Replaces the former ``activity.jsonl`` byte-cap rotation suite: durability
+    now comes from one fsynced append per record into a single ``log.jsonl``
+    (header line + one envelope per event), and read_activity pages that one
+    log rather than spanning generations.
+    """
+
+    def test_many_records_stay_in_one_log(self):
+        n = 40
+        for i in range(n):
+            assert record_activity("M", f"s{i}", "persistent")
+        log = _log_path("m")
+        lines = [ln for ln in log.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        # Exactly the header + one line per record; nothing rotated aside.
+        assert len(lines) == n + 1
+        # Retention in this store is dropping whole segments off the front, and
+        # nothing rotates yet, so a second segment would mean the append-only
+        # claim had been broken.
+        assert [p.name for p in log.parent.glob("log.*.jsonl")] == []
+
+    def test_read_limit_returns_most_recent_oldest_first(self):
+        n = 10
+        for i in range(n):
+            assert record_activity("M", f"s{i}", "persistent")
+        got = read_activity("m", limit=3)
+        # The most recent k, oldest-first within that window.
+        assert [r["session"] for r in got] == ["s7", "s8", "s9"]
+
+    def test_no_records_are_dropped(self):
+        n = 25
+        for i in range(n):
+            assert record_activity("M", f"s{i}", "persistent")
+        assert [r["session"] for r in read_activity("m")] == [f"s{i}" for i in range(n)]
+
+    def test_dedupe_still_works_after_many_records(self):
+        assert record_activity("M", "dedup-me", "persistent", via="chat", dedupe_session=True)
+        for i in range(30):
+            assert record_activity("M", f"filler-{i}", "persistent")
+        # The original pair is still suppressed — the dedupe probe reads the
+        # one append-only log, so a burst of later records cannot re-inflate it.
+        assert (
+            record_activity("M", "dedup-me", "persistent", via="chat", dedupe_session=True) is False
+        )
+        assert len([r for r in read_activity("m") if r.get("session") == "dedup-me"]) == 1
+
+
+class TestLogCorruptionContract:
+    """The append-only log's damage contract, now that the log is a crew log.
+
+    A torn TRAILING line (partial write, no newline) is repaired by truncation on
+    load, and the next record_activity appends with a contiguous seq. A damaged
+    line INSIDE the committed region costs a reader that line and nothing else.
+    An unreadable HEADER is the fatal case -- without it nothing in the file is
+    attributable -- and it raises LogCorrupt in the log layer, which
+    record_activity reports as False and read_activity as [] rather than raising.
+
+    The service caches a loaded MemberLog per slug, so a file mutated behind
+    its back is only observed after the singleton is dropped — these tests
+    ``set_service(None)`` to force the next call to reload from disk, which is
+    exactly the cold-start / other-process path the damage contract exists
+    for (a live process never tears its own committed region).
+    """
+
+    @staticmethod
+    def _reset_service():
+        from kiro_crew.eventlog.service import set_service
+
+        set_service(None)
+
+    def test_torn_trailing_line_is_repaired_and_next_append_is_contiguous(self):
+        assert record_activity("M", "s1", "persistent")
+        log = _log_path("m")
+        # A write interrupted before its newline leaves a torn trailing line.
+        with open(log, "a", encoding="utf-8") as fh:
+            fh.write('{"type":"activity/record","seq":2,"time":123,"dat')
+        self._reset_service()
+        # The next record reloads, repairs (truncates) the torn tail, and
+        # appends with a contiguous seq — no gap, no lost record.
+        assert record_activity("M", "s2", "persistent")
+        rows = read_activity("m")
+        assert [r["session"] for r in rows] == ["s1", "s2"]
+        lines = [ln for ln in log.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        assert len(lines) == 3  # header + two committed records
+        # On disk the header is seq 0, so the two records are 1 and 2. The wire
+        # numbering this surface has always used starts the first EVENT at 0, and
+        # that translation is the log adapter's job, not the file's.
+        assert [json.loads(ln)["seq"] for ln in lines[1:]] == [1, 2]
+
+    def test_a_damaged_committed_line_costs_that_line_and_nothing_else(self):
+        """A damaged line inside the committed region is skipped, not fatal.
+
+        This changed with the move into the crew log store and the new answer is
+        the better one for a record whose purpose is to survive damage: refusing
+        the file turns one bad line into a member whose entire history is
+        unreadable, and the bad line is unrecoverable either way. So the reads
+        keep working and the next append still lands.
+        """
+        assert record_activity("M", "s1", "persistent")
+        log = _log_path("m")
+        with open(log, "a", encoding="utf-8") as fh:
+            fh.write("not valid json at all\n")  # committed damage
+        self._reset_service()
+
+        assert record_activity("M", "s2", "persistent")
+        assert [r["session"] for r in read_activity("m")] == ["s1", "s2"]
+
+    def test_an_unreadable_header_degrades_both_public_funcs(self):
+        """Without a header nothing in the file is attributable, so it IS fatal.
+
+        That is the difference from one damaged line, and it is the case the
+        ``LogCorrupt`` contract now covers: record_activity is documented
+        best-effort so it reports False, and read_activity degrades to [] rather
+        than raising through to the drawer and the counters.
+        """
+        assert record_activity("M", "s1", "persistent")
+        log = _log_path("m")
+        lines = log.read_text(encoding="utf-8").splitlines(keepends=True)
+        log.write_text("garbage header\n" + "".join(lines[1:]), encoding="utf-8")
+        self._reset_service()
+
+        assert record_activity("M", "s2", "persistent") is False
+        assert read_activity("m") == []
+
+    def test_corruption_contract_matches_the_service(self):
+        # Guard the claim against drift: the log layer really raises LogCorrupt
+        # for an unreadable header, and both public members funcs convert that
+        # into their non-raising contracts once the stale in-memory log is gone.
+        from kiro_crew.eventlog.log import LogCorrupt, MemberLog
+
+        assert record_activity("M", "s1", "persistent")
+        log = _log_path("m")
+        lines = log.read_text(encoding="utf-8").splitlines(keepends=True)
+        log.write_text("garbage header\n" + "".join(lines[1:]), encoding="utf-8")
+        with pytest.raises(LogCorrupt):
+            MemberLog("m").load()
+        self._reset_service()
+        assert record_activity("M", "s2", "persistent") is False
+        assert read_activity("m") == []
+
+
+class TestRefusedActivityIsReported:
+    """A refused append is REPORTED; an ordinary fault is not promoted to a report.
+
+    ``crew_log.lease`` takes write ownership non-blocking, so two processes
+    appending to one member at the same instant do not serialize -- the second is
+    refused with ``already_owned`` and writes nothing. That is a lost entry, and
+    the lease module states the caller's duty for it: report the loss rather than
+    retry it. Both halves are pinned here, because a handler that reported EVERY
+    failure would satisfy the first test while telling a reader nothing about
+    which case they have.
+    """
+
+    @staticmethod
+    def _reset_service():
+        from kiro_crew.eventlog.service import set_service
+
+        set_service(None)
+
+    def test_a_refused_append_is_reported_as_a_dropped_entry(self, caplog):
+        from kiro_crew.crew_log.lease import LEASE_FILE, acquire, release
+
+        assert record_activity("M", "s1", "persistent")
+        # ``sole`` ownership refuses every later acquire in THIS process with the
+        # same code a second process is given, so the refusal under test is
+        # reproduced without a second interpreter.
+        key = acquire(_log_path("m").parent / LEASE_FILE, kind=KIND_MEMBER, unit_id="m", sole=True)
+        try:
+            with caplog.at_level(logging.DEBUG, logger="kiro_crew.members"):
+                assert record_activity("M", "s2", "persistent", via="select_crew") is False
+        finally:
+            release(key)
+
+        reported = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert reported, "a dropped activity entry was not reported above debug"
+        assert "DROPPED" in reported[0]
+        assert "'s2'" in reported[0] and "select_crew" in reported[0]
+        # The report is about a real loss, not a spurious one.
+        self._reset_service()
+        assert [row.get("session") for row in read_activity("m")] == ["s1"]
+
+    def test_an_ordinary_failure_is_not_reported_as_a_dropped_entry(self, caplog, monkeypatch):
+        from kiro_crew.eventlog import service as service_module
+
+        class _Unusable:
+            def ensure(self, *args, **kwargs):
+                raise RuntimeError("unrelated fault")
+
+        monkeypatch.setattr(service_module, "get_service", lambda: _Unusable())
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.members"):
+            assert record_activity("M", "s1", "persistent") is False
+
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert [r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG]
+
+
+class TestNamelessWriterKeepsTheMemberIdentity:
+    """A writer with no name in hand must not rename the log it appends to.
+
+    ``eventlog_hooks.emit`` passes ``name or slug``, so a nameless writer reaches
+    ``ensure`` with the slug. The header is written once and is the authority on
+    who the log belongs to, so on an existing log the argument is only whatever
+    that writer held. Taking it would set the scoping owner to the slug, and the
+    member's own records -- stored under their real name -- would then be scoped
+    out of their own drawer.
+    """
+
+    @staticmethod
+    def _reset_service():
+        from kiro_crew.eventlog.service import set_service
+
+        set_service(None)
+
+    def test_a_nameless_emit_does_not_scope_a_member_out_of_their_own_activity(self):
+        from kiro_crew import eventlog_hooks
+        from kiro_crew.eventlog.service import get_service
+        from kiro_crew.eventlog.types import MEMBER_MESSAGE, PROJ_ACTIVITY
+
+        assert record_activity("Real Name", "s1", "persistent")
+        slug = slug_for_name("Real Name")
+        # A cold service must re-derive the owner, which is the state a fresh
+        # process is in and the only one where the argument could win.
+        self._reset_service()
+
+        eventlog_hooks.emit(slug, None, MEMBER_MESSAGE, {"text": "hi"})
+
+        assert get_service()._names[slug] == "Real Name"
+        activity = get_service().snapshot(slug)["values"][PROJ_ACTIVITY]
+        assert [row.get("session") for row in activity["recent"]] == ["s1"]
+
+    def test_a_fresh_log_still_takes_the_name_its_creator_resolved(self):
+        # CONTROL. Reading the header cannot become "the header always wins" in a
+        # way that empties creation: on a fresh log the header is written by this
+        # very call, so the resolved name has to survive the round trip.
+        from kiro_crew.eventlog.service import get_service
+
+        get_service().ensure(slug_for_name("Real Name"), "Real Name")
+        assert get_service()._names[slug_for_name("Real Name")] == "Real Name"

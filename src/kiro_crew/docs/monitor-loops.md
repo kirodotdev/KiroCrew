@@ -1,0 +1,122 @@
+# Monitor loops
+
+A monitor loop keeps one conversation checking something on a schedule — a pull
+request, a CI run, a ticket, a deployment — without you re-asking. Say "keep an
+eye on this PR and tell me when it is review-ready" and the session wakes itself
+on an interval, does the check, and only speaks up when there is something to
+say.
+
+The loop runs in **the same conversation**, not a new one. It carries the same
+context, the same tools, and the same history, so it does not have to be
+re-briefed each round. Each cycle appends a turn to that conversation.
+
+## Starting and stopping one
+
+Ask for it in words: "monitor", "keep checking", "babysit", "let me know when".
+The agent arms the loop with the check instructions and an exit condition, then
+ends its turn. You do not have to stay in the tab.
+
+To stop it, say so — or use the dashboard control below.
+
+## The 🎯 goal control
+
+The composer carries a goal button (a target icon). It shows whether a loop is
+active, which cycle it is on, and the countdown to the next wake. Open it to set
+a goal, change the seconds between wakes, adjust the cycle cap, or stop the loop
+yourself.
+
+## Timing
+
+The interval is the gap between wakes, and it is **deadline-preserving**: your
+own messages defer a wake that comes due until your turn finishes, but they do
+not restart the clock. A loop stays on schedule in a conversation you are
+actively using.
+
+A loop the agent arms caps at **24** cycles by default; the goal control's own
+field starts at `0`, so a loop you arm there is unlimited unless you set a
+number. Either way the cap is a runaway backstop, not a finish line —
+a loop that reaches its cap ran out of rope rather than completing. A cap of `0`
+is unlimited, which is worth asking for only when you genuinely want an
+unbounded loop.
+
+A separate runtime budget (awake time while the gateway runs; a restart counts
+the time since `created_ts` on the wall clock) can bound running time instead of
+cycles, which suits a loop whose turns are slow or whose interval is long. While
+the gateway keeps running, the time a host spends asleep counts toward the budget
+on Windows and not on Linux or macOS. A restart reads the time since the loop was
+armed (`created_ts`) from the wall clock instead, so a sleep that came before the
+restart counts in full on every platform. When the budget is spent the loop
+deactivates and tells you. No budget can exceed the operator ceiling
+`monitoring.max_runtime_secs` (default 7 days, maximum 30 days); raising it never
+extends a deadline already set.
+
+## The wake judge
+
+A loop can carry a **wake judge**: two plain sentences saying what is worth
+waking for and what is not. Before each cycle, what the watched targets produced
+since the last one — a watched session's new assistant lines, a watched pull
+request's state — is read and answered against those sentences. A cycle the
+judge calls quiet costs no turn; the session gets one short notice row instead.
+
+The agent sets it with `judge` on `monitor_start` or `monitor_update`
+(`wake_when`, `quiet_when`, and optional `targets`). `judge: false` turns the
+judge off for that loop. `monitor_update` with
+`judge: {"wake_when": "", "quiet_when": ""}` drops the loop's own criteria, so
+it goes back to the built-in brief described below; an empty `judge: {}` means
+the same, but some clients drop an empty object before it reaches the server.
+A loop armed with `gate=false` is never screened, because its job is to act
+while its subject is quiet.
+
+The judge never ends a loop and never silences one for good: after a run of
+quiet cycles one fires anyway, so a wrong answer costs a late turn, not a missed
+one. The goal popover shows the criteria (**Judge: wake when …**) and the last
+verdict.
+
+A gated loop that names no criteria of its own is screened under a built-in
+brief only once you grant the `nudge_evidence` scope on the Decisions card in
+Settings. That scope sends a watched session's transcript tail and a pull
+request's typed facts to the decision service, so it is off until you turn it
+on. With the scope off, such a loop runs as a plain timer.
+
+## One at a time
+
+A session holds one automation. Arming a new loop is refused while an active one
+exists, so a second request does not silently replace the first. A loop the
+system already stopped — an approval stall, a spent cap or budget, a finished
+subject, or a stand-down after repeated cycles that never got a model session
+(`session_start_failures`) — is replaced by the new one; a loop you paused or
+stopped yourself is preserved.
+
+Each stop is logged once at WARNING in `gateway.log` as an
+`AutoNudge: … stopped — reason=…` line naming the reason, the cycles run and the
+time it ran.
+
+Loops survive a gateway restart.
+
+## Watching a pull or merge request specifically
+
+For a supported pull or merge request there is a cheaper path than a general
+loop: a structured watch that probes the provider directly and wakes the session
+**only when a new revision needs action**. An unchanged, pending, retrying, or
+finished probe costs no agent turn at all. Ask to watch the change until it is
+review-ready and you get this instead of a turn every interval. See
+[Monitor a pull request](monitoring.md) for the provider and authentication
+matrix.
+
+You can ask what the current watch is doing, or stop it, at any time.
+
+## Where loops work
+
+Dashboard chat, Slack threads, Discord DMs, and Webex. A loop bound to one of
+those channels stays bound to it. Anywhere else — a cron job, a webhook session, a
+subagent — the arm is refused with a note to use a schedule instead.
+
+The structured pull-request watch above is narrower: it needs typed wake delivery,
+which exists for dashboard, Slack and Discord only. Ask for it from a Webex
+session and you get the general loop, not the cheap probe.
+
+## Related docs
+
+- [Subagents](subagents.md): parallel fan-out rather than repeated checks
+- [Cron and scheduling](cron-and-scheduling.md): a schedule that starts a *fresh* session each time
+- [Dashboard](dashboard.md): the composer and the side panel

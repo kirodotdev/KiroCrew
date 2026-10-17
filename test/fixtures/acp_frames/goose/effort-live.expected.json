@@ -1,0 +1,388 @@
+[
+  {
+    "agent_capabilities": {
+      "_meta": {
+        "goose": {
+          "recipeParameterScopes": {}
+        }
+      },
+      "auth": {},
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": false
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "delete": {},
+        "list": {}
+      }
+    },
+    "agent_version": "1.54.0",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "currentValue": "ollama",
+        "id": "provider",
+        "name": "Provider",
+        "options": [
+          {
+            "name": "Ollama",
+            "value": "ollama"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "mode",
+        "currentValue": "approve",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Automatically approve tool calls",
+            "name": "auto",
+            "value": "auto"
+          },
+          {
+            "description": "Ask before every tool call",
+            "name": "approve",
+            "value": "approve"
+          },
+          {
+            "description": "Ask only for sensitive tool calls",
+            "name": "smart_approve",
+            "value": "smart_approve"
+          },
+          {
+            "description": "Chat only, no tool calls",
+            "name": "chat",
+            "value": "chat"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "claude-sonnet-4",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "claude-sonnet-4",
+            "value": "claude-sonnet-4"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "off",
+        "description": "Controls reasoning effort for models that support extended thinking.",
+        "id": "thinking_effort",
+        "name": "Thinking effort",
+        "options": [
+          {
+            "name": "off",
+            "value": "off"
+          },
+          {
+            "name": "low",
+            "value": "low"
+          },
+          {
+            "name": "medium",
+            "value": "medium"
+          },
+          {
+            "name": "high",
+            "value": "high"
+          },
+          {
+            "name": "max",
+            "value": "max"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "approve",
+      "ids": [
+        "auto",
+        "approve",
+        "smart_approve",
+        "chat"
+      ]
+    },
+    "session_id": "goose-session-1"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "config_option_update"
+  },
+  {
+    "config_options": [
+      {
+        "currentValue": "ollama",
+        "id": "provider",
+        "name": "Provider",
+        "options": [
+          {
+            "name": "Ollama",
+            "value": "ollama"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "mode",
+        "currentValue": "approve",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Automatically approve tool calls",
+            "name": "auto",
+            "value": "auto"
+          },
+          {
+            "description": "Ask before every tool call",
+            "name": "approve",
+            "value": "approve"
+          },
+          {
+            "description": "Ask only for sensitive tool calls",
+            "name": "smart_approve",
+            "value": "smart_approve"
+          },
+          {
+            "description": "Chat only, no tool calls",
+            "name": "chat",
+            "value": "chat"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "claude-sonnet-4",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "claude-sonnet-4",
+            "value": "claude-sonnet-4"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "high",
+        "description": "Controls reasoning effort for models that support extended thinking.",
+        "id": "thinking_effort",
+        "name": "Thinking effort",
+        "options": [
+          {
+            "name": "off",
+            "value": "off"
+          },
+          {
+            "name": "low",
+            "value": "low"
+          },
+          {
+            "name": "medium",
+            "value": "medium"
+          },
+          {
+            "name": "high",
+            "value": "high"
+          },
+          {
+            "name": "max",
+            "value": "max"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 3
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "config_option_update"
+  },
+  {
+    "config_options": [
+      {
+        "currentValue": "ollama",
+        "id": "provider",
+        "name": "Provider",
+        "options": [
+          {
+            "name": "Ollama",
+            "value": "ollama"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "mode",
+        "currentValue": "approve",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Automatically approve tool calls",
+            "name": "auto",
+            "value": "auto"
+          },
+          {
+            "description": "Ask before every tool call",
+            "name": "approve",
+            "value": "approve"
+          },
+          {
+            "description": "Ask only for sensitive tool calls",
+            "name": "smart_approve",
+            "value": "smart_approve"
+          },
+          {
+            "description": "Chat only, no tool calls",
+            "name": "chat",
+            "value": "chat"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "llama3.2:3b",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "llama3.2:3b",
+            "value": "llama3.2:3b"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "off",
+        "description": "Controls reasoning effort for models that support extended thinking.",
+        "id": "thinking_effort",
+        "name": "Thinking effort",
+        "options": [
+          {
+            "name": "off",
+            "value": "off"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 5
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "config_option_update"
+  },
+  {
+    "config_options": [
+      {
+        "currentValue": "ollama",
+        "id": "provider",
+        "name": "Provider",
+        "options": [
+          {
+            "name": "Ollama",
+            "value": "ollama"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "mode",
+        "currentValue": "approve",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Automatically approve tool calls",
+            "name": "auto",
+            "value": "auto"
+          },
+          {
+            "description": "Ask before every tool call",
+            "name": "approve",
+            "value": "approve"
+          },
+          {
+            "description": "Ask only for sensitive tool calls",
+            "name": "smart_approve",
+            "value": "smart_approve"
+          },
+          {
+            "description": "Chat only, no tool calls",
+            "name": "chat",
+            "value": "chat"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "llama3.2:3b",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "llama3.2:3b",
+            "value": "llama3.2:3b"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "off",
+        "description": "Controls reasoning effort for models that support extended thinking.",
+        "id": "thinking_effort",
+        "name": "Thinking effort",
+        "options": [
+          {
+            "name": "off",
+            "value": "off"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 6
+  }
+]

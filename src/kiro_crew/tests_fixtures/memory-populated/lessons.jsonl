@@ -1,0 +1,3 @@
+{"rule": "Run the diff-scoped gate before asking for review, not the full suite.", "negative": "Do not run the whole suite for a two-file change.", "ts": "2026-01-16T00:00:00+00:00", "category": "tool", "repo_scope": null}
+{"rule": "Use the worktree's own venv for every test command.", "negative": "Do not use the system python; it lacks the dev group.", "ts": "2026-01-16T00:00:01+00:00", "category": "tool", "repo_scope": "src/kiro_crew"}
+{"rule": "Say what was verified and what was not.", "negative": null, "ts": "2026-01-16T00:00:02+00:00", "category": "preference", "repo_scope": null}

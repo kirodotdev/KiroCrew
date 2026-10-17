@@ -1,0 +1,345 @@
+"""The read-only seal re-asserts the target mount's LOCKED nosuid/nodev/noexec bits.
+
+Inside an unprivileged user namespace the kernel treats a mount's nosuid / nodev /
+noexec bits as locked (``MNT_LOCK_*``) and rejects with EPERM any remount whose
+flag set would clear them. The bind :func:`~kiro_crew.sandbox_launcher_program.seal_readonly`
+creates inherits those bits — locks included — from its source mount, so a remount
+carrying only ``MS_RDONLY`` is refused on hosts whose ``/tmp`` (or ``/home``) is mounted
+``nosuid,nodev``: the systemd ``tmp.mount`` default on Amazon Linux 2023, Fedora
+and RHEL. ``_mount_or_die`` fails closed, so a plain ``MS_RDONLY`` remount would
+abort every sandboxed spawn there. ``_locked_mount_flags`` reads the new bind's effective
+flags via ``statvfs`` and the sealing remount ORs them back in — re-asserting a
+bit already in force can only keep restrictions, never widen access.
+
+Three layers here, each driving the launcher program module itself
+(``kiro_crew.sandbox_launcher_program``, the program a sandboxed spawn runs):
+
+- unit: ``_locked_mount_flags``'s ``f_flag`` → ``MS_*`` mapping, ``statvfs`` patched;
+- integration: :func:`seal_readonly`'s remount receives the helper's bits OR'd in,
+  and the helper reads the target AFTER the bind step, recorded by a stand-in libc;
+- real kernel: NESTED namespaces. Flags are only locked on mounts a namespace
+  INHERITED, never on mounts it created itself — so an outer namespace mounts a
+  fresh tmpfs ``nosuid,nodev`` (inside the outer namespace, so the test does not
+  depend on the host's ``/tmp`` options), and an inner nested namespace, for
+  which that tmpfs is inherited and therefore locked, runs :func:`seal_readonly` with
+  the real libc. A control first proves the lock is real: a remount carrying
+  ``MS_RDONLY`` alone must be refused with EPERM, then the seal must succeed and a
+  write must be refused with EROFS. Skips — never fails — where user namespaces,
+  ``unshare``, tmpfs mounting, or the flag locking itself are unavailable.
+
+Everything is Linux-only: ``os.ST_NODEV`` / ``os.ST_NOEXEC`` are Linux-only
+constants (macOS defines only ``ST_RDONLY`` / ``ST_NOSUID``), and the control
+under test is the Linux namespace launcher.
+"""
+
+from __future__ import annotations
+
+import errno
+import json
+import os
+import shutil
+import subprocess
+import sys
+import textwrap
+from types import SimpleNamespace
+
+import pytest
+from test_sandbox_launcher_program import RecordingLibc, launch, payload
+
+from kiro_crew import sandbox_launcher_program as program
+
+_LINUX_ONLY = pytest.mark.skipif(sys.platform != "linux", reason="Linux namespace launcher only")
+
+#: The kernel's ``MS_*`` values, stated here independently of the launcher's own
+#: constants so an assertion on a flag set checks the ABI value, not a mirror of it.
+_MS_RDONLY = 1
+_MS_NOSUID = 2
+_MS_NODEV = 4
+_MS_NOEXEC = 8
+_MS_REMOUNT = 32
+_MS_BIND = 4096
+
+
+@_LINUX_ONLY
+class TestLockedMountFlagsHelper:
+    def test_nosuid_and_nodev_are_mapped_to_their_ms_flags(self, monkeypatch):
+        monkeypatch.setattr(
+            os, "statvfs", lambda _t: SimpleNamespace(f_flag=os.ST_NOSUID | os.ST_NODEV)
+        )
+
+        assert program._locked_mount_flags(b"/anywhere") == _MS_NOSUID | _MS_NODEV
+
+    def test_all_three_lockable_bits_are_mapped(self, monkeypatch):
+        monkeypatch.setattr(
+            os,
+            "statvfs",
+            lambda _t: SimpleNamespace(f_flag=os.ST_NOSUID | os.ST_NODEV | os.ST_NOEXEC),
+        )
+
+        assert program._locked_mount_flags(b"/anywhere") == _MS_NOSUID | _MS_NODEV | _MS_NOEXEC
+
+    def test_a_plain_flag_set_yields_zero_extra_flags(self, monkeypatch):
+        """No locked bit means the remount behaves exactly as it would without the helper."""
+        monkeypatch.setattr(os, "statvfs", lambda _t: SimpleNamespace(f_flag=0))
+
+        assert program._locked_mount_flags(b"/anywhere") == 0
+
+    def test_statvfs_failure_falls_back_to_zero_never_degrading_the_seal(self, monkeypatch):
+        """The fallback is 0 EXTRA flags — the remount itself still fails closed.
+
+        A helper that raised here would turn a transient stat failure into a
+        refused spawn even on hosts where the plain remount would have succeeded;
+        a helper that silently skipped the remount would degrade the seal. Zero
+        extra flags does neither.
+        """
+
+        def _boom(_t):
+            raise OSError(errno.EACCES, "statvfs refused")
+
+        monkeypatch.setattr(os, "statvfs", _boom)
+
+        assert program._locked_mount_flags(b"/anywhere") == 0
+
+    def test_a_host_without_the_st_constants_maps_to_zero_not_a_crash(self, monkeypatch):
+        """macOS defines only ``ST_RDONLY``/``ST_NOSUID``, and the launcher program is
+        imported on every host, so a missing constant must read as 0, never raise
+        ``AttributeError``."""
+        monkeypatch.setattr(os, "statvfs", lambda _t: SimpleNamespace(f_flag=0xFFFF))
+        monkeypatch.delattr(os, "ST_NODEV", raising=False)
+        monkeypatch.delattr(os, "ST_NOEXEC", raising=False)
+
+        assert program._locked_mount_flags(b"/anywhere") == _MS_NOSUID
+
+
+class _OrderedLibc(RecordingLibc):
+    """A libc that logs each mount, by the object its target reaches, into *events*."""
+
+    def __init__(self, events: list[tuple]) -> None:
+        super().__init__()
+        self.events = events
+
+    def bound(self, source, target, fstype, flags):  # noqa: ANN001, ANN201
+        assert source == target, "a ceiling is bound over ITSELF"
+        self.events.append(("mount", os.stat(target).st_ino, flags))
+        return 0
+
+
+@_LINUX_ONLY
+class TestSealRemountCarriesTheLockedBits:
+    def test_remount_flags_include_the_helper_result_read_after_the_bind(
+        self, tmp_path, monkeypatch
+    ):
+        """The seal ORs the helper's bits into the remount, post-bind.
+
+        Order is asserted, not just the flags: the helper must read the target
+        AFTER the ``MS_BIND`` step, because that is when ``f_flag`` reflects the
+        new bind — the mount whose locks the kernel will enforce on the remount.
+
+        Each event names the inode its target REACHES, resolved while the stage's
+        descriptor is open: the stage hands ``mount`` and ``statvfs`` a descriptor
+        path pinning the object it classified, so the spelling is a live fd number
+        and says nothing on its own. What the assertion needs is the OBJECT, which is
+        what both the bind and the sealing remount must reach.
+        """
+        target = tmp_path / "sealed"
+        target.mkdir()
+        sealed_ino = target.stat().st_ino
+        events: list[tuple] = []
+
+        def _fake_statvfs(target_):
+            events.append(("statvfs", os.stat(target_).st_ino))
+            return SimpleNamespace(f_flag=os.ST_NOSUID | os.ST_NODEV)
+
+        run = launch(tmp_path, payload(readonly_dirs=[str(target)]), libc=_OrderedLibc(events))
+        monkeypatch.setattr(os, "statvfs", _fake_statvfs)
+        program.seal_readonly(run)
+
+        assert events == [
+            ("mount", sealed_ino, _MS_BIND),
+            ("statvfs", sealed_ino),
+            (
+                "mount",
+                sealed_ino,
+                _MS_REMOUNT | _MS_BIND | _MS_RDONLY | _MS_NOSUID | _MS_NODEV,
+            ),
+        ]
+
+
+#: The test's OWN mounts -- the outer tmpfs and the inner control -- go through this
+#: libc. The seal under test does not: the inner stage runs the launcher program's
+#: :func:`seal_readonly` through the program's own ``_load_libc``.
+_SHARED_PREAMBLE = textwrap.dedent("""\
+    import ctypes
+    import errno
+    import os
+    import sys
+
+    _MS_RDONLY = 1
+    _MS_NOSUID = 2
+    _MS_NODEV = 4
+    _MS_REMOUNT = 32
+    _MS_BIND = 4096
+
+    _libc = ctypes.CDLL(None, use_errno=True)
+    _libc.mount.argtypes = [
+        ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p,
+        ctypes.c_ulong, ctypes.c_void_p,
+    ]
+    _libc.mount.restype = ctypes.c_int
+    """)
+
+
+def _outer_script() -> str:
+    """Stage 1, run under ``unshare -Urm --propagation private``.
+
+    Mounts a fresh tmpfs ``nosuid,nodev`` — a mount THIS namespace created, so
+    its flags are NOT locked here — then re-execs into a nested user+mount
+    namespace, for which that tmpfs is an INHERITED mount and the kernel locks
+    its nosuid/nodev bits. Exit 42 = cannot mount tmpfs; 43 = cannot nest
+    namespaces; otherwise propagates the inner stage's exit code.
+    """
+    driver = textwrap.dedent("""\
+        import subprocess
+
+        mnt = sys.argv[1].encode()
+        inner = sys.argv[2]
+        unshare = sys.argv[3]
+        if _libc.mount(b"tmpfs", mnt, b"tmpfs", _MS_NOSUID | _MS_NODEV, None) != 0:
+            sys.stderr.write("tmpfs mount failed: errno %d\\n" % ctypes.get_errno())
+            sys.exit(42)
+        os.mkdir(os.path.join(mnt, b"sealed"))
+        os.mkdir(os.path.join(mnt, b"control"))
+        nested = ["%s" % unshare, "-Urm", "--propagation", "private"]
+        probe = subprocess.run(nested + ["true"], capture_output=True)
+        if probe.returncode != 0:
+            sys.stderr.write("nested namespace unavailable: %s\\n"
+                             % probe.stderr.decode(errors="replace"))
+            sys.exit(43)
+        rc = subprocess.call(nested + [sys.executable, inner, sys.argv[1]] + sys.argv[4:])
+        sys.exit(rc)
+        """)
+    return _SHARED_PREAMBLE + "\n" + driver
+
+
+def _inner_script() -> str:
+    """Stage 2, the nested namespace: control, then the launcher program's seal.
+
+    The seal is :func:`~kiro_crew.sandbox_launcher_program.seal_readonly` itself: the
+    program file is loaded by path (``argv[2]``, the module this test process
+    imported) and driven with its own libc and the plan in ``argv[3]``, so the code
+    under test is the code that ships.
+
+    The control comes first and is what gives the test its power: bind the
+    control dir over itself, then attempt a remount carrying ``MS_RDONLY`` alone. On
+    a locked mount the kernel must refuse it with EPERM — the exact locked-flag
+    failure. If it succeeds the environment does not lock flags and the test skips
+    (44) rather than passing vacuously. Only then does the seal run against the
+    sealed dir; it must land and a write must be refused with EROFS.
+    """
+    body = textwrap.dedent("""\
+        import importlib.util
+        import json
+
+        mnt = sys.argv[1].encode()
+        control = os.path.join(mnt, b"control")
+        if _libc.mount(control, control, None, _MS_BIND, None) != 0:
+            sys.stderr.write("control bind failed: errno %d\\n" % ctypes.get_errno())
+            sys.exit(45)
+        if _libc.mount(control, control, None,
+                       _MS_REMOUNT | _MS_BIND | _MS_RDONLY, None) == 0:
+            sys.stderr.write("control remount succeeded; flags are not locked here\\n")
+            sys.exit(44)
+        _control_errno = ctypes.get_errno()
+        if _control_errno != errno.EPERM:
+            sys.stderr.write("control remount failed with errno %d, not EPERM\\n"
+                             % _control_errno)
+            sys.exit(46)
+
+        spec = importlib.util.spec_from_file_location("launcher_program", sys.argv[2])
+        program = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(program)
+        with open(sys.argv[3], encoding="utf-8") as fh:
+            plan = json.load(fh)
+        program.seal_readonly(program.Launch(plan, program._load_libc(), environ={}))
+
+        sealed = os.path.join(mnt, b"sealed")
+        try:
+            with open(os.path.join(sealed, b"probe"), "wb") as fh:
+                fh.write(b"x")
+        except OSError as exc:
+            if exc.errno == errno.EROFS:
+                print("OK")
+                sys.exit(0)
+            raise
+        sys.stderr.write("write succeeded; the seal did not hold\\n")
+        sys.exit(1)
+        """)
+    return _SHARED_PREAMBLE + "\n" + body
+
+
+@_LINUX_ONLY
+class TestSealHoldsOnALockedNosuidNodevMountRealKernel:
+    def test_prefix_remount_gets_eperm_and_the_fixed_seal_lands(self, tmp_path):
+        """The regression on a real kernel, with its own power proven in-band.
+
+        The inner stage first shows a remount carrying ``MS_RDONLY`` alone is refused
+        with EPERM (so the locked-flag condition genuinely holds in this
+        environment), then runs the program's seal and asserts it succeeds and the
+        sealed dir refuses a write with EROFS. A seal whose remount dropped the
+        locked bits fails here at the seal step with the launcher's own
+        ``sandbox: BLOCKED`` refusal.
+        """
+        unshare = shutil.which("unshare")
+        if unshare is None:
+            pytest.skip("unshare not available on this host")
+        probe = subprocess.run(
+            [unshare, "-Urm", "--propagation", "private", "true"],
+            capture_output=True,
+            cwd=str(tmp_path),
+            timeout=30,
+        )
+        if probe.returncode != 0:
+            pytest.skip(
+                "user namespaces unavailable: %s" % probe.stderr.decode(errors="replace").strip()
+            )
+
+        outer = tmp_path / "outer_stage.py"
+        outer.write_text(_outer_script())
+        inner = tmp_path / "inner_stage.py"
+        inner.write_text(_inner_script())
+        mnt = tmp_path / "mnt"
+        mnt.mkdir()
+        plan = tmp_path / "plan.json"
+        plan.write_text(json.dumps(payload(readonly_dirs=[str(mnt / "sealed")])))
+        result = subprocess.run(
+            [
+                unshare,
+                "-Urm",
+                "--propagation",
+                "private",
+                sys.executable,
+                str(outer),
+                str(mnt),
+                str(inner),
+                unshare,
+                program.__file__,
+                str(plan),
+            ],
+            capture_output=True,
+            cwd=str(tmp_path),
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+        )
+        if result.returncode == 42:
+            pytest.skip("tmpfs mount unavailable inside the namespace: %s" % result.stderr)
+        if result.returncode == 43:
+            pytest.skip("nested user namespaces unavailable: %s" % result.stderr)
+        if result.returncode == 44:
+            pytest.skip("kernel did not lock the flags here: %s" % result.stderr)
+
+        assert result.returncode == 0, (
+            f"seal did not hold inside the nested namespace: "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+        assert "OK" in result.stdout

@@ -1,0 +1,548 @@
+import { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react'
+import { useMutation } from '@tanstack/react-query'
+import { Bot, X, AlertTriangle, Loader2, CheckCircle, AlertCircle, Square, RotateCcw, Clock, ChevronRight, Hand, CircleDashed } from 'lucide-react'
+import { useAppSelector, useAppDispatch } from '../../store'
+import { openActivityToTab, selectSubagent, sseSubagentDone, isActiveSubagent, isAwaitingSpawnApproval, isSpawnApprovalGone, reconcileSubagentApprovalGone } from '../../store/chatSlice'
+import { api } from '../../api/client'
+import { ApiError, apiErrorCode } from '../../api/apiError'
+import { sanitizeLlmOutput } from '../../utils/sanitize'
+import ErrorNotice from '../../components/ErrorNotice'
+import { Glass } from '../../components/Glass'
+import type { SubagentActivity } from '../../types'
+
+import { i18nT } from '../../i18n/t'
+import { fmtElapsed } from '../../i18n/format'
+import { queuedWaitText } from './subagentQueuedReason'
+import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
+const EMPTY_SUBAGENTS: Record<string, SubagentActivity> = {}
+
+/**
+ * Is a rejected retry a BENIGN, self-caused no-op rather than a failure to
+ * report? The one such case is the backend's `409 retry_superseded`: the run
+ * was already picked up by another retry or a `spawn_continue` (a double-click,
+ * two tabs), so retrying it again would double-run its task — the refusal is
+ * correct and the failed set is already drained. The code travels in the JSON
+ * body `toApiError` keeps on `ApiError.body`; everything else (404 not found,
+ * 429 capacity, 503, an older gateway's codeless 409, a proxy's HTML) counts as
+ * a genuine failure worth a count.
+ */
+function isBenignSupersededRetry(reason: unknown): boolean {
+  return reason instanceof ApiError && reason.status === 409 && apiErrorCode(reason) === 'retry_superseded'
+}
+
+/** Max agent rows rendered in the chip — exceptions (stalled/retrying) sort
+ *  first, the healthy remainder collapses into a summary row. Bounds chip DOM
+ *  at 60-100 concurrent agents without a virtualization dependency. */
+const CHIP_MAX_ROWS = 8
+
+/** localStorage key persisting the user's collapse choice for the wave chip.
+ *  Default is expanded (matches the long-standing behaviour); the toggle only
+ *  adds the ability to shrink the chip to its one-line header when a big wave
+ *  would otherwise push the composer down. Choice survives across sessions. */
+const COLLAPSE_KEY = 'mc.subagentChip.collapsed'
+
+/**
+ * Placeholder marker for the tool name inside a translated stall sentence.
+ *
+ * The stalled row used to be assembled in JSX from three fragments glued
+ * together with a hardcoded English `" at "`, which stayed English in all 11
+ * non-English locales (a Japanese user read
+ * `停止している可能性があります at Running: sleep 600 — 117秒間アクティビティなし`)
+ * and pinned the word order, so a locale whose grammar puts the tool elsewhere
+ * could not express it. The sentence is now ONE interpolated catalog entry per
+ * variant, so each locale orders it itself.
+ *
+ * The tool name still has to carry `font-mono` — it is the same value the
+ * non-stalled `→ lastTool` row renders, and a plain interpolated string cannot
+ * style a substring. So `{{tool}}` is interpolated with this sentinel and the
+ * result split on it, which keeps BOTH properties: full translatability and the
+ * monospace styling (and its regression test). U+0000 cannot occur in catalog
+ * copy or in a sanitized tool name, so the split is unambiguous.
+ */
+const TOOL_SLOT = '\u0000'
+
+/**
+ * The four stall sentences, one per (tool present?) x (idle span present?).
+ *
+ * Full literal keys in an `as const` map rather than a template-built key, so
+ * the i18n key gate can resolve every one statically and verify it exists --
+ * a key that gate cannot resolve is exempt from every catalog check it runs.
+ *
+ * Four entries rather than one string with optional clauses, because a catalog
+ * value cannot express "omit this clause": gluing the optional halves on
+ * outside the translate call is exactly the defect being fixed here. The
+ * no-span variants stay reachable -- a gateway too old to send `idle_secs`
+ * still renders a complete, translated sentence.
+ */
+const STALL_KEYS = {
+  tool_secs: 'pages.chat.subagentProgressBar.possibly_stalled_at_tool_for_secs',
+  tool: 'pages.chat.subagentProgressBar.possibly_stalled_at_tool',
+  secs: 'pages.chat.subagentProgressBar.possibly_stalled_for_secs',
+  plain: 'pages.chat.subagentProgressBar.possibly_stalled_no_activity',
+} as const
+
+/**
+ * Render a translated stall sentence, monospacing the tool name in place.
+ *
+ * Only the tool span is `truncate`. Previously the whole sentence truncated, so
+ * a long tool name could clip off the idle figure — the very number that
+ * justifies the warning — right off the end of the row.
+ */
+function StallText({ tool, idleSecs }: { tool: string; idleSecs?: number }) {
+  const hasSecs = typeof idleSecs === 'number'
+  // The key expression is inlined into the call, not bound to a local first, so
+  // the i18n key gate can resolve every branch of it statically.
+  const sentence = i18nT(
+    tool
+      ? (hasSecs ? STALL_KEYS.tool_secs : STALL_KEYS.tool)
+      : (hasSecs ? STALL_KEYS.secs : STALL_KEYS.plain),
+    { tool: TOOL_SLOT, secs: idleSecs },
+  )
+  const [before, after] = sentence.split(TOOL_SLOT)
+  // No slot in the resolved string (the no-tool variants, or a catalog value
+  // that dropped the placeholder) — render it whole rather than half.
+  if (after === undefined) return <span className="min-w-0">{before}</span>
+  return (
+    <>
+      {before && <span className="shrink-0 whitespace-pre">{before}</span>}
+      <span className="min-w-0 truncate font-mono">{tool}</span>
+      {after && <span className="shrink-0 whitespace-pre">{after}</span>}
+    </>
+  )
+}
+
+/** Active subagent summary above the chat input. */
+const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: string | null }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  // Use chatSlice.subagents — populated by subagent_spawn/tool/done WS events
+  // (dashboardSlice.subagentRunning only updates on subagent_status which fires at completion)
+  const dispatch = useAppDispatch()
+  const subagents = useAppSelector(s => slot === s.chat.activeSlot ? s.chat.subagents : s.chat.slotActivity[slot ?? '']?.subagents ?? EMPTY_SUBAGENTS)
+  // Aggregate "waiting to start" count for this slot — agents accepted but
+  // queued behind the concurrency cap / stagger gate (no individual card yet).
+  const queued = useAppSelector(s => s.chat.subagentQueued?.[slot ?? ''] ?? 0)
+  // Why they wait, when the gateway said; undefined keeps the concurrency text.
+  const queuedReason = useAppSelector(s => s.chat.subagentQueuedReason?.[slot ?? ''])
+  // null for the ordinary capacity wait and for a count with no reason.
+  const waitText = queuedWaitText(queuedReason)
+  // Only top-level (managed) subagents belong in the chip — its count must
+  // match the "spawned N" prose. Native kiro-cli sub-agents (native:* ids,
+  // surfaced from _kiro.dev/subagent/list_update) are nested UNDER a managed
+  // agent, not launched by this session's spawn_run, so counting them inflated
+  // the histogram past what was actually spawned (e.g. 4 spawned → 9 tracked).
+  // They remain fully visible in the Subagents activity sidebar.
+  const all = useMemo(() => Object.values(subagents).filter(a => !a.id.startsWith('native:')), [subagents])
+  // Exception-first ordering: retrying/stalled agents need eyes; the healthy
+  // majority collapses behind the summary row at scale.
+  const activeList = useMemo(() => {
+    // A gone approval stays in this liveness list until the authoritative
+    // inventory decides running vs retired, but it is tallied separately below.
+    const act = all.filter(isActiveSubagent)
+    const rank = (a: SubagentActivity) => (a.retrying ? 0 : a.stalled ? 1 : a.status === 'pending' ? 2 : 3)
+    return act.sort((x, y) => rank(x) - rank(y))
+  }, [all])
+  // Runs PARKED on an unanswered spawn approval. They are registered and
+  // active, but no process was ever launched — they are blocked on the user, so
+  // they get their own tally instead of inflating the spinning running count
+  // that told the user work was in progress (#7318).
+  const awaiting = useMemo(() => activeList.filter(isAwaitingSpawnApproval).length, [activeList])
+  // A terminal refusal says the decision is closed, not whether another
+  // surface launched the process. Keep this distinct from both waiting and
+  // running until the authoritative spawn list answers.
+  const unresolved = useMemo(() => activeList.filter(isSpawnApprovalGone).length, [activeList])
+  const running = activeList.length - awaiting - unresolved
+  // Histogram counts across the WHOLE wave (terminal agents included) so a
+  // failure mid-wave is visible in the header instead of silently dropping
+  // out of the running-only list.
+  const counts = useMemo(() => ({
+    done: all.filter(a => a.status === 'done').length,
+    failed: all.filter(a => a.status === 'error').length,
+    // A retired never-launched card was not stopped by anyone.
+    stopped: all.filter(a => a.status === 'stopped' && !a.approvalRetired).length,
+    stalled: activeList.filter(a => a.stalled).length,
+  }), [all, activeList])
+  // `all` already excludes native:* ids, so error entries here are managed.
+  const failedIds = useMemo(() => all.filter(a => a.status === 'error').map(a => a.id), [all])
+  const activeListRef = useRef(activeList)
+  activeListRef.current = activeList
+  // Mount when anything is in flight — running OR queued OR parked on an
+  // approval. Including queued is what makes the chip (1) appear the instant a
+  // wave is accepted, before the first agent's subagent_spawn arrives, and (2)
+  // stay mounted across the staggered ramp instead of flickering out whenever
+  // running momentarily hits zero between staggered starts. `awaiting` is named
+  // separately because it is no longer part of `running`: a wave whose only
+  // member is parked on an approval has running === 0, and without this term
+  // the chip — the one surface naming what is blocking it — would unmount.
+  const hasActive = running > 0 || queued > 0 || awaiting > 0 || unresolved > 0
+  const visibleList = activeList.slice(0, CHIP_MAX_ROWS)
+  const hiddenCount = activeList.length - visibleList.length
+  // Per-row stop remains limited to agents with a live run id. The header also
+  // includes accepted work waiting behind the stagger/concurrency queue. Pending
+  // spawn approvals keep their explicit approve/reject path.
+  const stoppableCount = useMemo(() => activeList.filter(a => a.status === 'running' || a.status === 'tool').length, [activeList])
+  const stopTargetCount = stoppableCount + queued
+  // The most recent refused wave action (a stop, a stop-all, a retry). One slot,
+  // newest wins: these are all answers to the person's last press, and the row
+  // sits under the header where that press happened. The 30s reconcile loop
+  // below still resyncs the cards, but it can only hide a cancel that never
+  // landed — it cannot tell the person it never landed.
+  const [actionError, setActionError] = useState<string | null>(null)
+  // A failed liveness read for a gone approval. Unlike a phantom-card sweep,
+  // that read is what unblocks the composer and Reload, so a refusal is
+  // reported rather than swallowed; the next successful read clears it. It
+  // never settles the card: a failed read is not evidence of either outcome.
+  const [livenessFailed, setLivenessFailed] = useState(false)
+  // A spawn frame or a card's own re-read can settle the last gone approval
+  // without this poll succeeding, so the flag would outlive the cards it was
+  // about and greet the next refusal before any read for it had failed.
+  useEffect(() => { if (unresolved === 0) setLivenessFailed(false) }, [unresolved])
+  // Cancel a running subagent. A refused spawnDelete used to be swallowed with a
+  // console breadcrumb; it now surfaces on the chip.
+  const stopAgent = useCallback((id: string, name: string) => {
+    setActionError(null)
+    api.spawnDelete(id).catch(() => {
+      setActionError(i18nT('pages.chat.subagentProgressBar.stop_failed', { name }))
+    })
+  }, [])
+  const stopAllMutation = useMutation({
+    mutationFn: (targetSlot: string) => api.spawnStopAll(targetSlot),
+    onMutate: () => setActionError(null),
+    onError: () => {
+      setActionError(i18nT('pages.chat.subagentProgressBar.stop_all_failed'))
+    },
+  })
+  const stopAll = useCallback(() => {
+    if (!slot) return
+    stopAllMutation.mutate(slot)
+  }, [slot, stopAllMutation])
+  const [retrying, setRetrying] = useState(false)
+  // Collapse the agent list to the one-line header. Default expanded; the
+  // choice is remembered across sessions via localStorage so a user who
+  // prefers the quiet header keeps it. Counts + Stop all stay in the header
+  // either way, so a wave can always be stopped without expanding.
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem(COLLAPSE_KEY) === '1' } catch { return false }
+  })
+  const toggleCollapsed = useCallback(() => {
+    setCollapsed(c => {
+      const next = !c
+      try { localStorage.setItem(COLLAPSE_KEY, next ? '1' : '0') } catch { /* private mode / quota — keep in-memory only */ }
+      return next
+    })
+  }, [])
+  const retryFailed = useCallback(() => {
+    setRetrying(true)
+    setActionError(null)
+    // `allSettled` so one refused retry does not abort the rest. Rejections are
+    // counted, not discarded — but a `409 retry_superseded` is a benign,
+    // self-caused no-op (the run was already picked up, so the failed set is
+    // already drained) and must not read like an outage. Only GENUINE failures
+    // are counted, and the toast carries that count, matching the activityViewer
+    // sibling. An all-benign race shows nothing: there was nothing to report.
+    Promise.allSettled(failedIds.map(id => api.spawnRetry(id)))
+      .then(results => {
+        const failed = results.filter(
+          r => r.status === 'rejected' && !isBenignSupersededRetry(r.reason),
+        ).length
+        if (failed > 0) {
+          setActionError(i18nT('pages.chat.subagentProgressBar.retry_failed_error', { count: failed }))
+        }
+      })
+      .finally(() => setRetrying(false))
+  }, [failedIds])
+  const openAgent = useCallback((id: string) => {
+    dispatch(selectSubagent(id))
+    dispatch(openActivityToTab('subagents'))
+  }, [dispatch])
+  const [, setTick] = useState(0)
+  // 1Hz tick to update elapsed timers + 30s reconciliation to clear phantom agents
+  useEffect(() => {
+    if (!hasActive || !slot) return
+    let cancelled = false
+    const t = setInterval(() => setTick(n => 1 - n), 1000)
+    const reconcile = setInterval(() => {
+      const read = api.spawnList()
+      read.then(d => {
+        if (cancelled) return
+        // Live rows by run id alone, as the gone-approval branch matches them:
+        // ids are unique, and a nested, cron- or channel-born run's `parent` is
+        // not this tab's key. A parent filter here would mark such a live run
+        // failed, and "Dismiss done" would then DELETE (cancel) it.
+        const backendIds = new Set((d.agents || []).filter((a) => !a.done).map((a) => a.id))
+        activeListRef.current.forEach(a => {
+          if (isSpawnApprovalGone(a) && a.approval_id) {
+            const agent = (d.agents || []).find(candidate => candidate.id === a.id) ?? null
+            dispatch(reconcileSubagentApprovalGone({ slot, id: a.id, approval_id: a.approval_id, agent }))
+          } else if (!backendIds.has(a.id)) {
+            dispatch(sseSubagentDone({ slot, id: a.id, elapsed: Math.round((Date.now() - a.startedAt) / 1000), error: 'reconciliation: agent no longer tracked by backend' }))
+          }
+        })
+      }).catch(() => {
+        // Deliberately silent: this is a background poll that only ever REMOVES
+        // phantom cards. A refused poll leaves the cards exactly as they were,
+        // the next tick retries in 30s, and the person asked for none of it —
+        // so there is no failed action to report on the chip.
+      })
+      // The liveness check for a gone (404) spawn approval rides the same read
+      // on its own path. Unlike the phantom sweep above, it is what unblocks the
+      // composer and Reload, so its outcome is reported: a refused read raises
+      // the liveness notice, an answered one clears it. With no gone card
+      // waiting this path does not run and the poll stays silent (#8743).
+      if (activeListRef.current.some(isSpawnApprovalGone)) {
+        read.then(
+          () => { if (!cancelled) setLivenessFailed(false) },
+          () => { if (!cancelled) setLivenessFailed(true) },
+        )
+      }
+    }, 30_000)
+    return () => { cancelled = true; clearInterval(t); clearInterval(reconcile) }
+  }, [hasActive, slot, dispatch])
+  if (!hasActive) return null
+  return (
+    // `relative z-[46]` lifts the wave chip above every theme-experience
+    // overlay. Overlays portal into the shell's decor slot, which is pinned at
+    // OVERLAY_Z_MAX (lib/themeDecorLayer.ts — do not restate the number here);
+    // the chip renders in the same shell stacking context, so 46 is a real
+    // in-context comparison against that ceiling (the test pins 46 >
+    // OVERLAY_Z_MAX). The mute button (z=50) and consent modal (z=120) live at
+    // the document root and outrank the whole shell regardless; the chip also
+    // stays under modal backdrops (z-[46], later in DOM).
+    // Without this the chip sits at auto z-index and a fullscreen overlay (e.g.
+    // an activate-time transition wipe) covers it for the overlay's lifetime.
+    <div className="px-4 mx-auto w-full relative z-[46]" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+      {/* The same glass as every other pane in the composer dock
+          (components/Glass.tsx), on the accent tint step: the old
+          `bg-accent/10` wash had no blur and no body, so the transcript
+          scrolling under it showed through as if the bar were a hole. `thick`:
+          the progress panes above the composer carry dense rows that must stay
+          readable while the transcript passes under them (maintainer, #16299). */}
+      <Glass variant="chip" thickness="thick" radius={8} className="mb-1 glass-accent animate-slide-up">
+        {/* The clip lives one level in, not on the pane: the pane's hairlines sit
+            half a pixel OUTSIDE its top and bottom edges, and `overflow: hidden`
+            on the pane itself would cut them (see QuestionCard). The inner box
+            inherits the radius so the row hover fills still stop at the arc. */}
+        <div className="overflow-hidden rounded-[inherit]">
+        {/* Chrome type, so no `font-mono`: the wave chip is prose and labels,
+            and Tailwind's `font-mono` pins `var(--mono)` — a token the Font
+            Family setting never writes, so a hardcoded one here overrode the
+            user's choice and put JetBrains Mono (no CJK coverage) under a
+            translated UI. Mono is re-applied below on the parts that earn it:
+            the tree glyphs, the elapsed/tool counter and the tool command. */}
+        <div className="flex items-center gap-2 px-3 py-1.5 text-[13px]">
+          <button
+            type="button"
+            onClick={toggleCollapsed}
+            className="shrink-0 flex items-center text-muted hover:text-text cursor-pointer bg-transparent border-none p-0 focus-ring-accent rounded-sm"
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? i18nT('pages.chat.subagentProgressBar.expand_agent_list') : i18nT('pages.chat.subagentProgressBar.collapse_agent_list')}
+            title={collapsed ? i18nT('pages.chat.subagentProgressBar.expand_agent_list') : i18nT('pages.chat.subagentProgressBar.collapse_agent_list')}
+          >
+            <ChevronRight size={14} className="transition-transform" style={{ transform: collapsed ? 'none' : 'rotate(90deg)' }} />
+          </button>
+          <Bot size={14} className="text-accent shrink-0" />
+          {/* Histogram header: whole-wave counts so mid-wave failures stay visible */}
+          <span className="text-text-strong font-medium flex items-center gap-2 min-w-0" data-testid="subagent-histogram">
+            <span className="inline-flex items-center gap-1" data-testid="subagent-running-count"><Loader2 size={12} className="animate-spin text-accent" /> {running}</span>
+            {awaiting > 0 && <span className="inline-flex items-center gap-1 text-warn" data-testid="subagent-awaiting-count" title={i18nT('pages.chat.subagentProgressBar.waiting_for_your_approval_to_start')}><Hand size={12} /> {awaiting}</span>}
+            {unresolved > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-unresolved-count" title={i18nT('pages.chat.subagentProgressBar.checking_whether_it_started')}><CircleDashed size={12} /> {unresolved}</span>}
+            {queued > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-queued-count" title={waitText ?? i18nT('pages.chat.subagentProgressBar.waiting_to_start_queued_behind_the_concurrency_l')}><Clock size={12} /> {queued}</span>}
+            {counts.done > 0 && <span className="inline-flex items-center gap-1 text-ok"><CheckCircle size={12} /> {counts.done}</span>}
+            {counts.failed > 0 && <span className="inline-flex items-center gap-1 text-danger"><AlertCircle size={12} /> {counts.failed}</span>}
+            {counts.stopped > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-stopped-count"><Square size={12} /> {counts.stopped}</span>}
+            {counts.stalled > 0 && <span className="inline-flex items-center gap-1 text-warn" title={i18nT('pages.chat.subagentProgressBar.no_activity_possibly_stalled')}><AlertTriangle size={12} /> {counts.stalled}</span>}
+          </span>
+          <span className="ml-auto shrink-0 flex items-center gap-1.5">
+            {failedIds.length > 0 && (
+              <button
+                className="shrink-0 flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border border-accent/40 text-accent/80 hover:bg-accent/10 hover:text-accent cursor-pointer transition-all bg-transparent disabled:opacity-50"
+                onClick={retryFailed}
+                disabled={retrying}
+              >
+                {/* No aria-label: the accessible name IS the visible text below,
+                    so WCAG 2.5.3 (Label in Name) holds by construction. */}
+                <RotateCcw size={11} className={retrying ? 'animate-spin' : ''} /> {i18nT('pages.chat.subagentProgressBar.retry_failed_count', { count: failedIds.length })}
+              </button>
+            )}
+            {stopTargetCount > 0 && (
+              <button
+                className="shrink-0 flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger-text cursor-pointer transition-all bg-transparent"
+                onClick={stopAll}
+                aria-label={queued > 0 || stoppableCount > 1 ? i18nT('pages.chat.subagentProgressBar.stop_all') : i18nT('pages.chat.subagentProgressBar.stop_running_subagent')}
+              >
+                <X size={11} /> {queued > 0 || stoppableCount > 1 ? i18nT('pages.chat.subagentProgressBar.stop_all') : i18nT('pages.chat.subagentProgressBar.stop')}
+              </button>
+            )}
+          </span>
+        </div>
+        {queued > 0 && waitText && (
+          // The histogram's queued count explains itself only on hover; a
+          // deferral can hold for hours, so the sentence is also rendered.
+          // Absent for the ordinary capacity wait, which keeps the chip as it was.
+          <div className="px-3 pb-1.5 text-[11px] leading-4 text-warn" data-testid="subagent-wait-reason" role="status">
+            {waitText}
+          </div>
+        )}
+        {unresolved > 0 && livenessFailed && (
+          // The refused approval request reports itself once, on the surface
+          // that sent it (the composer or the activity card); this chip states
+          // each unresolved row as neutral status. What it does own is its own
+          // failed read of the inventory, the poll that settles those rows.
+          // Not in the row: each row is a button, and the hand-off is another.
+          <div className="px-3 pb-1.5">
+            <ErrorNotice
+              variant="inline"
+              message={i18nT('pages.chat.subagentProgressBar.liveness_check_failed')}
+              askAgent
+              testId="subagent-liveness-error"
+            />
+          </div>
+        )}
+        {actionError && (
+          <div className="px-3 pb-1.5">
+            {/* askAgent on: the chip is a status surface with no editable field,
+                and the composer draft below it is persisted per slot. */}
+            <ErrorNotice
+              variant="inline"
+              message={actionError}
+              askAgent
+              onDismiss={() => setActionError(null)}
+              testId="subagent-action-error"
+            />
+          </div>
+        )}
+        {/* The rows body holds only running/tool/pending agents (`visibleList`)
+            plus an overflow row that is itself gated on there being hidden rows.
+            When the chip is mounted solely on a QUEUED count — the header's
+            `hasActive` term with running === 0 — `visibleList` is empty, so this
+            body has nothing to render and expanding it revealed only its own
+            `px-3 pb-2` padding as blank whitespace. Gate the whole body on
+            having a row: the header (counts + Stop all) still stands on its own. */}
+        {visibleList.length > 0 && (
+        <div className={`px-3 pb-2 space-y-0.5${collapsed ? ' hidden' : ''}`}>
+          {visibleList.map((a, i) => {
+            const isLast = i === visibleList.length - 1 && hiddenCount === 0
+            const taskPreview = sanitizeLlmOutput((a.task || '').slice(0, 80)) + ((a.task || '').length > 80 ? '…' : '')
+            // Falls through to something that IDENTIFIES the agent. An entry
+            // recovered from an incremental frame has neither task nor agent, and
+            // stopping at the bare noun rendered every such row identically --
+            // two agents running in parallel were indistinguishable for the rest
+            // of their runs. The short id is the fallback rather than the last
+            // tool because the tool already has its own line directly beneath
+            // this one: a row titled "shell" above "-> shell" says one word twice
+            // and still does not say WHICH agent is running it. The kind is named
+            // alongside the id because a bare "#bb2222" reads as a hex colour
+            // code rather than as something that identifies an agent.
+            const agentLabel = taskPreview
+              || sanitizeLlmOutput(a.agent)
+              || (a.id ? `agent #${a.id.slice(-6)}` : 'agent')
+            const elapsed = Math.round((Date.now() - a.startedAt) / 1000)
+            // An assumed start time cannot produce an elapsed figure: the agent
+            // may have been running long before the frame that minted its entry.
+            // The row then shows the SAME `--` placeholder the card does, rather
+            // than omitting the figure: an empty slot where a number belongs reads
+            // as "this agent has not started", while `--` reads as "the elapsed
+            // time is not known", which is what is true.
+            const elapsedShown = !a.startedAtAssumed
+            // The backend sends `idle_secs` once, on the stalled transition, so a
+            // bare render would freeze at that value beside the live `elapsed`
+            // above — the same two-numbers-disagree confusion this row exists to
+            // remove. `stalled` means no activity by definition, so advancing it
+            // locally from the receipt instant is sound. The 1Hz tick above
+            // re-renders it.
+            const idleShown = typeof a.idleSecs === 'number'
+              ? a.idleSecs + (a.stalledAt ? Math.max(0, Math.round((Date.now() - a.stalledAt) / 1000)) : 0)
+              : undefined
+            const stoppable = a.status === 'running' || a.status === 'tool'
+            return (
+              <div key={a.id} data-testid="subagent-row" className="flex items-start gap-1">
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 flex items-start gap-1.5 rounded-sm text-left text-[12px] text-muted hover:bg-accent/5 transition-colors cursor-pointer focus-ring-accent"
+                  onClick={() => openAgent(a.id)}
+                  aria-label={i18nT('pages.chat.subagentProgressBar.open_in_subagents_sidebar', { label: agentLabel })}
+                >
+                  {/* Box-drawing glyphs stay mono so `├─` and `└─` keep an
+                      identical advance width and the rows line up. */}
+                  <span aria-hidden="true" className="shrink-0 font-mono text-border select-none">{isLast ? '└─' : '├─'}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-1.5">
+                      <span className="min-w-0 flex-1 truncate text-text">{agentLabel}</span>
+                      <span className="shrink-0 font-mono tabular-nums text-muted/50">{elapsedShown ? fmtElapsed(elapsed * 1000, { wholeSeconds: true }) : '--'}{typeof a.toolCount === 'number' && a.toolCount > 0 ? ` · ${i18nT('pages.chat.subagentProgressBar.tool', { count: a.toolCount })}` : ''}</span>
+                    </span>
+                    {isSpawnApprovalGone(a) ? (
+                      <span className="text-muted flex items-center gap-1" data-testid="subagent-row-checking">
+                        <CircleDashed size={11} className="shrink-0" />
+                        <span className="truncate">{i18nT('pages.chat.subagentProgressBar.checking_whether_it_started')}</span>
+                      </span>
+                    ) : isAwaitingSpawnApproval(a) ? (
+                      /* Checked BEFORE retrying/stalled: a parked run never
+                         executed, so the watchdog's silence-based stall verdict
+                         (and a retry attributed to a backend hiccup) would both
+                         be describing an absence this row can already explain
+                         exactly. Naming the approval is strictly more specific
+                         than either, and it is the one state the user can act
+                         on. */
+                      <span className="text-warn flex items-center gap-1">
+                        <Hand size={11} className="shrink-0" />
+                        <span className="truncate">{i18nT('pages.chat.subagentProgressBar.waiting_for_your_approval_to_start')}</span>
+                      </span>
+                    ) : a.retrying ? (
+                      <span className="text-info flex items-center gap-1">
+                        <Loader2 size={11} className="shrink-0 animate-spin" />
+                        <span className="truncate">{i18nT('pages.chat.subagentProgressBar.backend_hiccup_retrying')}</span>
+                      </span>
+                    ) : a.stalled ? (
+                      <span className="text-warn flex items-center gap-1">
+                        <AlertTriangle size={11} className="shrink-0" />
+                        {/* Hedged to match the header tooltip: the watchdog sees
+                            an ABSENCE of stream events, which a slow silent tool
+                            also produces — it cannot prove a stall, so it must
+                            not assert one. The idle span (not `elapsed`) is the
+                            figure that justifies the warning, so it is shown
+                            here; `elapsed` already sits on the row above and the
+                            two are different numbers. The tool name carries the
+                            same mono as the non-stalled `→ lastTool` line. */}
+                        <span className="min-w-0 flex items-baseline">
+                          <StallText
+                            tool={a.lastTool ? sanitizeLlmOutput(a.lastTool) : ''}
+                            idleSecs={idleShown}
+                          />
+                        </span>
+                      </span>
+                    ) : (a.lastTool && <span className="block font-mono text-accent/60 truncate">→ {sanitizeLlmOutput(a.lastTool)}</span>)}
+                  </span>
+                </button>
+                {stoppable && (
+                  <button
+                    className="shrink-0 flex items-center text-[11px] px-1 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger-text cursor-pointer transition-all bg-transparent"
+                    onClick={() => stopAgent(a.id, sanitizeLlmOutput(a.agent || a.id))}
+                    aria-label={i18nT('pages.chat.subagentProgressBar.stop_subagent', { name: sanitizeLlmOutput(a.agent || a.id) })}
+                    title={i18nT('pages.chat.subagentProgressBar.stop_this_subagent')}
+                  >
+                    <X size={11} />
+                  </button>
+                )}
+              </div>
+            )
+          })}
+          {hiddenCount > 0 && (
+            <button
+              type="button"
+              data-testid="subagent-overflow-row"
+              className="w-full flex items-center gap-1.5 rounded-sm text-left text-[12px] text-muted/60 hover:bg-accent/5 transition-colors cursor-pointer bg-transparent border-none"
+              onClick={() => dispatch(openActivityToTab('subagents'))}
+              aria-label={`Show ${hiddenCount} more running subagents in the sidebar`}
+            >
+              <span aria-hidden="true" className="shrink-0 font-mono text-border select-none">└─</span>
+              <span>+ {hiddenCount} {i18nT('pages.chat.subagentProgressBar.more_running_normally')}</span>
+            </button>
+          )}
+        </div>
+        )}
+        </div>
+      </Glass>
+    </div>
+  )
+})
+
+export default SubagentProgressBar

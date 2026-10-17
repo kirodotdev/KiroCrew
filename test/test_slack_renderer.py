@@ -1,0 +1,1750 @@
+"""Tests for SlackRenderer + SlackApprovalDecider (v1b-3).
+
+Drives the real TurnDriver with a scripted provider into a SlackRenderer
+backed by a recording Slack client, and asserts the abstract output events
+map to the expected SlackClientOps calls -- including prompt_choice ->
+Block Kit approve/deny buttons and the interactive approval await/resolve.
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+from kiro_crew.acp.types import (
+    EVENT_COMPLETE,
+    EVENT_PERMISSION_REQUEST,
+    EVENT_TEXT_CHUNK,
+    EVENT_THINKING_CHUNK,
+    EVENT_TOOL_CALL,
+    AcpEvent,
+)
+from kiro_crew.messaging import APPROVAL_INTERACTIVE, TurnDriver
+from kiro_crew.slack.client import RealSlackClient
+from kiro_crew.slack.renderer import (
+    _STATUS_WORKING,
+    TOOL_APPROVE_ACTION_PREFIX,
+    TOOL_DENY_ACTION_PREFIX,
+    TOOL_TRUST_ACTION_PREFIX,
+    SlackApprovalDecider,
+    SlackRenderer,
+    build_approval_blocks,
+    is_wait_identity,
+    split_approval_token,
+)
+
+
+class _RecSlack:
+    """Minimal recording Slack client (only methods SlackRenderer calls)."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, dict]] = []
+        self._n = 0
+
+    def _ts(self):
+        self._n += 1
+        return f"ts-{self._n}"
+
+    async def start_stream(self, channel, thread_ts, **kw):
+        self.calls.append(
+            (
+                "start_stream",
+                {
+                    "channel": channel,
+                    "thread_ts": thread_ts,
+                    "user_id": kw.get("user_id"),
+                    "initial_text": kw.get("initial_text"),
+                },
+            )
+        )
+        return self._ts()
+
+    async def append_stream(self, channel, ts, text):
+        self.calls.append(("append_stream", {"text": text}))
+        return True
+
+    async def update_message(self, channel, ts, text="", blocks=None):
+        self.calls.append(("update_message", {"text": text}))
+
+    async def stop_stream(self, channel, ts, final_text=None):
+        self.calls.append(("stop_stream", {"final_text": final_text}))
+        return True
+
+    async def append_task(self, channel, ts, task_id, title, status, details="", output=""):
+        self.calls.append(("append_task", {"title": title, "status": status}))
+        return True
+
+    async def set_thread_status(self, channel, thread_ts, status):
+        self.calls.append(("set_thread_status", {"status": status}))
+
+    async def post_blocks(self, channel, blocks, text, thread_ts=None, **kw):
+        self.calls.append(("post_blocks", {"blocks": blocks}))
+        return self._ts()
+
+    def approval_token(self):
+        """The (registry key, nonce) pair the posted Approve button carries.
+
+        A click sends back the button's own ``value``, so a test that resolves
+        with anything else is not pressing what the user pressed.
+        """
+        for name, kw in reversed(self.calls):
+            if name != "post_blocks":
+                continue
+            for block in kw["blocks"]:
+                for element in block.get("elements", []):
+                    if str(element.get("action_id", "")).startswith(TOOL_APPROVE_ACTION_PREFIX):
+                        return split_approval_token(element.get("value", ""))
+        return None
+
+    async def post_message(self, channel, text, thread_ts=None, **kw):
+        self.calls.append(("post_message", {"text": text}))
+        return self._ts()
+
+
+class _Provider:
+    def __init__(self, events):
+        self._events = events
+        self.approved: list = []
+        self.rejected: list = []
+
+    async def stream(self, message):
+        for ev in self._events:
+            yield ev
+
+    async def approve_tool(self, request_id, *, always=False):
+        self.approved.append(request_id)
+
+    async def reject_tool(self, request_id):
+        self.rejected.append(request_id)
+
+
+class TestRendererClose:
+    """close() must guarantee the 30s tool-elapsed timer is cancelled even
+    when the turn ends via an exception (TurnDriver.run raises -> on_done never
+    fires), so the updater task can't survive against a dead stream."""
+
+    def test_close_cancels_leaked_tool_timer(self):
+        async def scenario():
+            rec = _RecSlack()
+            renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+            renderer._start_tool_timer()  # simulates an in-flight tool
+            task = renderer._tool_timer_task
+            assert task is not None and not task.done()
+            # Simulate the dispatcher finally after driver.run() raised.
+            await renderer.close()
+            assert renderer._tool_timer_task is None
+            await asyncio.sleep(0)  # let the cancellation propagate
+            assert task.cancelled() or task.done()
+
+        asyncio.run(scenario())
+
+    def test_close_is_idempotent_and_safe_after_done(self):
+        async def scenario():
+            rec = _RecSlack()
+            renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+            await renderer.on_done()  # success path marks _finalized
+            await renderer.close()  # must be a no-op, not re-finalize
+            await renderer.close()  # idempotent
+            assert renderer._finalized is True
+
+        asyncio.run(scenario())
+
+
+class TestOptionsControlIsStamped:
+    """The canonical Slack path must stamp the controls it posts.
+
+    ``messaging.use_transport`` defaults to True, so this renderer -- not the
+    native handler -- posts most real OPTIONS controls. A control that goes out
+    unstamped is one whose clicks can never be judged: the click-time check
+    abstains and honours it however far the conversation has since moved.
+    """
+
+    @staticmethod
+    def _options_block(rec):
+        for name, kw in rec.calls:
+            if name != "post_blocks":
+                continue
+            for block in kw["blocks"]:
+                if block.get("type") == "actions":
+                    return block
+        return None
+
+    def test_the_footer_control_carries_the_dispatcher_s_stamp(self):
+        async def scenario():
+            rec = _RecSlack()
+            renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+            renderer._accumulated = "pick one\n[OPTIONS: alpha | beta]"
+
+            seen: list[str] = []
+
+            async def _stamp(final_text: str) -> str:
+                seen.append(final_text)
+                return "stamp-abc"
+
+            renderer.stamp_options = _stamp
+            await renderer.on_done()
+
+            actions = self._options_block(rec)
+            assert actions is not None, "the options control must still be posted"
+            assert (
+                actions.get("block_id") == "stamp-abc"
+            ), "the control must carry the stamp, or its clicks cannot be judged"
+            assert seen, "the stamp must be taken BEFORE the control is posted"
+
+        asyncio.run(scenario())
+
+    def test_what_gets_persisted_keeps_the_options_trailer(self):
+        """The stamp replaces the dispatcher's persist, so it must write the same text.
+
+        A replayed turn re-renders its question as a control by finding the
+        ``[OPTIONS: ...]`` trailer in the persisted text. Handing the stamp the
+        stripped copy that goes to Slack would drop that trailer from history, and
+        every replayed control would come back as literal prose instead.
+        """
+
+        async def scenario():
+            rec = _RecSlack()
+            renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+            renderer._accumulated = "pick one\n[OPTIONS: alpha | beta]"
+
+            persisted: list[str] = []
+
+            async def _stamp(final_text: str) -> str:
+                persisted.append(final_text)
+                return "stamp-abc"
+
+            renderer.stamp_options = _stamp
+            await renderer.on_done()
+
+            assert persisted, "the stamp must have been invoked"
+            assert (
+                "[OPTIONS: alpha | beta]" in persisted[0]
+            ), "the persisted text must keep the trailer, or replay loses the control"
+
+        asyncio.run(scenario())
+
+    def test_a_failing_stamp_costs_the_user_nothing(self):
+        """Best-effort: an unstamped control is honoured on click, as before.
+
+        Losing the footer entirely because bookkeeping failed would be a worse
+        outcome than losing the ability to refuse a stale click.
+        """
+
+        async def scenario():
+            rec = _RecSlack()
+            renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+            renderer._accumulated = "pick one\n[OPTIONS: alpha | beta]"
+
+            async def _boom(final_text: str) -> str:
+                raise RuntimeError("transcript unavailable")
+
+            renderer.stamp_options = _boom
+            await renderer.on_done()
+
+            actions = self._options_block(rec)
+            assert actions is not None, "the control must post even if stamping fails"
+            assert "block_id" not in actions
+
+        asyncio.run(scenario())
+
+
+class TestBuildApprovalBlocks:
+    def test_action_ids_encode_request_id(self):
+        blocks = build_approval_blocks("grep", "rq9")
+        actions = [b for b in blocks if b["type"] == "actions"][0]["elements"]
+        ids = {e["action_id"] for e in actions}
+        assert f"{TOOL_APPROVE_ACTION_PREFIX}rq9" in ids
+        assert f"{TOOL_TRUST_ACTION_PREFIX}rq9" in ids
+        assert f"{TOOL_DENY_ACTION_PREFIX}rq9" in ids
+
+
+class TestSlackRendererMapping:
+    def test_text_turn_maps_to_stream(self):
+        rec = _RecSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="Hello "),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="world"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+        methods = [m for m, _ in rec.calls]
+        assert methods == [
+            "set_thread_status",
+            "start_stream",
+            "append_stream",
+            "append_stream",
+            "stop_stream",
+            "set_thread_status",
+            "post_blocks",
+        ]
+        # stop_stream carries the clean final text
+        stop = [kw for m, kw in rec.calls if m == "stop_stream"][0]
+        assert stop["final_text"] == "Hello world"
+
+    def test_shared_driver_strips_split_steering_marker(self):
+        rec = _RecSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="Before [STEERING steer-7e6a4a0d"),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="94314d2db: internal ack] after"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+        visible = "".join(
+            str(kw.get("text") or kw.get("final_text") or "")
+            for method, kw in rec.calls
+            if method in {"append_stream", "stop_stream"}
+        )
+        assert "Before" in visible and "after" in visible
+        assert "STEERING" not in visible and "7e6a4a0d" not in visible
+        assert "internal ack" not in visible
+
+    def test_on_turn_start_is_idempotent(self):
+        # The dispatcher fires on_turn_start early (before session acquisition)
+        # so the ack reaches the user immediately; the driver's later call must
+        # no-op rather than post a second working-status update.
+        rec = _RecSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="hi"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+
+        async def _drive():
+            await renderer.on_turn_start()  # early ack, before session spin-up
+            await TurnDriver(provider, renderer, approval_mode="auto").run("hi")
+
+        asyncio.run(_drive())
+        # Exactly one working-status ack at the start (the driver's call no-ops),
+        # plus the clearing set_thread_status at on_done.
+        working = [
+            kw
+            for m, kw in rec.calls
+            if m == "set_thread_status" and kw.get("status") == _STATUS_WORKING
+        ]
+        assert len(working) == 1
+
+    def test_bracket_hold_filters_options_from_stream(self):
+        rec = _RecSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="Pick one "),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="[OPTIONS: A | B]"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+        streamed = "".join(kw["text"] for m, kw in rec.calls if m == "append_stream")
+        # The [OPTIONS:...] markup must never hit the live stream...
+        assert "OPTIONS" not in streamed and "[" not in streamed
+        # ...but the surrounding prose still streams.
+        assert "Pick one" in streamed
+        # ...and the final message is clean (extract_options strips the tag).
+        stop = [kw for m, kw in rec.calls if m == "stop_stream"][0]
+        assert "OPTIONS" not in (stop["final_text"] or "")
+        assert "Pick one" in (stop["final_text"] or "")
+
+    def test_tool_turn_maps_to_tasks(self):
+        rec = _RecSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="x", title="grep", tool_final=False),
+                AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="x", tool_output="ok", tool_final=True),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+        statuses = [kw.get("status") for m, kw in rec.calls if m == "append_task"]
+        # Unified on_tool_call: start task1; tool2 completes task1 + starts task2;
+        # done completes task2.
+        assert statuses == ["in_progress", "complete", "in_progress", "complete"]
+
+    def test_prompt_choice_posts_approval_blocks(self):
+        rec = _RecSlack()
+        decider = SlackApprovalDecider()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, decider=decider)
+        provider = _Provider(
+            [
+                AcpEvent(
+                    kind=EVENT_PERMISSION_REQUEST,
+                    request_id="rq1",
+                    options=[{"id": "grep", "label": "grep"}],
+                ),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        driver = TurnDriver(provider, renderer, approval_mode=APPROVAL_INTERACTIVE, decider=decider)
+
+        async def scenario():
+            task = asyncio.create_task(driver.run("hi"))
+            for _ in range(1000):
+                if decider._futures:
+                    break
+                await asyncio.sleep(0)
+            decider.resolve("rq1", True)
+            await task
+
+        asyncio.run(scenario())
+        posted = [kw for m, kw in rec.calls if m == "post_blocks"]
+        # Approval blocks are posted only when a decider can act on them.
+        all_ids = {
+            e["action_id"]
+            for kw in posted
+            for b in kw["blocks"]
+            if b["type"] == "actions"
+            for e in b["elements"]
+            if "action_id" in e
+        }
+        assert f"{TOOL_APPROVE_ACTION_PREFIX}rq1" in all_ids
+        assert provider.approved == ["rq1"]
+
+    def test_the_approval_card_names_the_tool_not_the_answer(self):
+        """The card promises a tool name, so an option LABEL must not fill it in.
+
+        The options are the ANSWERS ("Allow", "Reject"), so reading the first one
+        put a verb where the operator reads a tool name, and the tool the request
+        is about never appeared on the card at all.
+        """
+        rec = _RecSlack()
+        decider = SlackApprovalDecider()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, decider=decider)
+        provider = _Provider(
+            [
+                AcpEvent(
+                    kind=EVENT_PERMISSION_REQUEST,
+                    request_id="rq1",
+                    title="execute_bash",
+                    options=[{"id": "allow", "label": "Allow"}],
+                ),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        driver = TurnDriver(provider, renderer, approval_mode=APPROVAL_INTERACTIVE, decider=decider)
+
+        async def scenario():
+            task = asyncio.create_task(driver.run("hi"))
+            for _ in range(1000):
+                if decider._futures:
+                    break
+                await asyncio.sleep(0)
+            decider.resolve("rq1", True)
+            await task
+
+        asyncio.run(scenario())
+        sections = [
+            b["text"]["text"]
+            for m, kw in rec.calls
+            if m == "post_blocks"
+            for b in kw["blocks"]
+            if b.get("type") == "section"
+        ]
+        assert any("execute_bash" in t for t in sections), sections
+        assert not any("*Allow*" in t for t in sections), sections
+
+    def test_prompt_choice_suppressed_without_decider(self):
+        # Deny-by-default (no decider): no dead approve/deny buttons are posted.
+        rec = _RecSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        provider = _Provider(
+            [
+                AcpEvent(
+                    kind=EVENT_PERMISSION_REQUEST,
+                    request_id="rq1",
+                    options=[{"id": "grep", "label": "grep"}],
+                ),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode=APPROVAL_INTERACTIVE).run("hi"))
+        posted = [kw for m, kw in rec.calls if m == "post_blocks"]
+        all_ids = {
+            e["action_id"]
+            for kw in posted
+            for b in kw["blocks"]
+            if b["type"] == "actions"
+            for e in b["elements"]
+            if "action_id" in e
+        }
+        assert f"{TOOL_APPROVE_ACTION_PREFIX}rq1" not in all_ids
+        # No decider to resolve -> deny by default.
+        assert provider.rejected == ["rq1"]
+
+
+class TestApprovalDecider:
+    def test_await_then_resolve_approves(self):
+        rec = _RecSlack()
+        decider = SlackApprovalDecider()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, decider=decider)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_PERMISSION_REQUEST, request_id="rq1", options=[{"id": "grep"}]),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        driver = TurnDriver(provider, renderer, approval_mode=APPROVAL_INTERACTIVE, decider=decider)
+
+        async def scenario():
+            task = asyncio.create_task(driver.run("hi"))
+            for _ in range(1000):
+                if decider._futures:
+                    break
+                await asyncio.sleep(0)
+            assert decider.resolve("rq1", True) is True
+            await task
+
+        asyncio.run(scenario())
+        assert provider.approved == ["rq1"]
+        assert provider.rejected == []
+
+    def test_resolve_unknown_returns_false(self):
+        decider = SlackApprovalDecider()
+        assert decider.resolve("nope", True) is False
+
+    def test_session_for_maps_rid_to_session(self):
+        # While a prompt is awaiting, session_for() returns the decider's
+        # session_key so the interaction handler can grant per-session Trust.
+        rec = _RecSlack()
+        decider = SlackApprovalDecider(session_key="thread-42")
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, decider=decider)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_PERMISSION_REQUEST, request_id="rqS", options=[{"id": "grep"}]),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        driver = TurnDriver(provider, renderer, approval_mode=APPROVAL_INTERACTIVE, decider=decider)
+
+        async def scenario():
+            task = asyncio.create_task(driver.run("hi"))
+            for _ in range(1000):
+                if decider._futures and rec.approval_token():
+                    break
+                await asyncio.sleep(0)
+            token = rec.approval_token()
+            assert token is not None
+            key, nonce = token
+            assert key == "thread-42:rqS"
+            assert SlackApprovalDecider.session_for(key, nonce=nonce) == "thread-42"
+            assert SlackApprovalDecider.resolve_global(key, True, nonce=nonce) is True
+            await task
+
+        asyncio.run(scenario())
+        # Cleared after the turn.
+        assert SlackApprovalDecider.session_for("thread-42:rqS") == ""
+
+    def test_resolve_global_approves_via_registry(self):
+        # The Slack interaction handler resolves clicks through the
+        # process-global registry (it holds no direct decider reference).
+        rec = _RecSlack()
+        decider = SlackApprovalDecider()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, decider=decider)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_PERMISSION_REQUEST, request_id="rqG", options=[{"id": "grep"}]),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        driver = TurnDriver(provider, renderer, approval_mode=APPROVAL_INTERACTIVE, decider=decider)
+
+        async def scenario():
+            task = asyncio.create_task(driver.run("hi"))
+            for _ in range(1000):
+                if decider._futures and rec.approval_token():
+                    break
+                await asyncio.sleep(0)
+            # Resolve WITHOUT a direct decider reference — as interactions.py does.
+            token = rec.approval_token()
+            assert token is not None
+            key, nonce = token
+            assert key == "rqG"
+            assert SlackApprovalDecider.resolve_global(key, True, nonce=nonce) is True
+            await task
+
+        asyncio.run(scenario())
+        assert provider.approved == ["rqG"]
+        assert provider.rejected == []
+        # Registry is cleaned up after the turn.
+        assert "rqG" not in SlackApprovalDecider._REGISTRY
+
+    def test_resolve_global_denies_via_registry(self):
+        # A Slack "deny" button click resolves the global registry with
+        # approved=False -> the tool is rejected (not approved).
+        rec = _RecSlack()
+        decider = SlackApprovalDecider()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, decider=decider)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_PERMISSION_REQUEST, request_id="rqD", options=[{"id": "grep"}]),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        driver = TurnDriver(provider, renderer, approval_mode=APPROVAL_INTERACTIVE, decider=decider)
+
+        async def scenario():
+            task = asyncio.create_task(driver.run("hi"))
+            for _ in range(1000):
+                if decider._futures and rec.approval_token():
+                    break
+                await asyncio.sleep(0)
+            token = rec.approval_token()
+            assert token is not None
+            key, nonce = token
+            assert SlackApprovalDecider.resolve_global(key, False, nonce=nonce) is True
+            await task
+
+        asyncio.run(scenario())
+        assert provider.rejected == ["rqD"]
+        assert provider.approved == []
+        assert "rqD" not in SlackApprovalDecider._REGISTRY
+
+    def test_timeout_denies(self, monkeypatch):
+        # If the user never clicks, the decider denies by default after the
+        # approval window (patched tiny for the test).
+        monkeypatch.setattr("kiro_crew.slack.renderer._APPROVAL_TIMEOUT", 0.01)
+        rec = _RecSlack()
+        decider = SlackApprovalDecider()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, decider=decider)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_PERMISSION_REQUEST, request_id="rqT", options=[{"id": "grep"}]),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(
+            TurnDriver(provider, renderer, approval_mode=APPROVAL_INTERACTIVE, decider=decider).run(
+                "hi"
+            )
+        )
+        assert provider.rejected == ["rqT"]
+        assert provider.approved == []
+        assert "rqT" not in SlackApprovalDecider._REGISTRY
+
+    def test_concurrent_sessions_same_rid_do_not_collide(self):
+        # Regression: kiro-cli request ids restart at 1 per session, so two
+        # concurrent threads both produce request_id == "1". The registry must
+        # be namespaced by session_key so a click on thread B's button resolves
+        # ONLY thread B's pending tool — never thread A's.
+        import asyncio as _asyncio
+
+        async def scenario():
+            dec_a = SlackApprovalDecider(session_key="thread-A")
+            dec_b = SlackApprovalDecider(session_key="thread-B")
+            ev = AcpEvent(kind=EVENT_PERMISSION_REQUEST, request_id="1", options=[])
+            # The renderer opens each window (and mints its nonce) before posting.
+            nonce_a = dec_a.reserve("1")
+            nonce_b = dec_b.reserve("1")
+            assert nonce_a and nonce_b and nonce_a != nonce_b
+            task_a = _asyncio.create_task(dec_a(ev))
+            task_b = _asyncio.create_task(dec_b(ev))
+            for _ in range(1000):
+                if dec_a._futures and dec_b._futures:
+                    break
+                await _asyncio.sleep(0)
+            # Both deciders are registered under DISTINCT namespaced keys.
+            assert SlackApprovalDecider._REGISTRY.get("thread-A:1") is dec_a
+            assert SlackApprovalDecider._REGISTRY.get("thread-B:1") is dec_b
+            # Approve ONLY thread B via its namespaced token.
+            assert SlackApprovalDecider.resolve_global("thread-B:1", True, nonce=nonce_b) is True
+            assert (await task_b) is True  # B approved
+            # A is untouched and still pending — deny it to finish the test.
+            assert not task_a.done()
+            assert SlackApprovalDecider.resolve_global("thread-A:1", False, nonce=nonce_a) is True
+            assert (await task_a) is False  # A independently denied
+
+        _asyncio.run(scenario())
+
+
+class _FakeClock:
+    """Pops scripted monotonic values; clamps to the last value when drained."""
+
+    def __init__(self, values):
+        self._values = list(values)
+
+    def __call__(self):
+        if len(self._values) > 1:
+            return self._values.pop(0)
+        return self._values[0]
+
+
+class _FlakyAppendSlack(_RecSlack):
+    """append_stream fails the first time, forcing one stream rotation."""
+
+    def __init__(self):
+        super().__init__()
+        self._n_append = 0
+
+    async def append_stream(self, channel, ts, text):
+        self._n_append += 1
+        ok = self._n_append > 1  # first append fails -> rotation, retry succeeds
+        self.calls.append(("append_stream", {"text": text, "ok": ok}))
+        return ok
+
+
+class _FlakyTaskSlack(_RecSlack):
+    """append_task refuses; append_stream is healthy.
+
+    The shape of a long tool phase meeting a rate limit: the 30s elapsed-time
+    refresh is the only thing touching the stream, and Slack turns it down.
+    """
+
+    async def append_task(self, channel, ts, task_id, title, status, details="", output=""):
+        self.calls.append(("append_task", {"title": title, "status": status, "ok": False}))
+        return False
+
+
+class TestTaskCardNeverAbandonsTheStream:
+    """A refused task card must not cost the reader their in-progress message.
+
+    Rotating on a task-card failure stops the stream the reader is watching and
+    continues the answer in a NEW message, so the thread reads as a reply that
+    failed followed minutes later by an unexplained second reply.
+    The card is decoration; skipping it withholds no answer text, and
+    ``_append_stream`` still rotates when real text is refused.
+    """
+
+    def test_refused_task_card_does_not_rotate(self):
+        rec = _FlakyTaskSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+
+        async def scenario():
+            ts = await renderer._ensure_stream()
+            assert await renderer._append_task("t-1", "Bash", "in_progress") is False
+            return ts
+
+        opened = asyncio.run(scenario())
+        opens = [kw for m, kw in rec.calls if m == "start_stream"]
+        assert len(opens) == 1, rec.calls
+        assert renderer._stream_ts == opened, rec.calls
+        assert not [m for m, _ in rec.calls if m == "stop_stream"], rec.calls
+
+    def test_elapsed_refresh_failure_leaves_the_answer_in_one_message(self):
+        """Whole-turn shape: tool runs, its card is refused, the answer still
+        lands in the message that was already open."""
+        rec = _FlakyTaskSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="looking "),
+                AcpEvent(kind=EVENT_TOOL_CALL, title="Bash", tool_name="Bash"),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="done "),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("x"))
+        opens = [kw for m, kw in rec.calls if m == "start_stream"]
+        assert len(opens) == 1, rec.calls
+        assert [kw for m, kw in rec.calls if m == "append_task"], rec.calls
+
+    def test_real_text_refused_still_rotates_and_says_it_continues(self):
+        """The branch that protects delivery is untouched, and the replacement
+        stream opens with the continuation marker so the two messages read as
+        one answer rather than as a failure plus a mystery reply."""
+        rec = _FlakyAppendSlack()  # first append_stream fails => one rotation
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="hi "),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("x"))
+        opens = [kw for m, kw in rec.calls if m == "start_stream"]
+        assert len(opens) == 2, rec.calls
+        assert opens[0]["initial_text"] is None, opens
+        # The literal, not the constant: a test that imports the constant still
+        # passes when the marker is emptied out.
+        assert "continued" in (opens[1]["initial_text"] or ""), opens
+
+
+class _NoStreamSlack(_RecSlack):
+    """start_stream returns None -> chat.update cursor fallback path."""
+
+    async def start_stream(self, channel, thread_ts, **kw):
+        self.calls.append(("start_stream", {"thread_ts": thread_ts}))
+        return None
+
+
+class TestStreamMachinery:
+    def test_throttle_coalesces_chunks_within_interval(self):
+        rec = _RecSlack()
+        # 5 clock reads: turn_start, chunk A, B, C, on_done. A flushes
+        # (now-0>=1.0); B and C arrive <1.0s later so they coalesce.
+        # Chunks end with a space so the driver's StreamRedactor commits each
+        # immediately (a trailing credential-class run would otherwise be held
+        # back until flush) — this test targets the renderer throttle, not the
+        # redactor holdback.
+        clock = _FakeClock([1000.0, 1000.0, 1000.2, 1000.4, 1000.4])
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, now=clock)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="A "),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="B "),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="C "),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+        streamed = [kw["text"] for m, kw in rec.calls if m == "append_stream"]
+        assert streamed == ["A ", "B C "], streamed
+
+    def test_throttle_flushes_each_chunk_past_interval(self):
+        rec = _RecSlack()
+        clock = _FakeClock([1000.0, 1000.0, 1002.0, 1003.0])  # B is 2s after A
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, now=clock)
+        # Trailing space so StreamRedactor commits each chunk immediately.
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="A "),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="B "),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+        streamed = [kw["text"] for m, kw in rec.calls if m == "append_stream"]
+        assert streamed == ["A ", "B "], streamed
+
+    def test_flush_on_edit_interval_does_not_tear_a_word_in_half(self):
+        """A model fragment boundary landing mid-word must not split it.
+
+        The throttled flush sends what is in ``_stream_buffer`` when the
+        edit-interval timer fires, and that timer knows nothing about where a
+        word ends. Two model fragments ("...ch" then "ạy...", the split shape
+        seen on a Vietnamese reply) land far enough apart to each cross the 1s
+        throttle, so each is a flush of its own; without a boundary check Slack
+        renders the word torn across two appended, unfixable segments.
+        """
+        rec = _RecSlack()
+        # turn_start, chunk 1 (@1000, flushes), chunk 2 (@1002, past interval,
+        # flushes), on_done (@1003).
+        clock = _FakeClock([1000.0, 1000.0, 1002.0, 1003.0])
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, now=clock)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="Đang chạ"),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="y trên máy.\n"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+        streamed = [kw["text"] for m, kw in rec.calls if m == "append_stream"]
+        # The first flush holds "chạ" back rather than sending it torn; it is
+        # only released once "y" arrives and completes the word.
+        assert streamed == ["Đang ", "chạy trên máy.\n"], streamed
+        assert "".join(streamed) == "Đang chạy trên máy.\n"
+
+    def test_held_word_is_released_at_on_done_even_with_no_trailing_space(self):
+        """A turn that ends mid-word must still deliver the whole word.
+
+        The held tail exists only until the true end of the turn -- ``on_done``
+        flushes unconditionally so a turn that happens to stop right after a
+        throttled cut never leaves a fragment permanently stuck in the
+        renderer's buffer.
+        """
+        rec = _RecSlack()
+        clock = _FakeClock([1000.0, 1000.0, 1002.0])
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, now=clock)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="partial"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+        streamed = [kw["text"] for m, kw in rec.calls if m == "append_stream"]
+        assert "".join(streamed) == "partial", streamed
+
+    def test_a_script_written_without_spaces_still_streams_progressively(self):
+        """Whitespace is the only boundary here, so a script with none is sent.
+
+        Chinese, Japanese and Thai supply no whitespace for whole paragraphs. A
+        holdback that waited for one would re-hold the entire buffer on every
+        tick, so the reader would see nothing between newlines and the throttled
+        cadence the stream path exists for would be lost for exactly the
+        multibyte-script users a word-boundary guard is meant to help. Both
+        fragments below cross the throttle, so both must appear on their own.
+        """
+        rec = _RecSlack()
+        clock = _FakeClock([1000.0, 1000.0, 1002.0, 1003.0])
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, now=clock)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="正在机器上运行"),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="第二段文字。\n"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+        streamed = [kw["text"] for m, kw in rec.calls if m == "append_stream"]
+        assert streamed == ["正在机器上运行", "第二段文字。\n"], streamed
+
+    def test_an_over_long_run_is_sent_rather_than_held(self):
+        """The hold is bounded, so one unbroken run cannot stall the stream.
+
+        A run far longer than any word is not a token mid-flight; it is content
+        this rule cannot read -- a base64 blob, a minified line, a space-free
+        script after one leading space. Holding it would defer real output
+        waiting for a boundary that may never arrive, so it goes out as written.
+        Asserted on the boundary helper rather than through a turn because the
+        ref-hold can defer a long unbroken run for its own, unrelated reason,
+        which would make a stream-level assertion pass without this rule.
+        """
+        from kiro_crew.slack.renderer import _WORD_HOLD_MAX, _split_trailing_word
+
+        short = "y" * _WORD_HOLD_MAX
+        assert _split_trailing_word(f"pin {short}") == ("pin ", short)
+        over = "y" * (_WORD_HOLD_MAX + 1)
+        assert _split_trailing_word(f"pin {over}") == (f"pin {over}", "")
+        # No whitespace at all: nothing to hold against, so send as written.
+        assert _split_trailing_word("正在机器上运行") == ("正在机器上运行", "")
+
+    def test_a_tool_card_cannot_get_between_a_held_word_and_its_start(self):
+        """Prose before a tool must finish before the card, not after it.
+
+        The hold is only ever safe because the NEXT flush stitches it back onto
+        its own word. A tool boundary is the one place that premise fails: the
+        card is appended immediately after the flush, so a complete word the
+        model simply did not follow with a space is released on the FAR side of
+        it and reads as the opening of the post-tool sentence -- "Đang kiểm tra
+        máy " / card / "chủ và ...". Nothing is lost, which is why no test
+        caught it; the order is wrong, and appends are final on Slack's side,
+        so the reader cannot be given the sentence back.
+
+        The trailing word carries a non-ASCII character deliberately: the
+        driver's own StreamRedactor holds a trailing ASCII run back as a
+        possible credential prefix, which would satisfy this assertion without
+        the renderer's hold ever being exercised.
+        """
+        rec = _RecSlack()
+        clock = _FakeClock([1000.0, 1000.0, 1002.0, 1004.0])
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, now=clock)
+        provider = _Provider(
+            [
+                # No trailing space, so the throttled flush has a word to hold.
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="Đang kiểm tra máy chủ"),
+                AcpEvent(kind=EVENT_TOOL_CALL, title="Bash", tool_name="Bash"),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=" và ổ đĩa.\n"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+        # Split the interleaved call log at the first task card.
+        before, after, seen_card = "", "", False
+        for method, kw in rec.calls:
+            if method == "append_task":
+                seen_card = True
+            elif method == "append_stream":
+                if seen_card:
+                    after += kw["text"]
+                else:
+                    before += kw["text"]
+        assert seen_card, rec.calls
+        assert before == "Đang kiểm tra máy chủ", rec.calls
+        assert after == " và ổ đĩa.\n", rec.calls
+
+        """The rescued transcript must not end on half a word.
+
+        A dying turn is the one exit where the hold is released without a flush,
+        and the buffer behind it holds the rest of that same word. Releasing the
+        hold alone appends ``"chạ"`` as the last thing the durable transcript
+        establishes and drops the ``"y "`` that completes it -- the very tear the
+        throttled holdback exists to prevent, reintroduced on the failure path.
+        """
+        rec = _RecSlack()
+        clock = _FakeClock([1000.0, 1000.0])
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, now=clock)
+        provider = _Provider([AcpEvent(kind=EVENT_TEXT_CHUNK, text="Đang chạ")])
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+        # The flush held "chạ"; the continuation then buffered behind it without
+        # crossing the throttle, so neither has reached Slack.
+        assert renderer._word_hold == "chạ", renderer._word_hold
+        renderer._stream_buffer = "y trên máy."
+
+        asyncio.run(renderer.release_held_word())
+
+        streamed = "".join(kw["text"] for m, kw in rec.calls if m == "append_stream")
+        assert streamed == "Đang chạy trên máy.", streamed
+        assert renderer.delivered_text == "Đang chạy trên máy.", renderer.delivered_text
+        # Both are consumed: a second call cannot re-send either.
+        assert renderer._word_hold == "" and renderer._stream_buffer == ""
+
+    def test_append_failure_triggers_one_rotation(self):
+        rec = _FlakyAppendSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="hi"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("x"))
+        methods = [m for m, _ in rec.calls]
+        # Initial open + one rotation = 2 start_streams; the failed append is
+        # retried after rotation and succeeds.
+        assert methods.count("start_stream") == 2, methods
+        appends = [kw for m, kw in rec.calls if m == "append_stream"]
+        assert appends[0]["ok"] is False and appends[-1]["ok"] is True, appends
+
+    def test_no_stream_falls_back_to_chat_update(self):
+        rec = _NoStreamSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="hello"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("x"))
+        methods = [m for m, _ in rec.calls]
+        # No streaming surface -> a placeholder is posted and edits go via
+        # chat.update (update_message), never append_stream.
+        assert "update_message" in methods, methods
+        assert "append_stream" not in methods, methods
+        assert "post_message" in methods, methods  # the _THINKING placeholder
+
+
+class TestToolTimerAndWait:
+    def test_elapsed_appended_to_completed_task_title(self):
+        rec = _RecSlack()
+        # Clock reads: turn_start, tool1(start timer @1000), tool2(elapsed=2s,
+        # completes tool1), on_done. Tool1 ran 2s -> "⏱ 2.0s" in its title.
+        clock = _FakeClock([1000.0, 1000.0, 1002.0, 1002.0])
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, now=clock)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="a", title="grep", tool_final=False),
+                AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="b", title="cat", tool_final=False),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("x"))
+        completes = [
+            kw["title"] for m, kw in rec.calls if m == "append_task" and kw["status"] == "complete"
+        ]
+        assert any("⏱" in t for t in completes), completes
+        assert renderer._tool_timer_task is None  # timer cancelled on done
+
+    def test_wait_tool_finalizes_stream(self):
+        rec = _RecSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="w", title="wait", tool_final=False),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="back"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("x"))
+        methods = [m for m, _ in rec.calls]
+        # The wait tool finalizes (stop_stream) then a fresh stream opens for
+        # the post-wait text -> a second start_stream appears.
+        assert methods.count("start_stream") == 2, methods
+        assert "stop_stream" in methods
+
+
+class _StepClock:
+    """Monotonic clock that advances a fixed step on every call, so every text
+    chunk trips the edit-throttle (deterministic intermediate updates)."""
+
+    def __init__(self, step: float = 2.0):
+        self._t = 0.0
+        self._step = step
+
+    def __call__(self) -> float:
+        self._t += self._step
+        return self._t
+
+
+class TestNoStreamOptionsFiltering:
+    """Regression: [OPTIONS:...] markup must never leak into no-stream
+    chat.update calls (the streaming path already filters via bracket-hold)."""
+
+    def test_options_markup_not_leaked_in_no_stream_updates(self):
+        rec = _NoStreamSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, now=_StepClock(step=2.0))
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="Pick one: "),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="A or B "),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="[OPTIONS: A | B]"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+
+        updates = [kw["text"] for m, kw in rec.calls if m == "update_message"]
+        assert updates, "expected chat.update calls in the no-stream fallback"
+        # Neither intermediate nor final updates leak the OPTIONS markup:
+        #  - intermediate updates are filtered via the bracket-hold buffer,
+        #  - the final update uses extract_options(_accumulated) clean text.
+        assert all("[OPTIONS:" not in t for t in updates), updates
+        # The visible text is the filtered content.
+        assert any("Pick one" in t for t in updates), updates
+
+    def test_thinking_tags_not_leaked_in_no_stream_updates(self):
+        rec = _NoStreamSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, now=_StepClock(step=2.0))
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="Answer: "),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="<thinking>secret</thinking>"),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="42"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+
+        updates = [kw["text"] for m, kw in rec.calls if m == "update_message"]
+        assert updates, "expected chat.update calls in the no-stream fallback"
+        # Intermediate renders carry the cursor (▍). They must never surface
+        # <thinking>…</thinking>, mirroring the streaming path's
+        # _flush_stream_buffer strip. (The final on_done render is produced by
+        # extract_options — identical on both paths — and is out of scope here.)
+        intermediate = [t for t in updates if "▍" in t]
+        assert intermediate, updates
+        assert all("<thinking>" not in t and "secret" not in t for t in intermediate), intermediate
+
+
+class TestShowThinking:
+    """slack.show_thinking gates surfacing the model's reasoning as a 💭 thread
+    reply above the answer (matches native). Off => reasoning stays private."""
+
+    def _events(self):
+        return [
+            AcpEvent(kind=EVENT_THINKING_CHUNK, text="let me think "),
+            AcpEvent(kind=EVENT_THINKING_CHUNK, text="about it"),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="the answer "),
+            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+        ]
+
+    def test_show_thinking_on_posts_reasoning_reply(self):
+        rec = _RecSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, show_thinking=True)
+        asyncio.run(TurnDriver(_Provider(self._events()), renderer, approval_mode="auto").run("hi"))
+        posts = [kw["text"] for m, kw in rec.calls if m == "post_message"]
+        assert any(p.startswith("💭") and "let me think about it" in p for p in posts), posts
+
+    def test_show_thinking_off_suppresses_reasoning(self):
+        rec = _RecSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, show_thinking=False)
+        asyncio.run(TurnDriver(_Provider(self._events()), renderer, approval_mode="auto").run("hi"))
+        posts = [kw["text"] for m, kw in rec.calls if m == "post_message"]
+        assert not any(p.startswith("💭") for p in posts), posts
+
+    def test_thinking_reply_is_redacted(self):
+        rec = _RecSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, show_thinking=True)
+        events = [
+            AcpEvent(kind=EVENT_THINKING_CHUNK, text="key AKIA1234567890ABCDEX here"),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="done"),
+            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+        ]
+        asyncio.run(TurnDriver(_Provider(events), renderer, approval_mode="auto").run("hi"))
+        thinking = [
+            kw["text"] for m, kw in rec.calls if m == "post_message" and kw["text"].startswith("💭")
+        ]
+        assert thinking, rec.calls
+        assert "AKIA1234567890ABCDEX" not in thinking[0]
+        assert "[REDACTED: credential]" in thinking[0]
+
+
+class _RecWeb:
+    """Records outgoing Slack Web API bodies (stands in for AsyncWebClient)."""
+
+    def __init__(self):
+        self.bodies: list[tuple[str, dict]] = []
+
+    async def api_call(self, method, json=None):
+        self.bodies.append((method, dict(json or {})))
+        return {"ok": True, "ts": f"ts-{len(self.bodies)}"}
+
+
+def _real_client_with_recorder():
+    """A RealSlackClient whose transport is recorded instead of sent.
+
+    ``__new__`` skips ``__init__`` so no bot token is needed; the only attribute
+    the streaming calls touch beyond ``_web`` is the channel->team cache, which
+    is already ``getattr``-guarded for exactly this case.
+    """
+    client = RealSlackClient.__new__(RealSlackClient)
+    web = _RecWeb()
+    client._web = web
+    return client, web
+
+
+def _start_stream_bodies(web):
+    return [body for method, body in web.bodies if method == "chat.startStream"]
+
+
+class TestStreamRecipientRouting:
+    """chat.startStream needs recipient routing, and the renderer holds it.
+
+    Slack rejects the call with ``missing_recipient_user_id`` when the field is
+    absent; the renderer then demotes to the non-streaming chat.update surface,
+    which still produces a correct reply. That is why these assertions read the
+    OUTGOING request body rather than the rendered text -- a test that only
+    checks the reply text passes either way.
+    """
+
+    def test_open_stream_sends_recipient_user_id(self):
+        client, web = _real_client_with_recorder()
+        renderer = SlackRenderer(client, "C1", "t1", reactions_enabled=False, user_id="U123")
+        asyncio.run(renderer._ensure_stream())
+        bodies = _start_stream_bodies(web)
+        assert len(bodies) == 1, web.bodies
+        assert bodies[0]["recipient_user_id"] == "U123", bodies[0]
+
+    def test_rotated_stream_sends_recipient_user_id(self):
+        client, web = _real_client_with_recorder()
+        renderer = SlackRenderer(client, "C1", "t1", reactions_enabled=False, user_id="U123")
+        asyncio.run(renderer._ensure_stream())
+        asyncio.run(renderer._rotate_stream())
+        bodies = _start_stream_bodies(web)
+        assert len(bodies) == 2, web.bodies
+        assert all(b["recipient_user_id"] == "U123" for b in bodies), bodies
+
+    def test_absent_user_id_omits_the_field(self):
+        """No sender id => the same request as before, not an empty recipient."""
+        client, web = _real_client_with_recorder()
+        renderer = SlackRenderer(client, "C1", "t1", reactions_enabled=False)
+        asyncio.run(renderer._ensure_stream())
+        bodies = _start_stream_bodies(web)
+        assert len(bodies) == 1, web.bodies
+        assert "recipient_user_id" not in bodies[0], bodies[0]
+
+    def test_driver_turn_forwards_user_id_on_both_call_sites(self):
+        """Whole-turn coverage: the initial open and the rotation both carry it."""
+        rec = _FlakyAppendSlack()  # first append fails => one rotation
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, user_id="U123")
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="hi"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("x"))
+        opens = [kw for m, kw in rec.calls if m == "start_stream"]
+        assert len(opens) == 2, rec.calls
+        assert [kw["user_id"] for kw in opens] == ["U123", "U123"], opens
+
+
+class _DeadAppendSlack(_RecSlack):
+    """Every append_stream is rejected, rotation included."""
+
+    async def append_stream(self, channel, ts, text):
+        self.calls.append(("append_stream", {"text": text, "ok": False}))
+        return False
+
+
+class TestDeliveryLedger:
+    """``delivered_text`` records what Slack SHOWED, never what the model produced.
+
+    The dispatcher's partial-progress rescue persists this on the failure path, so
+    anything it over-claims becomes a transcript asserting the user was told
+    something they never saw.
+    """
+
+    @staticmethod
+    def _acknowledged(rec):
+        """Concatenation of every append Slack accepted — the ledger's contract."""
+        return "".join(
+            kw["text"] for m, kw in rec.calls if m == "append_stream" and kw.get("ok", True)
+        )
+
+    def test_the_ledger_is_empty_before_anything_streams(self):
+        rec = _RecSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        assert renderer.delivered_text == ""
+
+    def test_a_flushed_chunk_is_recorded(self):
+        async def scenario():
+            rec = _RecSlack()
+            # Single clamping clock value: the first chunk sees now - 0.0 >= the
+            # edit interval and flushes.
+            renderer = SlackRenderer(
+                rec, "C1", "t1", reactions_enabled=False, now=_FakeClock([1000.0])
+            )
+            await renderer.on_text_chunk("ledger A reconciles ")
+            assert self._acknowledged(rec) == "ledger A reconciles "
+            assert renderer.delivered_text == self._acknowledged(rec)
+
+        asyncio.run(scenario())
+
+    def test_a_chunk_still_inside_the_throttle_window_is_not_recorded(self):
+        """The exact defect this ledger exists for: produced is not shown.
+
+        The clock never advances, so the second chunk lands inside the edit
+        interval and the renderer buffers it WITHOUT sending. It is in
+        ``_accumulated`` — the buffer the old rescue read — and must not be in the
+        ledger.
+        """
+
+        async def scenario():
+            rec = _RecSlack()
+            renderer = SlackRenderer(
+                rec, "C1", "t1", reactions_enabled=False, now=_FakeClock([1000.0])
+            )
+            await renderer.on_text_chunk("shown to the user ")
+            await renderer.on_text_chunk("NEVER left the buffer ")
+
+            # Slack only ever saw the first chunk.
+            assert self._acknowledged(rec) == "shown to the user "
+            # The renderer is still holding the second one...
+            assert "NEVER left the buffer " in renderer._accumulated
+            # ...and the ledger refuses to claim it.
+            assert renderer.delivered_text == "shown to the user "
+            assert "NEVER" not in renderer.delivered_text
+
+        asyncio.run(scenario())
+
+    def test_a_rejected_append_is_not_recorded(self):
+        """A send Slack refused is not delivery, even after the rotation retry."""
+
+        async def scenario():
+            rec = _DeadAppendSlack()
+            renderer = SlackRenderer(
+                rec, "C1", "t1", reactions_enabled=False, now=_FakeClock([1000.0])
+            )
+            await renderer.on_text_chunk("this never landed ")
+            assert [m for m, _ in rec.calls if m == "append_stream"], rec.calls
+            assert renderer.delivered_text == ""
+
+        asyncio.run(scenario())
+
+    def test_the_no_stream_fallback_records_nothing(self):
+        """``_safe_update`` cannot confirm delivery, so the ledger stays empty.
+
+        It returns None, swallows its own exceptions and truncates at Slack's
+        message limit, and the frame it sends is a fence-safe prefix rather than the
+        whole text. Recording it would be a guess; the rescue no-ops instead.
+        """
+
+        async def scenario():
+            rec = _NoStreamSlack()
+            renderer = SlackRenderer(
+                rec, "C1", "t1", reactions_enabled=False, now=_FakeClock([1000.0])
+            )
+            await renderer.on_text_chunk("cursor fallback text ")
+            assert [m for m, _ in rec.calls if m == "update_message"], rec.calls
+            assert renderer.delivered_text == ""
+
+        asyncio.run(scenario())
+
+    def test_the_ledger_survives_the_tool_boundary_that_clears_accumulated(self):
+        """A ``wait`` boundary ends the message and clears ``_accumulated``.
+
+        Appends are final on this path, so text shown before the boundary stays
+        delivered. A ledger rebuilt from ``_accumulated`` would lose it.
+        """
+
+        async def scenario():
+            rec = _RecSlack()
+            renderer = SlackRenderer(
+                rec, "C1", "t1", reactions_enabled=False, now=_FakeClock([1000.0])
+            )
+            await renderer.on_text_chunk("before the tool ")
+            before = renderer.delivered_text
+            assert before == "before the tool "
+            await renderer.on_tool_call("tc1", "Running: wait", tool_kind="wait")
+            # The message segment was closed and its accumulator reset...
+            assert renderer._accumulated == ""
+            # ...but what the user was already shown is still on the ledger.
+            assert renderer.delivered_text.startswith(before)
+
+        asyncio.run(scenario())
+
+
+class TestAppendTaskRaiseIsSwallowed:
+    """``SlackRenderer._append_task`` forwards to ``slack.append_task``,
+    which the real client swallows internally — but a client or transport that
+    raises would propagate out of ``on_tool_call`` (before any text streams)
+    into the transport catch-all, which posts a terminal "Something went wrong
+    (transport path)" reply on a live turn. The guard at ``_append_task``'s
+    single definition (mirroring the native handler's guard) must swallow
+    the raise at every call site and let the turn deliver."""
+
+    def test_raising_append_task_does_not_escape_the_turn(self):
+        class RaisingTaskSlack(_RecSlack):
+            def __init__(self):
+                super().__init__()
+                self.task_raises = 0
+
+            async def append_task(self, *a, **kw):
+                self.task_raises += 1
+                raise RuntimeError("ratelimited: chat.appendStream")
+
+        rec = RaisingTaskSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        provider = _Provider(
+            [
+                AcpEvent(
+                    kind=EVENT_TOOL_CALL, tool_call_id="x", title="Running: grep", tool_final=False
+                ),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="The answer is 42"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        # Must not raise out of the turn — a raise here is what reaches the
+        # transport catch-all and posts the terminal error.
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+
+        assert rec.task_raises >= 1, rec.calls  # the guarded site actually fired
+        # The reply still reached the user via the normal delivery path.
+        final_texts = [
+            str(kw.get("final_text") or kw.get("text") or "")
+            for m, kw in rec.calls
+            if m in ("stop_stream", "post_message", "update_message", "append_stream")
+        ]
+        joined = " ".join(final_texts)
+        assert "The answer is 42" in joined, rec.calls
+        assert "Something went wrong" not in joined, rec.calls
+
+
+class TestRendererPresentationGuards:
+    """Renderer presentation-guard sweep: the transport path (``use_transport`` defaults True)
+    drives ``SlackRenderer`` whose presentation calls, on a raising client,
+    would escape into the transport catch-all and post a terminal error on a
+    live turn — same class as the native handler sites. Each test drives one
+    guarded site and asserts the turn completes and the reply is delivered."""
+
+    @staticmethod
+    def _events():
+        return [
+            AcpEvent(
+                kind=EVENT_TOOL_CALL, tool_call_id="x", title="Running: grep", tool_final=False
+            ),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="The answer is 42"),
+            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+        ]
+
+    @staticmethod
+    def _joined(rec):
+        return " ".join(
+            str(kw.get("final_text") or kw.get("text") or "")
+            for m, kw in rec.calls
+            if m in ("stop_stream", "post_message", "update_message", "append_stream")
+        )
+
+    def test_raising_set_thread_status_does_not_escape(self):
+        class RaisingStatusSlack(_RecSlack):
+            def __init__(self):
+                super().__init__()
+                self.status_raises = 0
+
+            async def set_thread_status(self, channel, thread_ts, status):
+                if status.startswith("is using"):
+                    self.status_raises += 1
+                    raise RuntimeError("ratelimited: assistant.threads.setStatus")
+                return await super().set_thread_status(channel, thread_ts, status)
+
+        rec = RaisingStatusSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        asyncio.run(TurnDriver(_Provider(self._events()), renderer, approval_mode="auto").run("hi"))
+        assert rec.status_raises >= 1, rec.calls
+        joined = self._joined(rec)
+        assert "The answer is 42" in joined, rec.calls
+        assert "Something went wrong" not in joined, rec.calls
+
+    def test_raising_wait_finalize_stop_stream_does_not_escape(self):
+        class RaisingFinalizeSlack(_RecSlack):
+            def __init__(self):
+                super().__init__()
+                self.finalize_raises = 0
+
+            async def stop_stream(self, channel, ts, final_text=None):
+                if final_text is None:
+                    self.finalize_raises += 1
+                    raise RuntimeError("message_not_found: chat.stopStream")
+                return await super().stop_stream(channel, ts, final_text)
+
+        rec = RaisingFinalizeSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        events = [
+            AcpEvent(
+                kind=EVENT_TOOL_CALL, tool_call_id="x", title="Running: wait", tool_final=False
+            ),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="The answer is 42"),
+            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+        ]
+        asyncio.run(TurnDriver(_Provider(events), renderer, approval_mode="auto").run("hi"))
+        assert rec.finalize_raises >= 1, rec.calls
+        joined = self._joined(rec)
+        assert "The answer is 42" in joined, rec.calls
+        assert "Something went wrong" not in joined, rec.calls
+
+    def test_raising_append_stream_recovers_full_text(self):
+        """Append raises, rotation succeeds, retry raises: the raise must map
+        onto the refused-append outcome — the turn completes without a
+        terminal error, matching the shipped client's refused append on this
+        path. (Re-delivering the dropped delta is the delivery-debt
+        follow-up, deliberately out of this sweep's scope.)"""
+
+        class RaisingAppendSlack(_RecSlack):
+            def __init__(self):
+                super().__init__()
+                self.append_raises = 0
+
+            async def append_stream(self, channel, ts, text):
+                self.append_raises += 1
+                raise RuntimeError("ratelimited: chat.appendStream")
+
+        rec = RaisingAppendSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        asyncio.run(TurnDriver(_Provider(self._events()), renderer, approval_mode="auto").run("hi"))
+        assert rec.append_raises >= 2, rec.calls  # first append + post-rotation retry
+        assert "Something went wrong" not in self._joined(rec), rec.calls
+
+    def test_raising_start_stream_and_placeholder_still_delivers(self):
+        """Both the stream start AND the placeholder post raise: no message
+        exists at all — ``on_done`` must post the final answer directly."""
+
+        class RaisingStartSlack(_RecSlack):
+            def __init__(self):
+                super().__init__()
+                self.start_raises = 0
+
+            async def start_stream(self, channel, thread_ts, **kw):
+                self.start_raises += 1
+                raise RuntimeError("fatal_error: chat.startStream")
+
+            async def post_message(self, channel, text, thread_ts=None, **kw):
+                if "Thinking" in text:
+                    raise RuntimeError("channel_not_found: chat.postMessage")
+                return await super().post_message(channel, text, thread_ts=thread_ts, **kw)
+
+        rec = RaisingStartSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        asyncio.run(TurnDriver(_Provider(self._events()), renderer, approval_mode="auto").run("hi"))
+        assert rec.start_raises >= 1, rec.calls
+        posts = [str(kw.get("text") or "") for m, kw in rec.calls if m == "post_message"]
+        assert any("The answer is 42" in p for p in posts), rec.calls
+        assert "Something went wrong" not in self._joined(rec), rec.calls
+
+    def test_total_delivery_failure_propagates(self):
+        """Stream start, placeholder post AND the final direct post all raise:
+        nothing was delivered, so the raise must PROPAGATE — the transport
+        catch-all recording a failure is the honest outcome. Swallowing here
+        would convert total delivery failure into recorded success (a
+        review finding)."""
+        import pytest
+
+        class TotalFailureSlack(_RecSlack):
+            async def start_stream(self, channel, thread_ts, **kw):
+                raise RuntimeError("fatal_error: chat.startStream")
+
+            async def post_message(self, channel, text, thread_ts=None, **kw):
+                raise RuntimeError("channel_not_found: chat.postMessage")
+
+        rec = TotalFailureSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        with pytest.raises(RuntimeError):
+            asyncio.run(
+                TurnDriver(_Provider(self._events()), renderer, approval_mode="auto").run("hi")
+            )
+
+
+class TestWaitIdentity:
+    """The wait-stream rollover keys on the tool's programmatic identity, not on
+    the display title, so a derived title (``Wait``) cannot disable it and a
+    look-alike name cannot trigger it."""
+
+    @pytest.mark.parametrize(
+        "tool_name",
+        ["wait", "kirocrew-core___wait", "mcp__kirocrew-core__wait", "  WAIT  "],
+    )
+    def test_wait_spellings_match(self, tool_name):
+        assert is_wait_identity(tool_name) is True
+
+    @pytest.mark.parametrize(
+        "tool_name",
+        [
+            "wait_for_ci",
+            "await",
+            "kirocrew-core___wait_for_ci",
+            "waiter",
+            "",
+            "third-party___wait",
+            "mcp__other-server__wait",
+        ],
+    )
+    def test_other_names_do_not_match(self, tool_name):
+        # A single underscore is not an MCP separator, so ``wait_for_ci`` is a
+        # different tool; and a foreign server's own ``wait`` is not the core
+        # tool, so a suffix match would roll the stream over on it.
+        assert is_wait_identity(tool_name) is False
+
+
+class TestRenderFallbackEmptyText:
+    """A tool-only / reasoning-only turn reaches ``_render_fallback`` with empty
+    text on the no-stream path; the answer-carrying ``chat.update`` must not be
+    sent empty (Slack rejects empty text as ``no_text`` and raises, failing an
+    ordinary completed turn). The fallback substitutes the ``_No response._``
+    placeholder, mirroring the native path."""
+
+    def test_empty_text_sends_placeholder_not_empty_update(self):
+        rec = _RecSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        # Simulate the no-stream placeholder path: a message ts exists to update.
+        renderer._stream_ts = "ts-existing"
+
+        asyncio.run(renderer._render_fallback(""))
+
+        updates = [kw["text"] for name, kw in rec.calls if name == "update_message"]
+        assert updates, "no update_message was attempted"
+        # The answer-carrying update carried the placeholder, never empty text —
+        # an empty text would raise no_text against the real client.
+        assert all(t for t in updates), "an empty chat.update was sent (no_text raise)"
+        assert updates[0] == "_No response._"
+
+
+class TestOptionsFooterCancellationDefersFinalize:
+    """F2: on an OPTIONS turn the footer is answer-carrying (the choices ride
+    only in it). A CancelledError during the footer ``post_blocks`` must leave
+    the turn UN-finalized so the transport dispatcher records a failure — not a
+    finalized success for choices the reader never received. The renderer defers
+    ``_finalized`` past the footer for OPTIONS turns precisely for this."""
+
+    def test_cancel_during_options_footer_leaves_turn_unfinalized(self):
+        async def scenario():
+            rec = _RecSlack()
+
+            async def _cancel_post_blocks(channel, blocks, text, thread_ts=None, **kw):
+                raise asyncio.CancelledError()
+
+            rec.post_blocks = _cancel_post_blocks  # type: ignore[assignment]
+            renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+            # Streaming path with an OPTIONS-only-carrying answer body.
+            renderer._accumulated = "pick one\n[OPTIONS: alpha | beta]"
+            renderer._stream_ts = "ts-stream"
+            renderer._use_slack_stream = True
+            renderer._delivered = "pick one"  # answer body already streamed
+
+            raised = False
+            try:
+                await renderer.on_done()
+            except asyncio.CancelledError:
+                raised = True
+
+            assert raised, "the cancellation must propagate so the dispatcher can act"
+            # The OPTIONS choices never reached the reader, so the turn must NOT be
+            # finalized — an un-finalized turn is what makes the dispatcher record a
+            # failure instead of booking a success for undelivered choices.
+            assert (
+                renderer.turn_finalized is False
+            ), "finalized a turn whose OPTIONS never delivered"
+
+        asyncio.run(scenario())
+
+    def test_non_options_footer_cancel_still_finalizes(self):
+        """A non-OPTIONS turn's footer is pure decoration, so the answer is
+        already delivered and the turn stays finalized even if the footer post is
+        cancelled — the deferral must apply ONLY to OPTIONS turns."""
+
+        async def scenario():
+            rec = _RecSlack()
+
+            async def _cancel_post_blocks(channel, blocks, text, thread_ts=None, **kw):
+                raise asyncio.CancelledError()
+
+            rec.post_blocks = _cancel_post_blocks  # type: ignore[assignment]
+            renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+            renderer._accumulated = "just an answer, no choices"
+            renderer._stream_ts = "ts-stream"
+            renderer._use_slack_stream = True
+            renderer._delivered = "just an answer, no choices"
+
+            try:
+                await renderer.on_done()
+            except asyncio.CancelledError:
+                pass
+
+            # No OPTIONS: the answer is fully delivered, the footer is decoration,
+            # so the turn is finalized (a footer cancellation must not un-book a
+            # delivered answer).
+            assert renderer.turn_finalized is True
+
+        asyncio.run(scenario())
+
+
+class TestTransportRedactionNotice:
+    """The DEFAULT Slack path posts a redaction notice below a rewritten answer.
+
+    Driven through the real TurnDriver so the StreamRedactor writes the
+    placeholder exactly as production does. The tally counts the final
+    display-safe body plus the posted 💭 reasoning, mirroring the native
+    handler's per-turn count; shared wording is pinned in
+    ``test_credential_redaction_notice.py``.
+    """
+
+    _SECRET_URI = "postgresql://user:SuperSecret123@db.example.com:5432/prod"
+
+    def _run(self, rec, events):
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        provider = _Provider(events)
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+
+    def test_redacted_answer_is_followed_by_one_threaded_notice(self):
+        rec = _RecSlack()
+        self._run(
+            rec,
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=f"Run: psql {self._SECRET_URI}"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ],
+        )
+        outbound = [str(kw.get("text") or kw.get("final_text") or "") for _method, kw in rec.calls]
+        assert not any("SuperSecret123" in t for t in outbound)
+        notices = [
+            kw["text"]
+            for method, kw in rec.calls
+            if method == "post_message" and "Security notice" in str(kw.get("text"))
+        ]
+        assert len(notices) == 1
+        assert "SuperSecret123" not in notices[0]
+        # Below the answer: the stream is finalized before the notice posts.
+        methods = [m for m, _ in rec.calls]
+        last_post_message = max(i for i, m in enumerate(methods) if m == "post_message")
+        assert methods.index("stop_stream") < last_post_message
+
+    def test_clean_answer_posts_no_notice(self):
+        rec = _RecSlack()
+        self._run(
+            rec,
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="All green, deploy finished."),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ],
+        )
+        assert not any(
+            "Security notice" in str(kw.get("text"))
+            for method, kw in rec.calls
+            if method == "post_message"
+        )
+
+    def test_notice_send_failure_does_not_fail_a_delivered_turn(self):
+        class _NoticeFailsSlack(_RecSlack):
+            async def post_message(self, channel, text, thread_ts=None, **kw):
+                if "Security notice" in str(text):
+                    raise RuntimeError("slack down after the answer")
+                return await super().post_message(channel, text, thread_ts, **kw)
+
+        rec = _NoticeFailsSlack()
+        # Must not raise: the answer is already delivered when the notice fails.
+        self._run(
+            rec,
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=f"Run: psql {self._SECRET_URI}"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ],
+        )
+        stops = [kw for m, kw in rec.calls if m == "stop_stream"]
+        assert len(stops) == 1 and "[REDACTED: credential]" in str(stops[0]["final_text"])

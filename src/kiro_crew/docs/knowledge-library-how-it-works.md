@@ -1,0 +1,76 @@
+# Knowledge Library
+
+Semantic search over your own documents, folders, and generated artifacts. Add a
+file and its text is chunked, indexed, and searchable by meaning rather than by
+exact wording, with every result citing the source it came from.
+
+## What gets indexed
+
+Uploaded documents and synced folders are indexed when you add them. Two more
+sources are opt-in, both off by default: saved artifacts, with
+`knowledge.auto_ingest_artifacts` (kinds from `knowledge.auto_ingest_artifact_kinds`,
+default markdown, text, html and json), and documents the agent reads during its
+work, with `knowledge.auto_add_documents`. Text is split
+into overlapping chunks so a match can be quoted in context, and entities and
+relations found in each chunk are linked into a graph that connects passages
+across different files.
+
+## What search returns
+
+A ranked list of passages, each with a citation naming where it came from:
+`**Source:**` for a document, `**File:**` for a file inside a synced folder,
+`**Artifact:**` for something you saved, and `**Link:**` for a URL. Results
+combine keyword and meaning-based matching, so an exact phrase and a paraphrase
+both find the passage.
+
+## Duplicates
+
+Near-identical passages from different sources are collapsed to one result, so
+uploading the same document twice — directly and through a folder sync — does not
+double every hit.
+
+## Removing documents
+
+A file panel offers a Remove toggle (green book icon, and a "Remove from
+Knowledge Library" row in the ⋯ menu) only for a document the panel itself
+added, as its own per-file source. A file that is in the library through a
+synced folder shows the green badge without a Remove action; remove it from the
+Knowledge page instead. Removing deletes that file's source and all of the
+chunks and graph entities indexed from it; the file itself stays on disk. The
+panel then offers Add again, unless another source still covers the file.
+
+The Knowledge page removes sources at larger granularity: the Knowledge
+Detail view deletes a single item, and the Knowledge page supports bulk
+deletion of a selection.
+
+Deletion is permanent. There is no undo, and it cascades to everything
+derived from the removed sources — indexed chunks, extracted graph entities
+and their search contributions are all dropped with the source.
+
+## Three levels of quality
+
+Search runs three legs and fuses whatever they return, so it degrades in a defined
+order rather than failing:
+
+1. **Full** — the embedding model is loaded, so meaning-based, keyword and graph
+   matching all contribute to the ranking.
+2. **Keyword and graph** — no embedding model, so results come from full-text and
+   graph matching. Exact wording still works; paraphrases are weaker.
+3. **Keyword only** — the graph leg finds no entity matching your terms, so
+   full-text matching answers alone. Keyword search is a local index with no model
+   behind it, so it is always available.
+
+When the embedding model is unavailable, the agent's search result says so: its
+header, or its "No relevant knowledge found." answer, notes that only keyword
+results were used.
+
+## Settings
+
+`knowledge.auto_ingest_artifacts` (default `false`) indexes saved artifacts and
+keeps them in sync; `knowledge.auto_add_documents` (default `false`) lets the
+agent add documents it reads. `knowledge.extraction_pool_size` bounds how many chunks are processed at once
+(1–10; idle workers are released after five minutes). The embedding model can be
+pointed elsewhere with `KIROCREW_EMBED_MODEL_URL` or `KIROCREW_EMBED_MODEL_PATH`.
+
+For how the graph itself is built and stored, see the contributor spec
+`docs/system-specs/modules/knowledge.md`.

@@ -1,0 +1,577 @@
+"""Tests for _apply_security_headers on dashboard responses.
+
+Guards the Permissions-Policy header that unblocks
+``navigator.clipboard.writeText`` on Chrome 143+ (crbug.com/414348233),
+the Cache-Control triplet, and the CSP header (including the
+instances-mode frame-src extension).
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+from aiohttp import web
+from aiohttp.test_utils import make_mocked_request
+
+from kiro_crew.dashboard.server import _apply_security_headers
+
+
+def _make_response() -> web.Response:
+    return web.Response(text="ok")
+
+
+def _make_app(with_instances: bool = False) -> web.Application:
+    app = web.Application()
+    instances_manager = object() if with_instances else None
+    app["state"] = SimpleNamespace(instances_manager=instances_manager)
+    return app
+
+
+class TestApplySecurityHeaders:
+    def test_permissions_policy_allows_clipboard_write(self) -> None:
+        resp = _make_response()
+        _apply_security_headers(resp, _make_app())
+        # The specific value matters: Chrome 143+ requires the exact
+        # allowlist form; a bare "clipboard-write" without the (self)
+        # source expression does not grant permission.
+        assert "clipboard-write=(self)" in resp.headers["Permissions-Policy"]
+        assert "clipboard-read=(self)" in resp.headers["Permissions-Policy"]
+
+    def test_cache_headers_prevent_stale_asset_caching(self) -> None:
+        resp = _make_response()
+        _apply_security_headers(resp, _make_app())
+        assert "no-store" in resp.headers["Cache-Control"]
+        assert resp.headers["Pragma"] == "no-cache"
+        assert resp.headers["Expires"] == "0"
+
+    def test_hashed_assets_are_immutable_cached(self) -> None:
+        """Vite content-hashed bundles under /assets/ must be cacheable:
+        the URL is the version, so no-store would force a full multi-MB
+        re-download on every page load (and make post-restart reloads bet
+        on a 6MB transfer during gateway cold-start)."""
+        resp = _make_response()
+        _apply_security_headers(resp, _make_app(), path="/assets/index-D9K94z8J.js")
+        cc = resp.headers["Cache-Control"]
+        assert "immutable" in cc
+        assert "max-age=31536000" in cc
+        assert "no-store" not in cc
+        # The no-cache companion headers must not undermine the cache
+        assert "Pragma" not in resp.headers
+        assert "Expires" not in resp.headers
+        # Security headers still applied on the immutable path
+        assert "Content-Security-Policy" in resp.headers
+        assert "Permissions-Policy" in resp.headers
+
+    def test_worker_assets_use_short_lived_not_immutable_or_no_store(self) -> None:
+        """A same-origin worker takes its CSP from its OWN cached response
+        header, and Vite content-hashes a chunk by content only — so a build
+        that changes just a header (a CSP directive) keeps the worker's hashed
+        filename identical. Under ``immutable`` a browser replays the stale
+        header for up to a year and the worker runs on a header that differs
+        from the one the running build serves (WASM refused, every diff/highlight
+        surface dead until a hard refresh). Worker chunks therefore use a
+        SHORT-LIVED cacheable policy: a small ``max-age`` picks up a header-only
+        build within a minute AND keeps the bytes cache-servable across a brief
+        gateway-down window, which a bare ``no-store`` would break by evicting
+        them. It must NOT carry ``no-cache``/``must-revalidate`` (those forbid
+        the cache reuse the gateway-down survival depends on) — the header
+        contradiction Opus flagged."""
+        for name in (
+            "diffWorker-DcdnVVDz.js",
+            "hljsWorker-D29BrEM0.js",
+            "subset-worker.chunk-D4w07nYk.js",
+            "worker-portable-ogdEFvyx.js",
+            # Case-insensitive: a future capitalised spelling is still caught.
+            "MyWorker-abc123.js",
+        ):
+            resp = _make_response()
+            _apply_security_headers(resp, _make_app(), path=f"/assets/{name}")
+            cc = resp.headers["Cache-Control"]
+            assert "immutable" not in cc, name
+            assert "no-store" not in cc, name
+            # Cacheable with a bounded lifetime — NOT a stale-prohibiting policy.
+            assert "max-age=60" in cc, name
+            assert "no-cache" not in cc, name
+            assert "must-revalidate" not in cc, name
+
+    def test_non_worker_assets_stay_immutable(self) -> None:
+        """The worker exemption is surgical: a plain JS/CSS chunk runs under the
+        DOCUMENT's CSP (served no-store, so always fresh) and keeps the year-long
+        immutable policy that spares the ~6MB entry bundle a re-download on every
+        load."""
+        for name in (
+            "index-D9K94z8J.js",
+            "vendor-a1b2c3d4.css",
+            "chunk-CQNSW5MT-B8S09OIh.js",
+        ):
+            resp = _make_response()
+            _apply_security_headers(resp, _make_app(), path=f"/assets/{name}")
+            cc = resp.headers["Cache-Control"]
+            assert "immutable" in cc, name
+            assert "no-store" not in cc, name
+
+    def test_every_built_worker_chunk_carries_the_marker(self) -> None:
+        """Guard the ``worker`` naming convention the serving layer keys on: the
+        worker entry files this project loads with ``new Worker(new URL(...))``
+        or Vite's ``?worker`` import must resolve, in the built dist, to a chunk
+        carrying the ``worker`` substring — otherwise it silently regains the
+        year-long ``immutable`` cache and re-strands its CSP.
+
+        Detection is independent of the marker so this is not tautological: the
+        worker SOURCE modules are found by scanning the frontend source for the
+        two worker-construction shapes, and each source basename is required to
+        appear (as a substring, pre-hash) in some emitted chunk that carries the
+        marker. Skipped when either tree is absent (python-only checkout)."""
+        import re
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1] / "website"
+        assets = root / "dist" / "assets"
+        src = root / "src"
+        if not assets.is_dir() or not src.is_dir():
+            return  # python-only checkout (sdist/wheel): nothing built to scan.
+
+        # Worker source modules, found by the two construction shapes Vite turns
+        # into a worker chunk: `new Worker(new URL('./x.ts', import.meta.url))`
+        # and a `?worker` / `?worker&url` import. This does NOT look at the
+        # marker, so a worker named without it is still discovered here.
+        new_worker_url = re.compile(
+            r"new\s+Worker\(\s*new\s+URL\(\s*['\"]([^'\"]+?)['\"]", re.MULTILINE
+        )
+        worker_import = re.compile(r"['\"]([^'\"]+?)\?worker(?:&url)?['\"]")
+        worker_stems: set[str] = set()
+        for ts in src.rglob("*.ts*"):
+            if ts.name.endswith((".test.ts", ".test.tsx")):
+                continue
+            text = ts.read_text(encoding="utf-8", errors="ignore")
+            for m in (*new_worker_url.finditer(text), *worker_import.finditer(text)):
+                # Basename without extension, e.g. './diffWorker.ts' -> 'diffWorker'.
+                worker_stems.add(Path(m.group(1)).stem)
+        if not worker_stems:
+            return  # no worker constructions in this checkout — nothing to guard.
+
+        emitted = [p.name for p in assets.glob("*.js")]
+        if not emitted:
+            return  # dist present but not built in this run — nothing to scan.
+        marked = [n for n in emitted if "worker" in n.lower()]
+        # Every worker source resolves to an emitted chunk that carries the
+        # marker. A worker Vite renamed to drop the marker would leave its stem
+        # only in an UNmarked chunk (or in none), failing this — which is the
+        # regression the exemption depends on catching.
+        unmarked = {
+            stem
+            for stem in worker_stems
+            if not any(stem in n for n in marked)
+            # An entry Vite may inline rather than emit as a standalone chunk is
+            # tolerated only if it appears nowhere as a separate /assets/ script.
+            and any(stem in n for n in emitted)
+        }
+        assert not unmarked, (
+            f"worker source(s) {sorted(unmarked)} emitted a chunk WITHOUT the "
+            "'worker' marker the cache-control exemption keys on — it would "
+            "regain the immutable policy and re-strand its CSP"
+        )
+
+    def test_non_200_under_assets_stays_no_store(self) -> None:
+        """During cold-start, /assets/* may return 404 or 503. Caching that
+        with immutable would be a permanent black screen. Only success
+        statuses get the immutable treatment."""
+        for status in (404, 503):
+            resp = web.Response(text="error", status=status)
+            _apply_security_headers(resp, _make_app(), path="/assets/index-D9K94z8J.js")
+            assert "no-store" in resp.headers["Cache-Control"], f"status={status}"
+            assert "immutable" not in resp.headers["Cache-Control"], f"status={status}"
+
+    def test_conditional_and_range_under_assets_stay_immutable(self) -> None:
+        """aiohttp's static handler answers 304 (conditional) and 206 (range)
+        for hashed assets. A 304's headers merge into the browser's stored
+        cache entry — answering it with no-store would degrade the cached
+        immutable bundle back to uncacheable."""
+        for status in (206, 304):
+            resp = web.Response(status=status)
+            _apply_security_headers(resp, _make_app(), path="/assets/index-D9K94z8J.js")
+            assert "immutable" in resp.headers["Cache-Control"], f"status={status}"
+            assert "no-store" not in resp.headers["Cache-Control"], f"status={status}"
+
+    def test_shell_and_api_paths_stay_no_store(self) -> None:
+        for path in ("/", "/index.html", "/api/health", "/apps/dev-fleet"):
+            resp = _make_response()
+            _apply_security_headers(resp, _make_app(), path=path)
+            assert "no-store" in resp.headers["Cache-Control"], path
+
+    def test_unhashed_static_prefixes_stay_no_store(self) -> None:
+        """/vendor, /fonts and /sprites use stable filenames — immutable
+        caching would pin stale content across upgrades."""
+        for path in (
+            "/vendor/react.js",
+            "/fonts/diatype.woff2",
+            "/sprites/icons.svg",
+        ):
+            resp = _make_response()
+            _apply_security_headers(resp, _make_app(), path=path)
+            assert "no-store" in resp.headers["Cache-Control"], path
+
+    def test_csp_default_no_instances(self) -> None:
+        resp = _make_response()
+        _apply_security_headers(resp, _make_app(with_instances=False))
+        csp = resp.headers["Content-Security-Policy"]
+        assert "default-src 'self'" in csp
+        assert "object-src 'none'" in csp
+        # Loopback frame-src is ALWAYS admitted (not instances-gated) so the
+        # Web Preview panel (WebPreviewPanel) can frame a local dev/static
+        # server in the packaged dashboard. The panel isolates the preview host
+        # from the dashboard host so no host-scoped cookie is sent to the frame.
+        assert "http://127.0.0.1:*" in csp
+        assert "http://localhost:*" in csp
+        # …and http+https across the IPv4 loopback hosts normalizeUrl accepts, so
+        # a preview never renders blank due to a CSP-blocked frame. IPv6 loopback
+        # ([::1]:*) is intentionally absent — see test_csp_no_ipv6_wildcard_source.
+        assert "http://[::1]:*" not in csp
+        assert "https://localhost:*" in csp
+        assert "https://127.0.0.1:*" in csp
+        # The *.localhost tunnel wildcard, however, stays instances-only.
+        assert "http://*.localhost:*" not in csp
+        assert "frame-ancestors 'self'" in csp
+
+    def test_csp_script_src_admits_wasm_but_not_eval(self) -> None:
+        """The Pierre highlight workers tokenize with the shiki-wasm engine
+        (website/src/pierre/config.ts, PIERRE_REGEX_ENGINE), and a same-origin
+        worker takes its CSP from its own script response — this header.
+        WebAssembly.instantiate needs 'wasm-unsafe-eval' in script-src or the
+        tokenizer worker dies on first highlight and every diff surface
+        unmounts. The expression admits ONLY WASM compilation: JS eval stays
+        banned, which the second assertion pins so a future edit cannot
+        silently widen this into 'unsafe-eval'."""
+        resp = _make_response()
+        _apply_security_headers(resp, _make_app(with_instances=False))
+        csp = resp.headers["Content-Security-Policy"]
+        script_src = next(d for d in csp.split(";") if d.strip().startswith("script-src"))
+        assert "'wasm-unsafe-eval'" in script_src
+        assert "'unsafe-eval'" not in script_src.replace("'wasm-unsafe-eval'", "")
+
+    def test_csp_connect_src_allows_loopback_liveness_probe(self) -> None:
+        """WebPreviewPanel polls the framed dev server with a no-cors ``fetch``
+        because a cross-origin iframe cannot report that its server died. When
+        connect-src admitted only ``'self'`` + ws:// loopback, that probe threw
+        on every tick and two strikes declared a healthy preview
+        "stopped responding", unmounting the iframe. connect-src must therefore
+        admit the SAME loopback origins frame-src does."""
+        for with_instances in (False, True):
+            resp = _make_response()
+            _apply_security_headers(resp, _make_app(with_instances=with_instances))
+            csp = resp.headers["Content-Security-Policy"]
+            connect_src = next(d for d in csp.split(";") if d.strip().startswith("connect-src"))
+            frame_src = next(d for d in csp.split(";") if d.strip().startswith("frame-src"))
+            # Every loopback origin the panel can frame, it can also probe.
+            for origin in (
+                "http://127.0.0.1:*",
+                "http://localhost:*",
+                "http://0.0.0.0:*",
+                "https://127.0.0.1:*",
+                "https://localhost:*",
+            ):
+                assert origin in frame_src, (origin, frame_src)
+                assert origin in connect_src, (origin, connect_src)
+            # IPv6 loopback wildcard is NOT admitted in either directive — the
+            # bracketed-literal-plus-wildcard-port form is invalid CSP grammar
+            # (see test_csp_no_ipv6_wildcard_source).
+            assert "http://[::1]:*" not in frame_src
+            assert "http://[::1]:*" not in connect_src
+            # Pre-existing WebSocket loopback grants stay.
+            assert "ws://localhost:*" in connect_src
+            assert "ws://127.0.0.1:*" in connect_src
+            # The probe is loopback-only: no bare wildcard, no public egress,
+            # and the *.localhost tunnel wildcard stays frame-src/instances-only.
+            assert "http://*.localhost:*" not in connect_src
+            assert "https://*" + " " not in connect_src
+            assert "*.cloudfront.net" not in connect_src
+
+    def test_csp_connect_src_stays_local_with_public_origin_configured(self) -> None:
+        """connect-src is a fixed list: 'self', loopback and esm.sh. A
+        public dashboard origin in the allowed-origin set does not reach it.
+        A dashboard behind a reverse proxy is served same-origin, so 'self'
+        already admits its own wss:// socket (docs/guides/remote-and-mobile.md,
+        "Behind a reverse proxy")."""
+        allowed = {"'self'", "https://esm.sh"}
+        for host in ("localhost", "127.0.0.1", "0.0.0.0"):
+            allowed |= {f"{scheme}://{host}:*" for scheme in ("http", "https", "ws")}
+        for with_instances in (False, True):
+            app = _make_app(with_instances=with_instances)
+            app["allowed_origins"] = {"https://crew.example.com"}
+            resp = _make_response()
+            _apply_security_headers(resp, app)
+            csp = resp.headers["Content-Security-Policy"]
+            connect_src = next(d for d in csp.split(";") if d.strip().startswith("connect-src"))
+            sources = set(connect_src.split()[1:])
+            assert sources <= allowed, sorted(sources - allowed)
+            assert "crew.example.com" not in csp
+
+    def test_csp_no_ipv6_wildcard_source(self) -> None:
+        """Regression: Chromium rejects a CSP host-source that pairs a bracketed
+        IPv6 literal with a wildcard port (``http://[::1]:*``) — it is invalid
+        grammar, so the browser drops the WHOLE source and logs
+        "contains an invalid source". The pet page surfaced exactly that on
+        connect-src/frame-src. No directive in either dashboard mode may contain
+        a bracketed IPv6 host immediately followed by ``:*``."""
+        import re
+
+        # A bracketed IPv6 host (any hex/colon run) directly followed by ``:*``.
+        ipv6_wildcard = re.compile(r"\[[0-9A-Fa-f:]+\]:\*")
+        for with_instances in (False, True):
+            resp = _make_response()
+            _apply_security_headers(resp, _make_app(with_instances=with_instances))
+            csp = resp.headers["Content-Security-Policy"]
+            hit = ipv6_wildcard.search(csp)
+            assert hit is None, (hit.group(0) if hit else None, csp)
+
+    def test_csp_frame_src_allows_cloudfront_previews(self) -> None:
+        """Webapp artifact live previews iframe the deployed CloudFront site
+        (WebAppArtifactCard / WebAppThumb): https-only wildcard, present in
+        BOTH modes, and never a bare scheme wildcard."""
+        for with_instances in (False, True):
+            resp = _make_response()
+            _apply_security_headers(resp, _make_app(with_instances=with_instances))
+            csp = resp.headers["Content-Security-Policy"]
+            frame_src = next(d for d in csp.split(";") if d.strip().startswith("frame-src"))
+            assert "https://*.cloudfront.net" in frame_src
+            assert "http://*.cloudfront.net" not in frame_src
+            assert "https://*" + " " not in frame_src  # no bare https wildcard
+
+    def test_csp_names_no_font_host_origin(self) -> None:
+        """The brand faces are served from the dashboard's own origin, so
+        style-src and font-src admit no dedicated font host."""
+        import re
+
+        font_host = re.compile(r"^https?://([A-Za-z0-9-]+\.)*fonts[A-Za-z0-9-]*\.", re.IGNORECASE)
+        for with_instances in (False, True):
+            resp = _make_response()
+            _apply_security_headers(resp, _make_app(with_instances=with_instances))
+            csp = resp.headers["Content-Security-Policy"]
+            for name in ("style-src", "font-src"):
+                sources = next(d for d in csp.split(";") if d.strip().startswith(name)).split()
+                hosts = [s for s in sources if font_host.match(s)]
+                assert not hosts, (name, hosts)
+
+    def test_dashboard_shell_loads_fonts_from_its_own_origin(self) -> None:
+        """``website/index.html`` and the global stylesheet reference no
+        absolute font URL, every face ``index.css`` declares is a relative
+        file under ``website/src`` (so Vite hashes it into ``/assets/`` and
+        ``'self'`` serves it), and each family ships its licence."""
+        import re
+        from pathlib import Path
+
+        website = Path(__file__).resolve().parents[1] / "website"
+        index_html = website / "index.html"
+        index_css = website / "src" / "index.css"
+        if not (index_html.is_file() and index_css.is_file()):
+            # python-only checkout (sdist/wheel test run): nothing to compare.
+            return
+        remote_font = re.compile(r"https?://[^\s\"')]*fonts[^\s\"')]*", re.IGNORECASE)
+        for path in (index_html, index_css):
+            hits = remote_font.findall(path.read_text(encoding="utf-8"))
+            assert not hits, (path.name, hits)
+
+        css = index_css.read_text(encoding="utf-8")
+        declared = re.findall(r"url\('(\./assets/fonts/[^']+\.woff2)'\)", css)
+        assert any("space-grotesk" in u for u in declared), declared
+        assert any("jetbrains-mono" in u for u in declared), declared
+        missing = [u for u in declared if not (index_css.parent / u).is_file()]
+        assert not missing, missing
+        for family_dir in ("space-grotesk", "jetbrains-mono"):
+            assert (website / "public" / "fonts" / family_dir / "OFL.txt").is_file(), family_dir
+
+    def test_defense_in_depth_headers_present(self) -> None:
+        """(CWE-1021/693/200/319): by default the pipeline sets
+        clickjacking / MIME-sniffing / referrer / HSTS headers + CSP
+        frame-ancestors 'self'. With no embed parent token, the posture is
+        unchanged: bare 'self' + X-Frame-Options."""
+        resp = _make_response()
+        _apply_security_headers(resp, _make_app(with_instances=False))
+        assert resp.headers["X-Frame-Options"] == "SAMEORIGIN"
+        assert resp.headers["X-Content-Type-Options"] == "nosniff"
+        assert resp.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
+        assert "max-age=31536000" in resp.headers["Strict-Transport-Security"]
+        assert "frame-ancestors 'self'" in resp.headers["Content-Security-Policy"]
+
+    def test_frame_ancestors_trusts_token_embed_parent(self, monkeypatch) -> None:
+        """When the request's signed token carries an embed_parent_port claim (the
+        parent desktop app's port, minted at connect), frame-ancestors lists that
+        EXACT loopback origin (all loopback hosts at that port) so the cross-port
+        multi-instance embed renders. Never a wildcard, never a hardcoded port;
+        X-Frame-Options is omitted so SAMEORIGIN can't refuse the cross-port
+        embed."""
+        # Focused header-logic test: stub the (separately unit-tested) signed
+        # claim reader so we don't re-mint a real token here.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.server.token_embed_parent_port",
+            lambda token: 5476 if token else None,
+        )
+        request = make_mocked_request("GET", "/?token=deadbeef")
+        resp = _make_response()
+        _apply_security_headers(resp, _make_app(with_instances=True), request=request)
+        csp = resp.headers["Content-Security-Policy"]
+        frame_anc = next(d for d in csp.split(";") if d.strip().startswith("frame-ancestors"))
+        assert "'self'" in frame_anc
+        assert "http://localhost:5476" in frame_anc
+        assert "http://127.0.0.1:5476" in frame_anc
+        assert "*" not in frame_anc  # exact origins only, no wildcard
+        # X-Frame-Options omitted so it cannot contradict the cross-port allowlist
+        assert "X-Frame-Options" not in resp.headers
+
+    def test_frame_ancestors_reads_embed_parent_from_session_cookie(self, monkeypatch) -> None:
+        """The framed document authenticates via the
+        ``mc_token_<port>`` session cookie, NOT a ``?token=`` query param
+        (token_auth_middleware exchanges the connect link token for that cookie).
+        The reader MUST consult the cookie — otherwise every steady-state framed
+        load falls back to bare frame-ancestors 'self' and the embedded pane
+        never renders (the exact blank-pane bug). Reproduced live: a cookie
+        carrying the claim must not yield 'self'."""
+        from kiro_crew.dashboard.state import _DEFAULT_PORT
+
+        # Stub the (separately unit-tested) signed-claim reader; the point of
+        # THIS test is that the cookie value reaches it (no query token present).
+        seen: dict[str, str] = {}
+
+        def _fake_reader(token: str) -> int | None:
+            seen["token"] = token
+            return 5476 if token else None
+
+        monkeypatch.setattr("kiro_crew.dashboard.server.token_embed_parent_port", _fake_reader)
+        request = make_mocked_request(
+            "GET",
+            "/",
+            headers={"Cookie": f"mc_token_{_DEFAULT_PORT}=sessioncookietoken"},
+        )
+        resp = _make_response()
+        _apply_security_headers(resp, _make_app(with_instances=True), request=request)
+        # The cookie value (not an empty query token) reached the claim reader.
+        assert seen["token"] == "sessioncookietoken"
+        csp = resp.headers["Content-Security-Policy"]
+        frame_anc = next(d for d in csp.split(";") if d.strip().startswith("frame-ancestors"))
+        assert "http://localhost:5476" in frame_anc
+        assert "http://127.0.0.1:5476" in frame_anc
+        assert "X-Frame-Options" not in resp.headers
+
+    def test_frame_ancestors_prefers_request_stashed_claim(self, monkeypatch) -> None:
+        """On the FIRST ``?token=`` framed document the
+        link→session exchange revokes the link nonce, so re-validating the query
+        token here returns None and the header would fall back to bare 'self'
+        (the browser enforces THIS response's frame-ancestors → blank pane).
+        token_auth_middleware stashes the validated parent port on the request
+        BEFORE revoking; this reader must prefer it. Simulate: request carries the
+        stashed claim but NO usable query token/cookie (reader returns None)."""
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.server.token_embed_parent_port", lambda token: None
+        )
+        request = make_mocked_request("GET", "/?token=revoked-link-token")
+        request["embed_parent_port"] = "5476"  # what the middleware stashed
+        resp = _make_response()
+        _apply_security_headers(resp, _make_app(with_instances=True), request=request)
+        csp = resp.headers["Content-Security-Policy"]
+        frame_anc = next(d for d in csp.split(";") if d.strip().startswith("frame-ancestors"))
+        assert "http://localhost:5476" in frame_anc
+        assert "http://127.0.0.1:5476" in frame_anc
+        assert "X-Frame-Options" not in resp.headers
+
+    def test_frame_ancestors_default_without_embed_token(self, monkeypatch) -> None:
+        """A request with no valid embed-parent token (or none at all) keeps the
+        default posture: frame-ancestors 'self' + X-Frame-Options: SAMEORIGIN.
+        A random local page has no signed token, so it can never inject an
+        ancestor (CSE SEC-016 clickjacking)."""
+        # Real reader returns None for a request with no token → default posture.
+        request = make_mocked_request("GET", "/")
+        resp = _make_response()
+        _apply_security_headers(resp, _make_app(with_instances=True), request=request)
+        csp = resp.headers["Content-Security-Policy"]
+        assert "frame-ancestors 'self'" in csp
+        assert "localhost:3000" not in csp
+        assert resp.headers["X-Frame-Options"] == "SAMEORIGIN"
+
+    def test_shell_csp_ancestors_go_through_the_same_validator(self, monkeypatch) -> None:
+        """The dashboard shell's ``frame-ancestors`` is built by
+        ``origin.frame_ancestors_value``, the same joiner the sandboxed-document
+        responses use — not a local ``" ".join``.
+
+        This is the third ancestor-emitting site. While it hand-joined, it was the
+        one source nothing validated, so the helper's guarantee that no future
+        ancestor can reintroduce an inexpressible entry did not actually hold for
+        the shell. That class of bug is not hypothetical: a bracketed IPv6 literal
+        WAS being emitted, and engines refuse the whole source expression when they
+        see one, dropping every ancestor with it.
+
+        Asserted by behaviour rather than by reading the source: an inexpressible
+        ancestor must not reach the header even when ``_extra_frame_ancestors``
+        offers one.
+        """
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.server._extra_frame_ancestors",
+            lambda request, app: ["http://[::1]:5476", "http://localhost:5476"],
+        )
+        request = make_mocked_request("GET", "/")
+        resp = _make_response()
+        _apply_security_headers(resp, _make_app(with_instances=True), request=request)
+        csp = resp.headers["Content-Security-Policy"]
+        frame_anc = next(d for d in csp.split(";") if d.strip().startswith("frame-ancestors"))
+        assert "[::1]" not in frame_anc
+        # The expressible sibling still gets through, so this is a filter and not
+        # a blanket refusal.
+        assert "http://localhost:5476" in frame_anc
+        assert "'self'" in frame_anc
+
+    def test_frame_ancestors_ignores_forged_unsigned_cookie(self) -> None:
+        """A forged/unsigned ``mc_token_<port>`` cookie must NOT get its parent
+        origin into frame-ancestors. Unlike the positive tests above, this test
+        does NOT monkeypatch the signed-claim reader: the real verifier
+        (``token_embed_parent_port``) rejects the unsigned JWT and returns None,
+        so ``_extra_frame_ancestors`` adds nothing and the posture stays the
+        default bare frame-ancestors 'self' + X-Frame-Options: SAMEORIGIN. A
+        local page that plants an attacker cookie can therefore never inject an
+        ancestor origin (clickjacking, CSE SEC-016 / CWE-778)."""
+        from kiro_crew.dashboard.state import _DEFAULT_PORT
+
+        # Real reader (no monkeypatch): the cookie value reaches it and is
+        # rejected because it carries no valid signature.
+        request = make_mocked_request(
+            "GET",
+            "/",
+            headers={"Cookie": f"mc_token_{_DEFAULT_PORT}=forged.unsigned.jwt"},
+        )
+        resp = _make_response()
+        _apply_security_headers(resp, _make_app(with_instances=True), request=request)
+        csp = resp.headers["Content-Security-Policy"]
+        frame_anc = next(d for d in csp.split(";") if d.strip().startswith("frame-ancestors"))
+        assert "frame-ancestors 'self'" in csp
+        # The forged cookie's parent origin was never appended.
+        assert "http://localhost:" not in frame_anc
+        assert "http://127.0.0.1:" not in frame_anc
+        # The legacy clickjacking backstop stays in place in the default posture.
+        assert resp.headers["X-Frame-Options"] == "SAMEORIGIN"
+
+    def test_csp_extends_frame_src_when_instances_enabled(self) -> None:
+        resp = _make_response()
+        _apply_security_headers(resp, _make_app(with_instances=True))
+        csp = resp.headers["Content-Security-Policy"]
+        # Loopback wildcards enable dynamically-connected tunnel port
+        # iframes for the instances feature.
+        assert "http://127.0.0.1:*" in csp
+        assert "http://localhost:*" in csp
+        assert "http://*.localhost:*" in csp
+
+    def test_setdefault_semantics_do_not_override_handler_headers(self) -> None:
+        resp = _make_response()
+        # Simulate a handler that already set a header
+        resp.headers["Cache-Control"] = "public, max-age=3600"
+        _apply_security_headers(resp, _make_app())
+        # Handler value preserved
+        assert resp.headers["Cache-Control"] == "public, max-age=3600"
+        # Other headers still applied
+        assert "Permissions-Policy" in resp.headers
+
+    def test_app_without_state_still_gets_headers(self) -> None:
+        """Auth failure paths return responses on apps without state; the
+        middleware must not raise on them."""
+        resp = _make_response()
+        app = web.Application()  # no state key
+        _apply_security_headers(resp, app)
+        assert "Permissions-Policy" in resp.headers
+        assert "Content-Security-Policy" in resp.headers

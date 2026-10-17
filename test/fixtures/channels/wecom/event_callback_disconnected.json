@@ -1,0 +1,23 @@
+{
+  "_provenance": {
+    "source": "vendor_doc",
+    "reference": "WeCom AI bot 长连接 (long connection), 事件回调 aibot_event_callback: cmd is aibot_event_callback and the event type lives at body.event.eventtype; disconnected_event is delivered to the OLD connection when a new aibot_subscribe replaces it. https://developer.work.weixin.qq.com/document/path/101463 (§ 接收事件回调), cross-checked against the receiving-events reference https://developer.work.weixin.qq.com/document/path/101027",
+    "captured_at": "2026-08-22",
+    "note": "Transcribed from published docs, NOT captured from a live bot; a live probe would upgrade this to live_probe. Recorded because the shape was previously misread: the client matched disconnected_event as a TOP-LEVEL cmd, so the anti-kick branch never fired and a replaced connection kept reconnecting into a mutual-kick loop. Only the fields kiro_crew.wecom reads are load-bearing (cmd, body.event.eventtype); the doc example omits chatid/chattype/from on this event."
+  },
+  "payload": {
+    "cmd": "aibot_event_callback",
+    "headers": {
+      "req_id": "REQUEST_ID"
+    },
+    "body": {
+      "msgid": "MSGID",
+      "create_time": 1755000000,
+      "aibotid": "AIBOTID",
+      "msgtype": "event",
+      "event": {
+        "eventtype": "disconnected_event"
+      }
+    }
+  }
+}

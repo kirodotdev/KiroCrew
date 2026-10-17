@@ -1,0 +1,209 @@
+[
+  {
+    "config_options": [
+      {
+        "currentValue": "local",
+        "id": "provider",
+        "name": "Provider",
+        "options": [
+          {
+            "name": "Local",
+            "value": "local"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "currentValue": "local",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "name": "Local",
+            "value": "local"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "currentValue": "local",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "Local",
+            "value": "local"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "currentValue": "local",
+        "id": "thinking_effort",
+        "name": "Thinking effort",
+        "options": [
+          {
+            "name": "Local",
+            "value": "local"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "approve",
+      "ids": [
+        "auto",
+        "approve",
+        "smart_approve",
+        "chat"
+      ]
+    },
+    "session_id": "goose-session-1"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      0,
+      128000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "Running the command"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Running the command",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " now."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " now.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "command": "echo goose-wire-probe",
+          "timeout_secs": 10
+        },
+        "title": "echo goose-wire-probe",
+        "tool_call_id": "call_ub405veq",
+        "tool_identity_trusted": true,
+        "tool_input": "{\n  \"command\": \"echo goose-wire-probe\",\n  \"timeout_secs\": 10\n}",
+        "tool_kind": "unknown",
+        "tool_name": "shell",
+        "wire_title": "shell · echo goose-wire-probe"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow_always",
+            "label": "allow_always"
+          },
+          {
+            "id": "allow_once",
+            "label": "allow_once"
+          },
+          {
+            "id": "reject_once",
+            "label": "reject_once"
+          },
+          {
+            "id": "reject_always",
+            "label": "reject_always"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "command": "echo goose-wire-probe",
+          "timeout_secs": 10
+        },
+        "request_id": "goose-permission-1",
+        "shell_classified": true,
+        "title": "shell · echo goose-wire-probe",
+        "tool_call_id": "call_ub405veq",
+        "tool_input": "{\n  \"command\": \"echo goose-wire-probe\",\n  \"timeout_secs\": 10\n}",
+        "tool_kind": "other",
+        "tool_name": "shell"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow_always",
+      "once": "allow_once",
+      "reject": "reject_once"
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_ub405veq",
+        "tool_final": true,
+        "tool_output": "goose-wire-probe",
+        "tool_output_bytes": 16,
+        "tool_output_digest": "1227eebb0df646d251be216ad28ba1fa2fbf2db876f187ef6ec1ce70e3ce38dc",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "prompt_tokens": [
+      1369,
+      137,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
+  }
+]

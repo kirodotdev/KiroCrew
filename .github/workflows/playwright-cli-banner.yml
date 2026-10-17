@@ -1,0 +1,60 @@
+name: Playwright CLI Banner Check
+
+# The Browser view proves the `playwright-cli show` child owns its port by
+# parsing the child's `Listening on http://127.0.0.1:<port>` stdout line
+# (`_binding_reported_port_on_line` in src/kiro_crew/browser_cli/view.py). On a
+# host with no other listener attribution that line is the only ownership
+# evidence, and the installer pins `@playwright/cli@latest`, so an upstream
+# wording change would first show up as a fail-closed Browser view for users.
+#
+# This workflow installs the same `@latest` the installer would, launches it
+# once with the view's own argv (`show --port 0 --host 127.0.0.1`), and feeds
+# its stdout to the real parser via scripts/check_playwright_cli_banner.py.
+# A drift fails the run with the CLI version and every stdout line read, and
+# scheduled-failure-watch.yml (which lists this workflow) turns a red scheduled
+# run into one tracking issue. Nothing on the install path changes.
+#
+# WHY A SCHEDULE AND NOT A PR CHECK: the fact it reads belongs to npm, not to a
+# commit. A PR job would go red on unrelated diffs the day upstream ships.
+
+on:
+  schedule:
+    - cron: "41 8 * * *" # daily, clear of the 06:00 nightly build
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: playwright-cli banner still parses
+    runs-on: ubuntu-latest  # schedule/workflow_dispatch has no live collaborator actor for the AWS webhook allowlist to check -- stays on ubuntu-latest.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: uv pip install --system -e .
+
+      - name: Install the CLI the installer pins
+        run: npm install -g @playwright/cli@latest
+
+      - name: Launch show --port 0 and parse its banner
+        run: python3 scripts/check_playwright_cli_banner.py

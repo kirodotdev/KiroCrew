@@ -1,0 +1,41 @@
+{
+  "$comment": [
+    "ONE fixture for the dist completeness rule, consumed by BOTH gates:",
+    "  - pytest  test/test_frontend_dist_resolve.py  (frontend._incomplete_bundle_reason)",
+    "  - vitest  website/src/test/publishDist.test.ts (incompleteReason)",
+    "",
+    "Each case is one index.html reference in a tree holding assets/x.js, and the",
+    "reason both gates give for it ('' means complete). A case added here is checked",
+    "against both, so the two gates cannot drift apart."
+  ],
+  "cases": [
+    {
+      "ref": "src=\"/assets/x.js?v=2\"",
+      "reason": ""
+    },
+    {
+      "ref": "src=\"/assets/x.js#h\"",
+      "reason": ""
+    },
+    {
+      "ref": "href=\"/assets/manifest-AbC.json\"",
+      "reason": ""
+    },
+    {
+      "ref": "href=\"/assets/x.css.map\"",
+      "reason": ""
+    },
+    {
+      "ref": "src=\"/assets/x.jsx\"",
+      "reason": ""
+    },
+    {
+      "ref": "src=\"/manifest.js\"",
+      "reason": ""
+    },
+    {
+      "ref": "src=\"/assets/missing.js\"",
+      "reason": "1 referenced asset(s) missing, e.g. /assets/missing.js"
+    }
+  ]
+}

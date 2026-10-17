@@ -1,0 +1,64 @@
+{
+  "bound_to": "crewmate:example",
+  "kind": "dashboard",
+  "model": {
+    "types": {
+      "boards": {
+        "description": "every work board the tree reaches, each naming the board it hangs under",
+        "label": "Boards",
+        "source": {
+          "fold": "worktree",
+          "path": "boards"
+        },
+        "type": "array"
+      },
+      "cycles": {
+        "description": "how many boards sit on a citation cycle, so a broken tree says so",
+        "label": "Cycles",
+        "source": {
+          "fold": "worktree",
+          "path": "cycles"
+        },
+        "type": "number"
+      },
+      "roots": {
+        "description": "the boards nothing dispatched, which the tree is drawn from",
+        "label": "Roots",
+        "source": {
+          "fold": "worktree",
+          "path": "roots"
+        },
+        "type": "array"
+      },
+      "unresolved": {
+        "description": "boards whose cited parent could not be followed",
+        "label": "Unresolved",
+        "source": {
+          "fold": "worktree",
+          "path": "unresolved"
+        },
+        "type": "number"
+      },
+      "work_items": {
+        "description": "this board's own work items, for the counts under each node",
+        "label": "Items",
+        "source": {
+          "fold": "work",
+          "path": "items"
+        },
+        "type": "array"
+      }
+    }
+  },
+  "theme": {
+    "tokens": {
+      "--edge": "rgba(0, 212, 146, 0.35)",
+      "--node": "#1a1d24",
+      "--root": "#00d492",
+      "--rule": "rgba(255, 255, 255, 0.08)"
+    }
+  },
+  "view": {
+    "html": "<section class=\"tree\">\n  <header>\n    <h1>Dispatch tree</h1>\n    <p class=\"sub\" id=\"sub\" hidden>\n      <span id=\"rootcount\">0 roots</span>,\n      <span data-dashboard-field=\"cycles\"></span> dispatched in a loop,\n      <span data-dashboard-field=\"unresolved\"></span> whose parent is missing\n    </p>\n  </header>\n  <ol id=\"nodes\" class=\"nodes\"></ol>\n  <p id=\"empty\" class=\"empty\" hidden>No board has dispatched another yet.</p>\n  <noscript>\n    <p class=\"notice\">Your administrator's network policy has turned scripts off for this page, and this page needs a script to draw itself. Nothing below is shown: not the tree, and not the counts. Ask whoever administers this crew's network policy to allow scripts on this page.</p>\n  </noscript>\n</section>\n<style>\n  .tree { max-width: 720px; }\n  h1 { margin: 0 0 2px; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }\n  .sub { margin: 0 0 14px; font-size: 11px; color: var(--muted, #8b8b8b); }\n  .nodes { margin: 0; padding: 0; list-style: none; }\n  .nodes li {\n    position: relative; padding: 7px 0 7px 14px;\n    border-top: 1px solid var(--rule, rgba(255, 255, 255, 0.08));\n    border-left: 2px solid var(--edge, rgba(0, 212, 146, 0.35));\n  }\n  .nodes li:first-child { border-top: 0; }\n  .nodes li[data-depth='0'] { border-left-color: var(--root, #00d492); }\n  /* The elbow into each row, so a child reads as hanging off its parent's line\n     rather than merely sitting further right. */\n  .nodes li::before {\n    content: ''; position: absolute; left: 0; top: 50%; width: 8px;\n    border-top: 1px solid var(--edge, rgba(0, 212, 146, 0.35));\n  }\n  .nodes li[data-depth='0']::before { width: 0; }\n  .who { font-size: 12px; }\n  .goal { margin-left: 6px; color: var(--muted, #8b8b8b); font-size: 11px; }\n  .count { float: right; font-size: 11px; color: var(--muted, #8b8b8b); font-variant-numeric: tabular-nums; }\n  .flag { color: var(--warn, #ffd230); }\n  .empty { font-size: 11px; color: var(--muted, #8b8b8b); }\n  /* A dead end a reader must act on, so it is not footnote grey: the UX read\n     of the muted version was that it looked like a caption worth skipping. */\n  .notice {\n    margin: 0; padding: 8px 10px; font-size: 12px; line-height: 1.5;\n    color: var(--fg, #e8e8e8);\n    border-left: 2px solid var(--warn, #ffd230);\n    background: var(--notice-bg, rgba(255, 210, 48, 0.08));\n  }\n  @media (prefers-reduced-motion: no-preference) {\n    .nodes li { transition: background 160ms ease; }\n  }\n</style>\n<script>\n  (function () {\n    var list = document.getElementById('nodes');\n    var empty = document.getElementById('empty');\n    var rootcount = document.getElementById('rootcount');\n    function row(board) {\n      var li = document.createElement('li');\n      li.setAttribute('data-depth', String(board.depth || 0));\n      li.style.marginLeft = ((board.depth || 0) * 18) + 'px';\n      var who = document.createElement('span');\n      who.className = 'who';\n      // The fold's own key names: `_worktree_render` emits board / parent /\n      // parent_item / cycle / depth / goal / items / generation.\n      who.textContent = board.board || 'a board';\n      li.appendChild(who);\n      if (board.goal) {\n        var goal = document.createElement('span');\n        goal.className = 'goal';\n        goal.textContent = board.goal;\n        li.appendChild(goal);\n      }\n      if (board.cycle) {\n        var flag = document.createElement('span');\n        flag.className = 'goal flag';\n        flag.textContent = 'dispatched in a loop';\n        li.appendChild(flag);\n      }\n      var count = document.createElement('span');\n      count.className = 'count';\n      // `items` is a COUNT of this board's own work items, not the items. Taken\n      // from a real folded row rather than assumed: the fold emits\n      // {board, parent, parent_item, cycle, depth, goal, items, generation}.\n      // Carries its unit: a bare number floated right of a board name reads as\n      // anything, and the singular matters at one.\n      var n = board.items || 0;\n      count.textContent = n + (n === 1 ? ' own item' : ' own items');\n      li.appendChild(count);\n      return li;\n    }\n    function draw(boards) {\n      list.textContent = '';\n      var rows = Array.isArray(boards) ? boards : [];\n      for (var i = 0; i < rows.length; i++) {\n        if (rows[i] && typeof rows[i] === 'object') list.appendChild(row(rows[i]));\n      }\n      empty.hidden = rows.length > 0;\n    }\n    window.kirocrew.subscribe('boards', draw);\n    // A COUNT, written by the page. `roots` is a list, and a text binding sets an\n    // element's textContent to the whole value -- which renders a JSON array where a\n    // reader wants a number. Counting it here is what `subscribe` is for.\n    window.kirocrew.subscribe('roots', function (roots) {\n      var n = Array.isArray(roots) ? roots.length : 0;\n      rootcount.textContent = n + (n === 1 ? ' root' : ' roots');\n      // Revealed only now. Shipped hidden, the counts cannot be read before a\n      // script has filled them: the literal in the markup would otherwise state\n      // a root count the data does not support, and the field spans would be\n      // empty, which together read as \", on a cycle, unresolved\".\n      var sub = document.getElementById('sub');\n      if (sub) sub.hidden = false;\n    });\n  })();\n</script>\n"
+  }
+}

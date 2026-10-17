@@ -1,0 +1,585 @@
+/**
+ * FolderPanel's SECOND body: the workspace tree it renders when the tab is
+ * rooted at the current chat's project directory (#6077).
+ *
+ * The behaviours pinned here are the ones that decide WHICH body renders, plus
+ * the contract the tree body owes the tab. They are separated from
+ * `FolderPanel.test.tsx` because the Pierre tree is replaced by a probe that
+ * echoes the props it was handed — that is what makes "what the panel tells the
+ * tree" assertable without loading the trees runtime, and it must not weaken the
+ * listing suite next door.
+ *
+ * The gate is deliberately string-only and platform-aware: `/api/project/tree`
+ * answers for server-known project roots ONLY, so a tab on any other directory
+ * must keep the one-level listing rather than render a panel the backend will
+ * refuse with 403.
+ */
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { recordError, recentErrors, consumeChatHandoff, __resetErrorJournalForTests } from '../utils/errorReport'
+
+const H = vi.hoisted(() => ({ OPENED: '/repo/src/a.ts', mounts: 0 }))
+
+vi.mock('../pierre/tree', async () => {
+  const { useState } = await import('react')
+  return {
+    TreeSkeleton: () => null,
+    PierreWorkspaceTree: function TreeProbe(p: {
+      projectDir: string
+      searchQuery?: string | null
+      onFileOpen?: (abs: string) => void
+      onAddToContext?: (abs: string, kind: 'file' | 'dir') => void
+    }) {
+      // Which mount this is: the real tree's expansion lives in its model, so a
+      // remount is what loses the folders the user opened.
+      const [mount] = useState(() => ++H.mounts)
+      return (
+        <button
+          data-testid="tree"
+          data-mount={mount}
+          data-dir={p.projectDir}
+          data-query={p.searchQuery ?? ''}
+          data-has-add-to-context={p.onAddToContext ? '1' : '0'}
+          onClick={() => p.onFileOpen?.(H.OPENED)}
+          onContextMenu={() => p.onAddToContext?.(H.OPENED, 'file')}
+        >
+          tree
+        </button>
+      )
+    },
+  }
+})
+
+import FolderPanel from '../pages/chat/FolderPanel'
+import { api, ApiError, BROWSE_FILES_TIMEOUT_MS, FILE_SEARCH_TIMEOUT_MS } from '../api/client'
+
+const ROOT = '/repo'
+
+function listing(path = ROOT, parent: string | null = '/') {
+  return {
+    path,
+    parent,
+    dirs: [{ name: 'src', path: `${path}/src` }],
+    files: [{ name: 'README.md', path: `${path}/README.md` }],
+  }
+}
+
+function renderPanel(
+  props: {
+    path: string
+    projectDir?: string
+    onFileOpen?: (p: string) => void
+    onPathChange?: (p: string) => void
+    onAddToContext?: (p: string, kind: 'file' | 'dir') => void
+  },
+  platform = 'linux',
+) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  // `useGatewayPlatform` is a pure reader over this cache key (the prerequisite
+  // gate owns the fetch), so seeding it is how a test says "the gateway is
+  // Windows" without a request.
+  client.setQueryData(['kiro-prerequisite'], { platform })
+  return render(
+    <QueryClientProvider client={client}>
+      <FolderPanel onClose={() => {}} {...props} />
+    </QueryClientProvider>,
+  )
+}
+
+const tree = () => screen.getByTestId('tree')
+
+beforeEach(() => {
+  vi.restoreAllMocks()
+  vi.spyOn(api, 'browseFiles').mockImplementation(async (p: string) => listing(p) as never)
+  vi.spyOn(api, 'projectTree').mockResolvedValue({ root: ROOT, paths: ['README.md'], repo: true } as never)
+  vi.spyOn(api, 'projectGitStatus').mockResolvedValue({ repo: true, files: [] } as never)
+  vi.spyOn(api, 'fileSearch').mockResolvedValue({ root: ROOT, results: [] } as never)
+})
+
+describe('FolderPanel — project-root workspace tree', () => {
+  it('renders the workspace tree instead of the one-level listing at the project root', async () => {
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    await waitFor(() => expect(tree()).toBeTruthy())
+    expect(tree().getAttribute('data-dir')).toBe(ROOT)
+    // The listing's own rows are what the tree replaces: seeing either of these
+    // would mean both bodies rendered.
+    expect(screen.queryByText('src')).toBeNull()
+    expect(screen.queryByText('README.md')).toBeNull()
+  })
+
+  it('keeps the one-level listing for a tab that is not the project root', async () => {
+    renderPanel({ path: `${ROOT}/src`, projectDir: ROOT })
+    await waitFor(() => expect(screen.getByText('src')).toBeTruthy())
+    expect(screen.queryByTestId('tree')).toBeNull()
+  })
+
+  it('matches the project root across trailing slashes, and separator flavour only on Windows', async () => {
+    const { unmount } = renderPanel({ path: `${ROOT}/`, projectDir: ROOT })
+    await waitFor(() => expect(screen.getByTestId('tree')).toBeTruthy())
+    unmount()
+
+    renderPanel({ path: 'C:\\repo\\', projectDir: 'C:/repo' }, 'win32')
+    await waitFor(() => expect(screen.getByTestId('tree')).toBeTruthy())
+  })
+
+  it('never treats a POSIX backslash as a separator', async () => {
+    // On Linux `\` is an ordinary filename character, so `/srv/a\b` and
+    // `/srv/a/b` are two different real directories. Folding the separator here
+    // would render one project's tree under the other's path, and a file opened
+    // from it would be the wrong file on disk.
+    vi.spyOn(api, 'browseFiles').mockResolvedValue(listing('/srv/a\\b') as never)
+    renderPanel({ path: '/srv/a\\b', projectDir: '/srv/a/b' }, 'linux')
+    await waitFor(() => expect(screen.getByText('src')).toBeTruthy())
+    expect(screen.queryByTestId('tree')).toBeNull()
+  })
+
+  it('never folds case, on either platform', async () => {
+    // Windows is case-insensitive only by DEFAULT: NTFS carries a per-directory
+    // case-sensitivity flag, so two siblings differing only in case can both
+    // exist. Aliasing them would render the wrong directory's tree; declining to
+    // match merely keeps today's listing, which is the safe direction.
+    vi.spyOn(api, 'browseFiles').mockResolvedValue(listing('C:\\Repo') as never)
+    const { unmount } = renderPanel({ path: 'C:\\Repo', projectDir: 'C:\\repo' }, 'win32')
+    await waitFor(() => expect(screen.getByText('src')).toBeTruthy())
+    expect(screen.queryByTestId('tree')).toBeNull()
+    unmount()
+
+    vi.spyOn(api, 'browseFiles').mockResolvedValue(listing('/Repo') as never)
+    renderPanel({ path: '/Repo', projectDir: '/repo' }, 'linux')
+    await waitFor(() => expect(screen.getByText('src')).toBeTruthy())
+    expect(screen.queryByTestId('tree')).toBeNull()
+  })
+
+  it('falls back to the listing when the tree endpoint refuses the directory', async () => {
+    vi.spyOn(api, 'projectTree').mockRejectedValue(new Error('unknown_project_dir'))
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    await waitFor(() => expect(screen.getByText('src')).toBeTruthy())
+    expect(screen.queryByTestId('tree')).toBeNull()
+  })
+
+  it('refreshes the visible listing while the project tree is unavailable', async () => {
+    vi.spyOn(api, 'projectTree').mockRejectedValue(new Error('unknown_project_dir'))
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    await waitFor(() => expect(screen.getByText('src')).toBeTruthy())
+    expect(api.browseFiles).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByLabelText('Refresh'))
+    await waitFor(() => expect(api.browseFiles).toHaveBeenCalledTimes(2))
+  })
+
+  it('refreshes the tree read as well while a RECOVERABLE tree failure holds', async () => {
+    // A recoverable failure leaves tree mode (it needs 'ready'), so Refresh took the listing
+    // branch and never re-read the tree — the one button offered could not restore it.
+    const timeout = Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })
+    const tree = vi.spyOn(api, 'projectTree').mockRejectedValue(timeout as never)
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    await waitFor(() => expect(screen.getByText('src')).toBeTruthy())
+    const before = tree.mock.calls.length
+    fireEvent.click(screen.getByLabelText('Refresh'))
+    await waitFor(() => expect(tree.mock.calls.length).toBeGreaterThan(before))
+  })
+
+  it('stays busy until the recoverable tree read a Refresh press started has settled', async () => {
+    // The listing arm's press awaits the tree read too, and that read carries its own deadline
+    // -- so a busy state keyed on the one-level listing alone went idle over a tree read still
+    // in flight, the same way it did over the search walk (FolderPanel.search.test.tsx).
+    const timeout = Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })
+    let release: (() => void) | undefined
+    const treeRead = vi.spyOn(api, 'projectTree')
+      .mockRejectedValueOnce(timeout as never)
+      .mockImplementation(() => new Promise(resolve => {
+        release = () => resolve({ root: ROOT, paths: ['README.md'], repo: true } as never)
+      }))
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    client.setQueryData(['kiro-prerequisite'], { platform: 'linux' })
+    render(
+      <QueryClientProvider client={client}>
+        <FolderPanel onClose={() => {}} path={ROOT} projectDir={ROOT} />
+      </QueryClientProvider>,
+    )
+    await waitFor(() => expect(screen.getByText('src')).toBeTruthy())
+    await screen.findByRole('alert')
+    const refresh = screen.getByRole('button', { name: 'Refresh' })
+    const icon = () => refresh.querySelector('svg')
+    expect(icon()).not.toHaveClass('animate-spin')
+
+    fireEvent.click(refresh)
+    await waitFor(() => expect(treeRead).toHaveBeenCalledTimes(2))
+    // The listing has LANDED; the tree read pressed with it is still out.
+    await waitFor(() => expect(client.getQueryState(['browse-files', ROOT])?.fetchStatus).toBe('idle'))
+    expect(client.getQueryState(['project-tree', ROOT])?.fetchStatus).toBe('fetching')
+    expect(icon()).toHaveClass('animate-spin')
+    expect(refresh).toHaveAttribute('aria-disabled', 'true')
+
+    release!()
+    // The recovered read hands the body to the tree; the header control goes idle with it.
+    await waitFor(() => expect(tree()).toBeTruthy())
+    await waitFor(() => expect(icon()).not.toHaveClass('animate-spin'))
+    expect(refresh).toHaveAttribute('aria-disabled', 'false')
+  })
+
+  it('names Refresh on the tree-timeout notice, since Refresh re-reads the tree in that arm', async () => {
+    // The search and listing notices already point at the header Refresh; the tree notice was
+    // the one recoverable arm that stated the cause without the remedy, while the button beside
+    // it stayed an unlabelled icon.
+    const timeout = Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })
+    vi.spyOn(api, 'projectTree').mockRejectedValue(timeout as never)
+    renderPanel({ path: ROOT, projectDir: ROOT })
+
+    expect(await screen.findByRole('alert'))
+      .toHaveTextContent("Couldn't load the file tree — Refresh to retry")
+    const label = screen.getByRole('button', { name: 'Refresh' }).querySelector('span')
+    expect(label).not.toBeNull()
+    expect(label).not.toHaveClass('invisible')
+  })
+
+  it('hands the agent the tree read\'s journaled report, not the composed notice line', async () => {
+    // The notice's text is composed client-side ("Couldn't load the file tree — Refresh to
+    // retry"), which is NOT the journal key: the API layer journals the failure under the
+    // error's own message with the endpoint, status and backend code. The hand-off has to
+    // carry those -- as the rail's tree notice and the listing arm two rows down already do --
+    // or the agent starts from a sentence that names nothing.
+    __resetErrorJournalForTests()
+    recordError({
+      source: 'api',
+      message: 'tree walk failed',
+      status: 500,
+      code: 'tree_walk_failed',
+      endpoint: '/api/project/tree',
+    })
+    vi.spyOn(api, 'projectTree').mockRejectedValue(new Error('tree walk failed') as never)
+    renderPanel({ path: ROOT, projectDir: ROOT })
+
+    const notice = await screen.findByRole('alert')
+    expect(notice).toHaveTextContent("Couldn't load the file tree")
+    fireEvent.click(within(notice).getByRole('button', { name: /ask the agent/i }))
+    const prompt = consumeChatHandoff()
+    expect(prompt).toContain('/api/project/tree')
+    expect(prompt).toContain('500')
+    expect(prompt).toContain('tree_walk_failed')
+  })
+
+  it('withholds the Refresh hint when the tree endpoint REFUSES the root', async () => {
+    // Control: a refusal is not recoverable, so it renders no tree notice at all and the header
+    // control stays compact — the hint above must be keyed on the recoverable arm, not on any error.
+    vi.spyOn(api, 'projectTree').mockRejectedValue(
+      new ApiError(403, 'unknown', JSON.stringify({ code: 'unknown_project_dir' })) as never,
+    )
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    await waitFor(() => expect(screen.getByText('src')).toBeTruthy())
+
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Refresh' })).toHaveClass('w-[26px]')
+  })
+
+  it('does not stack "Empty folder" under the tree-timeout notice', async () => {
+    // The listing that loaded is a FALLBACK for the tree that did not; with both on screen the
+    // panel made two claims about one directory, and the second read as the reason for the
+    // first.
+    const timeout = Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })
+    vi.spyOn(api, 'projectTree').mockRejectedValue(timeout as never)
+    vi.spyOn(api, 'browseFiles').mockResolvedValue(
+      { path: ROOT, parent: '/', dirs: [], files: [] } as never)
+    renderPanel({ path: ROOT, projectDir: ROOT })
+
+    expect(await screen.findByRole('alert'))
+      .toHaveTextContent("Couldn't load the file tree — Refresh to retry")
+    // The listing HAS settled (its parent row is up), so the absence is the gate, not a pending read.
+    await screen.findByText('Parent folder')
+    expect(screen.queryByText('Empty folder')).toBeNull()
+  })
+
+  it('reports ONE failure when a wedged gateway fails the tree and the listing together', async () => {
+    // At the project root both reads hit the same outage, so the tree notice sat above the
+    // listing's and one problem read as two. The listing's is kept: it names its own cause.
+    const timeout = Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })
+    vi.spyOn(api, 'projectTree').mockRejectedValue(timeout as never)
+    vi.spyOn(api, 'browseFiles').mockRejectedValue(timeout as never)
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    expect(await screen.findByText(/^Folder listing timed out/)).toBeInTheDocument()
+    // Regex, not an exact string: the tree notice carries a remedy clause, so an exact-text
+    // query would find nothing whether it rendered or not and the assertion would be vacuous.
+    expect(screen.queryByText(/Couldn't load the file tree/)).not.toBeInTheDocument()
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
+  })
+
+  it('still says "Empty folder" when no tree notice is up', async () => {
+    // Control: the same empty listing under a REFUSED tree renders no tree notice, so the line
+    // must come back -- the suppression above is keyed on the notice, not on being at the root.
+    vi.spyOn(api, 'projectTree').mockRejectedValue(
+      new ApiError(403, 'unknown', JSON.stringify({ code: 'unknown_project_dir' })) as never,
+    )
+    vi.spyOn(api, 'browseFiles').mockResolvedValue(
+      { path: ROOT, parent: '/', dirs: [], files: [] } as never)
+    renderPanel({ path: ROOT, projectDir: ROOT })
+
+    expect(await screen.findByText('Empty folder')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  /**
+   * A gateway that never answers: each request settles only when its own signal aborts, which is
+   * exactly what the client's deadline does. Real `api.*` binding, real deadline, real journal --
+   * so what is pinned below is the transport's hand-off, not a stand-in for it.
+   */
+  function wedgeFetch() {
+    return vi.spyOn(globalThis, 'fetch').mockImplementation((_input, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal
+        if (!signal) return reject(new Error('wedged request had no signal'))
+        if (signal.aborted) return reject(signal.reason)
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+      }))
+  }
+
+  it('hands the listing notice ITS OWN deadline report when the tree timed out after it', async () => {
+    // Every bounded read journals the one contract line, `deadline exceeded`, and the journal is
+    // resolved by exact message, newest first. At the project root the tree's 15s deadline
+    // outlives the listing's 10s one, so the listing notice resolved to the TREE's entry and
+    // handed the agent /api/project/tree for a /api/browse-files failure. The transport pins
+    // each report to its own rejection; the notice reads that before it consults the journal.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    __resetErrorJournalForTests()
+    vi.mocked(api.browseFiles).mockRestore()
+    vi.mocked(api.projectTree).mockRestore()
+    const fetchMock = wedgeFetch()
+    try {
+      renderPanel({ path: ROOT, projectDir: ROOT })
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+
+      await vi.advanceTimersByTimeAsync(BROWSE_FILES_TIMEOUT_MS)
+      await vi.advanceTimersByTimeAsync(FILE_SEARCH_TIMEOUT_MS - BROWSE_FILES_TIMEOUT_MS)
+      // Both reads journaled, the tree's LAST: the newest `deadline exceeded` is not the listing's.
+      await waitFor(() => expect(recentErrors().map(r => r.endpoint))
+        .toEqual(['/api/project/tree', '/api/browse-files']))
+      // One notice for the one outage, and it is the listing's.
+      const notice = await screen.findByRole('alert')
+      expect(notice).toHaveTextContent('Folder listing timed out')
+
+      fireEvent.click(within(notice).getByRole('button', { name: /ask the agent/i }))
+      const prompt = consumeChatHandoff() ?? ''
+      expect(prompt).toContain('/api/browse-files')
+      expect(prompt).not.toContain('/api/project/tree')
+    } finally {
+      fetchMock.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  it('hands the tree notice ITS OWN deadline report, not a later read\'s under the same message', async () => {
+    // The mirror case: the tree timed out and its notice is up when ANOTHER bounded read (the
+    // composer's @-menu search shares this journal) times out after it. A message match would
+    // resolve the tree notice to that newer entry; its own pinned report keeps it on its endpoint.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    __resetErrorJournalForTests()
+    vi.mocked(api.projectTree).mockRestore()
+    const fetchMock = wedgeFetch()
+    try {
+      renderPanel({ path: ROOT, projectDir: ROOT })
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+      await vi.advanceTimersByTimeAsync(FILE_SEARCH_TIMEOUT_MS)
+      const notice = await screen.findByRole('alert')
+      expect(notice).toHaveTextContent("Couldn't load the file tree")
+      expect(recentErrors().map(r => r.endpoint)).toEqual(['/api/project/tree'])
+
+      recordError({ source: 'api', message: 'deadline exceeded', code: 'timeout', endpoint: '/api/file-search' })
+      expect(recentErrors()[0].endpoint).toBe('/api/file-search')
+      // A re-render after the newer entry landed, as any keystroke causes: the notice's report is
+      // read at render time, so without one a stale-but-right prop would mask a wrong lookup.
+      // One character stays under the search floor, so this dispatches no request.
+      fireEvent.change(screen.getByLabelText('Search files'), { target: { value: 'x' } })
+
+      fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: /ask the agent/i }))
+      const prompt = consumeChatHandoff() ?? ''
+      expect(prompt).toContain('/api/project/tree')
+      expect(prompt).not.toContain('/api/file-search')
+    } finally {
+      fetchMock.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  it('opens a file through the normal file tab without re-targeting the folder tab', async () => {
+    const onFileOpen = vi.fn()
+    const onPathChange = vi.fn()
+    renderPanel({ path: ROOT, projectDir: ROOT, onFileOpen, onPathChange })
+    fireEvent.click(await waitFor(() => tree()))
+    expect(onFileOpen).toHaveBeenCalledWith(H.OPENED)
+    // The whole point of the tree body: browsing descendants never moves the tab.
+    expect(onPathChange).not.toHaveBeenCalled()
+  })
+
+  it('feeds the search box into the tree instead of the recursive file search', async () => {
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    await waitFor(() => expect(tree()).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('Search files'), { target: { value: 'read' } })
+    await waitFor(() => expect(tree().getAttribute('data-query')).toBe('read'))
+    // Past the 200ms debounce the listing body would have dispatched a walk; the
+    // tree already holds the path set, so nothing is requested.
+    await new Promise(resolve => setTimeout(resolve, 260))
+    expect(api.fileSearch).not.toHaveBeenCalled()
+  })
+
+  it('sends the search to the server when the tree payload is truncated', async () => {
+    // A truncated tree holds only the rows inside the server's cap, so its own
+    // filter cannot find what was never listed: the query takes the recursive
+    // search, whose matches stand in for the tree until it is cleared.
+    vi.spyOn(api, 'projectTree').mockResolvedValue(
+      { root: ROOT, paths: ['README.md'], directories: [], repo: false, truncated: true } as never,
+    )
+    vi.spyOn(api, 'fileSearch').mockResolvedValue({
+      root: ROOT,
+      results: [{ path: `${ROOT}/deep/past/the/cap/readme.txt`, name: 'readme.txt' }],
+    } as never)
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    await waitFor(() => expect(tree()).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('Search files'), { target: { value: 'read' } })
+    await waitFor(() => expect(api.fileSearch).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByText('readme.txt')).toBeTruthy())
+    expect(tree()).not.toBeVisible()
+    // The takeover says why the results replaced the tree.
+    expect(screen.getByTestId('folder-search-beyond-tree')).toHaveTextContent(
+      'Results can include files past the 10,000-item limit',
+    )
+    fireEvent.change(screen.getByLabelText('Search files'), { target: { value: '' } })
+    await waitFor(() => expect(tree().getAttribute('data-query')).toBe(''))
+  })
+
+  it('keeps the matches the truncated tree already lists when the server search misses them', async () => {
+    // The server search walks under its own scan budget and can come back empty
+    // on a workspace whose tree is showing the file. The tree's own paths join
+    // its matches, so the takeover never finds less than the local filter did,
+    // and a path both name is listed once.
+    vi.spyOn(api, 'projectTree').mockResolvedValue(
+      {
+        root: ROOT,
+        paths: ['README.md', 'src/main_entry.py', 'src/other.py'],
+        directories: ['src'],
+        repo: false,
+        truncated: true,
+      } as never,
+    )
+    const search = vi.spyOn(api, 'fileSearch').mockResolvedValue({ root: ROOT, results: [] } as never)
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    await waitFor(() => expect(tree()).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('Search files'), { target: { value: 'MAIN_entry' } })
+    await waitFor(() => expect(api.fileSearch).toHaveBeenCalled())
+    const row = await waitFor(() => screen.getByText('main_entry.py'))
+    expect(row.closest('[title]')).toHaveAttribute('title', `${ROOT}/src/main_entry.py`)
+    expect(screen.queryByText('other.py')).toBeNull()
+    expect(screen.queryByText('No files match')).toBeNull()
+
+    search.mockResolvedValue({
+      root: ROOT,
+      results: [{ path: `${ROOT}/src/main_entry.py`, name: 'main_entry.py' }],
+    } as never)
+    fireEvent.change(screen.getByLabelText('Search files'), { target: { value: 'main_ent' } })
+    await waitFor(() => expect(api.fileSearch).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getAllByText('main_entry.py')).toHaveLength(1))
+  })
+
+  it('announces the search still running while the truncated tree already lists matches', async () => {
+    // The tree's own matches show at once; the server's join them when it answers.
+    // Until then the list is about to grow, so the status row says so (#16743).
+    vi.spyOn(api, 'projectTree').mockResolvedValue(
+      { root: ROOT, paths: ['README.md'], directories: [], repo: false, truncated: true } as never,
+    )
+    let answer: (v: unknown) => void = () => {}
+    vi.spyOn(api, 'fileSearch').mockImplementation(() => new Promise(resolve => { answer = resolve }) as never)
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    await waitFor(() => expect(tree()).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('Search files'), { target: { value: 'read' } })
+    await waitFor(() => expect(api.fileSearch).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByText('README.md')).toBeTruthy())
+    expect(screen.getByRole('status')).toHaveTextContent('Searching')
+    answer({ root: ROOT, results: [{ path: `${ROOT}/deep/readme.txt`, name: 'readme.txt' }] })
+    await waitFor(() => expect(screen.getByText('readme.txt')).toBeTruthy())
+    expect(screen.queryByRole('status')).toBeNull()
+    // A refined query starts with the previous answer as placeholder rows: it has
+    // no answer of its own yet, so the status is back until it lands.
+    fireEvent.change(screen.getByLabelText('Search files'), { target: { value: 'readme' } })
+    await waitFor(() => expect(api.fileSearch).toHaveBeenCalledTimes(2))
+    expect(screen.getByRole('status')).toHaveTextContent('Searching')
+    answer({ root: ROOT, results: [{ path: `${ROOT}/deep/readme.txt`, name: 'readme.txt' }] })
+    await waitFor(() => expect(screen.queryByRole('status')).toBeNull())
+  })
+
+  it('keeps the truncated tree mounted behind the search, so its expansion survives clearing it', async () => {
+    // The matches stand in for the tree while the query is up, but the tree is
+    // hidden, not unmounted: a remount builds a fresh model with every folder
+    // the user expanded collapsed again.
+    vi.spyOn(api, 'projectTree').mockResolvedValue(
+      { root: ROOT, paths: ['README.md'], directories: [], repo: false, truncated: true } as never,
+    )
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    await waitFor(() => expect(tree()).toBeVisible())
+    const mount = tree().getAttribute('data-mount')
+    fireEvent.change(screen.getByLabelText('Search files'), { target: { value: 'read' } })
+    await waitFor(() => expect(api.fileSearch).toHaveBeenCalled())
+    await waitFor(() => expect(tree()).not.toBeVisible())
+    fireEvent.change(screen.getByLabelText('Search files'), { target: { value: '' } })
+    await waitFor(() => expect(tree()).toBeVisible())
+    expect(tree().getAttribute('data-mount')).toBe(mount)
+  })
+
+  it('does not name the beyond-the-tree search on a tab that only ever lists one level', async () => {
+    // Off the project root the box always searches recursively; nothing it
+    // replaces was a filter, so the takeover line has nothing to explain.
+    renderPanel({ path: `${ROOT}/src`, projectDir: ROOT })
+    await waitFor(() => expect(screen.getByText('src')).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('Search files'), { target: { value: 'read' } })
+    await waitFor(() => expect(api.fileSearch).toHaveBeenCalled())
+    expect(screen.queryByTestId('folder-search-beyond-tree')).toBeNull()
+  })
+
+  it('refreshes the search that stands in for a truncated tree', async () => {
+    // While the matches replace a truncated tree they are what the tab shows, so
+    // Refresh re-reads them, as it does for the same search in listing mode.
+    vi.spyOn(api, 'projectTree').mockResolvedValue(
+      { root: ROOT, paths: ['README.md'], directories: [], repo: false, truncated: true } as never,
+    )
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    await waitFor(() => expect(tree()).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('Search files'), { target: { value: 'read' } })
+    await waitFor(() => expect(api.fileSearch).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByLabelText('Refresh'))
+    await waitFor(() => expect(api.fileSearch).toHaveBeenCalledTimes(2))
+    expect(api.projectTree).toHaveBeenCalledTimes(2)
+  })
+
+  it('refreshes the queries the tree reads, not the directory listing', async () => {
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    await waitFor(() => expect(api.projectTree).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByLabelText('Refresh'))
+    await waitFor(() => expect(api.projectTree).toHaveBeenCalledTimes(2))
+  })
+
+  it('hands the tree the same add-to-context action the Files rail gets', async () => {
+    const onAddToContext = vi.fn()
+    renderPanel({ path: ROOT, projectDir: ROOT, onAddToContext })
+    await waitFor(() => expect(tree()).toBeTruthy())
+    // Pinned because the SAME tree renders in two surfaces now: a row that offers
+    // the action in the rail and not here is exactly how the two would diverge.
+    expect(tree().getAttribute('data-has-add-to-context')).toBe('1')
+    fireEvent.contextMenu(tree())
+    expect(onAddToContext).toHaveBeenCalledWith(H.OPENED, 'file')
+  })
+
+  it('names the search shape while filtering the tree, and not before', async () => {
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    await waitFor(() => expect(tree()).toBeTruthy())
+    expect(screen.queryByText('includes subfolders')).toBeNull()
+    fireEvent.change(screen.getByLabelText('Search files'), { target: { value: 'ord' } })
+    const hint = await waitFor(() => screen.getByText('includes subfolders'))
+    expect(hint).toHaveClass('min-w-0', 'truncate')
+  })
+
+  it('still offers the parent row, which is what leaves tree mode', async () => {
+    const onPathChange = vi.fn()
+    renderPanel({ path: ROOT, projectDir: ROOT, onPathChange })
+    fireEvent.click(await waitFor(() => screen.getByText('Parent folder')))
+    expect(onPathChange).toHaveBeenCalledWith('/')
+    // Stepping out of the project root drops the tab back to the listing.
+    await waitFor(() => expect(screen.queryByTestId('tree')).toBeNull())
+  })
+})

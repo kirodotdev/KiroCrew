@@ -1,0 +1,32 @@
+/*
+ * The transparency guarantee for the companion's standalone app windows.
+ *
+ * Lives in its own stylesheet, imported as text by `dashboardTheme.ts` and injected
+ * as the LAST element in <head>, so it is re-asserted after the dashboard's own
+ * stylesheets land. Those windows are transparent overlays covering a whole display;
+ * the dashboard paints `body` and a full-viewport `body::before` gradient, so adopting
+ * its theme naively turns the overlay into an opaque rectangle over everything.
+ *
+ * `!important` is what actually wins here -- the dashboard's own rules are not
+ * important, so this holds whatever order the sheets end up in. Being appended last
+ * is belt-and-braces, not the mechanism.
+ *
+ * It is a stylesheet rather than a string inside the module because CSS text in a .ts
+ * file reads to the i18n gate as untranslated user-facing prose (`transparent`,
+ * `none`, `important` are words), and because CSS belongs in CSS.
+ */
+
+html,
+body {
+  background: transparent !important;
+  background-image: none !important;
+}
+
+/* The dashboard's ambient gradient is drawn on a pseudo-element, which an inline
+   style on <body> cannot reach -- so it is neutralised explicitly. */
+body::before,
+body::after {
+  display: none !important;
+  background: none !important;
+  content: none !important;
+}

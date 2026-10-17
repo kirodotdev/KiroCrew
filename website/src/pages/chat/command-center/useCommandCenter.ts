@@ -1,0 +1,259 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { api } from '../../../api/client'
+import { CREW_BOARD_POLL_MS } from '../../../api/crewBoard'
+import { fmtList } from '../../../i18n/format'
+import { i18nT } from '../../../i18n/t'
+import { useAppDispatch, useAppSelector } from '../../../store'
+import { isAnsweredQuestionEnding, markQuestionSettled } from '../../../store/chatSlice'
+import { answersAsText, questionName } from '../../../utils/questionAnswers'
+import { restoreToComposer } from '../../../utils/composerRestore'
+import type { SubagentActivity } from '../../../types'
+import { buildCommandCenter, effectiveApprovalMode, scopedSlots, slotKey, type PendingQuestion, type WorkItem } from './model'
+
+/** The work board as its route serves it: the folded value plus its revision. */
+type WorkProjection = { value?: { items: WorkItem[]; omitted?: number }; revision?: number }
+
+/** How often the panel re-reads the work board on its own.
+ *
+ *  A PULL, not a push. Every other source here is refreshed by the frame that
+ *  announces its change, which is enough for a source whose only failure is a
+ *  missed frame. The work board is different: it is a FOLD of a growing log, the
+ *  reader is often an agent watching its own items, and a board that sits behind
+ *  the ledger is worse than one re-read for nothing. So this board asks, on a
+ *  clock, whatever the socket has or has not said.
+ *
+ *  The number is the Crew Board page's own, because this is the same board read
+ *  by a second surface and two cadences for one dataset is a number to keep in
+ *  step rather than a choice to make twice. Its figure: slow enough to cost
+ *  nothing, fast enough that a decision request is noticed while the person is
+ *  still at the desk. The socket remains the fast path; this is the backstop.
+ *
+ *  Background ticks are left off (react-query's default), so a hidden tab costs
+ *  nothing and re-reads when it is looked at again. */
+export const WORK_BOARD_PULL_MS = CREW_BOARD_POLL_MS
+
+/** Names of the optional sources that can fail. Literal keys, so the catalog
+ * tooling sees every one. */
+const MISSING_SOURCE_KEYS = {
+  runs: 'commandCenter.source_runs',
+  work: 'commandCenter.source_work',
+} as const
+
+/** One notice naming every optional source that failed, so the reassurance is
+ * said once however many are missing; null when none is. */
+export function missingSourcesNotice(missing: readonly (keyof typeof MISSING_SOURCE_KEYS)[]): string | null {
+  if (!missing.length) return null
+  return i18nT('commandCenter.partial_sources', { sources: fmtList(missing.map(name => i18nT(MISSING_SOURCE_KEYS[name]))) })
+}
+const EMPTY_AGENTS: Record<string, SubagentActivity> = {}
+/** One identity per card: a blocking ask by its ask_id, a stateless card by slot and
+ * card_id, a session's trailing `[OPTIONS:]` ask by its slot alone. */
+const questionId = (q: PendingQuestion) => q.ask_id ? JSON.stringify(['ask', q.ask_id])
+  : JSON.stringify([slotKey(q.slot), q.card_id || (q.followUp ? 'follow-up' : '')])
+
+/** Shared query keys let the panel and the fleet page observe one read, not one per
+ * worker. The decision sources do not poll: `approval*`, `question_card*` and the
+ * workflow events each refresh the source they announce, and a reconnect refreshes
+ * all of them. The WORK BOARD is the exception and pulls on a clock as well as
+ * taking its `slot_projection` frames (see WORK_BOARD_PULL_MS), so it catches up
+ * whether or not a push lands. */
+export function useCommandCenter(root: string | null, enabled = true, scope: 'task' | 'fleet' = 'task') {
+  const dispatch = useAppDispatch()
+  const slots = useAppSelector(s => s.dashboard.slots)
+  const approvalMode = useAppSelector(s => s.dashboard.approvalMode)
+  const activeSlot = useAppSelector(s => s.chat.activeSlot)
+  const liveAgents = useAppSelector(s => s.chat.subagents)
+  const background = useAppSelector(s => s.chat.slotActivity)
+  const liveWorkflows = useAppSelector(s => s.chat.workflowRuns)
+  const connected = useAppSelector(s => s.dashboard.connected)
+  const fleet = scope === 'fleet'
+  const scoped = useMemo(() => fleet ? slots : root ? scopedSlots(slots, root) : [], [slots, root, fleet])
+  const canRead = enabled && (fleet || !!root && scoped.length > 0)
+  // The app-wide policy is never-stale; a finite staleTime here made every
+  // window focus re-read all of these. Frames and reconnect own freshness; a
+  // failed source also re-reads on focus, since its frame may never come.
+  const sourceOptions = {
+    enabled: canRead, staleTime: 3_000,
+    refetchOnWindowFocus: (query: { state: { status: string } }) => query.state.status === 'error',
+  }
+  const questions = useQuery({ queryKey: ['command-center', 'questions'], queryFn: api.pendingQuestions, ...sourceOptions })
+  // Stateless cards stay visible while blocking drafts restore when authority retires.
+  const draftScope = JSON.stringify([scope, root])
+  const [drafts, setDrafts] = useState<{
+    scope: string
+    cards: Record<string, { question: PendingQuestion; answers: Record<string, string> }>
+    notices: Record<string, { slot: string; question: string }>
+  }>({ scope: draftScope, cards: {}, notices: {} })
+  if (drafts.scope !== draftScope) setDrafts({ scope: draftScope, cards: {}, notices: {} })
+  const onQuestionDraftChange = (question: PendingQuestion, answers: Record<string, string>) => {
+    // A trailing `[OPTIONS:]` ask (`followUp`) has neither id, but a pick in it
+    // is unsent text all the same; one per session is all the model ever offers.
+    if (!question.ask_id && !question.card_id && !question.followUp) return
+    const id = questionId(question)
+    setDrafts(previous => {
+      if (previous.scope !== draftScope) return previous
+      if (Object.keys(answers).length) {
+        return { ...previous, cards: { ...previous.cards, [id]: { question, answers } } }
+      }
+      if (!previous.cards[id]) return previous
+      const cards = { ...previous.cards }
+      delete cards[id]
+      return { ...previous, cards }
+    })
+  }
+  const questionRequestsInFlight = useAppSelector(s => s.chat.questionRequestsInFlight)
+  const questionsSettled = useAppSelector(s => s.chat.questionsSettled)
+  const localQuestionReleases = useRef(new Set<string>())
+  useEffect(() => {
+    for (const [askId, provenance] of Object.entries(questionRequestsInFlight || {})) {
+      if (provenance === 'composer' || provenance === 'queued') localQuestionReleases.current.add(askId)
+    }
+  }, [questionRequestsInFlight])
+  const visibleQuestions = useMemo(() => {
+    const live = questions.data || []
+    const ids = new Set(live.map(questionId))
+    const retained = Object.values(drafts.scope === draftScope ? drafts.cards : {})
+      .map(draft => draft.question)
+      // A trailing `[OPTIONS:]` ask is the slot's own, never retained past it.
+      .filter(question => !question.followUp && !ids.has(questionId(question))
+        && (!question.ask_id || (!questionsSettled?.[question.ask_id]
+          && questionRequestsInFlight?.[question.ask_id])))
+    return [...live, ...retained]
+  }, [questions.data, drafts, draftScope, questionRequestsInFlight, questionsSettled])
+  useEffect(() => {
+    if (!questions.data || drafts.scope !== draftScope) return
+    const liveIds = new Set(questions.data.map(questionId))
+    const retired = Object.entries(drafts.cards)
+      .filter(([id, draft]) => {
+        const askId = draft.question.ask_id
+        const answered = !!askId && isAnsweredQuestionEnding(questions.data?.resolved?.[askId])
+        return !!askId && !liveIds.has(id)
+          && (answered || questionsSettled?.[askId] || !questionRequestsInFlight?.[askId])
+      })
+    if (!retired.length) return
+    const restored = new Set<string>()
+    for (const [id, draft] of retired) {
+      const askId = draft.question.ask_id!
+      const answered = isAnsweredQuestionEnding(questions.data.resolved?.[askId])
+      const localRelease = localQuestionReleases.current.has(askId)
+      // A local composer/queued release settles the ask itself once its answer
+      // request returns; settling it here first would let the chat card drop the
+      // draft it retained for that release to hand back.
+      if (answered && !questionsSettled?.[askId] && !localRelease) {
+        dispatch(markQuestionSettled({ ask_id: askId }))
+      }
+      if ((answered || questionsSettled?.[askId]) && !localRelease) continue
+      const text = answersAsText(draft.answers)
+      if (text.trim()) {
+        restoreToComposer(slotKey(draft.question.slot), text)
+        restored.add(id)
+      }
+    }
+    for (const [, draft] of retired) localQuestionReleases.current.delete(draft.question.ask_id!)
+    setDrafts(previous => {
+      if (previous.scope !== draftScope) return previous
+      const cards = { ...previous.cards }
+      const notices = { ...previous.notices }
+      for (const [id, draft] of retired) {
+        delete cards[id]
+        if (restored.has(id)) notices[id] = { slot: slotKey(draft.question.slot), question: questionName(draft.question.questions) }
+      }
+      return { ...previous, cards, notices }
+    })
+  }, [questions.data, drafts, draftScope, questionRequestsInFlight, questionsSettled, dispatch])
+  // The same inventory the app shell already keeps: one cache, one request per frame.
+  const approvals = useQuery({ queryKey: ['global-approvals'], queryFn: () => api.approvals(), ...sourceOptions })
+  const workflows = useQuery({ queryKey: ['command-center', 'workflows'], queryFn: api.workflowRuns, ...sourceOptions })
+  const work = useQuery({
+    queryKey: ['command-center', root, 'work'],
+    // THE NEWEST READ WINS, with no condition on it. The response is the value,
+    // whatever revision it carries and whatever the socket has announced: a
+    // client that can refuse the server's own current answer can be stuck
+    // forever, and a board that is briefly behind cannot -- the pull below
+    // corrects it, and whoever is reading the board sees it correct itself.
+    //
+    // The read's own `revision` is DROPPED before it is cached. This key is the
+    // one `seedFoldedProjection` seeds a push into, and it keeps the cached value
+    // only when the cached revision is at or above the frame's. A read revision
+    // is not comparable to a frame revision -- the floor could sit above every
+    // response the server would give -- so leaving it on the cached entry would
+    // let a high read revision reject newer pushes, dropping them silently until
+    // the clock pull. The module's rule is "the ledger holds only revisions a
+    // frame applied"; a read records none, so the next frame always applies.
+    queryFn: async (): Promise<WorkProjection> => {
+      const { revision: _ignored, ...rest } = (await api.sessionWorkProjection(root!)) as WorkProjection
+      return rest
+    },
+    // The one polled source here (see WORK_BOARD_PULL_MS): this board must catch
+    // up without a frame having to arrive.
+    ...sourceOptions, enabled: canRead && !fleet, refetchInterval: WORK_BOARD_PULL_MS,
+  })
+  const model = useMemo(() => {
+    const subagents = Object.fromEntries(scoped.map(s => [s.key,
+      s.key === activeSlot ? liveAgents : background?.[s.key]?.subagents || EMPTY_AGENTS,
+    ]))
+    // REST restores completed runs after a reload; live events win until the next
+    // authoritative snapshot read. Neither an unavailable endpoint nor an idle slot is success.
+    const runs = new Map((workflows.data?.runs || []).map(r => [r.run_id, r]))
+    for (const r of Object.values(liveWorkflows || {})) {
+      runs.set(r.run_id, { ...runs.get(r.run_id), run_id: r.run_id, name: r.name, status: r.status,
+        session_key: r.sessionKey || runs.get(r.run_id)?.session_key || '', error: r.error })
+    }
+    return buildCommandCenter({ root: fleet ? null : root, slots: scoped, subagents, approvalMode, workflows: [...runs.values()],
+      questions: visibleQuestions, approvals: approvals.data || [], work: work.isEnabled ? work.data?.value : undefined })
+  }, [root, scoped, activeSlot, liveAgents, background, liveWorkflows, workflows.data, visibleQuestions, approvals.data, work.data, work.isEnabled, approvalMode, fleet])
+  // A pick in a trailing `[OPTIONS:]` ask is unsent text only while that ask is
+  // offered; once the session moves on the card is gone and so is its draft,
+  // never restored to the composer (the labels are the agent's, not typed text).
+  useEffect(() => {
+    if (drafts.scope !== draftScope) return
+    const gone = Object.entries(drafts.cards)
+      .filter(([, draft]) => draft.question.followUp
+        && !model.attention.some(a => a.question?.followUp && slotKey(a.slot) === slotKey(draft.question.slot)))
+      .map(([id]) => id)
+    if (!gone.length) return
+    setDrafts(previous => {
+      if (previous.scope !== draftScope) return previous
+      const cards = { ...previous.cards }
+      for (const id of gone) delete cards[id]
+      return { ...previous, cards }
+    })
+  }, [model.attention, drafts, draftScope])
+  const sources = [questions, approvals, workflows, ...(work.isEnabled ? [work] : [])]
+  // Questions and approvals are what a person must act on; the rest decorate.
+  // An optional source failing (workflows answer 503 while their service starts)
+  // must not hide fresh decisions behind a stale notice.
+  const required = [questions, approvals]
+  const loading = canRead && sources.some(q => q.isPending)
+  const stale = canRead && (!connected || required.some(q => q.isError))
+  // Which optional source failed while decisions are fresh, so the notice can
+  // name what is missing rather than hand the person a vague uncertainty. Only
+  // once both decision reads have answered, since the notice vouches for them.
+  const missing = canRead && connected && required.every(q => q.isSuccess)
+    ? ([['runs', workflows], ['work', work]] as const)
+      .filter(([, q]) => q.isEnabled && q.isError).map(([name]) => name)
+    : []
+  const restoredQuestionNotices = Object.entries(drafts.notices)
+    .map(([id, notice]) => ({ id, ...notice }))
+  const dismissRestoredQuestionNotice = (id: string) => setDrafts(previous => {
+    if (!previous.notices[id]) return previous
+    const notices = { ...previous.notices }
+    delete notices[id]
+    return { ...previous, notices }
+  })
+  // Whether any card on this scope holds a half-entered answer, blocking ask included, so a HOST keeps its panel mounted while text is unsent.
+  const hasQuestionDraft = drafts.scope === draftScope && Object.keys(drafts.cards).length > 0
+  return {
+    ...model, connected, onQuestionDraftChange, hasQuestionDraft,
+    restoredQuestionNotices, dismissRestoredQuestionNotice,
+    approvalMode: effectiveApprovalMode(approvalMode, slots.find(s => s.key === root)),
+    loading, stale, missing,
+    // Real clock from completed reads. A websocket connection alone doesn't
+    // establish that a server-side question/approval inventory is up to date.
+    updatedAt: Math.min(...required.map(q => q.dataUpdatedAt)),
+    approvalCount: model.attention.filter(a => a.kind === 'approval').length,
+  }
+}
+
+export type CommandCenterData = ReturnType<typeof useCommandCenter>

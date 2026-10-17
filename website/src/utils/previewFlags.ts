@@ -1,0 +1,211 @@
+/**
+ * Preview flags — local, per-device opt-ins for surfaces that ship in the
+ * bundle but are NOT ready to be released.
+ *
+ * The problem this solves: a surface can be code-complete enough to merge and
+ * still be too rough to put in front of every user. Deleting it to hold the
+ * release loses the work and the review history; shipping it visible releases
+ * an unpolished page. A preview flag keeps the code on `main`, keeps the route
+ * routable, and simply does not advertise the surface anywhere in the UI until
+ * the operator turns it on from Settings > Developer > Feature Previews.
+ *
+ * Deliberately localStorage, not backend config: this is a per-device "show me
+ * the unfinished thing" switch with no server behavior attached (the surface's
+ * own API is unaffected either way), which is exactly the shape of the existing
+ * Developer Mode gate (`mc-dev-mode`). Putting it in `config.json` would imply
+ * a fleet-wide setting and a backend contract that does not exist.
+ *
+ * Retiring a flag is the goal, not an afterthought: when the surface is
+ * polished, delete its `previewFlag` from the registry entry and its card from
+ * Settings > Developer > Feature Previews. The stale localStorage key then reads as an
+ * ordinary unused key and no longer gates anything. The card's "See what it
+ * looks like" intro goes with it: its builder in `FeaturePreviewsSection.tsx`,
+ * its captures under `public/app-assets/feature-previews/`, its
+ * `pages.developer.featurePreviewsTab.intro.*` keys in every catalog, and its
+ * `shoot` step in `scripts/capture-feature-previews.mjs` — the media is the
+ * heaviest thing a flag ships, so it must not outlive the flag.
+ */
+import { safeGetItem, safeSetItem } from './safeStorage'
+
+/**
+ * Fired on the window whenever a preview flag changes, so the nav rail updates
+ * in the same tick as the toggle instead of waiting for a reload.
+ *
+ * Mirrors `mc-dev-mode-changed`. One event for all flags (the `detail` names
+ * which one) rather than one event per flag, so adding a flag stays a data
+ * change.
+ */
+export const PREVIEW_FLAG_EVENT = 'mc-preview-flag-changed'
+
+/**
+ * Shared prefix of every preview-flag storage key.
+ *
+ * Cross-tab `storage` listeners match on this rather than on a list of known
+ * flags, so adding a flag stays a one-line data change.
+ */
+export const PREVIEW_FLAG_PREFIX = 'mc-preview-'
+
+/** Payload of {@link PREVIEW_FLAG_EVENT}. */
+export interface PreviewFlagChange {
+  key: string
+  on: boolean
+}
+
+/** Inbound webhooks (`/webhooks`): functional, not yet polished enough to ship. */
+export const PREVIEW_WEBHOOKS = `${PREVIEW_FLAG_PREFIX}webhooks`
+
+/**
+ * Artifact Deploy (`/deploy`): publishing an artifact to a public HTTPS URL in
+ * the operator's own AWS account.
+ *
+ * Gating the INGRESS only, like every flag here. `/deploy` stays routable, the
+ * deploy API is untouched, and an existing deployment keeps working — what the
+ * flag controls is whether the product OFFERS the surface to someone who has not
+ * asked for it. The doors are the Artifacts page's Artifact Deploy button and its
+ * dropdown twin, the webapp card's Deploy hero, and the "Publish to public web
+ * (your AWS)" row in the publish panel.
+ *
+ * Default OFF because every door leads to spending money in a real AWS account
+ * and to content served on the open internet. That is not a reasonable default
+ * for a surface still settling.
+ */
+export const PREVIEW_ARTIFACT_DEPLOY = `${PREVIEW_FLAG_PREFIX}artifact-deploy`
+
+/**
+ * Crew Members: the Crew Members page (`/members`) and its rail item.
+ *
+ * This flag used to hold a second door too — the "New Crew Mode chat" entry in
+ * the sidebar's create menu. Crew Mode retired in favour of the Members page,
+ * and that menu entry is now "Crewmates": rendered whatever this flag says,
+ * it opens `/members` when the flag is on and, when off, the Settings card that
+ * turns it on (`ChatSidebar.openCrewMembers`). The flag therefore gates only the
+ * page and where the entry lands, never whether the entry exists — a user who
+ * has not opted in still finds the door and is walked to the switch.
+ *
+ * Gating the INGRESS only. Turning the flag off hides the rail item and reroutes
+ * the menu entry; it does not orphan existing work — it stops advertising the
+ * page to someone who has not opted in.
+ */
+export const PREVIEW_CREW = `${PREVIEW_FLAG_PREFIX}crew`
+
+/**
+ * Creating a chat that RUNS ON a connected remote crew — the "New chat on crew"
+ * entry in the sidebar's create menu.
+ *
+ * Its own flag, deliberately NOT {@link PREVIEW_CREW}. The word "crew" carries
+ * two unrelated meanings here: `PREVIEW_CREW` holds the Crew Members page, while
+ * this holds sessions dispatched to another MACHINE over the instances tunnel.
+ * Sharing one key would release or hold both at once, which is the same
+ * half-ship failure a per-feature flag exists to prevent.
+ *
+ * ONE flag for the whole feature: it also merges each connected crew's live
+ * sessions into the Sessions list, grouped per crew. It used to share that half
+ * with {@link PREVIEW_INSTANCE_SESSIONS}, and a user with one switch on and the
+ * other off could open a chat on a crew and then find no crew group to return
+ * to it from. Read it through `useRemoteCrewChat` and write it through
+ * {@link setRemoteCrewChat}, never as a bare flag, so the retired key keeps
+ * counting.
+ *
+ * Its toggle lives in Settings > Developer > Feature Previews, alongside every other
+ * unreleased surface, and NOT on Settings > Remote Crew where it started: a
+ * held feature is found by looking at the one page that lists held features, so
+ * scattering an opt-in onto the page it happens to act on hides it from the only
+ * reader who wants it. It keeps its own card there rather than sharing
+ * {@link PREVIEW_CREW}'s, for the two-meanings reason above.
+ *
+ * Gating the INGRESS only. A session already created on a peer keeps running
+ * there and stays reachable through that crew's own dashboard; turning the flag
+ * off only stops offering the menu entry.
+ */
+export const PREVIEW_REMOTE_CREW_CHAT = `${PREVIEW_FLAG_PREFIX}remote-crew-chat`
+
+/**
+ * RETIRED: the old "Remote crew sessions" switch, folded into
+ * {@link PREVIEW_REMOTE_CREW_CHAT}. Kept only so a device that turned it on
+ * still has the feature on: `useRemoteCrewChat` reads either key as ON,
+ * and {@link setRemoteCrewChat} clears it when the feature is turned off. Never
+ * gate anything on it directly.
+ */
+export const PREVIEW_INSTANCE_SESSIONS = `${PREVIEW_FLAG_PREFIX}instance-sessions`
+
+/**
+ * The composable-layout dev harness (`/layout-harness`).
+ *
+ * Held because it is a MECHANISM being built beside the Members page, not a
+ * shippable surface: it mounts the layout renderer + scope over a hand-authored
+ * seed so the "panes connect by placement" mechanism can be verified in
+ * isolation, and it changes nothing a user sees. Gating the INGRESS only —
+ * turning it off hides the route; it orphans nothing (the harness holds no saved
+ * state). Its own flag so it releases (or is retired) independently.
+ *
+ * The key string is `layout-harness`, matching the flag the layout feature
+ * itself reads, so the toggle here and the feature's own gate agree on one key.
+ */
+export const PREVIEW_LAYOUT_HARNESS = `${PREVIEW_FLAG_PREFIX}layout-harness`
+
+/**
+ * A sidebar folder drawn around the session that conducts it: that card pinned
+ * first inside the folder, with an accent bar down its left edge and a
+ * `conductor` tag beside its agent name.
+ *
+ * Held because it changes the SHAPE of a list tens of thousands of people read
+ * every day, by default, for every folder whose sessions were opened by one of
+ * them. The pin is not a new door that a reader can decline to walk through, so
+ * the usual ingress-only argument for shipping a preview unflagged does not
+ * apply here: there is nothing to decline. First Principles review asked for
+ * either a flag or an accepted RFC, and a per-device flag is the cheaper of the
+ * two to retire.
+ *
+ * Default OFF, and OFF is byte-for-byte the list on `main`: the folder's rows
+ * are handed on as the same array in the same order and the body is the same
+ * element, so nothing about an ordinary render is conditional on this key.
+ *
+ * It does NOT gate the two ways to REACH that session -- the folder row's chat
+ * button and the same action in the folder's menus. Those are ingresses a reader
+ * can decline, they move nothing on the resting list, and gating them here would
+ * leave a conducted folder with no way to the conversation it is drawn around.
+ * This key holds the layout and nothing else.
+ */
+export const PREVIEW_FOLDER_CONDUCTOR = `${PREVIEW_FLAG_PREFIX}folder-conductor`
+
+/**
+ * Read a preview flag. Absent, unparseable, or storage-denied all mean OFF —
+ * the whole point of the gate is that a surface stays hidden unless someone
+ * deliberately turned it on, so it fails closed.
+ */
+export function readPreviewFlag(flag: string): boolean {
+  return safeGetItem(flag) === '1'
+}
+
+/**
+ * Turn "Chat on a crew" on or off. Off also clears the retired key, or that key
+ * would keep the feature on behind a switch that reads off.
+ */
+export function setRemoteCrewChat(on: boolean): boolean {
+  if (!setPreviewFlag(PREVIEW_REMOTE_CREW_CHAT, on)) return false
+  if (!on && readPreviewFlag(PREVIEW_INSTANCE_SESSIONS)) return setPreviewFlag(PREVIEW_INSTANCE_SESSIONS, false)
+  return true
+}
+
+/**
+ * Write a preview flag and announce it.
+ *
+ * Returns whether the write actually landed. The announcement is gated on that
+ * result, and the gating is load-bearing rather than tidiness: every READER of a
+ * flag (`readPreviewFlag`, and so `surfacePreviewEnabled` and the nav rail) goes
+ * to storage, while `usePreviewFlag` tracks the event. So dispatching after a
+ * dropped write would leave the toggle rendering ON while the rail and Search
+ * Everywhere stayed empty — the card contradicting the thing it controls — and
+ * the "preference" would vanish on the next reload. Storage writes really can be
+ * refused: a locked-down embedding context denies access outright, and an
+ * exhausted quota survives `safeSetItem`'s reclaim attempts.
+ *
+ * On failure the toggle simply stays where it was, which is the truthful
+ * outcome: nothing was saved.
+ */
+export function setPreviewFlag(flag: string, on: boolean): boolean {
+  if (!safeSetItem(flag, on ? '1' : '0')) return false
+  const detail: PreviewFlagChange = { key: flag, on }
+  window.dispatchEvent(new CustomEvent<PreviewFlagChange>(PREVIEW_FLAG_EVENT, { detail }))
+  return true
+}

@@ -1,0 +1,60 @@
+{
+  "_meta": {
+    "note": "KAS (kiro-agent) built-in tool identifiers Crew's vocabulary tables are measured against. Two id spaces exist on the engine: `registered` is the id the tool registers under and the allowlist matcher compares against (tools/tool-filter.ts matchesPattern; what a spec's `tools` entry must spell), and `permission_tool_id` is the id the engine stamps on session/request_permission as `_meta.kiro.toolId` (acp-workspace-connection.ts), which is what reaches Crew's gate on the kas backend. They differ for exactly one built-in: the shell registers as execute_bash / execute_pwsh but reports run_command (tools/default/execute-bash.ts: `public static id = 'run_command'`, while getConfig() sets the registered id). Sources: kiro-agent source at the commit below, plus a live wire capture (test/fixtures/acp_frames/kas/session.jsonl, run_command) and a live kas-backend probe on kiro-cli 2.24.0 that observed the Read File tool_call. RE-MEASURE on every kiro-cli/KAS bump: re-grep `id: '...' as const` under packages/kiro-agent/src/tools/{default,}/*.ts and the shell class's static id, then run test/test_tool_names.py -- a rename fails there before it fails permissive at the gate -- and APPEND the release to `verified_kiro_cli_versions` (the list the doctor row and the kas session-start warning compare the installed kiro-cli against; a release not on it warns as unverified, so the pin is maintained by this step, not by whoever next notices the warning). `kiro_cli_version` stays the release the id tables were first read on; 2.24.1 is on the list because the write-plane path shapes below were measured there and the id tables re-checked.",
+    "engine": "kiro-agent",
+    "kiro_cli_version": "2.24.0",
+    "verified_kiro_cli_versions": ["2.24.0", "2.24.1", "2.27.1"],
+    "kiro_agent_commit": "076b7d57b",
+    "recorded": "2026-09-24",
+    "remeasured": {
+      "2.27.1": {
+        "recorded": "2026-10-05",
+        "kiro_agent_bundle": "0.66.22",
+        "read": "the extracted KAS bundle kiro-cli 2.27.1 runs (node_modules/@kiro/agent/dist/server/acp-server.js, package.json version 0.66.22): every `registered` id present and no built-in renamed; the shell class's static id still run_command; the actionType->ToolKind switch byte-identical to the 2.24.1 bundle's for every kind in `tool_call_kind`; each built-in's approval still stamps _meta.kiro.toolId with its own class id; the path parameter descriptions that produced the `tool_call_path_shape` column unchanged."
+      }
+    }
+  },
+  "registered": [
+    "code",
+    "delete_file",
+    "execute_bash",
+    "execute_pwsh",
+    "file_search",
+    "fs_append",
+    "fs_write",
+    "grep_search",
+    "list_directory",
+    "read_file",
+    "str_replace",
+    "tool_search",
+    "web_fetch"
+  ],
+  "permission_tool_id": {
+    "execute_bash": "run_command",
+    "execute_pwsh": "run_command"
+  },
+  "tool_call_kind": {
+    "_note": "The ACP `kind` the engine stamps on a built-in's tool_call frame: each tool's `actionType` (tools/*.ts) through acp/session-update-utils.ts mapActionTypeToToolKind (read_files->read; fs_write/write/create/append/replace->edit; delete->delete; search->search; execute_bash (run_command)->execute; web_fetch->fetch; code/tool_search->other by default). Only the write-plane kinds (edit, delete) are retained by Crew's tool_call kind cache (`_dispatch._build_tool_call_event`, bounded to that closed vocabulary) and carried onto a kindless permission frame; the rest are recorded so the exclusion is measured, not assumed -- `search` in particular (grep_search, file_search AND list_directory) would veto the host read-only proof that auto-approves a KAS search by identity.",
+    "code": "other",
+    "delete_file": "delete",
+    "execute_bash": "execute",
+    "execute_pwsh": "execute",
+    "file_search": "search",
+    "fs_append": "edit",
+    "fs_write": "edit",
+    "grep_search": "search",
+    "list_directory": "search",
+    "read_file": "read",
+    "str_replace": "edit",
+    "tool_search": "other",
+    "web_fetch": "fetch"
+  },
+  "tool_call_path_shape": {
+    "_note": "How the engine spells the target path on a built-in's tool_call rawInput, measured live on kiro-cli 2.24.1 (kiro-agent 076b7d57b) through the PR's projection of the shipped defaults.json (create, str_replace, append with the spec as shipped; delete with `delete_file` added to the spec): every path was ABSOLUTE (`<workspace>/<file>`), matching the tools' own schema text (`Absolute path to the file`; fs_write/read_file add `Relative paths are resolved against the workspace root`). `delete_file`'s `targetFile` schema says only `The path of the file to delete`, and the engine resolves a relative one against its workspace (WorkspaceObject.fromPath); the model emitted it absolute. Crew's gate cannot resolve a relative spelling against the engine's workspace, so a relative write-plane target is refused as unverifiable rather than judged against the gateway CWD -- the absolute paths recorded here are what keep the kas write plane working under that rule.",
+    "delete_file": "absolute",
+    "fs_append": "absolute",
+    "fs_write": "absolute",
+    "read_file": "absolute",
+    "str_replace": "absolute"
+  }
+}

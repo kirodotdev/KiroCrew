@@ -1,0 +1,364 @@
+"""Tests for api_cron_to_chat HTTP handler (handlers/cron.py L169-L205)."""
+
+from __future__ import annotations
+
+from unittest.mock import ANY, MagicMock, patch
+
+import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
+
+from kiro_crew.dashboard.handlers.cron import api_cron_to_chat
+
+
+def _make_app(state):
+    app = web.Application()
+    app["state"] = state
+    app.router.add_post("/api/crons/{job_id}/to-chat", api_cron_to_chat)
+    return app
+
+
+def _make_state(jobs=None, history_messages=None, notifications=None):
+    state = MagicMock()
+    slots = {}
+
+    def get_or_create_slot(name=None, agent="", origin=""):
+        # ``origin`` is recorded, not just tolerated: the cron paths must
+        # declare SlotOrigin.CRON, and a fake that swallowed the kwarg
+        # would let that regress silently (a cron slot relabelled USER is
+        # readable by any app holding `slots:user`).
+        if name not in slots:
+            slot = MagicMock()
+            slot.key = name
+            slot._origin = origin
+            slot.linked_session_key = ""
+            slot.messages = []
+            slot.title = ""
+
+            def append(role, content, cls, broadcast=True, meta=None, mint_mid=True):
+                # Mirror the real ``_ChatSlot.append`` contract: preserve a
+                # supplied durable id and mint only when the caller allows it.
+                # History hydration passes ``mint_mid=False`` so a legacy row
+                # cannot advertise an identity absent from its disk copy.
+                supplied = meta.get("mid") if isinstance(meta, dict) else None
+                stored_meta = dict(meta) if isinstance(meta, dict) else {}
+                if mint_mid and not supplied:
+                    stored_meta["mid"] = f"m-test-{len(slot.messages)}"
+                msg = {
+                    "role": role,
+                    "content": content,
+                    "cls": cls,
+                    **({"meta": stored_meta} if stored_meta else {}),
+                }
+                slot.messages.append(msg)
+                return msg
+
+            slot.append = append
+            slots[name] = slot
+        return slots[name]
+
+    state.get_or_create_slot = get_or_create_slot
+    state.crons = MagicMock()
+    state.crons.list_jobs.return_value = jobs or []
+    state.conversation_log = MagicMock()
+    state.conversation_log.read_messages.return_value = history_messages or []
+    state._notification_log = notifications or []
+    state.push_slots_update = MagicMock()
+    state.has_slot = MagicMock(return_value=False)
+    return state
+
+
+def _make_job(job_id="abc123", name="test-cron", last_result="Hello world"):
+    job = MagicMock()
+    job.id = job_id
+    job.name = name
+    job.last_result = last_result
+    job.agent_id = ""
+    return job
+
+
+class TestApiCronToChat:
+    """HTTP handler tests for POST /api/crons/{job_id}/to-chat."""
+
+    @pytest.mark.asyncio
+    async def test_existing_job_injects_result(self):
+        job = _make_job()
+        state = _make_state(jobs=[job])
+        with patch(
+            "kiro_crew.dashboard.handlers.cron.inject_cron_result_to_dashboard"
+        ) as mock_inject:
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/crons/abc123/to-chat")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["ok"] is True
+                assert data["slot"] == "cron-abc123"
+                # include_prompt=False is the contract, not an incidental
+                # kwarg: /to-chat re-surfaces a STORED result, and the prompt
+                # behind it is not recoverable from job.message, which the user
+                # may have edited since. Pinning it here keeps a later
+                # refactor from silently pairing the two again.
+                mock_inject.assert_called_once_with(
+                    state, job, "Hello world", history=ANY, dismissed=ANY, include_prompt=False
+                )
+
+    @pytest.mark.asyncio
+    async def test_deleted_job_with_history_creates_slot(self):
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "world"},
+        ]
+        state = _make_state(history_messages=history)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/crons/deleted123/to-chat")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["ok"] is True
+            slot = state.get_or_create_slot(name="cron-deleted123")
+            assert slot.linked_session_key == "cron:deleted123"
+            assert len(slot.messages) == 2
+
+    @pytest.mark.asyncio
+    async def test_deleted_job_with_history_restores_dismissals(self):
+        # The deleted-job history branch hydrates messages; it must ALSO restore
+        # the transcript's dismissed source-link set, or a re-surfaced one-shot
+        # session shows a chip the user unlinked and its next save erases the
+        # tombstone. Readable metadata -> the set is restored.
+        history = [{"role": "assistant", "content": "world"}]
+        state = _make_state(history_messages=history)
+        key = "phor5::pull::11"
+        state.conversation_log.get_metadata_status.return_value = (
+            {"_type": "metadata", "dismissed_source_links": [key]},
+            True,
+        )
+        slot_holder = {}
+        _orig_goc = state.get_or_create_slot
+
+        def _get_or_create(name=None, agent="", origin=""):
+            s = _orig_goc(name=name, agent=agent, origin=origin)
+            if "s" not in slot_holder:
+                s._dismissed_source_links = set()
+                slot_holder["s"] = s
+            return s
+
+        with patch(
+            "kiro_crew.dashboard.source_providers.contract.is_valid_source_identity_key",
+            return_value=True,
+        ):
+            state.get_or_create_slot = _get_or_create
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/crons/deleted123/to-chat")
+                assert resp.status == 200
+        assert slot_holder["s"]._dismissed_source_links == {key}  # restored, not empty
+
+    @pytest.mark.asyncio
+    async def test_deleted_job_defers_dismissed_when_metadata_unreadable(self):
+        # The deleted-job branch marks the slot _dismissed_hydrated=False BEFORE
+        # the off-loop read, so a periodic flush during the await carries the
+        # on-disk line forward instead of erasing it. An unreadable read leaves it
+        # deferred (never restored to True).
+        history = [{"role": "assistant", "content": "world"}]
+        state = _make_state(history_messages=history)
+        state.conversation_log.get_metadata_status.return_value = ({}, False)  # unreadable
+        slot_holder = {}
+        _orig_goc = state.get_or_create_slot
+
+        def _get_or_create(name=None, agent="", origin=""):
+            s = _orig_goc(name=name, agent=agent, origin=origin)
+            if "s" not in slot_holder:
+                s._dismissed_source_links = set()
+                slot_holder["s"] = s
+            return s
+
+        state.get_or_create_slot = _get_or_create
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/crons/deleted123/to-chat")
+            assert resp.status == 200
+        assert slot_holder["s"]._dismissed_hydrated is False  # write deferred, not erased
+
+    @pytest.mark.asyncio
+    async def test_deleted_job_with_history_restores_its_turn_limit(self):
+        # The tab's own turn time limit is slot-owned metadata on the same line:
+        # the reopen restores it, or the next full save erases it.
+        state = _make_state(history_messages=[{"role": "assistant", "content": "world"}])
+        state.conversation_log.get_metadata_status.return_value = (
+            {"_type": "metadata", "turn_timeout_secs": 28800},
+            True,
+        )
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/crons/deleted123/to-chat")
+            assert resp.status == 200
+        slot = state.get_or_create_slot("cron-deleted123")
+        assert slot.turn_timeout_secs == 28800
+        assert slot._turn_timeout_hydrated is True
+
+    @pytest.mark.asyncio
+    async def test_deleted_job_keeps_a_turn_limit_set_during_the_metadata_read(self):
+        # A user's change that commits while the off-loop read runs is newer than
+        # the line the read returns, so the restore leaves it in place.
+        state = _make_state(history_messages=[{"role": "assistant", "content": "world"}])
+
+        def _read_while_user_sets(_key):
+            slot = state.get_or_create_slot("cron-deleted123")
+            slot.turn_timeout_secs = 3600
+            slot._turn_timeout_hydrated = True
+            return {"_type": "metadata", "turn_timeout_secs": 28800}, True
+
+        state.conversation_log.get_metadata_status.side_effect = _read_while_user_sets
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/crons/deleted123/to-chat")
+            assert resp.status == 200
+        slot = state.get_or_create_slot("cron-deleted123")
+        assert slot.turn_timeout_secs == 3600
+        assert slot._turn_timeout_hydrated is True
+
+    @pytest.mark.asyncio
+    async def test_deleted_job_rebound_during_the_metadata_read_takes_no_turn_limit(self):
+        # A tab bound to another transcript while the read runs keeps its limit
+        # unread rather than taking this transcript's.
+        state = _make_state(history_messages=[{"role": "assistant", "content": "world"}])
+
+        def _read_while_rebound(_key):
+            state.get_or_create_slot("cron-deleted123").linked_session_key = "cron:other"
+            return {"_type": "metadata", "turn_timeout_secs": 28800}, True
+
+        state.conversation_log.get_metadata_status.side_effect = _read_while_rebound
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/crons/deleted123/to-chat")
+            assert resp.status == 200
+        slot = state.get_or_create_slot("cron-deleted123")
+        assert slot.turn_timeout_secs is None
+        assert slot._turn_timeout_hydrated is False
+
+    @pytest.mark.asyncio
+    async def test_deleted_job_defers_its_turn_limit_when_metadata_unreadable(self):
+        # Unread, the slot holds no limit of its own and is marked unhydrated, so
+        # its saves carry the on-disk limit forward instead of erasing it.
+        state = _make_state(history_messages=[{"role": "assistant", "content": "world"}])
+        state.conversation_log.get_metadata_status.return_value = ({}, False)
+        stale = state.get_or_create_slot("cron-deleted123")
+        stale.turn_timeout_secs = 600  # a prior binding's limit on a reused slot
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/crons/deleted123/to-chat")
+            assert resp.status == 200
+        assert stale.turn_timeout_secs is None
+        assert stale._turn_timeout_hydrated is False
+
+    @pytest.mark.asyncio
+    async def test_deleted_job_unreadable_clears_stale_foreign_dismissal(self):
+        # A REUSED cron slot still carries a PRIOR binding's dismissal (key A).
+        # The deleted-job rebind reads UNREADABLE metadata, so the authoritative
+        # restore is skipped and the slot stays _dismissed_hydrated=False (union-
+        # carry). A must NOT survive, or the carry-forward save would fold it into
+        # THIS session's transcript and hide its matching chip.
+        history = [{"role": "assistant", "content": "world"}]
+        state = _make_state(history_messages=history)
+        state.conversation_log.get_metadata_status.return_value = ({}, False)  # unreadable
+        stale = "phor5::pull::11"
+        slot_holder = {}
+        _orig_goc = state.get_or_create_slot
+
+        def _get_or_create(name=None, agent="", origin=""):
+            s = _orig_goc(name=name, agent=agent, origin=origin)
+            if "s" not in slot_holder:
+                s._dismissed_source_links = {stale}  # leftover from a prior binding
+                slot_holder["s"] = s
+            return s
+
+        state.get_or_create_slot = _get_or_create
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/crons/deleted123/to-chat")
+            assert resp.status == 200
+        assert slot_holder["s"]._dismissed_hydrated is False  # still deferred
+        assert stale not in slot_holder["s"]._dismissed_source_links  # foreign key cleared
+
+    @pytest.mark.asyncio
+    async def test_deleted_job_no_history_uses_notification(self):
+        notifications = [{"job_id": "notif123", "body": "Cron completed successfully"}]
+        state = _make_state(notifications=notifications)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/crons/notif123/to-chat")
+            assert resp.status == 200
+            slot = state.get_or_create_slot(name="cron-notif123")
+            assert len(slot.messages) == 1
+            assert "Cron completed successfully" in slot.messages[0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_deleted_job_no_history_no_notification_returns_404(self):
+        state = _make_state()
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/crons/missing999/to-chat")
+            assert resp.status == 404
+            data = await resp.json()
+            assert "not found" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_notification_dedup_prevents_duplicate(self):
+        notifications = [{"job_id": "dup123", "body": "Result text"}]
+        state = _make_state(notifications=notifications)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            await client.post("/api/crons/dup123/to-chat")
+            await client.post("/api/crons/dup123/to-chat")
+            slot = state.get_or_create_slot(name="cron-dup123")
+            assert len(slot.messages) == 1
+
+
+class TestBindCronSlotDismissed:
+    def _bind(self, dismissed, seeded):
+        # Drive _bind_cron_slot directly with a REUSED slot object that already
+        # carries a colliding local transcript's dismissed set (``seeded``), an
+        # unlinked binding, and the given ``dismissed`` payload.
+        from kiro_crew.dashboard import cron_inject
+
+        slot = MagicMock()
+        slot.linked_session_key = ""
+        slot.messages = []
+        slot._dismissed_source_links = set(seeded)
+        slot._dismissed_hydrated = True
+        state = MagicMock()
+        state.get_or_create_slot.return_value = slot
+        job = MagicMock()
+        job.id = "job9"
+        job.name = "job9"
+        job.member_id = ""
+        job.agent_id = "agent"
+        job.memory_store = ""
+        with (
+            patch.object(cron_inject, "hydrate_slot_from_history", lambda s, h: None),
+            patch.object(
+                cron_inject,
+                "_restore_dismissed_source_links",
+                lambda s, raw: (
+                    setattr(s, "_dismissed_source_links", set(raw)),
+                    setattr(s, "_dismissed_hydrated", True),
+                ),
+            ),
+            patch(
+                "kiro_crew.dashboard.source_providers.contract.is_valid_source_identity_key",
+                return_value=True,
+            ),
+        ):
+            cron_inject._bind_cron_slot(state, job, [], dismissed)
+        return slot
+
+    def test_unreadable_bind_clears_colliding_local_dismissals(self):
+        # UNREADABLE cron metadata on a reused slot: the colliding local
+        # transcript's tombstone must NOT survive, or the deferred union-carry
+        # save would fold it into the cron:{id} transcript and suppress an
+        # unrelated link there.
+        foreign = "phor5::pull::11"
+        slot = self._bind(cron_inject_unread(), {foreign})
+        assert slot._dismissed_source_links == set()  # foreign key cleared
+        assert slot._dismissed_hydrated is False  # deferred to union-carry save
+
+    def test_readable_bind_replaces_with_cron_transcripts_own(self):
+        own = "phor5::pull::42"
+        slot = self._bind([own], {"phor5::pull::11"})
+        assert slot._dismissed_source_links == {own}  # replaced, not merged
+        assert slot._dismissed_hydrated is True
+
+
+def cron_inject_unread():
+    from kiro_crew.dashboard import cron_inject
+
+    return cron_inject._DISMISSED_UNREAD

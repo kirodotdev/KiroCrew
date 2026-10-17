@@ -1,0 +1,288 @@
+{
+  "conductor": {
+    "schema": 1,
+    "slot_key": "chat-1750-conductor",
+    "goal": "Ship the conductor work ledger end to end (RFC Phases 1-5)",
+    "round": 0,
+    "depth": 0,
+    "parent_item": null,
+    "created_at": "2026-09-23T03:00:35+00:00"
+  },
+  "conductor_alive": "idle",
+  "items": [
+    {
+      "schema": 1,
+      "item_id": "it_032f46a3",
+      "title": "Crew page item table over the masked projection",
+      "acceptance": {
+        "kind": "pr_checks"
+      },
+      "state": "open",
+      "verdict": null,
+      "decision": "Fold onto the incumbent RFC's Phase 4. Build the masked projection first.",
+      "round": 0,
+      "fails": 0,
+      "status": "progress",
+      "summary": "Masked projection landed with 31 tests. Page, bands and the 10 s poll are in.",
+      "artifacts": {
+        "branch": "feat/crew-page-work-items",
+        "commit": "a523538a5f"
+      },
+      "pr": 12208,
+      "last_report_at": "2026-09-23T03:00:35+00:00",
+      "created_at": "2026-09-23T03:00:35+00:00",
+      "closed_at": null,
+      "orphaned": false,
+      "stale": false,
+      "acceptance_concrete": false,
+      "events": [
+        {
+          "id": "69ecbdc88909fe43",
+          "ts": "2026-09-23T03:00:35+00:00",
+          "item_id": "it_032f46a3",
+          "kind": "create",
+          "status": null,
+          "text": "Crew page item table over the masked projection"
+        },
+        {
+          "id": "ebd537e7ed9e4266",
+          "ts": "2026-09-23T03:00:35+00:00",
+          "item_id": "it_032f46a3",
+          "kind": "bind",
+          "status": null,
+          "text": ""
+        },
+        {
+          "id": "de53054010ffa161",
+          "ts": "2026-09-23T03:00:35+00:00",
+          "item_id": "it_032f46a3",
+          "kind": "decision",
+          "status": null,
+          "text": "Fold onto the incumbent RFC's Phase 4. Build the masked projection first."
+        },
+        {
+          "id": "b5dd7958dbe97025",
+          "ts": "2026-09-23T03:00:35+00:00",
+          "item_id": "it_032f46a3",
+          "kind": "report",
+          "status": "progress",
+          "text": "Masked projection landed with 31 tests. Page, bands and the 10 s poll are in."
+        }
+      ],
+      "alive": "running",
+      "outstanding": false,
+      "terminal": false
+    },
+    {
+      "schema": 1,
+      "item_id": "it_139d0f78",
+      "title": "Backfill the event log schema version",
+      "acceptance": {
+        "kind": "human_approval"
+      },
+      "state": "open",
+      "verdict": null,
+      "decision": "",
+      "round": 0,
+      "fails": 0,
+      "status": "blocked",
+      "summary": "Needs the migration in #12180 to land first; nothing here can move until then.",
+      "artifacts": {},
+      "pr": null,
+      "last_report_at": "2026-09-23T03:00:35+00:00",
+      "created_at": "2026-09-23T03:00:35+00:00",
+      "closed_at": null,
+      "orphaned": false,
+      "stale": false,
+      "acceptance_concrete": true,
+      "events": [
+        {
+          "id": "40293d60a431ebc0",
+          "ts": "2026-09-23T03:00:35+00:00",
+          "item_id": "it_139d0f78",
+          "kind": "create",
+          "status": null,
+          "text": "Backfill the event log schema version"
+        },
+        {
+          "id": "5c96d1774b900548",
+          "ts": "2026-09-23T03:00:35+00:00",
+          "item_id": "it_139d0f78",
+          "kind": "bind",
+          "status": null,
+          "text": ""
+        },
+        {
+          "id": "b62e88fd9b11a43a",
+          "ts": "2026-09-23T03:00:35+00:00",
+          "item_id": "it_139d0f78",
+          "kind": "report",
+          "status": "blocked",
+          "text": "Needs the migration in #12180 to land first; nothing here can move until then."
+        }
+      ],
+      "alive": "closed",
+      "outstanding": false,
+      "terminal": false
+    },
+    {
+      "schema": 1,
+      "item_id": "it_8ec42cf1",
+      "title": "Stall sweep for items whose worker went quiet",
+      "acceptance": {
+        "kind": "human_approval"
+      },
+      "state": "open",
+      "verdict": null,
+      "decision": "",
+      "round": 0,
+      "fails": 0,
+      "status": null,
+      "summary": "",
+      "artifacts": {},
+      "pr": null,
+      "last_report_at": null,
+      "created_at": "2026-09-23T03:00:35+00:00",
+      "closed_at": null,
+      "orphaned": false,
+      "stale": false,
+      "acceptance_concrete": true,
+      "events": [
+        {
+          "id": "65b5b1aade154b89",
+          "ts": "2026-09-23T03:00:35+00:00",
+          "item_id": "it_8ec42cf1",
+          "kind": "create",
+          "status": null,
+          "text": "Stall sweep for items whose worker went quiet"
+        }
+      ],
+      "alive": "closed",
+      "outstanding": false,
+      "terminal": false
+    },
+    {
+      "schema": 1,
+      "item_id": "it_bc424bdf",
+      "title": "Wake hook on the ledger append path",
+      "acceptance": {
+        "kind": "human_approval"
+      },
+      "state": "open",
+      "verdict": null,
+      "decision": "",
+      "round": 0,
+      "fails": 0,
+      "status": "question",
+      "summary": "Append fires inside the store lock. Waking there risks re-entry; waking after the release can miss a write. Which boundary owns it?",
+      "artifacts": {
+        "branch": "feat/ledger-wake-hook"
+      },
+      "pr": null,
+      "last_report_at": "2026-09-23T03:00:35+00:00",
+      "created_at": "2026-09-23T03:00:35+00:00",
+      "closed_at": null,
+      "orphaned": false,
+      "stale": false,
+      "acceptance_concrete": true,
+      "events": [
+        {
+          "id": "94efd42fbc161c07",
+          "ts": "2026-09-23T03:00:35+00:00",
+          "item_id": "it_bc424bdf",
+          "kind": "create",
+          "status": null,
+          "text": "Wake hook on the ledger append path"
+        },
+        {
+          "id": "43d039d3abfb7f84",
+          "ts": "2026-09-23T03:00:35+00:00",
+          "item_id": "it_bc424bdf",
+          "kind": "bind",
+          "status": null,
+          "text": ""
+        },
+        {
+          "id": "ba9a4ebb82c2805f",
+          "ts": "2026-09-23T03:00:35+00:00",
+          "item_id": "it_bc424bdf",
+          "kind": "report",
+          "status": "question",
+          "text": "Append fires inside the store lock. Waking there risks re-entry; waking after the release can miss a write. Which boundary owns it?"
+        }
+      ],
+      "alive": "idle",
+      "outstanding": true,
+      "terminal": false
+    },
+    {
+      "schema": 1,
+      "item_id": "it_bee3e616",
+      "title": "Mask the worker key out of every browser payload",
+      "acceptance": {
+        "kind": "pr_checks"
+      },
+      "state": "accepted",
+      "verdict": "pass",
+      "decision": "Verified against the bar. Accepted.",
+      "round": 0,
+      "fails": 0,
+      "status": "done",
+      "summary": "Item field and the bind event's text both masked; whole-payload assertion added so a new field cannot leak by default.",
+      "artifacts": {},
+      "pr": 12195,
+      "last_report_at": "2026-09-23T03:00:35+00:00",
+      "created_at": "2026-09-23T03:00:35+00:00",
+      "closed_at": "2026-09-23T03:00:35+00:00",
+      "orphaned": false,
+      "stale": false,
+      "acceptance_concrete": false,
+      "events": [
+        {
+          "id": "c19c4cc6aa769f0f",
+          "ts": "2026-09-23T03:00:35+00:00",
+          "item_id": "it_bee3e616",
+          "kind": "create",
+          "status": null,
+          "text": "Mask the worker key out of every browser payload"
+        },
+        {
+          "id": "99d08dc01176ffd8",
+          "ts": "2026-09-23T03:00:35+00:00",
+          "item_id": "it_bee3e616",
+          "kind": "bind",
+          "status": null,
+          "text": ""
+        },
+        {
+          "id": "29cf91f05a6e5260",
+          "ts": "2026-09-23T03:00:35+00:00",
+          "item_id": "it_bee3e616",
+          "kind": "report",
+          "status": "done",
+          "text": "Item field and the bind event's text both masked; whole-payload assertion added so a new field cannot leak by default."
+        },
+        {
+          "id": "880954b5c0f10279",
+          "ts": "2026-09-23T03:00:35+00:00",
+          "item_id": "it_bee3e616",
+          "kind": "verdict",
+          "status": null,
+          "text": "pass"
+        },
+        {
+          "id": "2ee41cf93ed0c2f6",
+          "ts": "2026-09-23T03:00:35+00:00",
+          "item_id": "it_bee3e616",
+          "kind": "close",
+          "status": null,
+          "text": "Verified against the bar. Accepted."
+        }
+      ],
+      "alive": "closed",
+      "outstanding": false,
+      "terminal": true
+    }
+  ],
+  "take_over_available": false
+}

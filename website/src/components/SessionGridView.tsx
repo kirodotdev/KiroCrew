@@ -1,0 +1,398 @@
+import { useEffect, useRef, useState } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { X, Plus, GitFork, Loader2, Circle } from 'lucide-react'
+import { SplitGlyph } from './SplitGlyph'
+import ErrorNotice from './ErrorNotice'
+import { api, ApiError } from '../api/client'
+import SessionGridLayout from './SessionGridLayout'
+import ChatPane, { type PaneLeading } from './ChatPane'
+import { useSessionGrid, type GridLeaf } from '../hooks/useSessionGrid'
+import { emitSlotFocused } from '../hooks/useWebSocket'
+import PaneDim from './PaneDim'
+import { byRecentActivity } from '../utils/slotRecency'
+
+import { i18nT } from '../i18n/t'
+import { forkFailureNoticeOffsite } from '../utils/forkFailure'
+import type { ForkFailureNotice } from '../utils/forkFailure'
+import { errMessage } from '../utils/thunkError'
+type Slot = {
+  key: string
+  title?: string
+  running?: boolean
+  pending_approval?: boolean
+  /** The agent asked something and is waiting on the answer: sorted and marked
+   *  with the owed decisions rather than with idle sessions. */
+  needs_input?: boolean
+  messages?: number
+  agent?: string
+  last_activity_ts?: string
+  forked_from?: string | null
+}
+
+/**
+ * SessionGridView — native in-place "terminal split" surface (no app shell).
+ *
+ * Renders the recursive split tree from useSessionGrid directly in the chat area
+ * (NOT an overlay, and with NO "Session Grid · Exit" chrome). Each leaf is a live
+ * <ChatPane> (session) or a picker (placeholder); split the focused pane right (⌘D)
+ * or down (⬓ button), drag the dividers to resize, close a pane to let siblings
+ * reflow. The split exists ONLY while it is a real multi-cell layout: entering
+ * always seeds [current session | empty placeholder] in place, and closing back
+ * down to a single session hands that session to the native single-chat surface
+ * (onCollapse) — so a lone pane is never rendered with grid chrome.
+ */
+export default function SessionGridView({
+  onClose,
+  onCollapse,
+  seedSlot,
+  openSideChat,
+  leading,
+  onFileOpen,
+}: {
+  /** Leave split mode entirely (everything closed, or a lone empty placeholder). */
+  onClose: () => void
+  /** Down to a single session pane → return to the native single-chat surface on
+   *  that session (the grid never shows a 1-pane chrome). */
+  onCollapse: (slot: string, anchorTs?: string, anchorMid?: string) => void
+  seedSlot?: string | null
+  /** Bring the host's Side Chat surface on screen for a pane's slot — what the
+   *  selection toolbar's Ask needs. The grid owns no Side Chat of its own
+   *  (the host's activity panel does), so without it panes offer Quote only. */
+  openSideChat?: (slot: string) => boolean | void | Promise<boolean | void>
+  /** The host's sessions-sidebar toggle lives at the surface's top-left. The
+   *  geometric top-left pane either reserves its column (`inset`, desktop) or
+   *  renders it inline (`control`, mobile) — see ChatPane's `leading`. */
+  leading?: PaneLeading
+  /** Open a file in the host's file viewer for every pane (#9487). The host
+   *  opener accepts a `slot` override so each pane can stamp the opened tab
+   *  with ITS OWN session, not the host's active one — a file opened from a
+   *  non-focused pane in split view must bind to that pane's slot (#9921). */
+  onFileOpen?: (path: string, opts?: { line?: number; endLine?: number; slot?: string | null }) => void
+}) {
+  const grid = useSessionGrid(seedSlot)
+
+  // On entry, restore this anchor's persisted layout if one exists (useSessionGrid
+  // loaded it from splitLayoutStore); otherwise seed [current session | placeholder]
+  // in place. Either way ⌘D opens the split of the session you're looking at.
+  const seededRef = useRef(false)
+  useEffect(() => {
+    if (!seededRef.current) {
+      seededRef.current = true
+      if (grid.isEmpty) grid.seedFromSession(seedSlot ?? null)
+      return
+    }
+    // Collapse rules — the grid only lives while it's a real (multi-cell) split:
+    //  • 0 leaves            → user closed everything → leave split.
+    //  • 1 leaf, a session   → return to native single chat on that session.
+    //  • 1 leaf, placeholder → no session left → leave split.
+    const ls = grid.leaves
+    if (ls.length === 0) {
+      onClose()
+    } else if (ls.length === 1) {
+      const only = ls[0]
+      if (only.kind === 'session' && only.slot) onCollapse(only.slot)
+      else onClose()
+    }
+  }, [grid.leaves]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ⌘D / Ctrl+D splits the focused pane RIGHT. ⌘⇧D is not page-cancelable in a
+  // browser tab (Chrome reserves it), so split-down is the on-pane ⬓ button only.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || e.key.toLowerCase() !== 'd') return
+      const ids = grid.leaves.map((l) => l.id)
+      const target = grid.focusedId && ids.includes(grid.focusedId) ? grid.focusedId : ids[0]
+      if (!target) return
+      e.preventDefault()
+      grid.splitLeaf(target, 'right')
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the three fields read are listed individually; `useSessionGrid` returns a fresh object literal every render, so depending on `grid` itself would rebind the document listener on every render while covering nothing these deps miss
+  }, [grid.focusedId, grid.leaves, grid.splitLeaf])
+
+  const { data: slots = [] } = useQuery<Slot[]>({
+    queryKey: ['session-grid-slots'],
+    queryFn: () => api.chatSlots(),
+    refetchInterval: 3000,
+  })
+
+  // Once the slot list loads, heal a restored layout: drop panes whose session was
+  // deleted/archived while away. Runs once (the first non-empty slots payload).
+  const prunedRef = useRef(false)
+  useEffect(() => {
+    if (prunedRef.current || slots.length === 0) return
+    prunedRef.current = true
+    grid.pruneAgainst(slots.map((s) => s.key))
+    // Depend on the stable pruneAgainst callback (useCallback []), not the whole grid
+    // object (new literal each render) — avoids re-scheduling the effect every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- see above: `grid` is a new literal every render and `pruneAgainst` is the only member this effect calls
+  }, [slots, grid.pruneAgainst])
+
+  // Fork source = the focused session pane, else the first session pane in the grid.
+  const focusedLeaf = grid.leaves.find((l) => l.id === grid.focusedId)
+  // Split view keeps its own local focus model (pane focus never routes
+  // through Redux activeSlot), so pane focus must report the slot-focused
+  // intent signal itself for resume prefetch to cover already-mounted panes.
+  const focusedPaneSlot = focusedLeaf?.kind === 'session' ? (focusedLeaf.slot ?? null) : null
+  useEffect(() => {
+    // Unconditional: a placeholder pane taking focus must emit the null
+    // (blur) frame so the server cancels this connection's pending prefetch,
+    // matching the visibilitychange blur semantics.
+    emitSlotFocused(focusedPaneSlot)
+  }, [focusedPaneSlot])
+  const forkSourceSlot =
+    focusedLeaf?.kind === 'session' && focusedLeaf.slot
+      ? focusedLeaf.slot
+      : grid.leaves.find((l) => l.kind === 'session' && l.slot)?.slot
+  const forkSourceTitle = slots.find((s) => s.key === forkSourceSlot)?.title
+
+  const renderLeaf = (leaf: GridLeaf, ownsTopLeft: boolean) => {
+    const paneLeading = ownsTopLeft ? leading : undefined
+    if (leaf.kind === 'session' && leaf.slot) {
+      // Slot-bound opener (#9921): the host hands ONE opener to every pane, but
+      // each pane owns a different session. Stamp the opened tab with THIS
+      // pane's slot so a file opened from a non-focused pane binds to that
+      // pane's chat (comment submissions, involvement breadcrumbs) instead of
+      // the host's active slot. ChatPane's `onFileOpen` only ever forwards a
+      // path (its transcript passes no opts today), so the pane slot is added
+      // here, at the one place that knows which pane this is.
+      const paneSlot = leaf.slot
+      const openFileForPane = onFileOpen
+        ? (path: string, opts?: { line?: number; endLine?: number }) => onFileOpen(path, { ...opts, slot: paneSlot })
+        : undefined
+      return (
+        <ChatPane
+          slotKey={leaf.slot}
+          focused={grid.focusedId === leaf.id}
+          onFocus={() => grid.setFocused(leaf.id)}
+          onRemove={() => grid.closeLeaf(leaf.id)}
+          onSplitRight={() => grid.splitLeaf(leaf.id, 'right')}
+          onSplitDown={() => grid.splitLeaf(leaf.id, 'down')}
+          onOpenFull={onCollapse}
+          openSideChat={openSideChat}
+          leading={paneLeading}
+          onFileOpen={openFileForPane}
+        />
+      )
+    }
+    if (leaf.kind === 'terminal') {
+      // Phase 2 — terminal panes (xterm/PTY) not wired yet.
+      return (
+        <div className="h-full flex items-center justify-center text-muted text-[12px] border border-border rounded-lg m-1">
+          {i18nT('components.sessionGridView.terminal_pane_coming_in_phase_2')}
+        </div>
+      )
+    }
+    return (
+      <PlaceholderPane
+        slots={slots}
+        occupied={grid.occupiedSlots}
+        forkSourceSlot={forkSourceSlot}
+        forkSourceTitle={forkSourceTitle}
+        focused={grid.focusedId === leaf.id}
+        onFocus={() => grid.setFocused(leaf.id)}
+        onPick={(slot) => grid.fillLeaf(leaf.id, { kind: 'session', slot })}
+        onCancel={() => grid.closeLeaf(leaf.id)}
+        onSplitRight={() => grid.splitLeaf(leaf.id, 'right')}
+        onSplitDown={() => grid.splitLeaf(leaf.id, 'down')}
+        leading={paneLeading}
+      />
+    )
+  }
+
+  return (
+    <div className="flex flex-col flex-1 min-h-0 bg-bg">
+      {/* No app chrome — the split tree IS the chat surface. Per-pane headers carry
+          the split/close controls; closing down to one session returns to native
+          single chat (onCollapse). */}
+      {grid.tree ? (
+        <div className="flex-1 min-h-0 p-0.5">
+          <SessionGridLayout node={grid.tree} renderLeaf={renderLeaf} onResize={grid.resize} />
+        </div>
+      ) : (
+        <div className="flex-1 flex items-center justify-center text-muted text-sm">{i18nT('components.sessionGridView.loading')}</div>
+      )}
+    </div>
+  )
+}
+
+function PlaceholderPane({
+  slots,
+  occupied,
+  forkSourceSlot,
+  forkSourceTitle,
+  focused,
+  onFocus,
+  onPick,
+  onCancel,
+  onSplitRight,
+  onSplitDown,
+  leading,
+}: {
+  slots: Slot[]
+  occupied: string[]
+  forkSourceSlot?: string
+  forkSourceTitle?: string
+  focused?: boolean
+  onFocus: () => void
+  onPick: (key: string) => void
+  onCancel: () => void
+  onSplitRight: () => void
+  onSplitDown: () => void
+  leading?: PaneLeading
+}) {
+  const [search, setSearch] = useState('')
+  const [forkError, setForkError] = useState<ForkFailureNotice | null>(null)
+  const queryClient = useQueryClient()
+  // Same key and shape the transcript path reads, so the two share one cache entry
+  const createSession = useMutation({
+    mutationFn: () => api.createChatSlot(),
+    onSuccess: (r: { key?: string }) => {
+      queryClient.invalidateQueries({ queryKey: ['session-grid-slots'] })
+      if (r?.key) onPick(r.key)
+    },
+  })
+  const forkSession = useMutation({
+    mutationFn: () => api.forkChatSlot(forkSourceSlot as string),
+    onSuccess: (r: { ok?: boolean; key?: string }) => {
+      // The refused condition is over. The cell usually unmounts with the new pane, so
+      // this matters for the case where it does not: a success that opens no tab.
+      setForkError(null)
+      queryClient.invalidateQueries({ queryKey: ['session-grid-slots'] })
+      if (r?.ok && r.key) onPick(r.key)
+    },
+    // A refused fork must not read as a no-op: the only other signal is the spinner
+    // stopping, which is indistinguishable from success that opened no tab.
+    onError: (err) => {
+      setForkError(
+        forkFailureNoticeOffsite(
+          err instanceof ApiError ? err.body : '',
+          errMessage(err),
+          false,
+          // Several panes can be visible and the source is the focused one, so the copy
+          // names it. Same fallback as the Fork button's own tooltip above.
+          forkSourceTitle || forkSourceSlot,
+        ),
+      )
+    },
+  })
+
+  const available = slots
+    .filter((s) => !occupied.includes(s.key))
+    .filter(
+      (s) =>
+        !search || ((s.title || '') + s.key + (s.agent || '')).toLowerCase().includes(search.toLowerCase()),
+    )
+    .sort((a, b) => {
+      if (!!a.pending_approval !== !!b.pending_approval) return a.pending_approval ? -1 : 1
+      // An unanswered agent question ranks with the other owed decisions, above
+      // running sessions: this list is what a user picks a pane's session from,
+      // and the ones waiting on them are the ones worth opening first.
+      if (!!a.needs_input !== !!b.needs_input) return a.needs_input ? -1 : 1
+      if (!!a.running !== !!b.running) return a.running ? -1 : 1
+      // Compare INSTANTS, not the timestamp text: `last_activity_ts` is the raw
+      // transcript `ts`, which is not guaranteed to be one format, so a string
+      // compare can order a later session first. See `utils/slotRecency`.
+      return byRecentActivity(a, b)
+    })
+
+  const ctrlBtn =
+    'shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors'
+
+  return (
+    <div
+      onMouseDownCapture={onFocus}
+      className={`relative flex flex-col h-full border-[1.5px] border-dashed rounded-lg bg-bg overflow-hidden m-1 ${focused ? 'border-accent' : 'border-border'}`}
+    >
+      {/* Leading edge (#10585): the geometric top-left pane stands in for the
+          single-chat title row. `inset` clears the shell's stationary sidebar
+          toggle: this card starts at container x 8 (2px grid inset + 4px
+          margin + 1.5px border), the toggle spans container x 8..36, so the
+          hairline sits at container 44 = pane 36 and the row's content starts
+          at container 52 = pane 44 — the same columns the single-chat row uses
+          (its left-[52px] / pl-[60px] are measured from container x -8).
+          `control` renders the toggle inline ahead of the search field. */}
+      <div className={`relative flex items-center gap-1 py-2 pr-2 border-b border-border transition-[padding-left] duration-[240ms] [transition-timing-function:cubic-bezier(.32,.72,0,1)] ${leading?.inset ? 'pl-[44px]' : 'pl-2'}`}>
+        {leading?.inset && <span aria-hidden="true" data-pane-leading-divider className="absolute left-[36px] top-1/2 -translate-y-1/2 w-px h-5 bg-border" />}
+        {leading?.control}
+        <input
+          autoFocus={focused}
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder={i18nT('components.sessionGridView.search_sessions')}
+          aria-label={i18nT('components.sessionGridView.search_sessions')}
+          className="flex-1 min-w-0 bg-bg-elevated border border-border rounded px-2 py-1 text-[13px] text-text placeholder:text-muted outline-hidden focus-visible:border-accent"
+        />
+        <button onClick={onSplitRight} title={i18nT('components.sessionGridView.split_right_d')} aria-label={i18nT('components.sessionGridView.split_right')} className={ctrlBtn}>
+          <SplitGlyph />
+        </button>
+        <button onClick={onSplitDown} title={i18nT('components.sessionGridView.split_down')} aria-label={i18nT('components.sessionGridView.split_down')} className={ctrlBtn}>
+          <SplitGlyph down />
+        </button>
+        <button
+          onClick={onCancel}
+          title={i18nT('components.sessionGridView.close_cell')}
+          aria-label={i18nT('components.sessionGridView.close_cell')}
+          className="shrink-0 p-1 rounded text-muted hover:text-danger-text hover:bg-danger/10 cursor-pointer bg-transparent border-none transition-colors"
+        >
+          <X size={14} />
+        </button>
+      </div>
+      {/* After the header so the header stays the first child (tests locate it
+          that way); absolute, so order does not change what paints where. */}
+      <PaneDim dimmed={!focused} />
+
+      {/* Below the pane's own chrome, so a refusal reads as being about this cell's
+          content rather than about the toolbar it would otherwise displace. */}
+      <ErrorNotice
+        message={forkError?.message}
+        report={forkError?.report}
+        onDismiss={() => setForkError(null)}
+        askAgent
+        className="mx-2 mt-2 mb-0"
+        testId="grid-fork-error"
+      />
+
+      {/* Three creation entry points (Terminal arrives in Phase 2). */}
+      <div className="flex gap-1.5 p-2 border-b border-border">
+        <button
+          disabled={createSession.isPending}
+          onClick={() => createSession.mutate()}
+          className="flex-1 inline-flex items-center justify-center gap-1 text-[12px] font-semibold text-accent bg-accent/10 rounded px-2 py-1.5 cursor-pointer border-none hover:bg-accent/20 disabled:opacity-50 transition-colors"
+        >
+          {createSession.isPending ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />} {i18nT('components.sessionGridView.new_session')}
+        </button>
+        <button
+          disabled={!forkSourceSlot || forkSession.isPending}
+          onClick={() => forkSession.mutate()}
+          title={forkSourceSlot ? i18nT('components.sessionGridView.fork_child_session', { name: forkSourceTitle || forkSourceSlot }) : i18nT('components.sessionGridView.no_session_to_fork_yet')}
+          className="flex-1 inline-flex items-center justify-center gap-1 text-[12px] font-semibold text-text border border-border rounded px-2 py-1.5 cursor-pointer bg-transparent hover:bg-bg-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          {forkSession.isPending ? <Loader2 size={13} className="animate-spin" /> : <GitFork size={13} />} {i18nT('components.sessionGridView.fork')}
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto">
+        {available.length === 0 ? (
+          <div className="text-[12px] text-muted p-3 text-center">{i18nT('components.sessionGridView.no_matching_sessions')}</div>
+        ) : (
+          available.map((s) => (
+            <button
+              key={s.key}
+              onClick={() => onPick(s.key)}
+              className="w-full text-left px-3 py-2 hover:bg-bg-elevated text-[13px] cursor-pointer flex items-center gap-2 border-none bg-transparent text-text"
+            >
+              <Circle
+                size={10}
+                className={`shrink-0 ${s.pending_approval ? 'fill-warn text-warn' : s.needs_input ? 'fill-info text-info' : s.running ? 'fill-ok text-ok' : 'fill-muted text-muted'}`}
+              />
+              <span className="truncate flex-1">{s.title || s.key}</span>
+              <span className="text-[11px] text-muted shrink-0">{s.messages ?? 0} {i18nT('components.sessionGridView.msgs')}</span>
+            </button>
+          ))
+        )}
+      </div>
+    </div>
+  )
+}

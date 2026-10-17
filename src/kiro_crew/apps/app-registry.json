@@ -1,0 +1,20 @@
+[
+  {
+    "name": "launchdarkly",
+    "gitUrl": "https://github.com/launchdarkly-labs/launchdarkly-kiro-crew-app",
+    "repo": "https://github.com/launchdarkly-labs/launchdarkly-kiro-crew-app",
+    "branch": "main"
+  },
+  {
+    "name": "todo-ledger",
+    "gitUrl": "https://github.com/qihang-dai/todo-ledger",
+    "repo": "https://github.com/qihang-dai/todo-ledger",
+    "branch": "release"
+  },
+  {
+    "name": "todo-txt",
+    "gitUrl": "https://github.com/LeTeutz/todo-txt",
+    "repo": "https://github.com/LeTeutz/todo-txt",
+    "branch": "main"
+  }
+]

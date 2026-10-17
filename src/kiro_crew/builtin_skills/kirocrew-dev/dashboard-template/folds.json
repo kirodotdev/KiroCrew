@@ -1,0 +1,994 @@
+{
+  "catalogue_version": 1,
+  "folds": [
+    {
+      "name": "status",
+      "mode": "session",
+      "advertised": true,
+      "package_only": false,
+      "affects": null,
+      "answers": "Is this session open, what agent and model is it on, how many turns has it taken, and what stopped it last",
+      "fields": [
+        {
+          "name": "agent",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "close_reason",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "name": "closed_at",
+          "type": "number",
+          "optional": true,
+          "integer": true
+        },
+        {
+          "name": "cwd",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "dropped",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "entries",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "last_error",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "name": "last_stop_reason",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "name": "last_time",
+          "type": "number",
+          "optional": true,
+          "integer": true
+        },
+        {
+          "name": "lifecycle",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "model",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "opened_at",
+          "type": "number",
+          "optional": true,
+          "integer": true
+        },
+        {
+          "name": "owner",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "previous",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "name": "provider",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "resumed",
+          "type": "boolean",
+          "optional": false
+        },
+        {
+          "name": "seeded",
+          "type": "boolean",
+          "optional": false
+        },
+        {
+          "name": "slot",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "turn",
+          "type": "object",
+          "optional": true
+        },
+        {
+          "name": "turn_open",
+          "type": "boolean",
+          "optional": false
+        },
+        {
+          "name": "turns_completed",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "turns_refused",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        }
+      ]
+    },
+    {
+      "name": "usage",
+      "mode": "session",
+      "advertised": true,
+      "package_only": false,
+      "affects": [
+        "background/completed",
+        "compaction/applied",
+        "context/composed",
+        "request/configured",
+        "session/opened",
+        "step/completed",
+        "subagent/completed",
+        "subagent/failed",
+        "turn/completed",
+        "turn/refused"
+      ],
+      "answers": "Tokens, credits, context, compactions and duration, broken down per model",
+      "fields": [
+        {
+          "name": "by_model",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "compactions",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "context",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "credits",
+          "type": "number",
+          "optional": false,
+          "integer": false
+        },
+        {
+          "name": "credits_by_source",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "duration_ms",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "models_omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "models_omitted_saturated",
+          "type": "boolean",
+          "optional": false
+        },
+        {
+          "name": "steps",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "tokens",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "turns",
+          "type": "object",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "timeline",
+      "mode": "session",
+      "advertised": true,
+      "package_only": false,
+      "affects": [
+        "approval/decided",
+        "approval/requested",
+        "compaction/applied",
+        "model/selected",
+        "session/closed",
+        "session/opened",
+        "session/seeded",
+        "subagent/completed",
+        "subagent/failed",
+        "subagent/spawned",
+        "turn/completed",
+        "turn/refused",
+        "turn/started",
+        "write/dropped"
+      ],
+      "answers": "The ordered moments of the session, and how many were dropped",
+      "fields": [
+        {
+          "name": "dropped",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "first_seq",
+          "type": "number",
+          "optional": true,
+          "integer": true
+        },
+        {
+          "name": "last_seq",
+          "type": "number",
+          "optional": true,
+          "integer": true
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "moments",
+          "type": "array",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "tools",
+      "mode": "session",
+      "advertised": true,
+      "package_only": false,
+      "affects": [
+        "tool/called",
+        "tool/completed"
+      ],
+      "answers": "Which tools ran, how often, for how long, how many errored, and what is still open",
+      "fields": [
+        {
+          "name": "by_name",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "calls",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "completed",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "elapsed_ms",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "errors",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "names_omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "names_omitted_saturated",
+          "type": "boolean",
+          "optional": false
+        },
+        {
+          "name": "open",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "open_calls",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "name": "open_calls_omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "open_dropped",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "unidentified_calls",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "unmatched_completions",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        }
+      ]
+    },
+    {
+      "name": "approvals",
+      "mode": "session",
+      "advertised": true,
+      "package_only": false,
+      "affects": [
+        "approval/decided",
+        "approval/requested"
+      ],
+      "answers": "What was requested, what was decided, and what is still pending",
+      "fields": [
+        {
+          "name": "by_decision",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "decided",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "last",
+          "type": "object",
+          "optional": true
+        },
+        {
+          "name": "pending",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "pending_dropped",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "pending_omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "pending_requests",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "name": "requested",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "unidentified_requests",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "unmatched_decisions",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        }
+      ]
+    },
+    {
+      "name": "subagents",
+      "mode": "session",
+      "advertised": true,
+      "package_only": false,
+      "affects": [
+        "subagent/completed",
+        "subagent/dismissed",
+        "subagent/failed",
+        "subagent/spawned"
+      ],
+      "answers": "Which children this session dispatched, and for each one what happened, how long it ran and what it cost",
+      "fields": [
+        {
+          "name": "by_id",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "dismissed",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "running",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "running_exact",
+          "type": "boolean",
+          "optional": false
+        },
+        {
+          "name": "totals",
+          "type": "object",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "class",
+      "mode": "session",
+      "advertised": false,
+      "package_only": false,
+      "affects": null,
+      "answers": "What KIND of session this log belongs to, over the log's whole life",
+      "fields": [
+        {
+          "name": "app",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "channel",
+          "type": "boolean",
+          "optional": false
+        },
+        {
+          "name": "complete",
+          "type": "boolean",
+          "optional": false
+        },
+        {
+          "name": "damaged",
+          "type": "boolean",
+          "optional": false
+        },
+        {
+          "name": "memory",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "recorded",
+          "type": "boolean",
+          "optional": false
+        },
+        {
+          "name": "workspace",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "workspace_moved",
+          "type": "boolean",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "outline",
+      "mode": "session",
+      "advertised": false,
+      "package_only": false,
+      "affects": [
+        "message/received",
+        "message/sent",
+        "turn/completed",
+        "turn/refused",
+        "turn/started"
+      ],
+      "answers": "The conversation one row per turn: the first line the human typed and the reply the turn settled on, both clipped, with no injected context and no tool output",
+      "fields": [
+        {
+          "name": "dropped",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "first_turn",
+          "type": "number",
+          "optional": true,
+          "integer": true
+        },
+        {
+          "name": "last_turn",
+          "type": "number",
+          "optional": true,
+          "integer": true
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "prompt_chars",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "reply_chars",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "turns",
+          "type": "array",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "ledger",
+      "mode": "slot",
+      "advertised": true,
+      "package_only": false,
+      "affects": [
+        "ledger/recorded"
+      ],
+      "answers": "One workstream's goal, phase and next step, what was tried and rejected, and its artifacts",
+      "fields": [
+        {
+          "name": "artifacts",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "created_at",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "events",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "name": "finished_at",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "goal",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "last_progress_at",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "next",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "phase",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "schema",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "tried",
+          "type": "array",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "radar",
+      "mode": "slot",
+      "advertised": true,
+      "package_only": false,
+      "affects": [
+        "radar/recorded"
+      ],
+      "answers": "An issue crew's items, counts, phase lines and recorded skips",
+      "fields": [
+        {
+          "name": "counts",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "crew_id",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "events",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "name": "items",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "name": "owner",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "phase_lines",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "repo",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "schema",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "skips",
+          "type": "object",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "work",
+      "mode": "slot",
+      "advertised": true,
+      "package_only": false,
+      "affects": [
+        "work/recorded"
+      ],
+      "answers": "A conductor's board: the header, every work item, and what the fold dropped",
+      "fields": [
+        {
+          "name": "conductor",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "forgotten",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "items",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "name": "omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        }
+      ]
+    },
+    {
+      "name": "panel",
+      "mode": "slot",
+      "advertised": true,
+      "package_only": false,
+      "affects": [
+        "panel/published"
+      ],
+      "answers": "The publisher's own record, in the shape the crew drawer consumes",
+      "fields": [
+        {
+          "name": "crew",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "crew_key",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "data",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "history",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "name": "history_omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "owners",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "owners_omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "published_at",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "publishes",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "schema",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "template",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "title",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "agentic",
+      "mode": "slot",
+      "advertised": true,
+      "package_only": false,
+      "affects": [
+        "dashboard/agentic_value"
+      ],
+      "answers": "Which dashboard fields this crewmate filled itself, with what value, of what declared type and when",
+      "fields": [
+        {
+          "name": "fields",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "fields_omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "wrote",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        }
+      ]
+    },
+    {
+      "name": "mistakes",
+      "mode": "slot",
+      "advertised": true,
+      "package_only": false,
+      "affects": [
+        "dashboard/agentic_refused"
+      ],
+      "answers": "Which dashboard writes of this crewmate's were refused, grouped by reason and field, how often, and what worked instead",
+      "fields": [
+        {
+          "name": "groups",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "name": "groups_omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "refused",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        }
+      ]
+    },
+    {
+      "name": "workstreams",
+      "mode": "slot",
+      "advertised": true,
+      "package_only": false,
+      "affects": [
+        "background/completed",
+        "session/opened",
+        "subagent/completed",
+        "subagent/failed",
+        "turn/completed",
+        "work/recorded"
+      ],
+      "answers": "Every workstream this crewmate is running: each board's goal and counts, each task's result, and what each task cost its own worker session",
+      "fields": [
+        {
+          "name": "items",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "name": "last_entry_at",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "schema",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "series",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "name": "slot",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "spenders_omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "unattributed",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "units_omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        }
+      ]
+    },
+    {
+      "name": "worktree",
+      "mode": "tree",
+      "advertised": false,
+      "package_only": true,
+      "affects": [
+        "work/recorded"
+      ],
+      "answers": "The shape of a fleet: every work board the tree reaches, which board each one hangs under, and which boards are its roots",
+      "fields": [
+        {
+          "name": "boards",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "name": "cycles",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "dropped",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "goal_chars",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "owner_limit",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "root",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "roots",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "name": "unresolved",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        }
+      ]
+    }
+  ]
+}

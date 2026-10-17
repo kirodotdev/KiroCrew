@@ -1,0 +1,1873 @@
+"""Conductor work ledger routes — Phase 2 exit criteria, one test per criterion.
+
+Pins what the conductor-work-ledger RFC (``docs/request-for-change/rfc-conductor-work-ledger.md``,
+revision v2) §Migration plan Phase 2 lists for the four tools and their routes: a
+worker's report reaches its own item and no other, asserted against a
+two-conductor two-worker fixture; every error code carries its tabulated HTTP
+status; ``accept_batch`` parses in the real ``accept_eval.py`` and ignores a
+worker's claimed ``pr``; a round trip through ``work_report`` writes no
+conductor-owned field, asserted field by field; and each of the four caller states
+in the dispatch table resolves as tabulated against both tool halves.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from aiohttp import web
+from aiohttp.test_utils import make_mocked_request
+
+from kiro_crew import validation
+from kiro_crew import work_ledger as wl
+from kiro_crew.dashboard.handlers import work_ledger as routes
+
+#: The real implementation, captured before the autouse fixture stubs the name.
+#: A test that drives the true branch has to reach past its own default.
+_REAL_REACHES_A_CHANNEL = routes.reaches_a_channel
+
+CONDUCTOR_A = "chat-a-conductor"
+CONDUCTOR_B = "chat-b-conductor"
+WORKER_A = "chat-a-worker"
+WORKER_B = "chat-b-worker"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_home(tmp_path, monkeypatch):
+    """Every test writes into its own data home, never the live one."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _open_route(monkeypatch):
+    """Bypass session recognition/restriction (their own suites cover them).
+
+    Several tests below re-patch these to assert the refusals still fire, so the
+    bypass is a default rather than an assumption.
+
+    The channel-mirror probe is stubbed to "not mirrored" for the same reason and
+    with the same caveat: the real probe reads the session store, which a
+    ``make_mocked_request`` slot cannot answer, and it FAILS CLOSED — so leaving it
+    live would make every test's caller read as mirrored and refused.
+    ``test_an_outbound_mirrored_session_is_refused`` drives the true branch.
+    """
+
+    async def _recognized(*a: Any, **k: Any) -> None:
+        return None
+
+    monkeypatch.setattr(routes, "_recognize_session", _recognized)
+    monkeypatch.setattr(routes, "_is_restricted_session", lambda *a: False)
+    monkeypatch.setattr(routes, "reaches_a_channel", lambda state, sk: False)
+    # The routes record every write into the caller's crew log and refuse when
+    # they cannot: a ``MagicMock`` state resolves no unit, so the gate is opened
+    # here and the append is swallowed. ``test_work_ledger_projection.py`` drives
+    # the gate and the recorded entries themselves.
+    monkeypatch.setattr(routes.crew_log_emit, "enabled", lambda: True)
+    monkeypatch.setattr(routes, "unit_for_session_key", lambda sessions, key: f"unit:{key}")
+    monkeypatch.setattr(routes.crew_log_emit, "on_work_recorded", lambda unit, data: True)
+
+
+class _Slot:
+    """The two slot attributes these routes read, and nothing else.
+
+    ``_created_by`` is what ``session_control.create_session`` stamps with the
+    calling session's key — the attribution a bind's ownership check rests on — and
+    ``workspace`` is the memory boundary it must not cross.
+    """
+
+    def __init__(
+        self, created_by: str = "", workspace: str = "default", running: bool = False
+    ) -> None:
+        self._created_by = created_by
+        self.workspace = workspace
+        # ``_ChatSlot.running`` is a property over its asyncio task; a bool is the
+        # whole of what these routes read from it.
+        self.running = running
+
+
+#: Slot table for the request under test, keyed exactly as the routes look keys
+#: up. Reset per test by the autouse fixture, because a leaked worker slot would
+#: make a later test's ``stale`` assertion pass for the wrong reason.
+_SLOTS: dict[str, _Slot] = {}
+
+
+@pytest.fixture(autouse=True)
+def _clean_slots():
+    _SLOTS.clear()
+    yield
+    _SLOTS.clear()
+
+
+def _dispatched(
+    worker: str, conductor: str, *, workspace: str = "default", running: bool = False
+) -> None:
+    """Register *worker* as a session *conductor* created, as session_create would."""
+    _SLOTS[worker] = _Slot(created_by=conductor, workspace=workspace, running=running)
+
+
+def _req(method: str, path: str, *, body: Any = ..., sk: str) -> web.Request:
+    app = web.Application()
+    state = MagicMock()
+    # A real-shaped slot table rather than a MagicMock: a mock would answer every
+    # ``get_slot`` with a truthy object, making every item look alive and every
+    # bind look owned — the two things these routes decide from.
+    state.get_slot = MagicMock(side_effect=lambda key: _SLOTS.get(key))
+    app["state"] = state
+    req = make_mocked_request(method, path, app=app, headers={"X-Session-Key": sk})
+    # The routes require the internal-secret principal, positively confirmed — on
+    # loopback a strict internal path with no secret header falls through to cookie
+    # auth and is granted, so the handler cannot infer it from the path. This is
+    # what ``token_auth`` sets for a verified secret caller.
+    req["internal_auth"] = True
+    if body is not ...:
+        req.json = AsyncMock(return_value=body)  # type: ignore[method-assign]
+    return req
+
+
+async def _record(sk: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    resp = await routes.api_work_ledger_record(
+        _req("POST", "/api/work-ledger/record", body=body, sk=sk)
+    )
+    return resp.status, json.loads(resp.text)
+
+
+async def _report(sk: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    resp = await routes.api_work_report(_req("POST", "/api/work-ledger/report", body=body, sk=sk))
+    return resp.status, json.loads(resp.text)
+
+
+async def _read(sk: str) -> tuple[int, dict[str, Any]]:
+    resp = await routes.api_work_ledger_get(_req("GET", "/api/work-ledger", sk=sk))
+    return resp.status, json.loads(resp.text)
+
+
+async def _brief(sk: str) -> tuple[int, dict[str, Any]]:
+    resp = await routes.api_work_brief(_req("GET", "/api/work-ledger/brief", sk=sk))
+    return resp.status, json.loads(resp.text)
+
+
+async def _dispatch(conductor: str, worker: str, title: str, acceptance: dict) -> str:
+    """The conductor's own create-then-bind sequence, through the routes only."""
+    status, body = await _record(
+        conductor, {"action": "goal", "goal": f"goal for {title}", "round": 1}
+    )
+    assert status == 200, body
+    status, body = await _record(
+        conductor, {"action": "create", "title": title, "acceptance": acceptance}
+    )
+    assert status == 200, body
+    item_id = body["item"]["item_id"]
+    # The conductor dispatches the session BEFORE binding it, which is the order
+    # the RFC's binding lifecycle specifies and the order the ownership check on
+    # ``bind`` requires: the slot has to exist and be attributed to this conductor.
+    _dispatched(worker, conductor)
+    status, body = await _record(
+        conductor, {"action": "bind", "item_id": item_id, "worker_session_key": worker}
+    )
+    assert status == 200, body
+    return item_id
+
+
+async def two_by_two() -> dict[str, str]:
+    """Two conductors, one bound worker each — the fixture the RFC names.
+
+    An awaited helper rather than a pytest fixture: an async fixture needs a
+    plugin-provided decorator, and every consumer here is already a coroutine.
+    """
+    item_a = await _dispatch(CONDUCTOR_A, WORKER_A, "item A", {"kind": "human_approval"})
+    item_b = await _dispatch(CONDUCTOR_B, WORKER_B, "item B", {"kind": "human_approval"})
+    return {"item_a": item_a, "item_b": item_b}
+
+
+# ── the isolation the whole design exists for ─────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_workers_report_reaches_its_own_item_and_no_other():
+    """Worker A's report lands on A's item; B's item is byte-identical after it."""
+    ids = await two_by_two()
+    before = wl.item_path(CONDUCTOR_B, ids["item_b"]).read_bytes()
+
+    status, _ = await _report(WORKER_A, {"status": "progress", "summary": "A moving"})
+    assert status == 200
+
+    item_a = wl.read_work_item(CONDUCTOR_A, ids["item_a"])
+    item_b = wl.read_work_item(CONDUCTOR_B, ids["item_b"])
+    assert item_a is not None and item_b is not None
+    assert item_a.summary == "A moving"
+    assert item_b.summary == ""
+    assert item_b.status is None
+    assert wl.item_path(CONDUCTOR_B, ids["item_b"]).read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_a_worker_cannot_name_another_item_because_there_is_no_parameter():
+    """The bound item is resolved, not supplied — naming one is an unknown field."""
+    ids = await two_by_two()
+    status, body = await _report(
+        WORKER_A,
+        {"status": "done", "summary": "mine now", "item_id": ids["item_b"]},
+    )
+    assert status == 400
+    assert body["code"] == wl.CODE_INVALID_VALUE
+    item_b = wl.read_work_item(CONDUCTOR_B, ids["item_b"])
+    assert item_b is not None and item_b.status is None
+
+
+@pytest.mark.asyncio
+async def test_a_report_writes_no_conductor_owned_field():
+    """Field by field: every conductor-owned value survives a worker round trip.
+
+    Asserted as a set difference rather than as a list of five names, so a field
+    added to the item record joins this check automatically instead of silently
+    escaping it.
+    """
+    ids = await two_by_two()
+    worker_owned = {"status", "summary", "artifacts", "pr", "last_report_at"}
+    before = (wl.read_work_item(CONDUCTOR_A, ids["item_a"]) or wl.WorkItem()).to_dict()
+
+    status, _ = await _report(
+        WORKER_A,
+        {
+            "status": "done",
+            "summary": "built it",
+            "artifacts": {"pr": "42", "branch": "feat/x"},
+            "pr": 42,
+        },
+    )
+    assert status == 200
+
+    after = (wl.read_work_item(CONDUCTOR_A, ids["item_a"]) or wl.WorkItem()).to_dict()
+    changed = {k for k in after if before.get(k) != after.get(k)}
+    assert changed <= worker_owned, f"a worker changed conductor-owned field(s): {changed}"
+    # And the conductor's own values are still exactly what it wrote.
+    assert after["state"] == "open"
+    assert after["verdict"] is None
+    assert after["acceptance"] == {"kind": "human_approval"}
+    assert after["title"] == "item A"
+
+
+@pytest.mark.asyncio
+async def test_a_brief_shows_one_item_and_never_a_sibling_or_the_goal():
+    ids = await two_by_two()
+    status, body = await _brief(WORKER_A)
+    assert status == 200
+    brief = body["brief"]
+    assert brief["item_id"] == ids["item_a"]
+    assert brief["title"] == "item A"
+    assert "goal" not in brief
+    assert "items" not in brief
+    assert ids["item_b"] not in json.dumps(brief)
+
+
+# ── the dispatch table, cell by cell ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_dispatch_table_binding_only_is_a_worker():
+    """A binding file and no ledger directory: worker half answers, conductor 404s."""
+    await two_by_two()
+    assert (await _brief(WORKER_A))[0] == 200
+    assert (await _report(WORKER_A, {"status": "progress", "summary": "x"}))[0] == 200
+    status, body = await _read(WORKER_A)
+    assert status == 404
+    assert body["code"] == wl.CODE_NO_LEDGER
+    status, body = await _record(
+        WORKER_A, {"action": "verdict", "item_id": "it_00000000", "verdict": "pass"}
+    )
+    assert status == 404
+    assert body["code"] == wl.CODE_NO_LEDGER
+
+
+@pytest.mark.asyncio
+async def test_dispatch_table_ledger_only_is_a_conductor():
+    """A ledger directory and no binding: conductor half answers, worker 403s."""
+    await two_by_two()
+    assert (await _read(CONDUCTOR_A))[0] == 200
+    status, body = await _brief(CONDUCTOR_A)
+    assert status == 403
+    assert body["code"] == routes.CODE_NOT_BOUND
+    status, body = await _report(CONDUCTOR_A, {"status": "done", "summary": "x"})
+    assert status == 403
+    assert body["code"] == routes.CODE_NOT_BOUND
+
+
+@pytest.mark.asyncio
+async def test_dispatch_table_both_is_a_second_level_conductor():
+    """Worker A opens its own ledger: all four answer, and depth is one past A's."""
+    ids = await two_by_two()
+    status, body = await _record(WORKER_A, {"action": "goal", "goal": "sub-goal", "round": 1})
+    assert status == 200, body
+    assert body["conductor"]["depth"] == 1
+    assert body["conductor"]["parent_item"] == ids["item_a"]
+
+    assert (await _brief(WORKER_A))[0] == 200
+    assert (await _report(WORKER_A, {"status": "progress", "summary": "sub"}))[0] == 200
+    assert (await _read(WORKER_A))[0] == 200
+    status, _ = await _record(
+        WORKER_A,
+        {"action": "create", "title": "sub item", "acceptance": {"kind": "human_approval"}},
+    )
+    assert status == 200
+
+
+@pytest.mark.asyncio
+async def test_dispatch_table_neither_gets_both_refusals():
+    status, body = await _brief("chat-nobody")
+    assert status == 403
+    assert body["code"] == routes.CODE_NOT_BOUND
+    status, body = await _report("chat-nobody", {"status": "done", "summary": "x"})
+    assert status == 403
+    assert body["code"] == routes.CODE_NOT_BOUND
+    status, body = await _read("chat-nobody")
+    assert status == 404
+    assert body["code"] == wl.CODE_NO_LEDGER
+    status, body = await _record(
+        "chat-nobody", {"action": "decide", "item_id": "it_00000000", "decision": "x"}
+    )
+    assert status == 404
+    assert body["code"] == wl.CODE_NO_LEDGER
+
+
+@pytest.mark.asyncio
+async def test_a_third_level_conductor_is_refused_at_the_depth_cap():
+    """A grandchild may work, and may not conduct: its ledger never opens.
+
+    The refusal lands at the moment the grandchild tries to open a ledger, not
+    later when it tries to create an item -- a ledger that opens and then refuses
+    every create would read on the parent's board as a child thinking, not as a
+    dispatch that was never viable.
+    """
+    await two_by_two()
+    assert (await _record(WORKER_A, {"action": "goal", "goal": "level 1", "round": 1}))[0] == 200
+    grandchild = "chat-a-grandchild"
+    _dispatched(grandchild, WORKER_A)
+    status, body = await _record(
+        WORKER_A, {"action": "create", "title": "leaf", "acceptance": {"kind": "human_approval"}}
+    )
+    assert status == 200
+    leaf = body["item"]["item_id"]
+    assert (
+        await _record(
+            WORKER_A, {"action": "bind", "item_id": leaf, "worker_session_key": grandchild}
+        )
+    )[0] == 200
+    # The grandchild is a working worker...
+    assert (await _report(grandchild, {"status": "progress", "summary": "leaf work"}))[0] == 200
+    # ...whose ledger does not open: depth 2 == MAX_DEPTH is the first level that
+    # may only work, which is what the cap buys -- a summary of summaries of
+    # summaries is not evidence any more.
+    status, body = await _record(grandchild, {"action": "goal", "goal": "level 2", "round": 1})
+    assert status == 409, body
+    assert body["code"] == wl.CODE_DEPTH_EXCEEDED
+    # Nothing sterile is left behind: no ledger exists for the grandchild to read.
+    status, body = await _read(grandchild)
+    assert status == 404
+    assert body["code"] == wl.CODE_NO_LEDGER
+    # And its worker role is untouched by the refusal.
+    assert (await _report(grandchild, {"status": "progress", "summary": "still working"}))[0] == 200
+
+
+# ── every error code carries its tabulated status ─────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_every_store_code_maps_to_the_status_the_rfc_tabulates():
+    """The map is exhaustive over the store's ``CODE_*`` constants.
+
+    Without this, a code the store gains later degrades to 400 unnoticed, and a
+    409-shaped conflict would reach the model as a bad-argument error.
+    """
+    store_codes = {
+        value
+        for name, value in vars(wl).items()
+        if name.startswith("CODE_") and isinstance(value, str)
+    }
+    assert store_codes == set(routes._CODE_STATUS), (
+        "the code->status map and the store's CODE_* constants disagree: "
+        f"{store_codes ^ set(routes._CODE_STATUS)}"
+    )
+    assert routes._CODE_STATUS == {
+        "no_ledger": 404,
+        "unknown_item": 404,
+        "already_bound": 409,
+        "item_closed": 409,
+        "item_cap_exceeded": 409,
+        "goal_concurrency_cap_reached": 409,
+        "depth_exceeded": 409,
+        "crew_log_incomplete": 409,
+        "cache_dirty": 409,
+        "field_too_long": 400,
+        "invalid_action": 400,
+        "invalid_status": 400,
+        "invalid_value": 400,
+        # Maintenance-only: raised by ``purge_conductor``, reachable from no
+        # route. Mapped so the exhaustiveness property above keeps its meaning.
+        "ledger_not_finished": 409,
+    }
+
+
+@pytest.mark.asyncio
+async def test_unknown_item_is_404():
+    await two_by_two()
+    status, body = await _record(
+        CONDUCTOR_A, {"action": "decide", "item_id": "it_deadbeef", "decision": "nope"}
+    )
+    assert status == 404
+    assert body["code"] == wl.CODE_UNKNOWN_ITEM
+
+
+@pytest.mark.asyncio
+async def test_already_bound_is_409():
+    ids = await two_by_two()
+    _dispatched("chat-other", CONDUCTOR_A)
+    status, body = await _record(
+        CONDUCTOR_A,
+        {"action": "bind", "item_id": ids["item_a"], "worker_session_key": "chat-other"},
+    )
+    assert status == 409
+    assert body["code"] == wl.CODE_ALREADY_BOUND
+
+
+@pytest.mark.asyncio
+async def test_item_closed_is_409_for_both_halves():
+    ids = await two_by_two()
+    status, _ = await _record(
+        CONDUCTOR_A, {"action": "close", "item_id": ids["item_a"], "state": "accepted"}
+    )
+    assert status == 200
+    status, body = await _report(
+        WORKER_A, {"status": "done", "summary": "too late", "artifacts": {"commit": "abc1234"}}
+    )
+    assert status == 409
+    assert body["code"] == wl.CODE_ITEM_CLOSED
+    status, body = await _record(
+        CONDUCTOR_A, {"action": "decide", "item_id": ids["item_a"], "decision": "late"}
+    )
+    assert status == 409
+    assert body["code"] == wl.CODE_ITEM_CLOSED
+
+
+@pytest.mark.asyncio
+async def test_item_cap_exceeded_is_409():
+    await two_by_two()
+    # Past the goal's default concurrency cap of 6, so the store's open cap bites.
+    status, _ = await _record(
+        CONDUCTOR_A, {"action": "goal", "concurrency_cap": wl.MAX_GOAL_CONCURRENCY_CAP}
+    )
+    assert status == 200
+    for n in range(wl.MAX_ITEMS_PER_CONDUCTOR - 1):
+        status, _ = await _record(
+            CONDUCTOR_A,
+            {"action": "create", "title": f"item {n}", "acceptance": {"kind": "human_approval"}},
+        )
+        assert status == 200
+    status, body = await _record(
+        CONDUCTOR_A,
+        {"action": "create", "title": "one too many", "acceptance": {"kind": "human_approval"}},
+    )
+    assert status == 409
+    assert body["code"] == wl.CODE_ITEM_CAP_EXCEEDED
+
+
+@pytest.mark.asyncio
+async def test_goal_concurrency_cap_reached_is_409_and_concurrency_cap_raises_it():
+    """The goal's fan-out cap answers 409 with its own code; a goal write raises it,
+    and closing an item frees a seat without any write to the cap."""
+    await two_by_two()
+    status, _ = await _record(CONDUCTOR_A, {"action": "goal", "concurrency_cap": 2})
+    assert status == 200
+    acceptance = {"kind": "human_approval"}
+    # two_by_two already created one open item on this board.
+    status, body = await _record(
+        CONDUCTOR_A, {"action": "create", "title": "b", "acceptance": acceptance}
+    )
+    assert status == 200
+    second = body["item"]["item_id"]
+    status, body = await _record(
+        CONDUCTOR_A, {"action": "create", "title": "c", "acceptance": acceptance}
+    )
+    assert status == 409
+    assert body["code"] == wl.CODE_GOAL_CONCURRENCY_CAP_REACHED
+    status, _ = await _record(CONDUCTOR_A, {"action": "goal", "concurrency_cap": 3})
+    assert status == 200
+    status, read = await _read(CONDUCTOR_A)
+    assert status == 200
+    assert read["conductor"]["concurrency_cap"] == 3
+    status, _ = await _record(
+        CONDUCTOR_A, {"action": "create", "title": "c", "acceptance": acceptance}
+    )
+    assert status == 200
+    status, body = await _record(
+        CONDUCTOR_A, {"action": "create", "title": "d", "acceptance": acceptance}
+    )
+    assert (status, body["code"]) == (409, wl.CODE_GOAL_CONCURRENCY_CAP_REACHED)
+    status, _ = await _record(
+        CONDUCTOR_A, {"action": "close", "item_id": second, "state": "accepted"}
+    )
+    assert status == 200
+    status, _ = await _record(
+        CONDUCTOR_A, {"action": "create", "title": "d", "acceptance": acceptance}
+    )
+    assert status == 200
+
+
+@pytest.mark.asyncio
+async def test_the_item_cap_is_advisory_over_http_and_the_read_flags_it():
+    """A create past ``item_cap`` is admitted; ``cap_exceeded`` turns true on the
+    read's ``conductor`` block, compact reads included, and a new goal clears it."""
+    await two_by_two()
+    status, _ = await _record(CONDUCTOR_A, {"action": "goal", "item_cap": 2})
+    assert status == 200
+    acceptance = {"kind": "human_approval"}
+    # two_by_two already created one item on this board.
+    status, _ = await _record(
+        CONDUCTOR_A, {"action": "create", "title": "b", "acceptance": acceptance}
+    )
+    assert status == 200
+    status, read = await _read(CONDUCTOR_A)
+    assert (read["conductor"]["goal_items_used"], read["conductor"]["cap_exceeded"]) == (2, False)
+    status, body = await _record(
+        CONDUCTOR_A, {"action": "create", "title": "c", "acceptance": acceptance}
+    )
+    assert status == 200, body
+    status, read = await _read(CONDUCTOR_A)
+    assert read["conductor"]["item_cap"] == 2
+    assert (read["conductor"]["goal_items_used"], read["conductor"]["cap_exceeded"]) == (3, True)
+    status, compact = await _read_with(CONDUCTOR_A, "compact=true")
+    assert status == 200
+    assert (compact["conductor"]["goal_items_used"], compact["conductor"]["cap_exceeded"]) == (
+        3,
+        True,
+    )
+    # A goal the user replaced, recorded with new_goal, starts the count again.
+    status, _ = await _record(CONDUCTOR_A, {"action": "goal", "goal": "next", "new_goal": True})
+    assert status == 200
+    status, read = await _read(CONDUCTOR_A)
+    assert (read["conductor"]["goal_items_used"], read["conductor"]["cap_exceeded"]) == (0, False)
+
+
+@pytest.mark.asyncio
+async def test_a_cap_past_its_ceiling_is_refused_400():
+    await two_by_two()
+    status, _ = await _record(CONDUCTOR_A, {"action": "goal", "item_cap": 257})
+    assert status == 400
+    status, _ = await _record(
+        CONDUCTOR_A, {"action": "goal", "concurrency_cap": wl.MAX_GOAL_CONCURRENCY_CAP + 1}
+    )
+    assert status == 400
+
+
+def test_the_tool_schemas_spell_the_stores_cap_ceilings():
+    """The MCP schema and the validator quote the store's own ceilings, so a value the
+    schema admits is never one the store then refuses under a different code."""
+    from kiro_crew import mcp_work
+
+    record = validation.WORK_LEDGER_RECORD_SCHEMA
+    item_cap = next(f for f in record.fields if f.name == "item_cap")
+    concurrency = next(f for f in record.fields if f.name == "concurrency_cap")
+    assert (item_cap.min_val, item_cap.max_val) == (1, wl.MAX_GOAL_ITEM_CAP)
+    assert (concurrency.min_val, concurrency.max_val) == (1, wl.MAX_GOAL_CONCURRENCY_CAP)
+    tool = next(t for t in mcp_work._tool_definitions() if t["name"] == "work_ledger_record")
+    props = tool["inputSchema"]["properties"]
+    assert props["item_cap"]["maximum"] == wl.MAX_GOAL_ITEM_CAP
+    assert props["concurrency_cap"]["maximum"] == wl.MAX_GOAL_CONCURRENCY_CAP
+    assert "concurrency_cap" in mcp_work._RECORD_FIELDS
+
+
+@pytest.mark.asyncio
+async def test_field_too_long_is_400_and_names_the_field():
+    """``artifacts`` carries pointers a conductor follows, so it refuses rather than cut."""
+    await two_by_two()
+    status, body = await _report(
+        WORKER_A,
+        {
+            "status": "progress",
+            "summary": "ok",
+            "artifacts": {"k": "v" * (wl.MAX_ARTIFACT_VALUE_CHARS + 1)},
+        },
+    )
+    assert status == 400
+    assert "artifacts" in body["error"]
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_summary_is_clamped_through_the_route_and_the_store_says_so():
+    """Prose over the cap costs no round-trip, and the stored value announces the cut.
+
+    The whole path: route validation, the store write, and the stamp read back off
+    the item the conductor reads. ``summary`` is the one field cut rather than
+    refused, because a model composing prose cannot measure it before it calls.
+    """
+    ids = await two_by_two()
+    sent = wl.MAX_SUMMARY_CHARS + 30
+
+    status, body = await _report(WORKER_A, {"status": "progress", "summary": "w" * sent})
+    assert status == 200, body
+
+    item = wl.read_work_item(CONDUCTOR_A, ids["item_a"])
+    assert item is not None
+    assert len(item.summary) <= wl.MAX_SUMMARY_CHARS
+    reported = validation.clamp_report(item.summary)
+    assert reported is not None
+    before, kept = reported
+    assert before == sent
+    assert item.summary.startswith("w" * kept)
+
+
+@pytest.mark.asyncio
+async def test_a_summary_exactly_at_the_cap_reaches_the_store_byte_identical():
+    """The boundary the clamp must not disturb."""
+    ids = await two_by_two()
+    exact = "b" * wl.MAX_SUMMARY_CHARS
+
+    status, body = await _report(WORKER_A, {"status": "progress", "summary": exact})
+    assert status == 200, body
+
+    item = wl.read_work_item(CONDUCTOR_A, ids["item_a"])
+    assert item is not None
+    assert item.summary == exact
+    assert validation.clamp_report(item.summary) is None
+
+
+@pytest.mark.asyncio
+async def test_invalid_status_is_400():
+    await two_by_two()
+    status, body = await _report(WORKER_A, {"status": "finished", "summary": "x"})
+    assert status == 400
+    assert body["code"] == wl.CODE_INVALID_STATUS
+
+
+@pytest.mark.asyncio
+async def test_invalid_action_is_400():
+    await two_by_two()
+    status, body = await _record(CONDUCTOR_A, {"action": "delete"})
+    assert status == 400
+    assert body["code"] == wl.CODE_INVALID_ACTION
+
+
+@pytest.mark.asyncio
+async def test_an_unrecognized_session_is_refused_before_the_store(monkeypatch):
+    async def _refused(*a: Any, **k: Any) -> web.Response:
+        return web.json_response(
+            {"error": "unknown session", "code": "unknown_session"}, status=403
+        )
+
+    monkeypatch.setattr(routes, "_recognize_session", _refused)
+    for call in (
+        routes.api_work_brief(_req("GET", "/api/work-ledger/brief", sk="chat-x")),
+        routes.api_work_ledger_get(_req("GET", "/api/work-ledger", sk="chat-x")),
+    ):
+        assert (await call).status == 403
+
+
+@pytest.mark.asyncio
+async def test_a_restricted_session_is_refused(monkeypatch):
+    await two_by_two()
+    monkeypatch.setattr(routes, "_is_restricted_session", lambda *a: True)
+    resp = await routes.api_work_report(
+        _req(
+            "POST", "/api/work-ledger/report", body={"status": "done", "summary": "x"}, sk=WORKER_A
+        )
+    )
+    assert resp.status == 403
+    assert json.loads(resp.text)["code"] == "restricted_session"
+
+
+# ── acceptance stays the conductor's ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_accept_batch_parses_in_the_real_accept_eval():
+    """Piped into the bundled script, unmodified, and read back as its verdicts."""
+    ids = await two_by_two()
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "src/kiro_crew/builtin_skills/goal-conductor/scripts/accept_eval.py"
+    )
+    assert script.is_file(), script
+    _, body = await _read(CONDUCTOR_A)
+    batch = body["accept_batch"]
+    assert batch["items"], batch
+    proc = subprocess.run(
+        [sys.executable, str(script)],
+        input=json.dumps(batch).encode(),
+        capture_output=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr.decode()
+    parsed = json.loads(proc.stdout.decode())
+    # ``accept_eval.py`` answers ``{"results": [{"id", "verdict", "evidence"}]}`` —
+    # one verdict per item it was handed, which is what "the batch parses" means.
+    evaluated = {row.get("id") for row in parsed["results"]}
+    assert ids["item_a"] in evaluated, parsed
+    verdicts = {row["verdict"] for row in parsed["results"]}
+    assert verdicts <= wl.VERDICTS, verdicts
+
+
+@pytest.mark.asyncio
+async def test_accept_batch_ignores_a_worker_supplied_pr():
+    """The claim is surfaced beside the item and never enters the bar."""
+    ids = await two_by_two()
+    status, _ = await _report(WORKER_A, {"status": "done", "summary": "green", "pr": 999_111})
+    assert status == 200
+    _, body = await _read(CONDUCTOR_A)
+    row = next(r for r in body["items"] if r["item_id"] == ids["item_a"])
+    assert row["pr"] == 999_111, "the claim must be visible to the conductor"
+    batch_text = json.dumps(body["accept_batch"])
+    assert "999111" not in batch_text
+    for entry in body["accept_batch"]["items"]:
+        assert "pr" not in entry["accept"], entry
+
+
+@pytest.mark.asyncio
+async def test_the_conductor_promotes_a_claim_with_the_accept_action():
+    """``accept`` is the explicit write that moves the bar — and only it does."""
+    await two_by_two()
+    item_id = await _dispatch(
+        CONDUCTOR_A, "chat-a-worker-2", "pending pr", {"kind": "pr_checks", "pr": "TBD"}
+    )
+    status, _ = await _report(
+        "chat-a-worker-2", {"status": "done", "summary": "opened it", "pr": 4321}
+    )
+    assert status == 200
+    _, body = await _read(CONDUCTOR_A)
+    # Absent from the batch while the bar still says "TBD", and the item row says why.
+    assert not [e for e in body["accept_batch"]["items"] if e["id"] == item_id]
+    row = next(r for r in body["items"] if r["item_id"] == item_id)
+    assert row["acceptance_concrete"] is False
+    assert row["acceptance"]["pr"] == "TBD", "the stored bar is untouched, just not batched"
+
+    status, body = await _record(
+        CONDUCTOR_A,
+        {
+            "action": "accept",
+            "item_id": item_id,
+            "acceptance": {"kind": "pr_checks", "pr": 4321, "repo": "kirodotdev/KiroCrew"},
+        },
+    )
+    assert status == 200, body
+    _, body = await _read(CONDUCTOR_A)
+    entry = next(e for e in body["accept_batch"]["items"] if e["id"] == item_id)
+    assert entry["accept"]["pr"] == 4321
+    # One event per write, and the promotion is one of them.
+    row = next(r for r in body["items"] if r["item_id"] == item_id)
+    assert row["acceptance_concrete"] is True
+    assert any(e["kind"] == "decision" for e in row["events"])
+
+
+@pytest.mark.asyncio
+async def test_a_read_says_per_item_why_an_item_is_not_in_the_batch():
+    """``acceptance_concrete`` is derived on the row, not stored, so a conductor can
+    tell "the bar is not filled in yet" from "the read dropped my item"."""
+    ids = await two_by_two()
+    pending = await _dispatch(
+        CONDUCTOR_A, "chat-a-worker-3", "no number yet", {"kind": "pr_checks", "pr": "TBD"}
+    )
+    _, body = await _read(CONDUCTOR_A)
+    rows = {r["item_id"]: r for r in body["items"]}
+    assert rows[pending]["acceptance_concrete"] is False
+    assert rows[ids["item_a"]]["acceptance_concrete"] is True
+    batched = {e["id"] for e in body["accept_batch"]["items"]}
+    assert pending not in batched
+    assert ids["item_a"] in batched
+    stored = json.loads(wl.item_path(CONDUCTOR_A, pending).read_text())
+    assert "acceptance_concrete" not in stored
+
+
+@pytest.mark.asyncio
+async def test_each_batch_entry_carries_the_items_status_unfiltered():
+    """The conductor filters to ``done``; the read hands it the field to filter on and
+    filters nothing itself."""
+    ids = await two_by_two()
+    status, _ = await _report(WORKER_A, {"status": "progress", "summary": "moving"})
+    assert status == 200
+    _, body = await _read(CONDUCTOR_A)
+    entry = next(e for e in body["accept_batch"]["items"] if e["id"] == ids["item_a"])
+    assert entry["status"] == "progress"
+    assert entry["accept"] == {"kind": "human_approval"}
+
+    status, _ = await _report(
+        WORKER_A, {"status": "done", "summary": "met", "artifacts": {"commit": "abc1234"}}
+    )
+    assert status == 200
+    _, body = await _read(CONDUCTOR_A)
+    entry = next(e for e in body["accept_batch"]["items"] if e["id"] == ids["item_a"])
+    assert entry["status"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_a_done_item_waiting_on_the_conductor_is_not_stale():
+    """``stale`` means the WORKER went quiet. Once it has claimed its bar is met the
+    next move is the conductor's or a human's, so the flag must not point back at the
+    reader — a quiet ``done`` item is silent because it is finished."""
+    ids = await two_by_two()
+    status, _ = await _report(
+        WORKER_A, {"status": "done", "summary": "opened the pr", "artifacts": {"commit": "abc1234"}}
+    )
+    assert status == 200
+    item = wl.read_work_item(CONDUCTOR_A, ids["item_a"])
+    assert item is not None
+    long_after = datetime.now().astimezone() + timedelta(seconds=wl.DEFAULT_STALE_WINDOW_SECS * 6)
+    assert (
+        routes._slot_running(_req("GET", "/api/work-ledger", sk=CONDUCTOR_A).app["state"], WORKER_A)
+        is False
+    )
+    assert wl.is_stale(item, worker_running=False, now=long_after) is False
+    _, body = await _read(CONDUCTOR_A)
+    row = next(r for r in body["items"] if r["item_id"] == ids["item_a"])
+    assert row["stale"] is False
+
+
+@pytest.mark.asyncio
+async def test_accept_is_a_route_action_not_a_store_action():
+    """The store's six are pinned by Phase 1, so the seventh lives one layer up."""
+    assert "accept" not in wl.CONDUCTOR_ACTIONS
+    assert "accept" in routes.RECORD_ACTIONS
+    assert routes.RECORD_ACTIONS == wl.CONDUCTOR_ACTIONS | {"accept"}
+    assert routes.RECORD_ACTIONS == validation._WORK_RECORD_ACTIONS
+
+
+# ── derived flags, and the schema caps that restate the store's ───────────
+
+
+@pytest.mark.asyncio
+async def test_orphaned_and_stale_are_derived_not_stored():
+    """Neither flag is a field, and both come back on a read."""
+    ids = await two_by_two()
+    _, body = await _read(CONDUCTOR_A)
+    row = next(r for r in body["items"] if r["item_id"] == ids["item_a"])
+    assert row["orphaned"] is True  # the mocked slot table reports nothing open
+    # NOT stale: just created, so it is inside the window even with no worker
+    # running. The window exists to cover the gap between bind and the first
+    # report, not to flag an item the moment it is dispatched.
+    assert row["stale"] is False
+    stored = json.loads(wl.item_path(CONDUCTOR_A, ids["item_a"]).read_text())
+    assert "orphaned" not in stored
+    assert "stale" not in stored
+
+
+@pytest.mark.asyncio
+async def test_an_item_past_the_window_with_no_running_worker_is_stale():
+    """Both conditions, and only both: the conjunction is what the flag means."""
+    ids = await two_by_two()
+    item = wl.read_work_item(CONDUCTOR_A, ids["item_a"])
+    assert item is not None
+    aged = datetime.now().astimezone() - timedelta(seconds=wl.DEFAULT_STALE_WINDOW_SECS + 60)
+    assert wl.is_stale(item, worker_running=False, now=aged + timedelta(days=1)) is True
+    assert wl.is_stale(item, worker_running=True, now=aged + timedelta(days=1)) is False
+
+
+@pytest.mark.asyncio
+async def test_an_idle_open_worker_past_the_window_is_stale():
+    """ "Running" means a turn in flight, not an open tab. A worker whose session
+    is still open but which stopped without reporting is the case the flag exists
+    for, so slot EXISTENCE must not satisfy it."""
+    ids = await two_by_two()
+    item = wl.read_work_item(CONDUCTOR_A, ids["item_a"])
+    assert item is not None
+    aged = datetime.now().astimezone() + timedelta(seconds=wl.DEFAULT_STALE_WINDOW_SECS + 60)
+    request = _req("GET", "/api/work-ledger", sk=CONDUCTOR_A)
+    # The worker slot exists (dispatched by the fixture) but has no turn running.
+    assert routes._slot_open(request.app["state"], WORKER_A) is True
+    assert routes._slot_running(request.app["state"], WORKER_A) is False
+    assert wl.is_stale(item, worker_running=False, now=aged) is True
+    # And with a turn in flight the same item is not stale.
+    _dispatched(WORKER_A, CONDUCTOR_A, running=True)
+    assert routes._slot_running(request.app["state"], WORKER_A) is True
+    assert wl.is_stale(item, worker_running=True, now=aged) is False
+
+
+@pytest.mark.asyncio
+async def test_a_reported_worker_whose_session_closed_is_stale_at_once(monkeypatch):
+    """``stale`` on the ledger read asks the wake gate's resolver whether the worker is
+    gone, so a worker that reported and then closed is flagged on the next read rather
+    than after the window."""
+    ids = await two_by_two()
+    status, _ = await _report(WORKER_A, {"status": "progress", "summary": "half way"})
+    assert status == 200
+    _, body = await _read(CONDUCTOR_A)
+    row = next(r for r in body["items"] if r["item_id"] == ids["item_a"])
+    assert row["stale"] is False
+    seen: list[str] = []
+
+    def _closed(state: Any, key: str) -> bool:
+        seen.append(key)
+        return key == WORKER_A
+
+    monkeypatch.setattr(routes.ledger_wake, "worker_closed", _closed)
+    _, body = await _read(CONDUCTOR_A)
+    row = next(r for r in body["items"] if r["item_id"] == ids["item_a"])
+    assert row["stale"] is True
+    assert WORKER_A in seen
+
+
+@pytest.mark.asyncio
+async def test_a_worker_parked_in_its_own_loop_is_not_stale_on_the_ledger_read(monkeypatch):
+    """``stale`` on the ledger read asks the wake gate's own looping resolver, so the
+    badge and the stall wake agree about a worker waiting inside its monitor loop."""
+    ids = await two_by_two()
+    status, _ = await _report(WORKER_A, {"status": "progress", "summary": "waiting on CI"})
+    assert status == 200
+    real = wl.is_stale
+    seen: list[str] = []
+
+    def _past_the_window(item, **kwargs):
+        return real(item, **{**kwargs, "window_secs": 0})
+
+    def _looping(_svc: Any, key: str) -> bool:
+        seen.append(key)
+        return key == WORKER_A
+
+    monkeypatch.setattr(routes.work_ledger, "is_stale", _past_the_window)
+    _, body = await _read(CONDUCTOR_A)
+    row = next(r for r in body["items"] if r["item_id"] == ids["item_a"])
+    assert row["stale"] is True
+    monkeypatch.setattr(routes.ledger_wake, "worker_looping", _looping)
+    _, body = await _read(CONDUCTOR_A)
+    row = next(r for r in body["items"] if r["item_id"] == ids["item_a"])
+    assert row["stale"] is False
+    assert WORKER_A in seen
+
+
+@pytest.mark.asyncio
+async def test_a_running_worker_is_never_stale(monkeypatch):
+    """The conjunction is the point: silence alone does not flag an item."""
+    ids = await two_by_two()
+    monkeypatch.setattr(routes, "_slot_open", lambda state, key: bool(key))
+    monkeypatch.setattr(routes, "_slot_running", lambda state, key: bool(key))
+    _, body = await _read(CONDUCTOR_A)
+    row = next(r for r in body["items"] if r["item_id"] == ids["item_a"])
+    assert row["stale"] is False
+    assert row["orphaned"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_pending_run_is_recorded_with_its_stamp_and_read_back_overdue(monkeypatch):
+    """The verdict route stamps the run into the store AND its crew-log entry, so a
+    rebuild keeps it; the fit probe covers the stamp; both reads carry the flag. The
+    run starts at a fixed moment long past, so the read's own clock is beyond it."""
+    entries: list[dict[str, Any]] = []
+    probes: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        routes.crew_log_emit, "on_work_recorded", lambda unit, data: entries.append(data) or True
+    )
+    monkeypatch.setattr(
+        routes.crew_log_emit, "work_entry_fits", lambda entry: probes.append(entry) or True
+    )
+    pr_bar = {"kind": "pr_checks", "pr": 7, "repo": "owner/name"}
+    item_id = await _dispatch(CONDUCTOR_A, WORKER_A, "item A", pr_bar)
+    started = "2001-01-01T00:00:00+00:00"
+    monkeypatch.setattr(wl, "_now_iso", lambda: started)
+    status, body = await _record(
+        CONDUCTOR_A, {"action": "verdict", "item_id": item_id, "verdict": "pending"}
+    )
+    assert status == 200, body
+    assert entries[-1]["pending_since"] == started
+    assert "pending_since" in probes[-1]
+    _, body = await _read(CONDUCTOR_A)
+    row = next(r for r in body["items"] if r["item_id"] == item_id)
+    assert (row["pending_since"], row["pending_overdue"]) == (started, True)
+    _, body = await _read_with(CONDUCTOR_A, "compact=true")
+    assert next(r for r in body["items"] if r["item_id"] == item_id)["pending_overdue"] is True
+
+    status, body = await _record(
+        CONDUCTOR_A, {"action": "verdict", "item_id": item_id, "verdict": "fail", "fails": 1}
+    )
+    assert status == 200, body
+    assert "pending_since" not in entries[-1]
+    _, body = await _read(CONDUCTOR_A)
+    row = next(r for r in body["items"] if r["item_id"] == item_id)
+    assert (row["pending_since"], row["pending_overdue"]) == (None, False)
+
+
+def test_the_schema_caps_restate_the_stores_own():
+    """``validation`` cannot import the store on the gateway's request path, so the
+    two spell the same numbers — and drifting apart would let a value through the
+    schema that the store then refuses with a different code."""
+    report = validation.WORK_REPORT_SCHEMA
+    summary = next(f for f in report.fields if f.name == "summary")
+    assert summary.max_len == wl.MAX_SUMMARY_CHARS
+    pr = next(f for f in report.fields if f.name == "pr")
+    assert (pr.min_val, pr.max_val) == (wl.MIN_PR, wl.MAX_PR)
+    status = next(f for f in report.fields if f.name == "status")
+    assert status.allowed == wl.WORKER_STATUSES
+
+    record = validation.WORK_LEDGER_RECORD_SCHEMA
+    assert next(f for f in record.fields if f.name == "title").max_len == wl.MAX_TITLE_CHARS
+    assert next(f for f in record.fields if f.name == "goal").max_len == wl.MAX_GOAL_CHARS
+    assert next(f for f in record.fields if f.name == "decision").max_len == wl.MAX_DECISION_CHARS
+    assert next(f for f in record.fields if f.name == "verdict").allowed == wl.VERDICTS
+    assert next(f for f in record.fields if f.name == "state").allowed <= wl.ITEM_STATES
+
+
+def test_the_worker_schema_has_no_conductor_field():
+    """The absence IS the guarantee — stronger than an allowlist kept correct by hand."""
+    names = {f.name for f in validation.WORK_REPORT_SCHEMA.fields}
+    assert names == {"status", "summary", "artifacts", "pr", "reason"}
+    for forbidden in (
+        "item_id",
+        "session",
+        "session_key",
+        "acceptance",
+        "verdict",
+        "state",
+        "decision",
+        "title",
+        "goal",
+        "round",
+        "fails",
+        "worker_session_key",
+    ):
+        assert forbidden not in names, forbidden
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_artifacts_map_is_refused_not_truncated():
+    ids = await two_by_two()
+    status, body = await _report(
+        WORKER_A,
+        {
+            "status": "progress",
+            "summary": "x",
+            "artifacts": {f"k{n}": "v" for n in range(wl.MAX_ARTIFACT_KEYS + 1)},
+        },
+    )
+    assert status == 400
+    assert body["code"] == wl.CODE_FIELD_TOO_LONG
+    item = wl.read_work_item(CONDUCTOR_A, ids["item_a"])
+    assert item is not None and item.artifacts == {}
+
+
+# ── the three refusals this layer owns, above the store ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_bind_refuses_a_worker_this_conductor_did_not_create():
+    """Otherwise conductor A binds B's idle worker, and B's worker then reads A's
+    brief and A's ``decision`` — the one field a worker treats as an instruction.
+    The store cannot see this: it checks only that the item is unbound."""
+    ids = await two_by_two()
+    victim = "chat-b-worker-2"
+    _dispatched(victim, CONDUCTOR_B)  # created by the OTHER conductor
+    status, body = await _record(
+        CONDUCTOR_A,
+        {"action": "create", "title": "hijack", "acceptance": {"kind": "human_approval"}},
+    )
+    assert status == 200
+    item_id = body["item"]["item_id"]
+    status, body = await _record(
+        CONDUCTOR_A,
+        {"action": "bind", "item_id": item_id, "worker_session_key": victim},
+    )
+    assert status == 403
+    assert body["code"] == "worker_not_owned"
+    # And the victim is still bound to nothing of A's.
+    assert wl.read_binding(victim) is None
+    item = wl.read_work_item(CONDUCTOR_A, item_id)
+    assert item is not None and item.worker_session_key is None
+    assert ids  # the two-by-two fixture stands untouched
+
+
+@pytest.mark.asyncio
+async def test_bind_refuses_a_session_that_is_not_open():
+    ids = await two_by_two()
+    status, body = await _record(
+        CONDUCTOR_A,
+        {"action": "create", "title": "no session", "acceptance": {"kind": "human_approval"}},
+    )
+    assert status == 200
+    status, body = await _record(
+        CONDUCTOR_A,
+        {
+            "action": "bind",
+            "item_id": body["item"]["item_id"],
+            "worker_session_key": "chat-never-created",
+        },
+    )
+    assert status == 404
+    assert body["code"] == "unknown_worker_session"
+    assert ids
+
+
+@pytest.mark.asyncio
+async def test_bind_refuses_across_a_workspace_boundary():
+    """Workspace is the memory boundary ``authorize_target`` already refuses across."""
+    ids = await two_by_two()
+    _SLOTS[CONDUCTOR_A] = _Slot(workspace="alpha")
+    _dispatched("chat-a-worker-elsewhere", CONDUCTOR_A, workspace="beta")
+    status, body = await _record(
+        CONDUCTOR_A,
+        {"action": "create", "title": "elsewhere", "acceptance": {"kind": "human_approval"}},
+    )
+    assert status == 200
+    status, body = await _record(
+        CONDUCTOR_A,
+        {
+            "action": "bind",
+            "item_id": body["item"]["item_id"],
+            "worker_session_key": "chat-a-worker-elsewhere",
+        },
+    )
+    assert status == 403
+    assert body["code"] == "worker_cross_workspace"
+    assert ids
+
+
+@pytest.mark.asyncio
+async def test_a_channel_session_is_refused_on_every_tool():
+    """The channel-agent block in ``channel.py`` matches a rendered PERMISSION
+    REQUEST, and the four tools are auto-approved on three specs — so an
+    ``allowedTools`` grant emits no permission event and that block never runs.
+    Containment therefore has to hold here, where no spec can route around it."""
+    for sk in ("slack:C123:456.789", "discord:guild:chan:1", "telegram:99:1"):
+        status, body = await _brief(sk)
+        assert status == 403, sk
+        assert body["code"] == "channel_session", sk
+        assert (await _report(sk, {"status": "done", "summary": "x"}))[0] == 403
+        assert (await _read(sk))[0] == 403
+        assert (await _record(sk, {"action": "goal", "goal": "g", "round": 1}))[0] == 403
+
+
+@pytest.mark.asyncio
+async def test_an_outbound_mirrored_session_is_refused_like_a_channel_one(monkeypatch):
+    """A dashboard-BORN session given an outbound mirror republishes every turn to a
+    channel, so its key looks local while the disclosure is identical. The key alone
+    is therefore not the test."""
+    ids = await two_by_two()
+    monkeypatch.setattr(routes, "reaches_a_channel", lambda state, sk: True)
+    for status, body in (
+        await _brief(WORKER_A),
+        await _report(WORKER_A, {"status": "done", "summary": "x"}),
+        await _read(CONDUCTOR_A),
+        await _record(CONDUCTOR_A, {"action": "goal", "goal": "g", "round": 1}),
+    ):
+        assert status == 403
+        assert body["code"] == "channel_session"
+    assert ids
+
+
+def test_the_mirror_probe_fails_closed_on_an_unreadable_store(monkeypatch):
+    """An unreadable link counts as mirrored rather than opening the boundary —
+    the same direction ``session_control._has_channel_mirror`` defaults to."""
+    from kiro_crew.dashboard import session_control
+
+    _SLOTS["chat-probe"] = _Slot()
+
+    def _boom(*a: Any, **k: Any) -> bool:
+        raise RuntimeError("session store unreadable")
+
+    monkeypatch.setattr(session_control, "_has_channel_mirror", _boom)
+    request = _req("GET", "/api/work-ledger", sk="chat-probe")
+    assert _REAL_REACHES_A_CHANNEL(request.app["state"], "chat-probe") is True
+
+
+@pytest.mark.asyncio
+async def test_accept_refuses_to_clear_the_bar_when_acceptance_is_omitted():
+    """Coercing a missing acceptance to ``{}`` replaced the real condition, dropped
+    the item out of ``accept_batch`` (which filters on a non-empty acceptance), and
+    answered 200 — conductor-owned state lost with no signal. A promotion never
+    legitimately clears a bar."""
+    ids = await two_by_two()
+    before = wl.read_work_item(CONDUCTOR_A, ids["item_a"])
+    assert before is not None and before.acceptance == {"kind": "human_approval"}
+
+    for body in (
+        {"action": "accept", "item_id": ids["item_a"]},
+        {"action": "accept", "item_id": ids["item_a"], "acceptance": {}},
+    ):
+        status, payload = await _record(CONDUCTOR_A, body)
+        assert status == 400, payload
+        assert payload["code"] == wl.CODE_INVALID_VALUE
+        assert payload["field"] == "acceptance"
+
+    after = wl.read_work_item(CONDUCTOR_A, ids["item_a"])
+    assert after is not None and after.acceptance == {"kind": "human_approval"}
+    # And it is still in the batch the evaluator reads.
+    _, read = await _read(CONDUCTOR_A)
+    assert any(e["id"] == ids["item_a"] for e in read["accept_batch"]["items"])
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_parent_ledger_refuses_the_bootstrap_rather_than_resetting_depth():
+    """``read_conductor`` answers None for an absent record AND a torn one. Treating
+    that as 'no parent' would compute depth 1 for a child of a depth-1 parent and
+    PERSIST it, granting a generation no later read corrects — a cap that fails open
+    on unreadable input is not a cap."""
+    ids = await two_by_two()
+    assert (await _record(WORKER_A, {"action": "goal", "goal": "level 1", "round": 1}))[0] == 200
+    grandchild = "chat-a-grandchild"
+    _dispatched(grandchild, WORKER_A)
+    status, body = await _record(
+        WORKER_A, {"action": "create", "title": "leaf", "acceptance": {"kind": "human_approval"}}
+    )
+    assert status == 200
+    assert (
+        await _record(
+            WORKER_A,
+            {
+                "action": "bind",
+                "item_id": body["item"]["item_id"],
+                "worker_session_key": grandchild,
+            },
+        )
+    )[0] == 200
+
+    # Truncate the parent's own record so it reads as absent.
+    wl.conductor_dir(WORKER_A).joinpath("conductor.json").write_text("{ tor", encoding="utf-8")
+    assert wl.read_conductor(WORKER_A) is None
+
+    status, body = await _record(grandchild, {"action": "goal", "goal": "level 2", "round": 1})
+    assert status == 409
+    assert body["code"] == "parent_unreadable"
+    # Nothing was persisted at the wrong depth.
+    assert wl.read_conductor(grandchild) is None
+    assert ids
+
+
+@pytest.mark.asyncio
+async def test_a_worker_session_is_bound_once_and_never_rebound():
+    """The store permits replacing a binding whose item is terminal, so a session
+    COULD be reused — but a report already in flight from the old work resolves its
+    binding when it LANDS, and there is no unbind path to undo the overwrite. An idle
+    check cannot close that: a turn can start during the awaits before the commit.
+    So the route refuses reuse outright, which makes the race unrepresentable."""
+    ids = await two_by_two()
+    # Close A's item, so the STORE would now allow the binding to be replaced.
+    status, _ = await _record(
+        CONDUCTOR_A, {"action": "close", "item_id": ids["item_a"], "state": "accepted"}
+    )
+    assert status == 200
+    status, body = await _record(
+        CONDUCTOR_A,
+        {"action": "create", "title": "second", "acceptance": {"kind": "human_approval"}},
+    )
+    assert status == 200
+    second = body["item"]["item_id"]
+
+    status, body = await _record(
+        CONDUCTOR_A,
+        {"action": "bind", "item_id": second, "worker_session_key": WORKER_A},
+    )
+    assert status == 409
+    assert body["code"] == "worker_already_dispatched"
+    item = wl.read_work_item(CONDUCTOR_A, second)
+    assert item is not None and item.worker_session_key is None
+    # The original binding is untouched, so no report can be misrouted.
+    assert wl.read_binding(WORKER_A) == (CONDUCTOR_A, ids["item_a"])
+
+    # A FRESH session for the new item is the supported path.
+    _dispatched("chat-a-worker-2", CONDUCTOR_A)
+    status, body = await _record(
+        CONDUCTOR_A,
+        {"action": "bind", "item_id": second, "worker_session_key": "chat-a-worker-2"},
+    )
+    assert status == 200, body
+
+
+def test_the_binding_presence_check_fails_closed(monkeypatch):
+    """An unreadable store must not admit a rebind: the alternative is deciding the
+    one question the refusal exists for on a store that could not answer."""
+
+    def _boom(_key: str):
+        raise OSError("store unreadable")
+
+    monkeypatch.setattr(routes.work_ledger, "binding_path", _boom)
+    assert routes._has_binding("chat-whoever") is True
+
+
+@pytest.mark.asyncio
+async def test_a_read_refuses_when_a_mirror_appears_during_the_read(monkeypatch):
+    """Containment decided on ENTRY says nothing about containment after an await.
+    The same reason ``session_control`` applies ``_refuse_ineligible_creator``
+    twice — once on entry, once immediately before it allocates."""
+    ids = await two_by_two()
+    calls = {"n": 0}
+
+    def _mirror_appears_after_entry(state: Any, sk: str) -> bool:
+        # False for the entry check, True for the post-read re-check.
+        calls["n"] += 1
+        return calls["n"] > 1
+
+    monkeypatch.setattr(routes, "reaches_a_channel", _mirror_appears_after_entry)
+    status, body = await _brief(WORKER_A)
+    assert status == 403
+    assert body["code"] == "channel_session"
+    assert "while the brief was being read" in body["error"]
+
+    calls["n"] = 0
+    status, body = await _read(CONDUCTOR_A)
+    assert status == 403
+    assert body["code"] == "channel_session"
+    assert "while the ledger was being read" in body["error"]
+    assert ids
+
+
+def test_the_route_owned_codes_are_disjoint_from_the_stores():
+    """``_CODE_STATUS`` is asserted exhaustive over the store's ``CODE_*``, so a
+    route-only code must not be folded into it or that assertion goes hollow."""
+    assert not (routes.ROUTE_CODES & set(routes._CODE_STATUS))
+    assert routes.CODE_NOT_BOUND not in routes.ROUTE_CODES  # its own named constant
+    for code in (
+        "channel_session",
+        "parent_unreadable",
+        "unknown_worker_session",
+        "worker_not_owned",
+        "worker_cross_workspace",
+        "worker_already_dispatched",
+    ):
+        assert code in routes.ROUTE_CODES, code
+
+
+# ── the routes are reachable by the tools and by nothing else ─────────────
+
+
+def test_the_store_directory_is_fenced_from_file_tools():
+    """The routes are the only sanctioned path in. The worker agent carries the
+    full default file toolset, so without both fences those auto-approved tools
+    reach every conductor's records directly — and a corrupted record reads as
+    ABSENT to the store, so the loss is silent. Same treatment as the sibling
+    ``ledger/`` directory, for the same reason."""
+    from kiro_crew import sandbox
+    from kiro_crew.security import is_sensitive_path
+
+    for prefix in (".kiro/crew", ".kirocrew"):
+        assert is_sensitive_path(f"~/{prefix}/work-ledger") is True
+        assert is_sensitive_path(f"~/{prefix}/work-ledger/bindings/x.json") is True
+        assert is_sensitive_path(f"~/{prefix}/work-ledger/c-abc12345/items/it_0.json") is True
+    assert "work-ledger" in sandbox._CREW_HIDDEN_LEAVES
+
+
+@pytest.mark.asyncio
+async def test_a_worker_edit_of_its_own_item_file_is_refused_and_the_store_still_writes():
+    """The fence, driven end to end through the tool gate on the REAL paths.
+
+    The worker agent is a full-capability agent with ``fs_write``, so the tool
+    layer's writer-ownership rule (a worker owns ``status``/``summary``/
+    ``artifacts``/``pr``, a conductor owns ``acceptance``/``verdict``/``state``/
+    ``decision``) is only as strong as the file fence under it: a prompt-injected
+    worker that could open ``items/it_*.json`` directly would forge
+    ``state: accepted``, gut ``acceptance`` before the conductor's evaluator runs,
+    or read a sibling item past ``read_work_brief``'s scoping, and the conductor
+    would read the forgery as its own writing.
+
+    Three things are pinned here that the spelling test above cannot: the
+    ``KIROCREW_HOME`` override this suite runs under is re-anchored (the store
+    lives OUTSIDE ``~/.kiro/crew``, and it is still fenced); the refusal is what
+    ``hooks.on_tool_call`` answers for an edit AND for a read of the item, the
+    binding file and the conductor record; and the store's own ``atomic_write``
+    path — the gateway process, not the agent tool — is untouched by the fence, so
+    the sanctioned writers keep working on the very file the tool was refused.
+
+    Shell writes (``echo >``, ``python -c``) are deliberately NOT text-matched by
+    the gate (see ``is_sensitive_bash_command``); the OS sandbox mask asserted
+    above is the shell-side control, so this test covers the file-tool plane.
+    """
+    from kiro_crew.config.paths import data_home
+    from kiro_crew.hooks import TOOL_DENY, HookManager, HooksConfig
+
+    ids = await two_by_two()
+    item_file = wl.item_path(CONDUCTOR_A, ids["item_a"])
+    sibling_file = wl.item_path(CONDUCTOR_B, ids["item_b"])
+    binding_file = wl.binding_path(WORKER_A)
+    conductor_file = wl.conductor_dir(CONDUCTOR_A) / wl._CONDUCTOR_FILE
+    for path in (item_file, sibling_file, binding_file, conductor_file):
+        assert path.is_file(), path
+    # The suite's override puts the store outside the default home, which is the
+    # anchoring case a hand-written ``~/.kiro/crew/...`` spelling never exercises.
+    assert Path.home() / ".kiro" / "crew" not in data_home().parents
+    assert data_home() not in (Path.home() / ".kiro" / "crew").parents
+
+    gate = HookManager(HooksConfig.from_dict({}))
+    for kind, path in (
+        ("edit", item_file),
+        ("edit", binding_file),
+        ("edit", conductor_file),
+        ("read", item_file),
+        ("read", sibling_file),
+    ):
+        decision = gate.on_tool_call(
+            f"Editing {path.name}" if kind == "edit" else f"Reading {path.name}",
+            session_key="cli_chat",
+            tool_kind=kind,
+            raw_params={"path": str(path)},
+        )
+        assert decision.action == TOOL_DENY, (kind, path, decision)
+        assert "sensitive path" in (decision.reason or ""), (kind, path, decision)
+
+    # The sanctioned writers reach the same file the tool was refused: the worker's
+    # report through its route, and the conductor's decision through the store.
+    before = item_file.read_bytes()
+    status, _ = await _report(WORKER_A, {"status": "progress", "summary": "still moving"})
+    assert status == 200
+    wl.apply_conductor_action(CONDUCTOR_A, "decide", item_id=ids["item_a"], decision="carry on")
+    after = item_file.read_bytes()
+    assert after != before
+    item = wl.read_work_item(CONDUCTOR_A, ids["item_a"])
+    assert item is not None
+    assert item.summary == "still moving"
+    assert item.decision == "carry on"
+
+
+def test_the_routes_are_on_the_strict_internal_allowlist():
+    """The four tools authenticate with the internal secret; without this entry the
+    call falls through to cookie auth and every one fails with 403 before the
+    handler's own session recognition can run."""
+    from kiro_crew.dashboard import server
+
+    assert "/api/work-ledger" in server._STRICT_INTERNAL_API_PATHS
+
+
+def test_every_route_is_registered_lazily_on_the_app():
+    """Registered by path AND by method, since a GET-only registration of the two
+    write routes would fail only at call time — and through the DEFERRED binder, so
+    an opt-in subsystem's module is not imported on the gateway boot path.
+    """
+    import inspect
+
+    from kiro_crew.dashboard import server
+
+    # server.py and the server_runtime owners it composes; the MCP route table
+    # lives in one of them.
+    owners = sorted((Path(server.__file__).parent / "server_runtime").glob("[!_]*.py"))
+    assert owners, "expected the server_runtime owners beside server.py"
+    src = inspect.getsource(server) + "".join(p.read_text(encoding="utf-8") for p in owners)
+    for method, path, handler in (
+        ("add_get", "/api/work-ledger", "api_work_ledger_get"),
+        ("add_post", "/api/work-ledger/record", "api_work_ledger_record"),
+        ("add_get", "/api/work-ledger/brief", "api_work_brief"),
+        ("add_post", "/api/work-ledger/report", "api_work_report"),
+    ):
+        assert f'{method}("{path}", _deferred_work_ledger("{handler}"))' in src, (method, path)
+        # And never eagerly, which is what the boot-path rule forbids.
+        assert f'{method}("{path}", handlers.{handler})' not in src, (method, path)
+
+
+def test_the_handler_package_does_not_import_the_subsystem_at_boot():
+    """``handlers/__init__.py`` is reached from ``start_dashboard``, so an import
+    there IS the boot path. The four handlers belong to an opt-in MCP server, and
+    clause 5 of ``no-new-work-on-gateway-boot-path`` requires gating the IMPORT, not
+    just the handler."""
+    package_init = (
+        Path(__file__).resolve().parents[1] / "src/kiro_crew/dashboard/handlers/__init__.py"
+    )
+    text = package_init.read_text(encoding="utf-8")
+    assert "from kiro_crew.dashboard.handlers.work_ledger import" not in text
+    for name in (
+        "api_work_brief",
+        "api_work_report",
+        "api_work_ledger_get",
+        "api_work_ledger_record",
+    ):
+        assert f"    {name},\n" not in text, name
+
+
+def test_the_deferred_binder_resolves_each_handler():
+    """The binder resolves by NAME, so a renamed handler would fail only at request
+    time — this pins all four names against the module."""
+    from kiro_crew.dashboard import server
+
+    for name in (
+        "api_work_brief",
+        "api_work_report",
+        "api_work_ledger_get",
+        "api_work_ledger_record",
+    ):
+        bound = server._deferred_work_ledger(name)
+        assert bound.__name__ == name
+        assert getattr(routes, name, None) is not None, name
+
+
+# ── the read's narrowing arguments and compact rows ──
+#
+# An argument-less read is the whole board; every argument narrows it. Sizing the
+# reply is the tool layer's job (``mcp_work._fit_ledger``), pinned in test_mcp_work.
+
+
+async def _read_with(sk: str, query: str) -> tuple[int, dict[str, Any]]:
+    resp = await routes.api_work_ledger_get(_req("GET", f"/api/work-ledger?{query}", sk=sk))
+    return resp.status, json.loads(resp.text)
+
+
+async def _create_stamped(
+    monkeypatch, conductor: str, title: str, stamp: str, *, first: bool = False
+) -> str:
+    """One item created at *stamp*, through the routes, with no worker bound.
+
+    ``_now_iso`` is the store's one clock, so pinning it here dates the item's
+    ``created_at`` exactly — the field the response order and ``since`` read.
+    """
+    monkeypatch.setattr(wl, "_now_iso", lambda: stamp)
+    if first:
+        status, body = await _record(conductor, {"action": "goal", "goal": "g", "round": 1})
+        assert status == 200, body
+    status, body = await _record(
+        conductor, {"action": "create", "title": title, "acceptance": {"kind": "human_approval"}}
+    )
+    assert status == 200, body
+    return body["item"]["item_id"]
+
+
+async def _three_dated_items(monkeypatch) -> list[str]:
+    """Three items a day apart, returned OLDEST first — the store's own order."""
+    ids = []
+    for day, first in ((1, True), (2, False), (3, False)):
+        ids.append(
+            await _create_stamped(
+                monkeypatch,
+                CONDUCTOR_A,
+                f"item {day}",
+                f"2026-03-0{day}T10:00:00+00:00",
+                first=first,
+            )
+        )
+    return ids
+
+
+async def _decide_n_times(conductor: str, item_id: str, count: int) -> None:
+    """*count* distinct decision events on one item (event ids are content-addressed,
+    so the texts must differ for the lines not to collapse)."""
+    for n in range(count):
+        status, body = await _record(
+            conductor, {"action": "decide", "item_id": item_id, "decision": f"decision {n}"}
+        )
+        assert status == 200, body
+
+
+@pytest.mark.asyncio
+async def test_read_keeps_the_stores_order_for_items_and_the_batch(monkeypatch):
+    """An argument-less read is unchanged: rows and ``accept_batch`` come in the
+    store's own order, oldest first. Only the budget trim ranks by age."""
+    ids = await _three_dated_items(monkeypatch)
+    _, body = await _read(CONDUCTOR_A)
+    assert [r["item_id"] for r in body["items"]] == ids
+    assert [e["id"] for e in body["accept_batch"]["items"]] == ids
+    assert [it.item_id for it in wl.list_work_items(CONDUCTOR_A)] == ids
+
+
+@pytest.mark.asyncio
+async def test_read_default_tail_is_the_ceiling_and_events_narrows_or_drops_it(monkeypatch):
+    """The default tail is unchanged — the 20 ceiling the Crew board reads too —
+    and ``events=<n>`` can only shorten it."""
+    ids = await _three_dated_items(monkeypatch)
+    await _decide_n_times(CONDUCTOR_A, ids[2], 12)
+    assert len(wl.read_events(CONDUCTOR_A, ids[2])) == 13, "create + 12 decisions on disk"
+
+    _, body = await _read(CONDUCTOR_A)
+    row = next(r for r in body["items"] if r["item_id"] == ids[2])
+    assert len(row["events"]) == 13 <= routes._MAX_EVENT_TAIL == 20
+    assert [e["text"] for e in row["events"]][1:] == [f"decision {n}" for n in range(12)]
+
+    _, body = await _read_with(CONDUCTOR_A, "events=10")
+    row = next(r for r in body["items"] if r["item_id"] == ids[2])
+    assert len(row["events"]) == 10
+    # The NEWEST ten, in log order.
+    assert [e["text"] for e in row["events"]] == [f"decision {n}" for n in range(2, 12)]
+    _, body = await _read_with(CONDUCTOR_A, "events=0")
+    assert all(r["events"] == [] for r in body["items"])
+    assert "events" in body["items"][0], "events=0 keeps the key, so the shape is stable"
+    _, body = await _read_with(CONDUCTOR_A, f"events={routes._MAX_EVENT_TAIL}")
+    row = next(r for r in body["items"] if r["item_id"] == ids[2])
+    assert len(row["events"]) == 13
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query,field",
+    [
+        ("events=21", "events"),
+        ("events=-1", "events"),
+        ("events=five", "events"),
+        ("item_id=it_nothex", "item_id"),
+        ("item_id=..%2Fetc", "item_id"),
+        ("state=closed", "state"),
+        ("since=yesterday", "since"),
+        ("compact=maybe", "compact"),
+        ("status=done", "status"),
+        # An EMPTY value is refused for every parameter: the schema skips a pattern
+        # on an empty string, so ``item_id=`` would otherwise select nothing and
+        # answer 200 with no rows beside a whole-board batch.
+        ("item_id=", "item_id"),
+        ("state=", "state"),
+        ("since=", "since"),
+        ("events=", "events"),
+        ("compact=", "compact"),
+    ],
+)
+async def test_read_refuses_an_out_of_shape_query_and_names_the_field(monkeypatch, query, field):
+    """The route validates the query with the tool's own schema, so a loopback
+    caller that bypasses the tool layer meets the same bounds — and an unknown
+    parameter is refused, never silently ignored into a whole-board answer."""
+    await _three_dated_items(monkeypatch)
+    status, body = await _read_with(CONDUCTOR_A, query)
+    assert status == 400, body
+    assert body["code"] == wl.CODE_INVALID_VALUE
+    assert body["field"] == field
+
+
+@pytest.mark.asyncio
+async def test_read_filters_by_item_id(monkeypatch):
+    ids = await _three_dated_items(monkeypatch)
+    status, body = await _read_with(CONDUCTOR_A, f"item_id={ids[1]}")
+    assert status == 200
+    assert [r["item_id"] for r in body["items"]] == [ids[1]]
+    # The batch is the WHOLE bar, whatever the rows were narrowed to.
+    assert [e["id"] for e in body["accept_batch"]["items"]] == ids
+    # Well-formed but not on this board: an empty answer, not an error.
+    status, body = await _read_with(CONDUCTOR_A, "item_id=it_00000000")
+    assert status == 200
+    assert body["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_read_filters_by_state(monkeypatch):
+    ids = await _three_dated_items(monkeypatch)
+    status, body = await _record(
+        CONDUCTOR_A, {"action": "close", "item_id": ids[0], "state": "accepted", "decision": "ok"}
+    )
+    assert status == 200, body
+    _, body = await _read_with(CONDUCTOR_A, "state=open")
+    assert [r["item_id"] for r in body["items"]] == [ids[1], ids[2]]
+    _, body = await _read_with(CONDUCTOR_A, "state=accepted")
+    assert [r["item_id"] for r in body["items"]] == [ids[0]]
+    _, body = await _read_with(CONDUCTOR_A, "state=rejected")
+    assert body["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_read_filters_by_since_on_created_reported_and_closed(monkeypatch):
+    """``since`` reads the stamps another party writes: a create, a worker's
+    report, a close. Inclusive at the stamp, so a caller can pass back the newest
+    stamp it saw and still receive the item that carried it."""
+    ids = await _three_dated_items(monkeypatch)
+    _, body = await _read_with(CONDUCTOR_A, "since=2026-03-02T10:00:00%2B00:00")
+    assert [r["item_id"] for r in body["items"]] == [ids[1], ids[2]]
+    _, body = await _read_with(CONDUCTOR_A, "since=2026-03-04T00:00:00%2B00:00")
+    assert body["items"] == []
+
+    # A worker report on the OLDEST item moves it into a later window.
+    _dispatched(WORKER_A, CONDUCTOR_A)
+    status, body = await _record(
+        CONDUCTOR_A, {"action": "bind", "item_id": ids[0], "worker_session_key": WORKER_A}
+    )
+    assert status == 200, body
+    monkeypatch.setattr(wl, "_now_iso", lambda: "2026-03-05T10:00:00+00:00")
+    status, body = await _report(WORKER_A, {"status": "progress", "summary": "moving"})
+    assert status == 200, body
+    _, body = await _read_with(CONDUCTOR_A, "since=2026-03-05T00:00:00%2B00:00")
+    assert [r["item_id"] for r in body["items"]] == [ids[0]]
+
+    # And so does a close, on the middle one.
+    monkeypatch.setattr(wl, "_now_iso", lambda: "2026-03-06T10:00:00+00:00")
+    status, body = await _record(
+        CONDUCTOR_A, {"action": "close", "item_id": ids[1], "state": "abandoned", "decision": "x"}
+    )
+    assert status == 200, body
+    _, body = await _read_with(CONDUCTOR_A, "since=2026-03-06T00:00:00%2B00:00")
+    assert [r["item_id"] for r in body["items"]] == [ids[1]]
+    # A stamp with no offset is read as local time, like the store's own reader.
+    _, body = await _read_with(CONDUCTOR_A, "since=2000-01-01T00:00:00")
+    assert len(body["items"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_read_since_the_beginning_of_time_returns_the_whole_board(monkeypatch):
+    """``since=0001-01-01T00:00:00`` is how a caller spells "everything", and
+    ``9999-12-31T23:59:59`` "nothing". Neither may be a 400, and neither may be a
+    500: shifting an extreme naive stamp into the local zone can run off the
+    calendar, which the platform reports as ``ValueError`` / ``OverflowError``, and
+    the read must answer through that. The overflow is also FORCED below, since
+    which end trips depends on the host's zone."""
+    ids = await _three_dated_items(monkeypatch)
+    status, body = await _read_with(CONDUCTOR_A, "since=0001-01-01T00:00:00")
+    assert status == 200, body
+    assert {r["item_id"] for r in body["items"]} == set(ids) and len(body["items"]) == 3
+    status, body = await _read_with(CONDUCTOR_A, "since=9999-12-31T23:59:59")
+    assert status == 200, body
+    assert body["items"] == []
+
+    class _Unshiftable(datetime):
+        def astimezone(self, tz=None):  # type: ignore[override]
+            raise OverflowError("date value out of range")
+
+    real_parse = wl._parse_iso
+    monkeypatch.setattr(
+        wl,
+        "_parse_iso",
+        lambda value: (
+            _Unshiftable(1, 1, 1) if value == "0001-01-01T00:00:00" else real_parse(value)
+        ),
+    )
+    status, body = await _read_with(CONDUCTOR_A, "since=0001-01-01T00:00:00")
+    assert status == 200, body
+    assert {r["item_id"] for r in body["items"]} == set(ids) and len(body["items"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_read_filters_compose_and_leave_the_batch_whole(monkeypatch):
+    ids = await _three_dated_items(monkeypatch)
+    status, body = await _record(
+        CONDUCTOR_A, {"action": "close", "item_id": ids[2], "state": "rejected", "decision": "no"}
+    )
+    assert status == 200, body
+    _, whole = await _read(CONDUCTOR_A)
+    _, body = await _read_with(CONDUCTOR_A, "state=open&since=2026-03-02T00:00:00%2B00:00&events=1")
+    assert [r["item_id"] for r in body["items"]] == [ids[1]]
+    assert len(body["items"][0]["events"]) == 1
+    # The batch is the bar's own document (every OPEN item with a concrete
+    # acceptance) and the row filters do not reach it.
+    assert body["accept_batch"] == whole["accept_batch"]
+    assert {e["id"] for e in body["accept_batch"]["items"]} == {ids[0], ids[1]}
+
+
+@pytest.mark.asyncio
+async def test_read_compact_mode_has_no_events_acceptance_or_batch(monkeypatch):
+    """The patrol read: the columns that decide who moves next, and no document
+    that is large in its own right. Still the store's order, still filterable."""
+    ids = await _three_dated_items(monkeypatch)
+    await _decide_n_times(CONDUCTOR_A, ids[2], 3)
+    status, body = await _read_with(CONDUCTOR_A, "compact=true")
+    assert status == 200, body
+    assert body["compact"] is True
+    assert "accept_batch" not in body
+    assert [r["item_id"] for r in body["items"]] == ids
+    for row in body["items"]:
+        assert set(row) == set(routes._COMPACT_ROW_FIELDS)
+        assert "events" not in row and "acceptance" not in row and "artifacts" not in row
+        # The derived flags ride along: a patrol read must still see a dead worker.
+        assert {"orphaned", "stale", "acceptance_concrete"} <= set(row)
+        assert row["acceptance_concrete"] is True
+        # The trim orders open rows by age, so a compact row must carry it.
+        assert row["created_at"]
+    newest = body["items"][-1]
+    assert newest["decision"] == "decision 2"
+    assert newest["state"] == "open"
+    # Composes with the filters, and the full read carries no ``compact`` key.
+    _, body = await _read_with(CONDUCTOR_A, f"compact=1&item_id={ids[0]}")
+    assert [r["item_id"] for r in body["items"]] == [ids[0]]
+    _, body = await _read_with(CONDUCTOR_A, "compact=false")
+    assert "compact" not in body
+    assert "accept_batch" in body
+    assert "events" in body["items"][0]
+
+
+@pytest.mark.asyncio
+async def test_a_compact_read_shows_a_stale_worker(monkeypatch):
+    """The patrol read the skill recommends is the compact one, and the dead-worker
+    signal is exactly what a patrol is there to notice — so ``stale`` (and its two
+    siblings) are on the compact row, not only on the full one."""
+    ids = await two_by_two()
+    _SLOTS[CONDUCTOR_A] = _Slot()  # the conductor's own slot is open: not orphaned
+    real_is_stale = wl.is_stale
+    monkeypatch.setattr(wl, "is_stale", lambda item, **kw: real_is_stale(item, window_secs=0, **kw))
+    _, body = await _read_with(CONDUCTOR_A, "compact=true")
+    row = next(r for r in body["items"] if r["item_id"] == ids["item_a"])
+    assert row["stale"] is True, "a bound worker whose slot is not running, past the window"
+    assert row["orphaned"] is False
+    assert row["acceptance_concrete"] is True
+    assert "events" not in row and "acceptance" not in row
+    _, full = await _read(CONDUCTOR_A)
+    full_row = next(r for r in full["items"] if r["item_id"] == ids["item_a"])
+    assert (row["stale"], row["orphaned"]) == (full_row["stale"], full_row["orphaned"])
+
+
+@pytest.mark.asyncio
+async def test_read_of_an_item_nested_too_deep_for_the_parser_answers(monkeypatch):
+    """A 20 KB item file of ten thousand nested arrays is under the reader's ceiling
+    and raises ``RecursionError`` from inside ``json.loads`` — before any fit. The
+    store reads it as content it cannot trust, the same as a torn file, so the read
+    answers 200 with the rest of the board; an event line nested as deep, or holding
+    an integer past the interpreter's digit limit (a bare ``ValueError``), is skipped
+    like a torn line and costs none of its neighbours."""
+    ids = await _three_dated_items(monkeypatch)
+    wl.item_path(CONDUCTOR_A, ids[0]).write_text("[" * 10_000 + "]" * 10_000, encoding="utf-8")
+    events_path = wl.item_events_path(CONDUCTOR_A, ids[1])
+    kept = events_path.read_text(encoding="utf-8")
+    events_path.write_text(
+        "[" * 10_000 + "]" * 10_000 + "\n" + "1" * 5_000 + "\n" + kept, encoding="utf-8"
+    )
+    resp = await routes.api_work_ledger_get(_req("GET", "/api/work-ledger", sk=CONDUCTOR_A))
+    assert resp.status == 200
+    body = json.loads(resp.text)
+    assert [r["item_id"] for r in body["items"]] == ids[1:], "the unreadable item is absent"
+    second = body["items"][0]
+    assert second["events"], "the readable event lines survive the unreadable one"
+
+
+@pytest.mark.asyncio
+async def test_read_of_an_open_item_with_a_year_one_stamp_answers(monkeypatch):
+    """An open, bound item whose hand-edited ``created_at`` is ``0001-01-01T00:00:00``
+    reaches ``is_stale`` before the fit; shifting that stamp into the local zone runs
+    off the calendar. It reads as UTC instead, so the read answers 200 and the item
+    is stale (year one is long past the window), never a 500."""
+    ids = await two_by_two()
+    item_path = wl.item_path(CONDUCTOR_A, ids["item_a"])
+    stored = json.loads(item_path.read_text(encoding="utf-8"))
+    stored["created_at"] = "0001-01-01T00:00:00"
+    stored["last_report_at"] = None
+    item_path.write_text(json.dumps(stored), encoding="utf-8")
+    resp = await routes.api_work_ledger_get(_req("GET", "/api/work-ledger", sk=CONDUCTOR_A))
+    assert resp.status == 200
+    row = next(r for r in json.loads(resp.text)["items"] if r["item_id"] == ids["item_a"])
+    assert row["stale"] is True
+    assert row["created_at"] == "0001-01-01T00:00:00"
+
+
+def test_the_schema_ceiling_restates_the_route_caps():
+    """``validation`` cannot import the handler, so the ``events`` ceiling is
+    spelled twice; this is what keeps the two spellings one number."""
+    events = next(f for f in validation.WORK_LEDGER_READ_SCHEMA.fields if f.name == "events")
+    assert events.max_val == routes._MAX_EVENT_TAIL
+    assert events.min_val == 0
+    assert routes._MAX_EVENT_TAIL <= wl.MAX_EVENTS_PER_ITEM
+    state = next(f for f in validation.WORK_LEDGER_READ_SCHEMA.fields if f.name == "state")
+    assert state.allowed == wl.ITEM_STATES
+    item_id = next(f for f in validation.WORK_LEDGER_READ_SCHEMA.fields if f.name == "item_id")
+    assert item_id.pattern is not None and item_id.pattern.pattern == wl._ITEM_ID_RE.pattern
+
+
+# ── a done names its evidence ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_done_with_no_evidence_is_refused_and_writes_nothing():
+    ids = await two_by_two()
+    before = wl.item_path(CONDUCTOR_A, ids["item_a"]).read_bytes()
+    status, body = await _report(WORKER_A, {"status": "done", "summary": "all tests pass"})
+    assert status == 400
+    assert body["code"] == "done_without_evidence"
+    assert body["field"] == "artifacts"
+    assert "not run" in body["error"]
+    assert wl.item_path(CONDUCTOR_A, ids["item_a"]).read_bytes() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        {"artifacts": {"tests": "pytest test/test_x.py exit=0"}},
+        {"artifacts": {"tests": "not run: harness unavailable"}},
+        {"pr": 42},
+    ],
+)
+async def test_a_done_with_one_pointer_is_recorded(evidence):
+    ids = await two_by_two()
+    status, body = await _report(WORKER_A, {"status": "done", "summary": "met", **evidence})
+    assert status == 200, body
+    item = wl.read_work_item(CONDUCTOR_A, ids["item_a"])
+    assert item is not None and item.status == "done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_value", ["progress", "blocked", "question"])
+async def test_only_done_needs_evidence(status_value):
+    await two_by_two()
+    status, body = await _report(WORKER_A, {"status": status_value, "summary": "still going"})
+    assert status == 200, body

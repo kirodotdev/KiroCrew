@@ -1,0 +1,1337 @@
+"""TaskStore: write-before-ack, journal mode selection, reads and the event log."""
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+import pytest
+from overload_fakes import Clock, open_task_store
+
+from kiro_crew.taskq import migrate, model
+from kiro_crew.taskq.store import (
+    TaskStore,
+    TaskStoreUnavailable,
+    detect_network_filesystem,
+)
+
+
+def _rec(task_id: str, **kw) -> model.TaskRecord:
+    kw.setdefault("kind", model.KIND_SUBAGENT)
+    kw.setdefault("params", {"task": f"task {task_id}"})
+    return model.TaskRecord(id=task_id, **kw)
+
+
+@pytest.fixture
+def clock() -> Clock:
+    return Clock()
+
+
+@pytest.fixture
+def store(tmp_path: Path, clock: Clock) -> TaskStore:
+    yield from open_task_store(tmp_path, clock, name="tasks/tasks.db", window=4)
+
+
+# ── open / schema / journal ───────────────────────────────────────────────────
+
+
+def test_open_creates_file_wal_and_schema(store: TaskStore, tmp_path: Path) -> None:
+    assert (tmp_path / "tasks" / "tasks.db").exists()
+    assert store.journal_mode == "wal"
+    conn = sqlite3.connect(str(store.path))
+    try:
+        assert migrate.read_schema_version(conn) == migrate.SCHEMA_VERSION
+        tables = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"  # wokeignore:rule=master
+            )
+        }
+    finally:
+        conn.close()
+    assert {"tasks", "task_events", "meta"} <= tables
+    assert store.warnings == []
+
+
+def test_network_filesystem_uses_delete_journal_and_warns(tmp_path: Path) -> None:
+    s = TaskStore(tmp_path / "t.db", network_fs=True).open()
+    try:
+        assert s.journal_mode == "delete"
+        assert any("network filesystem" in w for w in s.warnings)
+        assert any("journal_mode=DELETE" in w for w in s.warnings)
+        # still fully functional: never refuses
+        assert s.accept([_rec("a")]) == ["a"]
+        assert any("journal_mode=delete" in line for line in s.doctor_lines())
+    finally:
+        s.close()
+
+
+def test_detect_network_filesystem_on_tmp_is_not_true(tmp_path: Path) -> None:
+    verdict = detect_network_filesystem(tmp_path)
+    assert verdict in (False, None)
+
+
+def test_detect_network_filesystem_recognizes_linux_mount_table(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from kiro_crew.taskq import store as store_mod
+
+    monkeypatch.setattr(store_mod.sys, "platform", "linux")
+    monkeypatch.setattr(store_mod, "_linux_mount_type", lambda p: "nfs4")
+    assert detect_network_filesystem(tmp_path) is True
+    monkeypatch.setattr(store_mod, "_linux_mount_type", lambda p: "ext4")
+    assert detect_network_filesystem(tmp_path) is False
+    monkeypatch.setattr(store_mod, "_linux_mount_type", lambda p: None)
+    assert detect_network_filesystem(tmp_path) is None
+
+
+@pytest.mark.parametrize("verdict", [True, False, None])
+def test_detect_network_filesystem_asks_the_windows_volume_type(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, verdict: bool | None
+) -> None:
+    """Windows has no mount table, so the volume root's drive type is the source.
+
+    An unclassifiable volume stays unknown rather than becoming a mode choice.
+    """
+    from kiro_crew.taskq import store as store_mod
+
+    monkeypatch.setattr(store_mod.sys, "platform", "win32")
+    monkeypatch.setattr(
+        store_mod.platform_compat, "path_volume_is_remote", lambda p: verdict, raising=True
+    )
+    assert detect_network_filesystem(tmp_path) is verdict
+
+
+def test_a_windows_network_home_uses_delete_journal_and_warns(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """End to end through the shipped default (``auto``, i.e. ``network_fs=None``)."""
+    from kiro_crew.taskq import store as store_mod
+
+    monkeypatch.setattr(store_mod.sys, "platform", "win32")
+    monkeypatch.setattr(store_mod.platform_compat, "path_volume_is_remote", lambda p: True)
+    s = TaskStore(tmp_path / "t.db").open()
+    try:
+        assert s.journal_mode == "delete"
+        assert any("network filesystem" in w for w in s.warnings)
+        assert s.accept([_rec("a")]) == ["a"]
+    finally:
+        s.close()
+
+
+def test_a_windows_local_volume_keeps_wal(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from kiro_crew.taskq import store as store_mod
+
+    monkeypatch.setattr(store_mod.sys, "platform", "win32")
+    monkeypatch.setattr(store_mod.platform_compat, "path_volume_is_remote", lambda p: False)
+    s = TaskStore(tmp_path / "t.db").open()
+    try:
+        assert s.journal_mode == "wal"
+        assert s.warnings == []
+    finally:
+        s.close()
+
+
+def test_an_undecidable_volume_takes_delete_rather_than_guessing_local(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The detector has THREE answers and None is not False.
+
+    Every detection failure answers None -- an unreadable ``/proc/mounts``, a
+    ``statfs`` that raised, a Windows volume root that would not report its drive
+    type -- and the environment where that is most likely is the network volume
+    the DELETE branch exists for. Reading None as "local" keeps WAL there, whose
+    shared-memory assumption SMB/NFS does not honour, so the store the queue
+    depends on is the thing at risk. DELETE is slower and correct everywhere.
+    """
+    from kiro_crew.taskq import store as store_mod
+
+    monkeypatch.setattr(store_mod.sys, "platform", "win32")
+    monkeypatch.setattr(store_mod.platform_compat, "path_volume_is_remote", lambda p: None)
+    assert detect_network_filesystem(tmp_path) is None, "the premise: the volume is undecidable"
+    s = TaskStore(tmp_path / "t.db").open()
+    try:
+        assert s.journal_mode == "delete"
+        said = " ".join(s.warnings)
+        # The warning has to carry BOTH halves or it is not actionable: why the
+        # slow mode was chosen, and the one key that overrides it.
+        assert "could not tell" in said, said
+        assert "agent.task_store_journal_mode=wal" in said, said
+        # ...and the store still works in that mode, which is the whole point of
+        # preferring it to a guess.
+        assert s.accept([_rec("a")]) == ["a"]
+        assert s.claim("a") is not None
+    finally:
+        s.close()
+
+
+def test_an_explicit_wal_override_still_wins_on_an_undecidable_volume(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Fail-safe must not become a trap: an operator who KNOWS the disk is local
+    keeps the fast mode, and the detector is not consulted at all."""
+    from kiro_crew.taskq import store as store_mod
+
+    asked: list[Path] = []
+
+    def _undecidable(p: Path) -> None:
+        asked.append(p)
+        return None
+
+    monkeypatch.setattr(store_mod.sys, "platform", "win32")
+    monkeypatch.setattr(store_mod.platform_compat, "path_volume_is_remote", _undecidable)
+    s = TaskStore(tmp_path / "t.db", network_fs=False).open()
+    try:
+        assert s.journal_mode == "wal"
+        assert asked == []
+        assert s.warnings == []
+    finally:
+        s.close()
+
+
+@pytest.mark.parametrize("remote", [True, False])
+def test_the_journal_mode_override_wins_over_the_windows_volume_type(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, remote: bool
+) -> None:
+    """``agent.task_store_journal_mode`` forces the mode and skips detection."""
+    from kiro_crew.taskq import store as store_mod
+
+    asked: list[Path] = []
+
+    def _classify(p: Path) -> bool:
+        asked.append(p)
+        return remote
+
+    monkeypatch.setattr(store_mod.sys, "platform", "win32")
+    monkeypatch.setattr(store_mod.platform_compat, "path_volume_is_remote", _classify)
+    forced = TaskStore(tmp_path / "forced.db", network_fs=True).open()
+    kept = TaskStore(tmp_path / "kept.db", network_fs=False).open()
+    try:
+        assert forced.journal_mode == "delete"
+        assert kept.journal_mode == "wal"
+        assert asked == []
+    finally:
+        forced.close()
+        kept.close()
+
+
+def test_reopen_records_previous_incarnation(tmp_path: Path) -> None:
+    path = tmp_path / "t.db"
+    first = TaskStore(path, network_fs=False).open()
+    first_id = first.incarnation
+    first.close()
+    second = TaskStore(path, network_fs=False).open()
+    try:
+        assert second.previous_incarnation == first_id
+        assert second.incarnation != first_id
+    finally:
+        second.close()
+
+
+def test_apply_schema_is_one_shape_and_idempotent(tmp_path: Path) -> None:
+    """One ``CREATE IF NOT EXISTS`` set at ``SCHEMA_VERSION``: a fresh file gets
+    the whole current shape (``wait_json``, ``lane``, both indexes) and a second
+    apply changes nothing."""
+    conn = sqlite3.connect(str(tmp_path / "fresh.db"))
+    assert migrate.SCHEMA_VERSION == 1, "the first upgrade step bumps this and adds itself"
+    assert migrate.apply_schema(conn) == migrate.SCHEMA_VERSION
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
+    assert {"wait_json", "lane"} <= cols
+    indexes = {r[1] for r in conn.execute("PRAGMA index_list(tasks)")}
+    assert {"tasks_parent", "tasks_lane", "tasks_dispatch", "tasks_idempotency"} <= indexes
+    assert migrate.read_schema_version(conn) == migrate.SCHEMA_VERSION
+    before = conn.execute(
+        "SELECT sql FROM sqlite_master ORDER BY name"  # wokeignore:rule=master
+    ).fetchall()
+    assert migrate.apply_schema(conn) == migrate.SCHEMA_VERSION
+    after = conn.execute(
+        "SELECT sql FROM sqlite_master ORDER BY name"  # wokeignore:rule=master
+    ).fetchall()
+    assert after == before
+    conn.close()
+
+
+def test_newer_schema_version_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "t.db"
+    conn = sqlite3.connect(str(path))
+    conn.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    conn.execute("INSERT INTO meta VALUES('schema_version', '99')")
+    conn.commit()
+    conn.close()
+    with pytest.raises(TaskStoreUnavailable):
+        TaskStore(path, network_fs=False).open()
+
+
+def test_unopenable_path_raises_typed_error(tmp_path: Path) -> None:
+    blocker = tmp_path / "file"
+    blocker.write_text("x", encoding="utf-8")
+    with pytest.raises(TaskStoreUnavailable):
+        TaskStore(blocker / "tasks.db", network_fs=False).open()
+
+
+# ── accept: write-before-ack ──────────────────────────────────────────────────
+
+
+def test_accept_returns_ids_only_after_commit(store: TaskStore, clock: Clock) -> None:
+    ids = store.accept([_rec("a"), _rec("b")])
+    assert ids == ["a", "b"]
+    assert store.count(state=model.QUEUED) == 2
+    got = store.get("a")
+    assert got is not None and got.created_at == clock.t and got.state == model.QUEUED
+    assert [e.kind for e in store.events("a")] == ["accepted"]
+
+
+class _FailingConn:
+    """Forwards to a real connection, but the Nth ``INSERT INTO tasks`` fails."""
+
+    def __init__(self, real: sqlite3.Connection, fail_on_insert: int) -> None:
+        self._real = real
+        self._fail_on = fail_on_insert
+        self._inserts = 0
+
+    def execute(self, sql: str, *args):  # type: ignore[no-untyped-def]
+        if sql.lstrip().upper().startswith("INSERT INTO TASKS"):
+            self._inserts += 1
+            if self._inserts == self._fail_on:
+                raise sqlite3.OperationalError("disk I/O error")
+        return self._real.execute(sql, *args)
+
+    def __getattr__(self, name: str):  # type: ignore[no-untyped-def]
+        return getattr(self._real, name)
+
+
+def test_accept_write_failure_raises_and_commits_nothing(store: TaskStore) -> None:
+    real = store._conn
+    assert real is not None
+    store._conn = _FailingConn(real, fail_on_insert=2)  # type: ignore[assignment]
+    with pytest.raises(TaskStoreUnavailable):
+        store.accept([_rec("ok1"), _rec("boom")])
+    store._conn = real
+    # the whole batch rolled back: not even the first row is there
+    assert store.count() == 0
+    assert store.get("ok1") is None
+    # and the store is still usable afterwards
+    assert store.accept([_rec("after")]) == ["after"]
+
+
+def test_accept_duplicate_id_is_a_refusal_not_an_ack(store: TaskStore) -> None:
+    store.accept([_rec("dup")])
+    with pytest.raises(TaskStoreUnavailable):
+        store.accept([_rec("dup")])
+    assert store.count() == 1
+
+
+def test_accept_rejects_non_claimable_initial_state(store: TaskStore) -> None:
+    with pytest.raises(TaskStoreUnavailable):
+        store.accept([_rec("r", state=model.RUNNING)])
+    assert store.count() == 0
+
+
+def test_idempotency_key_is_unique_when_present(store: TaskStore) -> None:
+    store.accept([_rec("k1", idempotency_key="key")])
+    with pytest.raises(TaskStoreUnavailable):
+        store.accept([_rec("k2", idempotency_key="key")])
+    # NULL keys never collide
+    store.accept([_rec("n1"), _rec("n2")])
+    assert store.count() == 3
+
+
+def test_insert_if_absent_is_idempotent(store: TaskStore) -> None:
+    assert store.insert_if_absent(_rec("i", state=model.RECOVERING)) is True
+    assert store.insert_if_absent(_rec("i", state=model.QUEUED)) is False
+    got = store.get("i")
+    assert got is not None and got.state == model.RECOVERING
+    assert [e.kind for e in store.events("i")] == ["imported"]
+
+
+def test_locked_database_is_reported_not_hung(tmp_path: Path) -> None:
+    """A writer holding the lock past the busy timeout makes accept() refuse."""
+    path = tmp_path / "t.db"
+    s = TaskStore(path, network_fs=False, busy_timeout_secs=0.05).open()
+    try:
+        other = sqlite3.connect(str(path), isolation_level=None)
+        other.execute("BEGIN IMMEDIATE")
+        other.execute("INSERT INTO meta VALUES('hold', 'x')")
+        with pytest.raises(TaskStoreUnavailable):
+            s.accept([_rec("a")])
+        other.execute("ROLLBACK")
+        other.close()
+        assert s.accept([_rec("a")]) == ["a"]
+    finally:
+        s.close()
+
+
+# ── defer / reads / window helpers ────────────────────────────────────────────
+
+
+def test_next_eligible_at_is_a_wake_only_for_rows_time_holds(
+    store: TaskStore, clock: Clock
+) -> None:
+    """The wake is when a row the dispatch reads may claim, and could not,
+    becomes claimable. A row with no deferral and no lease is no wake: read as
+    "due at 0" it re-armed an empty pump pass on every loop turn."""
+    store.accept([_rec("fresh")])
+    assert store.next_eligible_at(model.KIND_SUBAGENT) is None
+
+    store.accept([_rec("root"), _rec("child", parent_id="root")])
+    store.defer("root", wait=10, reason="low memory")
+    store.defer("child", wait=20, reason="low memory")
+    assert store.next_eligible_at(model.KIND_SUBAGENT) == clock.t + 10
+    assert store.next_eligible_at(model.KIND_SUBAGENT, exclude_ids=["root"]) == clock.t + 20
+    assert store.next_eligible_at(model.KIND_SUBAGENT, children_only=True) == clock.t + 20
+    assert store.next_eligible_at(model.KIND_SUBAGENT, exclude_ids=["root", "child"]) is None
+
+    # A leased row is claimable once both its deferral and its lease are past.
+    store.insert_if_absent(
+        _rec(
+            "leased", state=model.RECOVERING, next_run_at=clock.t + 1, lease_expires_at=clock.t + 5
+        )
+    )
+    assert store.next_eligible_at(model.KIND_SUBAGENT) == clock.t + 5
+
+
+def test_defer_keeps_row_queued_but_ineligible_until_clock_passes(
+    store: TaskStore, clock: Clock
+) -> None:
+    store.accept([_rec("d")])
+    assert store.defer("d", wait=30, reason="low memory") is True
+    assert store.state_of("d") == model.QUEUED
+    assert store.fetch_dispatchable(model.KIND_SUBAGENT, limit=10) == []
+    assert store.count_pending(model.KIND_SUBAGENT) == 1
+    assert store.count_pending(model.KIND_SUBAGENT, eligible_only=True) == 0
+    assert store.next_eligible_at(model.KIND_SUBAGENT) == clock.t + 30
+    clock.t += 31
+    assert [r.id for r in store.fetch_dispatchable(model.KIND_SUBAGENT, limit=10)] == ["d"]
+    assert [e.kind for e in store.events("d")] == ["accepted", "deferred"]
+
+
+def test_expedite_ends_a_deferral_early_and_writes_no_event(store: TaskStore, clock: Clock) -> None:
+    """The memory wake's store half: a parked row is eligible now, nothing else moves."""
+    kind = model.KIND_SUBAGENT
+    store.accept([_rec("parked"), _rec("ready"), _rec("ran")])
+    store.defer("parked", wait=30, reason="low memory")
+    assert store.claim("ran") is not None
+    clock.t += 10
+    assert store.expedite(["parked", "ready", "ran", "absent"]) == 1
+    assert [r.id for r in store.fetch_dispatchable(kind, limit=10)] == ["parked", "ready"]
+    assert [e.kind for e in store.events("parked")] == ["accepted", "deferred"]
+    assert store.state_of("ran") == model.ADMITTED
+    # Brought forward, it is not parked now, so the max wait does not count it;
+    # 10 s of its first park count once it is parked again.
+    assert store.deferred_longer_than(kind, 1) == []
+    store.defer("parked", wait=30, reason="low memory")
+    clock.t += 25
+    assert [r.id for r in store.deferred_longer_than(kind, 35)] == ["parked"]
+    assert store.deferred_longer_than(kind, 36) == []
+    assert store.expedite([]) == 0
+
+
+def test_a_row_parked_again_after_an_expedite_is_charged_the_gap(
+    store: TaskStore, clock: Clock
+) -> None:
+    """The bound on what an expedite leaves counted: the gap up to the re-park,
+    never past the old deferral's end."""
+    kind = model.KIND_SUBAGENT
+    store.accept([_rec("late"), _rec("later")])
+    t0 = clock.t
+    store.defer("late", wait=30, reason="low memory")
+    store.defer("later", wait=30, reason="low memory")
+    clock.t = t0 + 10
+    assert store.expedite(["late", "later"]) == 2
+    # Re-parked 10 s after the expedite, inside the old deferral: charged.
+    clock.t = t0 + 20
+    store.defer("late", wait=40, reason="low memory")
+    # Re-parked past the old deferral's end: charged only up to it.
+    clock.t = t0 + 40
+    store.defer("later", wait=30, reason="low memory")
+    clock.t = t0 + 41
+    # late: 20 (t0..t0+20) + 21 = 41; later: 30 (t0..t0+30) + 1 = 31.
+    assert [r.id for r in store.deferred_longer_than(kind, 41)] == ["late"]
+    assert [r.id for r in store.deferred_longer_than(kind, 31)] == ["late", "later"]
+    assert store.deferred_longer_than(kind, 42) == []
+
+
+def test_deferred_longer_than_counts_the_time_a_row_was_parked(
+    store: TaskStore, clock: Clock
+) -> None:
+    """The memory wait's max-wait read: a re-check does not restart the clock, a
+    claim does, a deferral that lapsed is not a wait any more, and the time a
+    row spent eligible between two deferrals (queued for a slot) is not counted."""
+    kind = model.KIND_SUBAGENT
+    store.accept([_rec("w"), _rec("fresh"), _rec("lapsed"), _rec("slot")])
+    for rid in ("w", "lapsed", "slot"):
+        store.defer(rid, wait=30, reason="low memory")
+    clock.t += 30
+    store.defer("w", wait=30, reason="low memory")  # a re-check, same wait
+    store.defer("fresh", wait=30, reason="low memory")
+    clock.t += 10  # "lapsed" and "slot" are eligible again; "w" is still parked
+    assert [r.id for r in store.deferred_longer_than(kind, 40)] == ["w"]
+    assert store.deferred_longer_than(kind, 41) == []
+    both = store.deferred_longer_than(kind, 10)
+    assert sorted(r.id for r in both) == ["fresh", "w"]
+    assert store.deferred_longer_than(kind, 10, exclude_ids=["w", "fresh"]) == []
+    # "slot" queued 600 s for a slot after its deferral lapsed, then is parked
+    # again: only its 30 + 5 s parked count, not the 610 s since it was first.
+    clock.t += 600
+    store.defer("slot", wait=30, reason="low memory")
+    clock.t += 5
+    assert "slot" not in [r.id for r in store.deferred_longer_than(kind, 36)]
+    assert "slot" in [r.id for r in store.deferred_longer_than(kind, 35)]
+    # A claim ends the wait; a deferral after the re-queue starts a new one.
+    claimed = store.claim("w")
+    assert claimed is not None
+    assert store.transition("w", model.QUEUED, generation=claimed.generation)
+    clock.t += 5
+    store.defer("w", wait=30, reason="low memory")
+    clock.t += 3
+    assert "w" not in [r.id for r in store.deferred_longer_than(kind, 4)]
+    assert "w" in [r.id for r in store.deferred_longer_than(kind, 3)]
+
+
+def test_deferred_longer_than_bounds_every_state_defer_parks(
+    store: TaskStore, clock: Clock
+) -> None:
+    """A restart survivor (``recovering``) or a retried run (``retry_wait``) the
+    memory gates keep deferring is bounded like a ``queued`` row; a ``retry_wait``
+    row merely in its backoff (never deferred) is not a memory wait."""
+    kind = model.KIND_SUBAGENT
+    store.insert_if_absent(_rec("rec", state=model.RECOVERING))
+    store.insert_if_absent(_rec("retry", state=model.RETRY_WAIT, attempts=1))
+    store.insert_if_absent(
+        _rec("backoff", state=model.RETRY_WAIT, attempts=1, next_run_at=clock.t + 600)
+    )
+    for rid in ("rec", "retry"):
+        assert store.defer(rid, wait=60, reason="low memory") is True
+    clock.t += 50
+    assert sorted(r.id for r in store.deferred_longer_than(kind, 50)) == ["rec", "retry"]
+    assert store.deferred_longer_than(kind, 51) == []
+    expired = store.deferred_longer_than(kind, 50)[0]
+    assert store.finish(expired.id, model.FAILED, generation=expired.generation, error="x")
+    assert store.state_of(expired.id) == model.FAILED
+
+
+def test_an_owed_report_outlives_the_process_that_owed_it(
+    store: TaskStore, clock: Clock, tmp_path: Path
+) -> None:
+    """``finish(report_owed=True)`` leaves the row named by ``owed_reports`` -- in
+    a LATER incarnation only -- until ``mark_reported`` clears it."""
+    kind = model.KIND_SUBAGENT
+    store.accept([_rec("owed"), _rec("plain"), _rec("cleared")])
+    assert store.finish("owed", model.FAILED, error="x", report_owed=True)
+    assert store.finish("plain", model.FAILED, error="x")
+    assert store.finish("cleared", model.FAILED, error="x", report_owed=True)
+    store.mark_reported("cleared")
+    # Its own incarnation's rows are in flight in this process, never named.
+    assert store.owed_reports(kind) == []
+    # A refused finish owes nothing: the row is already terminal.
+    assert store.finish("plain", model.FAILED, error="x", report_owed=True) is False
+    store.close()
+    later = TaskStore(store.path, window=4, clock=clock, network_fs=False).open()
+    try:
+        assert [r.id for r in later.owed_reports(kind)] == ["owed"]
+        assert later.owed_reports(model.KIND_CRON) == []
+        later.mark_reported("owed")
+        assert later.owed_reports(kind) == []
+    finally:
+        later.close()
+
+
+def test_owed_reports_pages_after_a_cursor(store: TaskStore, clock: Clock) -> None:
+    """``after`` names only the rows ordered after the previous page's last one, so
+    a reader pages through every owed row, ties on ``updated_at`` included, and
+    never re-reads one whose ``reported`` clear has not landed. Accepted out of
+    id order, so insertion (``rowid``) order would break each tie the other way."""
+    kind = model.KIND_SUBAGENT
+    store.accept([_rec("b"), _rec("a"), _rec("d"), _rec("c")])
+    for task_id in ("b", "a"):  # one tick: a tie broken by id
+        assert store.finish(task_id, model.FAILED, error="x", report_owed=True)
+    clock.advance(1.0)
+    for task_id in ("d", "c"):
+        assert store.finish(task_id, model.FAILED, error="x", report_owed=True)
+    store.close()
+    later = TaskStore(store.path, window=4, clock=clock, network_fs=False).open()
+    try:
+        first = later.owed_reports(kind, limit=3)
+        assert [r.id for r in first] == ["a", "b", "c"]
+        cursor = (first[-1].updated_at, first[-1].id)
+        assert [r.id for r in later.owed_reports(kind, limit=3, after=cursor)] == ["d"]
+        mid = (first[0].updated_at, first[0].id)
+        assert [r.id for r in later.owed_reports(kind, after=mid)] == ["b", "c", "d"]
+    finally:
+        later.close()
+
+
+def test_defer_on_terminal_row_is_a_noop(store: TaskStore, clock: Clock) -> None:
+    store.accept([_rec("t")])
+    assert store.cancel("t") == model.QUEUED
+    assert store.defer("t", wait=5, reason="x") is False
+
+
+def test_conditional_cancel_refuses_a_row_that_left_the_callers_states(
+    store: TaskStore,
+) -> None:
+    """``only_from`` is tested INSIDE the cancel's transaction, so a caller whose
+    decision came from an earlier read cannot cancel a row that moved on."""
+    store.accept([_rec("c1")])
+    claimed = store.claim("c1")
+    assert claimed is not None
+    assert store.transition("c1", model.STARTING) and store.transition("c1", model.RUNNING)
+    assert store.cancel("c1", reason="stop", only_from=model.PARKED) is None
+    assert store.state_of("c1") == model.RUNNING
+    assert [e.kind for e in store.events("c1")][-1] == "rejected_transition"
+    assert store.events("c1")[-1].data == {"from": model.RUNNING, "to": model.CANCELLED}
+    # The row's own owner still settles it: the refusal left the generation alone.
+    assert store.finish("c1", model.DONE, generation=claimed.generation) is True
+    assert store.state_of("c1") == model.DONE
+
+
+def test_conditional_cancel_refuses_a_stale_generation(store: TaskStore, clock: Clock) -> None:
+    """A row still in an acceptable state, under a NEW generation, is another
+    attempt: the cancel the caller asked for was for the one it read."""
+    store.accept([_rec("c2")])
+    first = store.claim("c2")
+    assert first is not None
+    assert store.transition("c2", model.STARTING)
+    assert store.transition("c2", model.RETRY_WAIT, next_run_at=clock.t)
+    second = store.claim("c2")  # a re-dispatch: same claimable state, generation+1
+    assert second is not None and second.generation > first.generation
+    assert store.transition("c2", model.STARTING)
+    assert store.transition("c2", model.RETRY_WAIT, next_run_at=clock.t)
+    assert (
+        store.cancel("c2", reason="stop", only_from=model.PARKED, generation=first.generation)
+        is None
+    )
+    assert store.state_of("c2") == model.RETRY_WAIT
+    assert store.events("c2")[-1].kind == "stale_result"
+    assert store.events("c2")[-1].data == {
+        "from_generation": first.generation,
+        "current": second.generation,
+        "wanted": model.CANCELLED,
+    }
+    # Under the generation the row actually carries, the same call cancels.
+    assert (
+        store.cancel("c2", reason="stop", only_from=model.PARKED, generation=second.generation)
+        == model.RETRY_WAIT
+    )
+    assert store.state_of("c2") == model.CANCELLED
+
+
+def test_the_conditional_cancels_predicate_rides_in_the_write_not_in_a_python_test(
+    store: TaskStore,
+) -> None:
+    """The refusal is the UPDATE matching no row, never a test over an earlier read.
+
+    A guard that reads the row and then writes unconditionally satisfies every
+    other assertion in this file: both refusal tests above move the row before
+    ``cancel`` is entered, so a predicate hoisted OUT of the transaction still
+    answers None for them. The window this route exists to close is narrower than
+    that -- the row moving between the store's own read and its own write -- so the
+    interleaving is fired from inside the transaction, on the same connection, past
+    both Python guards. ``self._lock`` and ``BEGIN IMMEDIATE``'s RESERVED lock
+    cannot mask it there, which leaves the statement's own
+    ``WHERE state=? AND generation=?`` as the only thing that can refuse.
+    """
+    store.accept([_rec("c3")])
+    claimed = store.claim("c3")
+    assert claimed is not None
+    assert store.transition("c3", model.STARTING)
+    assert store.transition("c3", model.RETRY_WAIT, next_run_at=0.0)
+    parked_generation = claimed.generation
+
+    real_c = store._c
+    fired: list[str] = []
+
+    def _take_the_row_live(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            "UPDATE tasks SET state=?, generation=? WHERE id=?",
+            (model.RUNNING, parked_generation + 1, "c3"),
+        )
+
+    class _InterleavingConn:
+        """Forwards everything, and fires the mutation once, right after the
+        in-transaction row read returns."""
+
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            self._conn = conn
+
+        def execute(self, sql: str, *a: object, **kw: object) -> object:
+            cur = self._conn.execute(sql, *a, **kw)
+            if not fired and sql.startswith("SELECT state") and "FROM tasks" in sql:
+                fired.append(sql)
+                rows = cur.fetchall()
+                _take_the_row_live(self._conn)
+
+                class _Replay:
+                    def fetchone(self) -> object:
+                        return rows[0] if rows else None
+
+                    def fetchall(self) -> object:
+                        return rows
+
+                return _Replay()
+            return cur
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._conn, name)
+
+    store._c = lambda: _InterleavingConn(real_c())  # type: ignore[method-assign,return-value]
+    try:
+        answer = store.cancel(
+            "c3", reason="stop", only_from=model.PARKED, generation=parked_generation
+        )
+    finally:
+        store._c = real_c  # type: ignore[method-assign]
+
+    assert fired, "the interleaving never ran, so this pin exercised nothing"
+    assert answer is None
+    live = store.get("c3")
+    assert live is not None and live.state == model.RUNNING
+    assert live.generation == parked_generation + 1
+
+
+def _park(store: TaskStore, task_id: str, state: str, clock: Clock) -> int:
+    """Claim *task_id*, take it to ``running`` and park it in *state*; the
+    generation the wait carries."""
+    claimed = store.claim(task_id)
+    assert claimed is not None
+    assert store.transition(task_id, model.STARTING)
+    assert store.transition(task_id, model.RUNNING)
+    assert store.enter_wait(
+        task_id,
+        {"state": state, "reason": "parked", "since": clock.t, "resume_condition": {}},
+        generation=claimed.generation,
+    )
+    return claimed.generation
+
+
+def test_a_wake_only_ends_the_wait_its_caller_named(store: TaskStore, clock: Clock) -> None:
+    """``only_from`` narrows the wake to the ONE question the answer answers.
+
+    A wake carries an answer, and the four waits are four different questions:
+    without the predicate an answer to an input question ends whatever wait the
+    row is in by the time the write lands -- a dependency wait whose scope has
+    not recovered, left claimable with nothing satisfied.
+    """
+    store.accept([_rec("w1")])
+    generation = _park(store, "w1", model.WAITING_DEPENDENCY, clock)
+    assert (
+        store.wake_wait(
+            "w1",
+            reason="input answered",
+            generation=generation,
+            only_from=frozenset({model.WAITING_INPUT}),
+        )
+        is None
+    )
+    assert store.state_of("w1") == model.WAITING_DEPENDENCY
+    assert store.get("w1") is not None and store.get("w1").wait is not None
+    assert store.events("w1")[-1].kind == "rejected_transition"
+    assert store.events("w1")[-1].data == {
+        "from": model.WAITING_DEPENDENCY,
+        "to": model.RETRY_WAIT,
+    }
+    # The wait this row IS in still ends under its own name.
+    assert (
+        store.wake_wait(
+            "w1",
+            reason="scope recovered",
+            generation=generation,
+            only_from=frozenset({model.WAITING_DEPENDENCY}),
+        )
+        == generation + 1
+    )
+    assert store.state_of("w1") == model.RETRY_WAIT
+
+
+def test_a_wake_predicate_can_only_tighten_the_waiting_fence(
+    store: TaskStore, clock: Clock
+) -> None:
+    """``only_from`` intersects the WAITING set, so no caller can widen the wake
+    onto a state that holds no wait record."""
+    store.accept([_rec("w2")])
+    claimed = store.claim("w2")
+    assert claimed is not None
+    assert store.transition("w2", model.STARTING)
+    assert store.transition("w2", model.RUNNING)
+    assert store.wake_wait("w2", reason="answered", only_from=frozenset({model.RUNNING})) is None
+    assert store.state_of("w2") == model.RUNNING
+    # And with no predicate at all the default fence is unchanged.
+    store.accept([_rec("w3")])
+    generation = _park(store, "w3", model.WAITING_CHILDREN, clock)
+    assert store.wake_wait("w3", reason="children done") == generation + 1
+
+
+def test_unconditional_cancel_still_ends_every_non_terminal_state(store: TaskStore) -> None:
+    """The Stop-all cascade and the boot sweeps mean "from anywhere": passing no
+    predicate keeps that, including the two states ``PARKED`` excludes."""
+    for state in (model.STARTING, model.RUNNING):
+        task_id = f"any-{state}"
+        store.accept([_rec(task_id)])
+        assert store.claim(task_id) is not None
+        assert store.transition(task_id, model.STARTING)
+        if state == model.RUNNING:
+            assert store.transition(task_id, model.RUNNING)
+        assert store.cancel(task_id, reason="stop all") == state
+        assert store.state_of(task_id) == model.CANCELLED
+
+
+def test_fetch_dispatchable_is_fifo_and_excludes_window_ids(store: TaskStore, clock: Clock) -> None:
+    for i in range(6):
+        clock.t += 1
+        store.accept([_rec(f"r{i}")])
+    got = store.fetch_dispatchable(model.KIND_SUBAGENT, limit=3, exclude_ids=["r0", "r2"])
+    assert [r.id for r in got] == ["r1", "r3", "r4"]
+    assert store.count_pending(model.KIND_SUBAGENT, exclude_ids=["r0", "r2"]) == 4
+
+
+def test_pending_by_batch_and_session_filters(store: TaskStore) -> None:
+    store.accept(
+        [
+            _rec("b1", session_key="s1", params={"batch_id": "w"}),
+            _rec("b2", session_key="s2", params={"batch_id": "w"}),
+            _rec("b3", session_key="s1", params={"batch_id": "z"}),
+        ]
+    )
+    assert {r.id for r in store.fetch_pending_by_batch(model.KIND_SUBAGENT, "w")} == {"b1", "b2"}
+    assert [r.id for r in store.list_pending(model.KIND_SUBAGENT, session_key="s1")] == [
+        "b1",
+        "b3",
+    ]
+    assert store.count_pending(model.KIND_SUBAGENT, session_key="s2") == 1
+
+
+def test_list_pending_names_every_waiting_row_and_pages_only_when_asked(
+    store: TaskStore,
+) -> None:
+    """The Stop-all cascade stops the rows this answer NAMES and nothing else.
+
+    ``cancel_for_parent_impl`` cancels exactly ``taskq_pending_ids_for``'s ids,
+    so a default cap would leave the rows past it queued and dispatchable after
+    the user stopped everything -- work restarting from a store the user emptied.
+    A caller that wants a page says so.
+    """
+    total = 10_001
+    store.accept([_rec(f"p{i:05d}", session_key="s1") for i in range(total)])
+    assert len(store.list_pending(model.KIND_SUBAGENT, session_key="s1")) == total
+    assert len(store.list_pending(model.KIND_SUBAGENT)) == total
+    page = store.list_pending(model.KIND_SUBAGENT, session_key="s1", limit=5)
+    assert [r.id for r in page] == [f"p{i:05d}" for i in range(5)]
+
+
+def test_count_by_state_oldest_wait_and_doctor_lines(store: TaskStore, clock: Clock) -> None:
+    store.accept([_rec("x")])
+    clock.t += 42
+    store.accept([_rec("y")])
+    store.claim("y")
+    assert store.count_by_state() == {model.QUEUED: 1, model.ADMITTED: 1}
+    assert store.oldest_wait_secs() == 42.0
+    lines = store.doctor_lines()
+    assert "pending=1 active=1 oldest_wait=42s" in lines[1]
+
+
+def test_record_progress_and_events_respect_generation(store: TaskStore) -> None:
+    store.accept([_rec("p")])
+    claimed = store.claim("p")
+    assert claimed is not None
+    assert store.record_progress("p", claimed.generation, {"step": 1}) is True
+    assert store.record_progress("p", claimed.generation + 5, {"step": 2}) is False
+    got = store.get("p")
+    assert got is not None and got.progress == {"step": 1}
+    store.append_event("p", "deliver", {"to": "dashboard:1"})
+    assert store.events("p")[-1].kind == "deliver"
+
+
+def _reclaim_after_a_lost_owner(
+    store: TaskStore, task_id: str, clock: Clock
+) -> tuple[int, model.TaskRecord]:
+    """Run attempt one to a progress marker, lose its owner, claim attempt two.
+
+    The owner's lease lapses, the sweep marks the row ``recovering`` and due
+    now, and the dispatcher claims it. Returns the first attempt's generation
+    and the row the second claim hands back.
+    """
+    first = store.claim(task_id)
+    assert first is not None
+    assert store.transition(task_id, model.STARTING, generation=first.generation)
+    assert store.transition(task_id, model.RUNNING, generation=first.generation)
+    assert store.record_progress(task_id, first.generation, {"step": 3}) is True
+    clock.advance(store.lease_secs + 1)
+    assert store.transition(
+        task_id, model.RECOVERING, generation=first.generation, next_run_at=clock.t
+    )
+    second = store.claim(task_id)
+    assert second is not None
+    return first.generation, second.record
+
+
+def test_a_new_attempt_starts_without_the_old_attempts_progress(
+    store: TaskStore, clock: Clock
+) -> None:
+    """A re-claimed row reads as a new attempt, not as the lost one's last marker.
+
+    ``claim`` hands the row to a new generation. The marker the earlier attempt
+    recorded describes work that attempt did, so the claim clears it in the same
+    statement and a reader sees no progress until the new attempt records some.
+    """
+    store.accept([_rec("p")])
+    old, record = _reclaim_after_a_lost_owner(store, "p", clock)
+    assert record.generation == old + 1
+    assert record.progress is None
+    got = store.get("p")
+    assert got is not None and got.generation == old + 1
+    assert got.progress is None
+
+
+def test_a_stale_attempt_cannot_record_progress_after_the_reclaim(
+    store: TaskStore, clock: Clock
+) -> None:
+    """The generation fence is the same after a re-claim: only the current attempt records."""
+    store.accept([_rec("p")])
+    old, record = _reclaim_after_a_lost_owner(store, "p", clock)
+    before = store.get("p")
+    assert before is not None
+    assert store.record_progress("p", old, {"step": 99}) is False
+    after = store.get("p")
+    assert after is not None and after.progress == before.progress
+    assert store.record_progress("p", record.generation, {"step": 1}) is True
+    got = store.get("p")
+    assert got is not None and got.progress == {"step": 1}
+
+
+def test_closed_store_raises_typed_error(tmp_path: Path) -> None:
+    s = TaskStore(tmp_path / "t.db", network_fs=False).open()
+    s.close()
+    with pytest.raises(TaskStoreUnavailable):
+        s.accept([_rec("a")])
+    assert s.is_open is False
+
+
+def test_default_path_under_home(tmp_path: Path) -> None:
+    assert TaskStore.default_path(tmp_path) == tmp_path / "tasks" / "tasks.db"
+
+
+def test_diagnostic_open_does_not_record_incarnation(tmp_path: Path) -> None:
+    path = tmp_path / "t.db"
+    owner = TaskStore(path, network_fs=False).open()
+    owner_id = owner.incarnation
+    owner.close()
+    reader = TaskStore(path, network_fs=False, diagnostic=True).open()
+    try:
+        assert reader.previous_incarnation is None  # never read, never written
+        assert reader.doctor_lines()[1].strip().startswith("pending=0")
+    finally:
+        reader.close()
+    again = TaskStore(path, network_fs=False).open()
+    try:
+        assert again.previous_incarnation == owner_id
+    finally:
+        again.close()
+
+
+def test_doctor_task_store_is_silent_without_store_and_reports_with_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from kiro_crew import cli_doctor
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    issues: list[str] = []
+    cli_doctor._doctor_task_store(issues)
+    assert capsys.readouterr().out == "" and issues == []
+    s = TaskStore(tmp_path / "tasks" / "tasks.db", network_fs=False).open()
+    s.accept([_rec("a")])
+    s.close()
+    from kiro_crew.taskq import store as store_mod
+
+    monkeypatch.setattr(store_mod, "detect_network_filesystem", lambda p: True)
+    cli_doctor._doctor_task_store(issues)
+    out = capsys.readouterr().out
+    assert "task store:" in out and "pending=1" in out
+    assert any("network filesystem" in i for i in issues)
+
+
+# ── a corrupt file is quarantined and recreated; a locked one still refuses ──
+
+
+def _corrupt_db(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"this is not a sqlite database at all\n" * 64)
+    (path.parent / (path.name + "-wal")).write_bytes(b"stale wal")
+
+
+def test_corrupt_store_is_quarantined_and_recreated(tmp_path: Path) -> None:
+    path = tmp_path / "tasks" / "tasks.db"
+    _corrupt_db(path)
+    store = TaskStore(path, window=8, network_fs=False).open()
+    try:
+        assert store.quarantined_to is not None
+        quarantined = store.quarantined_to
+        assert quarantined.exists() and quarantined.name.startswith("tasks.db.corrupt-")
+        assert quarantined.read_bytes().startswith(b"this is not a sqlite database")
+        # The stale WAL never survives beside the fresh store: SQLite drops an
+        # invalid one on close, and whatever is left is moved with the file.
+        wal = path.parent / "tasks.db-wal"
+        assert not wal.exists() or wal.read_bytes() != b"stale wal"
+        assert any("quarantined" in w for w in store.warnings)
+        # A fresh, usable store: the schema is there and work is accepted.
+        with sqlite3.connect(str(path)) as conn:
+            names = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"  # wokeignore:rule=master
+                )
+            }
+        assert {"tasks", "task_events"} <= names
+        assert store.accept_one(_rec("fresh1", session_key="web-1")) == "fresh1"
+        assert store.state_of("fresh1") == model.QUEUED
+    finally:
+        store.close()
+
+
+def test_two_quarantines_in_the_same_second_keep_both_copies(tmp_path: Path, monkeypatch) -> None:
+    """A crash loop quarantines repeatedly; every copy is evidence and none is
+    overwritten, even with a frozen clock and one pid."""
+    from kiro_crew.taskq import store as store_mod
+
+    monkeypatch.setattr(store_mod.time, "time", lambda: 1_800_000_000.25)
+    path = tmp_path / "tasks" / "tasks.db"
+    copies = []
+    for payload in (b"first corrupt copy\n" * 64, b"second corrupt copy\n" * 64):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        store = TaskStore(path, window=8, network_fs=False).open()
+        try:
+            assert store.quarantined_to is not None
+            copies.append(store.quarantined_to)
+        finally:
+            store.close()
+    assert len({c.name for c in copies}) == 2
+    assert copies[0].read_bytes().startswith(b"first corrupt copy")
+    assert copies[1].read_bytes().startswith(b"second corrupt copy")
+    assert copies[1].name == f"{copies[0].name}-1"
+    listed = [p.name for p in path.parent.glob("tasks.db.corrupt-*")]
+    assert sorted(listed) == sorted(c.name for c in copies)
+
+
+def test_stale_journal_is_quarantined_with_the_corrupt_file(tmp_path: Path) -> None:
+    """A DELETE-mode rollback journal beside the corrupt file moves with it;
+    left behind, SQLite would roll it into the recreated database. The move is
+    exercised directly: SQLite itself deletes a journal it finds unreadable, so
+    an open() round trip cannot tell the two removals apart."""
+    path = tmp_path / "tasks" / "tasks.db"
+    _corrupt_db(path)
+    journal = path.parent / "tasks.db-journal"
+    journal.write_bytes(b"\xd9\xd5\x05\xf9\x20\xa1\x63\xd7" + b"hot journal" * 16)
+    store = TaskStore(path, window=8, network_fs=False)
+    target = store._quarantine_corrupt_file("file is not a database")
+    moved_journal = target.with_name(target.name + "-journal")
+    assert moved_journal.exists() and moved_journal.read_bytes().endswith(b"hot journal")
+    assert not journal.exists() and not path.exists()
+    assert target.with_name(target.name + "-wal").read_bytes() == b"stale wal"
+    assert target.read_bytes().startswith(b"this is not a sqlite database")
+    assert any("-journal" in w for w in store.warnings)
+    store.open()
+    try:
+        assert store.accept_one(_rec("fresh2", session_key="web-1")) == "fresh2"
+        assert store.state_of("fresh2") == model.QUEUED
+        with sqlite3.connect(str(path)) as conn:
+            assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    finally:
+        store.close()
+
+
+def test_diagnostic_open_reports_corruption_without_moving_the_file(tmp_path: Path) -> None:
+    path = tmp_path / "tasks" / "tasks.db"
+    _corrupt_db(path)
+    before = path.read_bytes()
+    with pytest.raises(TaskStoreUnavailable, match="corrupt"):
+        TaskStore(path, diagnostic=True).open()
+    assert path.read_bytes() == before, "doctor never quarantines"
+    assert not list(path.parent.glob("tasks.db.corrupt-*"))
+
+
+def test_locked_store_still_refuses_instead_of_quarantining(tmp_path: Path, monkeypatch) -> None:
+    from kiro_crew.taskq import store as store_mod
+
+    path = tmp_path / "tasks" / "tasks.db"
+    TaskStore(path, window=8, network_fs=False).open().close()  # a healthy file
+
+    def _locked(*_a, **_k):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(store_mod.sqlite3, "connect", _locked)
+    with pytest.raises(TaskStoreUnavailable, match="locked"):
+        TaskStore(path, window=8, network_fs=False).open()
+    assert path.exists() and not list(path.parent.glob("tasks.db.corrupt-*"))
+    # Disk-full is a host condition too, never a quarantine.
+    monkeypatch.setattr(
+        store_mod.sqlite3,
+        "connect",
+        lambda *a, **k: (_ for _ in ()).throw(sqlite3.OperationalError("database or disk is full")),
+    )
+    with pytest.raises(TaskStoreUnavailable, match="full"):
+        TaskStore(path, window=8, network_fs=False).open()
+    assert not list(path.parent.glob("tasks.db.corrupt-*"))
+
+
+def test_is_corruption_classifies_sqlite_errors() -> None:
+    from kiro_crew.sqlite_quarantine import is_damaged_database_error as _is_corruption
+
+    assert _is_corruption(sqlite3.DatabaseError("file is not a database"))
+    assert _is_corruption(sqlite3.DatabaseError("database disk image is malformed"))
+    assert _is_corruption(sqlite3.DatabaseError("malformed database schema (tasks)"))
+    assert not _is_corruption(sqlite3.OperationalError("database is locked"))
+    assert not _is_corruption(sqlite3.OperationalError("database is busy"))
+    assert not _is_corruption(sqlite3.OperationalError("unable to open database file"))
+    assert not _is_corruption(sqlite3.OperationalError("database or disk is full"))
+    assert not _is_corruption(sqlite3.OperationalError("attempt to write a readonly database"))
+    assert not _is_corruption(OSError("permission denied"))
+    # A word that merely occurs in a message or a path is not a verdict.
+    assert not _is_corruption(sqlite3.OperationalError("unable to open /var/corrupt-dir/tasks.db"))
+    # A schema newer than this build is a refusal, never a quarantine (downgrade).
+    assert not _is_corruption(
+        sqlite3.DatabaseError("tasks.db schema version 99 is newer than this build supports")
+    )
+
+
+# ── the on-loop guard (kiro_crew.on_loop_db) ──────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_store_connection_on_the_loop_is_diagnosed(
+    store: TaskStore, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    """The connection accessor adopts the shared guard, so an on-loop take is
+    diagnosable rather than silent.
+
+    ``check_sync_io_in_async`` is lexical and sees only a query written INSIDE an
+    ``async def``; every site this store actually had was one plain helper down
+    from one, which is why the accessor is where the check has to live.
+    """
+    from kiro_crew.on_loop_db import OnLoopStoreError
+    from kiro_crew.taskq import store as store_mod
+
+    guard = store_mod._ON_LOOP_DB_GUARD
+
+    # Strict: the raise, so a fully offloaded surface stays offloaded.
+    monkeypatch.setenv(store_mod.STRICT_ON_LOOP_ENV, "1")
+    with pytest.raises(OnLoopStoreError, match="taken on the event loop"):
+        store.count_pending(model.KIND_SUBAGENT)
+    # ... and the vetted opt-out is honoured even then.
+    with guard.allow_on_loop():
+        assert store.count_pending(model.KIND_SUBAGENT) == 0
+    monkeypatch.delenv(store_mod.STRICT_ON_LOOP_ENV)
+
+    # Production: one throttled WARNING with a stack, and the call proceeds.
+    guard.reset_throttle()
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="kiro_crew.on_loop_db"):
+        assert store.count_pending(model.KIND_SUBAGENT) == 0
+        assert store.count_pending(model.KIND_SUBAGENT) == 0
+    warnings = [r for r in caplog.records if "task store" in r.getMessage()]
+    assert len(warnings) == 1 and warnings[0].exc_text is None
+    assert warnings[0].stack_info
+
+    # Off the loop it is a no-op, and the counter still records the on-loop takes.
+    before = store.loop_thread_calls
+    assert await store.run(store.count_pending, model.KIND_SUBAGENT) == 0
+    assert store.loop_thread_calls == before
+
+
+@pytest.mark.asyncio
+async def test_a_held_writer_lock_does_not_stall_the_loop(tmp_path: Path, clock: Clock) -> None:
+    """The point of ``run()``: with another connection holding the writer lock,
+    an offloaded write waits on the taskq-writer thread while the loop keeps
+    running -- the heartbeat this store's busy timeout would otherwise freeze.
+
+    The lock is taken and released by explicit ``threading.Event`` signals, so
+    nothing here depends on how long anything takes.
+    """
+    import asyncio
+    import sqlite3 as _sqlite3
+    import threading
+
+    path = tmp_path / "tasks.db"
+    store = TaskStore(path, window=8, clock=clock, network_fs=False, busy_timeout_secs=30.0).open()
+    held = threading.Event()
+    release = threading.Event()
+
+    def _hold_writer_lock() -> None:
+        # Connected INSIDE the thread: a sqlite3 connection belongs to the
+        # thread that made it.
+        other = _sqlite3.connect(str(path), isolation_level=None, timeout=30.0)
+        try:
+            other.execute("BEGIN IMMEDIATE")
+            held.set()
+            release.wait(30)
+            other.execute("ROLLBACK")
+        finally:
+            other.close()
+
+    holder = threading.Thread(target=_hold_writer_lock, name="lock-holder")
+    holder.start()
+    try:
+        assert held.wait(30)
+        beats = 0
+        blocked = asyncio.ensure_future(store.run(store.accept_one, _rec("t1")))
+
+        async def _heartbeat() -> int:
+            nonlocal beats
+            while not blocked.done():
+                beats += 1
+                await asyncio.sleep(0)
+                if beats >= 50:
+                    # The loop is demonstrably alive while the write waits;
+                    # now let the other connection go.
+                    release.set()
+            return beats
+
+        assert await asyncio.wait_for(_heartbeat(), timeout=30) >= 50
+        assert await asyncio.wait_for(blocked, timeout=30) == "t1"
+        assert store.state_of("t1") is not None
+    finally:
+        release.set()
+        holder.join(30)
+        store.close()
+
+
+# ── the unstarted-row index (is_unstarted) ────────────────────────────────────
+
+
+def test_unstarted_index_follows_every_state_write(store: TaskStore) -> None:
+    """``is_unstarted`` is True exactly while the row is claimable or ``admitted``.
+
+    Each write that can cross that set updates it after its commit: accept,
+    transition (start, wait, terminal), wake_wait and cancel. A claim stays
+    inside it. The ``running``
+    and ``waiting_children`` reads catch a widening to "not terminal"; each
+    terminal read catches a dropped update on that write.
+    """
+    store.accept([_rec("a"), _rec("b"), _rec("c")])
+    assert all(store.is_unstarted(i) for i in "abc")
+    assert store.is_unstarted("never-accepted") is False
+
+    assert store.claim("a") is not None
+    assert store.is_unstarted("a") is True  # admitted: claimed, no run yet
+    assert store.transition("a", model.STARTING)
+    assert store.is_unstarted("a") is False  # started
+    assert store.transition("a", model.RUNNING)
+    assert store.enter_wait(
+        "a", {"state": model.WAITING_CHILDREN, "reason": "children", "resume_condition": {}}
+    )
+    assert store.is_unstarted("a") is False  # a resident run waiting is not unstarted
+    assert store.wake_wait("a", reason="answered") is not None
+    assert store.is_unstarted("a") is True  # retry_wait: claimable again
+    assert store.claim("a") is not None
+    assert store.transition("a", model.STARTING)
+    assert store.transition("a", model.RUNNING)
+    assert store.finish("a", model.DONE)
+    assert store.is_unstarted("a") is False
+
+    assert store.finish("b", model.FAILED)  # a queued row failed at once
+    assert store.is_unstarted("b") is False
+    assert store.cancel("c", reason="user_stop") == model.QUEUED
+    assert store.is_unstarted("c") is False
+
+
+def test_unstarted_index_ignores_a_write_that_did_not_commit(store: TaskStore) -> None:
+    """The index changes only after a commit. A refused or rolled-back write
+    leaves it as it was."""
+    store.accept([_rec("t")])
+    assert store.cancel("t", reason="stop") == model.QUEUED
+    with pytest.raises(TaskStoreUnavailable):
+        store.accept([_rec("t")])  # duplicate id: rolled back
+    assert store.is_unstarted("t") is False
+    assert store.transition("t", model.QUEUED) is False  # terminal stays terminal
+    assert store.is_unstarted("t") is False
+
+    store.accept([_rec("u")])
+    assert store.claim("u") is not None
+    assert store.claim("u") is None  # already claimed: no write
+    assert store.is_unstarted("u") is True
+
+
+def test_unstarted_index_is_seeded_from_disk_at_open(tmp_path: Path, clock: Clock) -> None:
+    """A row accepted before this open (an earlier incarnation, a boot import)
+    is pending work too, so ``open`` loads the index from the rows on disk."""
+    path = tmp_path / "tasks.db"
+    first = TaskStore(path, clock=clock, network_fs=False).open()
+    first.accept([_rec("queued"), _rec("admitted"), _rec("started"), _rec("ended")])
+    assert first.claim("admitted") is not None
+    assert first.claim("started") is not None
+    assert first.transition("started", model.STARTING)
+    assert first.cancel("ended", reason="stop") is not None
+    first.close()
+
+    second = TaskStore(path, clock=clock, network_fs=False).open()
+    try:
+        assert second.is_unstarted("queued") is True
+        assert second.is_unstarted("admitted") is True
+        assert second.is_unstarted("started") is False
+        assert second.is_unstarted("ended") is False
+        assert second.insert_if_absent(_rec("imported")) is True
+        assert second.is_unstarted("imported") is True
+    finally:
+        second.close()
+
+
+@pytest.mark.asyncio
+async def test_unstarted_index_read_takes_no_connection_on_the_loop(
+    store: TaskStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The serial-lock done-probe reads the index on the gateway loop. That read
+    must never reach the connection: the strict on-loop guard is armed, the
+    connection accessor raises if taken, and the loop counter stays put."""
+    from kiro_crew.taskq import store as store_mod
+
+    await store.run(store.accept_one, _rec("t"))
+    monkeypatch.setenv(store_mod.STRICT_ON_LOOP_ENV, "1")
+    before = store.loop_thread_calls
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(store, "_c", lambda: pytest.fail("is_unstarted took the connection"))
+        assert store.is_unstarted("t") is True
+        assert store.is_unstarted("absent") is False
+    assert store.loop_thread_calls == before
+
+
+class _ReadAdvancingClock(Clock):
+    """A clock that moves 1 µs on every read, as a real one moves between
+    two reads made a few statements apart."""
+
+    step = 1e-6
+
+    def __call__(self) -> float:
+        self.t += self.step
+        self.last = self.t
+        return self.t
+
+
+@pytest.mark.parametrize(
+    ("start", "wait", "bound"),
+    [
+        (100000.123, 30, 90),
+        (1759708800.123457, 30, 90),
+    ],
+)
+def test_a_bound_of_whole_admit_waits_ends_the_row_on_the_recheck_that_reaches_it(
+    tmp_path: Path, start: float, wait: float, bound: float
+) -> None:
+    """A row parked for *wait* and re-checked at the end of each park has been
+    parked three waits when its third re-check lands. A sweep in that same
+    clock tick must end it at a bound of three waits, on a clock that moves
+    between any two reads before it.
+
+    Each start sits far enough inside its power-of-two range that ``ts + wait``
+    stays in the same binade, which is what makes ``(ts + wait) - ts`` exact.
+    An epoch clock always does; a start just below a power of two would not."""
+    clock = _ReadAdvancingClock(start)
+    for store in open_task_store(tmp_path, clock, name="tasks/tasks.db", window=4):
+        kind = model.KIND_SUBAGENT
+        store.accept([_rec("w")])
+        assert store.defer("w", wait=wait, reason="low memory") is True
+        for _ in range(3):
+            rec = store.get("w")
+            assert rec is not None
+            clock.t = rec.next_run_at  # the re-check fires at the planned end
+            assert store.defer("w", wait=wait, reason="low memory") is True
+        clock.t, clock.step = clock.last, 0.0  # the sweep reads the re-check's tick
+        assert [r.id for r in store.deferred_longer_than(kind, bound)] == ["w"]

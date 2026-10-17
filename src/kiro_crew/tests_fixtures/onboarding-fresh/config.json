@@ -1,0 +1,11 @@
+{
+  "meta": {
+    "version": 1,
+    "created_by": "kirocrew-fixture"
+  },
+  "dashboard": {
+    "host": "127.0.0.1",
+    "onboarded": false
+  },
+  "timezone": "UTC"
+}

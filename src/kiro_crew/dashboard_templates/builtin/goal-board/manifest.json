@@ -1,0 +1,20 @@
+{
+  "id": "goal-board",
+  "version": 1,
+  "title": "Goal board",
+  "description": "The work ledger this crewmate conducts: the goal, the round it is on, and every item with its state, the conductor's decision, the acceptance verdict and the worker's own last report. Read from the work slot fold, so an item's state here is the state the conductor recorded. One field is the conductor's own: asks, keyed by item id, each {options: [short strings]} -- the answers it offers for an item waiting on the reader. Each needs-you row gets a Reply button and one button per option; every button only fills the reader's chat box, never sends. A row with no entry still gets Reply, so the page works with no write at all.",
+  "source": "builtin",
+  "fields": {
+    "goal": { "type": "string", "source": { "fold": "work", "path": "conductor.goal" } },
+    "round": { "type": "number", "source": { "fold": "work", "path": "conductor.round" } },
+    "goal_version": { "type": "number", "source": { "fold": "work", "path": "conductor.goal_version" } },
+    "depth": { "type": "number", "source": { "fold": "work", "path": "conductor.depth" } },
+    "created_at": { "type": "string", "source": { "fold": "work", "path": "conductor.created_at" } },
+    "last_entry_at": { "type": "string", "source": { "fold": "work", "path": "conductor.last_entry_at" } },
+    "entries": { "type": "number", "source": { "fold": "work", "path": "conductor.entries" } },
+    "items": { "type": "array", "source": { "fold": "work", "path": "items" } },
+    "omitted": { "type": "number", "source": { "fold": "work", "path": "omitted" } },
+    "forgotten": { "type": "object", "source": { "fold": "work", "path": "forgotten" } },
+    "asks": { "type": "object", "values": { "type": "object", "properties": { "options": { "type": "array", "items": { "type": "string" } } } }, "source": { "agentic": true }, "upkeep": {"means": "the answers you offer for each item waiting on the person, keyed by item id", "when": "in the same turn a question for the person opens or is answered", "how": "set {item_id: {options: [short answers]}}; drop the entry once they answer; write it with dashboard_write; call dashboard_fields first for its shape"} }
+  }
+}

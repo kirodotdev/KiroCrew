@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 270" fill="none">
+  <rect width="480" height="270" fill="#1a1b26"/>
+  <!-- Left panel - file tree -->
+  <rect x="80" y="50" width="140" height="170" rx="6" stroke="#334155" stroke-width="1.5" fill="#1e293b"/>
+  <!-- Folder icons -->
+  <rect x="100" y="70" width="12" height="9" rx="2" fill="#f59e0b" opacity="0.8"/>
+  <rect x="100" y="68" width="6" height="3" rx="1" fill="#f59e0b" opacity="0.6"/>
+  <rect x="100" y="92" width="12" height="9" rx="2" fill="#f59e0b" opacity="0.7"/>
+  <rect x="100" y="90" width="6" height="3" rx="1" fill="#f59e0b" opacity="0.5"/>
+  <!-- File entries -->
+  <rect x="118" y="72" width="45" height="3" rx="1.5" fill="#fbbf24" opacity="0.6"/>
+  <rect x="118" y="94" width="35" height="3" rx="1.5" fill="#fbbf24" opacity="0.5"/>
+  <!-- Sub-files -->
+  <circle cx="125" cy="115" r="2" fill="#d97706" opacity="0.6"/>
+  <rect x="132" y="113" width="40" height="3" rx="1.5" fill="#92400e" opacity="0.5"/>
+  <circle cx="125" cy="130" r="2" fill="#d97706" opacity="0.6"/>
+  <rect x="132" y="128" width="55" height="3" rx="1.5" fill="#fbbf24" opacity="0.7"/>
+  <circle cx="125" cy="145" r="2" fill="#d97706" opacity="0.5"/>
+  <rect x="132" y="143" width="35" height="3" rx="1.5" fill="#92400e" opacity="0.5"/>
+  <circle cx="125" cy="160" r="2" fill="#d97706" opacity="0.6"/>
+  <rect x="132" y="158" width="50" height="3" rx="1.5" fill="#fbbf24" opacity="0.6"/>
+  <circle cx="125" cy="175" r="2" fill="#d97706" opacity="0.5"/>
+  <rect x="132" y="173" width="30" height="3" rx="1.5" fill="#92400e" opacity="0.4"/>
+  <!-- Right panel - code -->
+  <rect x="250" y="50" width="160" height="170" rx="6" stroke="#334155" stroke-width="1.5" fill="#1e293b"/>
+  <!-- Syntax colored lines -->
+  <rect x="270" y="70" width="40" height="3" rx="1.5" fill="#f59e0b" opacity="0.7"/>
+  <rect x="315" y="70" width="25" height="3" rx="1.5" fill="#fbbf24" opacity="0.5"/>
+  <rect x="278" y="83" width="55" height="3" rx="1.5" fill="#4ade80" opacity="0.6"/>
+  <rect x="278" y="96" width="35" height="3" rx="1.5" fill="#60a5fa" opacity="0.6"/>
+  <rect x="318" y="96" width="20" height="3" rx="1.5" fill="#fbbf24" opacity="0.5"/>
+  <rect x="278" y="109" width="70" height="3" rx="1.5" fill="#c084fc" opacity="0.5"/>
+  <rect x="278" y="122" width="45" height="3" rx="1.5" fill="#4ade80" opacity="0.6"/>
+  <rect x="270" y="135" width="30" height="3" rx="1.5" fill="#f59e0b" opacity="0.6"/>
+  <rect x="278" y="148" width="60" height="3" rx="1.5" fill="#60a5fa" opacity="0.5"/>
+  <rect x="278" y="161" width="40" height="3" rx="1.5" fill="#fbbf24" opacity="0.6"/>
+  <rect x="270" y="174" width="25" height="3" rx="1.5" fill="#f59e0b" opacity="0.7"/>
+  <!-- Connection line -->
+  <line x1="220" y1="130" x2="250" y2="130" stroke="#f59e0b" stroke-width="1" stroke-dasharray="3 2" opacity="0.4"/>
+  <!-- Accent -->
+  <circle cx="60" cy="240" r="2" fill="#f59e0b" opacity="0.3"/>
+  <circle cx="430" cy="40" r="1.5" fill="#fbbf24" opacity="0.3"/>
+</svg>

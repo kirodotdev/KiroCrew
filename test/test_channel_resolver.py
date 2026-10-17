@@ -1,0 +1,224 @@
+"""Unit tests for slack/channel_resolver.py — name cache + lazy refresh."""
+
+from __future__ import annotations
+
+import json
+import time
+from unittest.mock import AsyncMock
+
+import aiohttp
+import pytest
+
+from kiro_crew.slack.channel_resolver import (
+    _CACHE_FILENAME,
+    _CACHE_TTL_SECS,
+    ChannelNameResolver,
+)
+from kiro_crew.slack.client import RealSlackClient
+
+
+def _make_slack(channels: list[dict] | Exception | None = None) -> AsyncMock:
+    """Return a mock SlackClientOps whose conversations_list returns *channels*."""
+    slack = AsyncMock()
+    if isinstance(channels, Exception):
+        slack.conversations_list = AsyncMock(side_effect=channels)
+    else:
+        slack.conversations_list = AsyncMock(return_value=channels or [])
+    return slack
+
+
+class TestResolveMany:
+    @pytest.mark.asyncio
+    async def test_empty_input_returns_empty_dict(self, tmp_path):
+        resolver = ChannelNameResolver(cache_path=tmp_path / _CACHE_FILENAME)
+        slack = _make_slack([])
+        result = await resolver.resolve_many(slack, [])
+        assert result == {}
+        slack.conversations_list.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_resolves_unknown_ids_via_api(self, tmp_path):
+        resolver = ChannelNameResolver(cache_path=tmp_path / _CACHE_FILENAME)
+        slack = _make_slack([
+            {"id": "C111", "name": "engineering"},
+            {"id": "C222", "name": "random"},
+        ])
+        result = await resolver.resolve_many(slack, ["C111", "C222"])
+        assert result == {"C111": "engineering", "C222": "random"}
+        slack.conversations_list.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_unresolved_id_falls_back_to_id(self, tmp_path):
+        resolver = ChannelNameResolver(cache_path=tmp_path / _CACHE_FILENAME)
+        slack = _make_slack([{"id": "C111", "name": "engineering"}])
+        result = await resolver.resolve_many(slack, ["C111", "C999_GHOST"])
+        assert result == {"C111": "engineering", "C999_GHOST": "C999_GHOST"}
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_skips_api(self, tmp_path):
+        resolver = ChannelNameResolver(cache_path=tmp_path / _CACHE_FILENAME)
+        slack = _make_slack([{"id": "C111", "name": "engineering"}])
+        # First call populates cache
+        await resolver.resolve_many(slack, ["C111"])
+        # Second call should hit cache
+        slack.conversations_list.reset_mock()
+        result = await resolver.resolve_many(slack, ["C111"])
+        assert result == {"C111": "engineering"}
+        slack.conversations_list.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stale_cache_refreshes(self, tmp_path, monkeypatch):
+        resolver = ChannelNameResolver(cache_path=tmp_path / _CACHE_FILENAME)
+        slack = _make_slack([{"id": "C111", "name": "engineering-old"}])
+        await resolver.resolve_many(slack, ["C111"])
+
+        # Force stale by rewinding fetched_at
+        resolver._fetched_at = time.time() - _CACHE_TTL_SECS - 1
+        slack.conversations_list = AsyncMock(
+            return_value=[{"id": "C111", "name": "engineering-new"}]
+        )
+        result = await resolver.resolve_many(slack, ["C111"])
+        assert result == {"C111": "engineering-new"}
+        slack.conversations_list.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_api_failure_returns_id_fallback(self, tmp_path):
+        resolver = ChannelNameResolver(cache_path=tmp_path / _CACHE_FILENAME)
+        slack = _make_slack(RuntimeError("rate limited"))
+        result = await resolver.resolve_many(slack, ["C111"])
+        # Failed refresh — falls through to id fallback
+        assert result == {"C111": "C111"}
+
+    @pytest.mark.asyncio
+    async def test_successful_empty_refresh_is_cached(self, tmp_path):
+        resolver = ChannelNameResolver(cache_path=tmp_path / _CACHE_FILENAME)
+        slack = _make_slack([])
+
+        assert await resolver.resolve_many(slack, ["C111"]) == {"C111": "C111"}
+        assert await resolver.resolve_many(slack, ["C111"]) == {"C111": "C111"}
+
+        slack.conversations_list.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_real_client_first_page_failure_stays_retryable(self, tmp_path):
+        resolver = ChannelNameResolver(cache_path=tmp_path / _CACHE_FILENAME)
+        web = AsyncMock()
+        web.conversations_list = AsyncMock(
+            side_effect=[
+                aiohttp.ClientError("temporary Slack failure"),
+                {"channels": [], "response_metadata": {}},
+            ]
+        )
+        slack = RealSlackClient.__new__(RealSlackClient)
+        slack._web = web
+
+        assert await resolver.resolve_many(slack, ["C111"]) == {"C111": "C111"}
+        assert await resolver.resolve_many(slack, ["C111"]) == {"C111": "C111"}
+        assert await resolver.resolve_many(slack, ["C111"]) == {"C111": "C111"}
+
+        assert web.conversations_list.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_real_client_keeps_channels_when_a_later_page_fails(self):
+        channel = {"id": "C111", "name": "engineering"}
+        web = AsyncMock()
+        web.conversations_list = AsyncMock(
+            side_effect=[
+                {
+                    "channels": [channel],
+                    "response_metadata": {"next_cursor": "next"},
+                },
+                aiohttp.ClientError("second page failed"),
+            ]
+        )
+        slack = RealSlackClient.__new__(RealSlackClient)
+        slack._web = web
+
+        assert await slack.conversations_list() == [channel]
+
+    @pytest.mark.asyncio
+    async def test_real_client_empty_first_page_then_failure_raises(self):
+        # An empty first page that carries a next_cursor, followed by a
+        # failing later page, has collected nothing: the result must stay a
+        # failure (raise) rather than returning [] — otherwise the resolver
+        # caches an empty "successful" refresh and suppresses retries for the
+        # full TTL. Keeping-the-partial only applies once channels exist.
+        web = AsyncMock()
+        web.conversations_list = AsyncMock(
+            side_effect=[
+                {"channels": [], "response_metadata": {"next_cursor": "next"}},
+                aiohttp.ClientError("second page failed"),
+            ]
+        )
+        slack = RealSlackClient.__new__(RealSlackClient)
+        slack._web = web
+
+        with pytest.raises(aiohttp.ClientError):
+            await slack.conversations_list()
+
+    @pytest.mark.asyncio
+    async def test_real_client_empty_first_page_failure_stays_retryable(self, tmp_path):
+        # End-to-end through the resolver: the above all-empty page failure
+        # must NOT be cached, so a later resolve re-hits the API.
+        resolver = ChannelNameResolver(cache_path=tmp_path / _CACHE_FILENAME)
+        web = AsyncMock()
+        web.conversations_list = AsyncMock(
+            side_effect=[
+                {"channels": [], "response_metadata": {"next_cursor": "next"}},
+                aiohttp.ClientError("second page failed"),
+                {"channels": [], "response_metadata": {}},
+            ]
+        )
+        slack = RealSlackClient.__new__(RealSlackClient)
+        slack._web = web
+
+        assert await resolver.resolve_many(slack, ["C111"]) == {"C111": "C111"}
+        assert await resolver.resolve_many(slack, ["C111"]) == {"C111": "C111"}
+
+        assert web.conversations_list.await_count == 3
+
+
+class TestDiskCache:
+    @pytest.mark.asyncio
+    async def test_persists_to_disk(self, tmp_path):
+        cache_path = tmp_path / _CACHE_FILENAME
+        resolver = ChannelNameResolver(cache_path=cache_path)
+        slack = _make_slack([{"id": "C111", "name": "engineering"}])
+        await resolver.resolve_many(slack, ["C111"])
+        assert cache_path.exists()
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+        assert data["names"] == {"C111": "engineering"}
+        assert data["fetched_at"] > 0
+
+    @pytest.mark.asyncio
+    async def test_loads_from_disk_on_init(self, tmp_path):
+        cache_path = tmp_path / _CACHE_FILENAME
+        cache_path.write_text(json.dumps({
+            "names": {"C111": "preloaded"},
+            "fetched_at": time.time(),
+        }))
+        resolver = ChannelNameResolver(cache_path=cache_path)
+        slack = _make_slack([])
+        # Cache is fresh — no API call expected
+        result = await resolver.resolve_many(slack, ["C111"])
+        assert result == {"C111": "preloaded"}
+        slack.conversations_list.assert_not_called()
+
+    def test_corrupt_disk_cache_starts_fresh(self, tmp_path):
+        cache_path = tmp_path / _CACHE_FILENAME
+        cache_path.write_text("not valid json {{{")
+        # Should not raise
+        resolver = ChannelNameResolver(cache_path=cache_path)
+        assert resolver._names == {}
+        assert resolver._fetched_at == 0.0
+
+
+class TestGetCached:
+    def test_returns_none_for_unknown(self, tmp_path):
+        resolver = ChannelNameResolver(cache_path=tmp_path / _CACHE_FILENAME)
+        assert resolver.get_cached("C999") is None
+
+    def test_returns_cached_name(self, tmp_path):
+        resolver = ChannelNameResolver(cache_path=tmp_path / _CACHE_FILENAME)
+        resolver._names["C111"] = "engineering"
+        assert resolver.get_cached("C111") == "engineering"

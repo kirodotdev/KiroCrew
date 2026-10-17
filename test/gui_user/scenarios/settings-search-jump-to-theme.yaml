@@ -1,0 +1,29 @@
+# Smoke: the Settings header search. It matches against the generated settings
+# registry entirely on the client; picking a result navigates to the owning
+# tab with the row scrolled into view and flashed for about two seconds. The
+# flash is too short to assert reliably from a screenshot, so the expectations
+# hold the landing (Display tab, Theme row on screen), not the ring.
+name: settings-search-jump-to-theme
+tier: smoke
+feature: settings
+user_story: >-
+  As a user who does not know which tab a setting lives on, I want to type its
+  name into the Settings search and pick the result, so that I land on the
+  right tab with the row in front of me.
+docs_url: docs/feature-map/README.md
+summary: Search "theme" in the Settings header and jump to the Theme row on the Display tab
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /settings
+steps:
+  - You are on the Settings page. Find the search box in the page header whose placeholder reads "Search settings…" and click into it.
+  - Type exactly "theme". A dropdown of matching settings appears under the box; each row shows a setting name and, beneath it, the tab it belongs to.
+  - Click the result named "Theme" (its subtitle names the Display tab).
+  - Wait a second for the page to move.
+expectations:
+  - The Display tab of Settings is showing (Display is highlighted in the settings navigation).
+  - A setting row labelled "Theme" with a dropdown control is visible on screen.
+  - The search dropdown has closed.
+max_steps: 12
+max_seconds: 300

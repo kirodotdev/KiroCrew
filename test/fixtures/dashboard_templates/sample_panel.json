@@ -1,0 +1,35 @@
+{
+  "note": "One crewmate's panel_publish, as the panel fold renders it. Written, not captured: the pod capture predates any page reading this fold. The data object mixes every shape the project-report block draws -- short scalars, a long string, an array of objects, an array of scalars and a nested object -- so the page cases have one of each.",
+  "now": "2026-10-04T17:12:00Z",
+  "folds": {
+    "panel": {
+      "seq": 3,
+      "value": {
+        "schema": 1,
+        "template": "default",
+        "title": "Release watch",
+        "crew": "release-watch",
+        "crew_key": "0000000000000000000000000000000000000000",
+        "data": {
+          "title": "Release watch",
+          "phase": "rollout",
+          "open_rulings": 2,
+          "healthy": true,
+          "summary": "Two regions are on the new build and one waits for the canary to settle.",
+          "regions": [
+            {"name": "east", "state": "done", "hosts": 40},
+            {"name": "west", "state": "canary", "hosts": 6}
+          ],
+          "blockers": ["canary alarm under review", "one host failed its health check"],
+          "roles": {"rollout": "release-watch", "approval": "a person"}
+        },
+        "published_at": "2026-10-04T17:09:00+00:00",
+        "history": [],
+        "publishes": 1,
+        "history_omitted": 0,
+        "owners": {},
+        "owners_omitted": 0
+      }
+    }
+  }
+}

@@ -1,0 +1,434 @@
+import { describe, expect, it } from 'vitest'
+import {
+  deriveAutomationStatus,
+  isAutomationActive,
+  normalizeAutomationRecord,
+  normalizePullRequestMonitorTarget,
+  type StructuredMonitor,
+} from '../monitoring/automation'
+import { canonicalGitHubObservation, structuredMonitorLoop as structuredLoop } from './monitorFixtures'
+
+describe('automation transport normalizer', () => {
+  it.each([
+    ['https://github.com/acme/widgets/pull/1', 'github_pull_request'],
+    ['https://gitlab.com/acme/widgets/-/merge_requests/2', 'gitlab_merge_request'],
+    ['https://git.example/acme/widgets/-/merge_requests/2', 'gitlab_merge_request'],
+    ['https://git.example:8443/acme/widgets/-/merge_requests/2', 'gitlab_merge_request'],
+    ['https://dev.azure.com/acme/project/_git/widgets/pullrequest/3', 'azure_devops_pull_request'],
+    ['https://bitbucket.org/acme/widgets/pull-requests/4', 'bitbucket_pull_request'],
+  ])('infers the structured provider kind for %s', (target, kind) => {
+    expect(normalizePullRequestMonitorTarget(target)?.kind).toBe(kind)
+  })
+
+  it.each([
+    ['https://github.com/acme/widgets/pull/1/files', 'github_pull_request'],
+    ['https://gitlab.com/acme/widgets/-/merge_requests/2/diffs', 'gitlab_merge_request'],
+    ['https://bitbucket.org/acme/widgets/pull-requests/4/diff', 'bitbucket_pull_request'],
+  ])('recognizes a common provider subtab URL for %s', (target, kind) => {
+    expect(normalizePullRequestMonitorTarget(target)?.kind).toBe(kind)
+  })
+
+  it.each([
+    'https://github.com:8443/acme/widgets/pull/1',
+    'https://dev.azure.com:8443/acme/project/_git/widgets/pullrequest/3',
+    'https://bitbucket.org:8443/acme/widgets/pull-requests/4',
+  ])('rejects a custom port outside the self-managed GitLab provider: %s', target => {
+    expect(normalizePullRequestMonitorTarget(target)).toBeNull()
+  })
+
+  it('keeps legacy goal loops distinct and preserves zero as unlimited', () => {
+    const record = normalizeAutomationRecord({
+      id: 'legacy-1', slot_key: 'chat-1', message: 'Keep going', idle_secs: 60,
+      max_cycles: 0, cycle_count: 7, active: true, last_fire_ts: 123,
+    })
+
+    expect(record).toEqual({
+      kind: 'legacy_goal_loop', id: 'legacy-1', slotKey: 'chat-1',
+      message: 'Keep going', createdAt: 0, idleSecs: 60, maxCycles: 0, cycleCount: 7,
+      active: true, lastFireAt: 123, nextDueAt: 0, maxRuntimeSecs: 0,
+      stoppedReason: '', monitorOutcome: '', monitorKind: '',
+    })
+  })
+
+  it('carries the settled watch outcome of a finished loop, so Done can read merged or closed', () => {
+    const finished = normalizeAutomationRecord({
+      id: 'legacy-1', slot_key: 'chat-1', message: 'Keep going', idle_secs: 60,
+      max_cycles: 0, cycle_count: 7, active: false, last_fire_ts: 123,
+      stopped_reason: 'monitor_terminal', monitor_outcome: 'blocked', monitor_kind: 'gh-pr',
+    })
+    expect(finished).toMatchObject({ kind: 'legacy_goal_loop', stoppedReason: 'monitor_terminal', monitorOutcome: 'blocked', monitorKind: 'gh-pr' })
+  })
+
+  it('reads a gated REST row as the goal loop it is, with the watch outcome and kind off its nested record', () => {
+    // The cold read: GET /api/autonudge/slot ships a gated loop WITH its redacted
+    // monitor record and without the frame's two scalars. Read as a structured
+    // monitor it is dropped (the seed keeps only goal loops, /api/monitors/slot
+    // answers null for a gated loop), so a finished goal reloaded as no goal.
+    const rest = normalizeAutomationRecord({
+      id: 'loop-7', slot_key: 'chat-7-700', message: 'watch the pull request', idle_secs: 300,
+      max_cycles: 24, cycle_count: 3, active: false, last_fire_ts: 1, next_due_ts: 0,
+      max_runtime_secs: 14_400, stopped_reason: 'monitor_terminal', gate: true,
+      monitor: { kind: 'gh-pr', outcome: 'success', target: '[redacted]', objective: 'review_ready', version: 1 },
+    })
+    expect(rest).toMatchObject({
+      kind: 'legacy_goal_loop', stoppedReason: 'monitor_terminal', monitorOutcome: 'success', monitorKind: 'gh-pr',
+    })
+    // The frame's scalars win when both are present; a running gated loop has no outcome yet.
+    const frame = normalizeAutomationRecord({
+      loop: { id: 'loop-7', slot_key: 'chat-7-700', message: 'watch', idle_secs: 300, max_cycles: 24, cycle_count: 1,
+        active: true, gate: true, stopped_reason: '', monitor_outcome: '', monitor_kind: 'gh-pr' },
+    })
+    expect(frame).toMatchObject({ kind: 'legacy_goal_loop', active: true, monitorOutcome: '', monitorKind: 'gh-pr' })
+    // An ungated loop carrying a monitor record is still the structured monitor it always was.
+    const structured = normalizeAutomationRecord({
+      id: 'mon-1', slot_key: 'chat-8-800', message: '', active: true, gate: false,
+      monitor: { kind: 'github_pull_request', objective: 'review_ready', target: 'https://github.com/o/r/pull/1',
+        version: 1, cadence_secs: 300, budgets: { max_runtime_secs: 3600, max_agent_turns: 10, max_tokens: 100000 },
+        wake_count: 0, agent_turns: 0, input_tokens: 0, output_tokens: 0, probe_count: 0, provider_error_count: 0,
+        consecutive_provider_errors: 0 },
+    })
+    expect(structured?.kind).toBe('structured_monitor')
+  })
+
+  it('carries the REST sentinel path through, and leaves it absent when the frame withholds it (#10458)', () => {
+    const base = {
+      id: 'legacy-1', slot_key: 'chat-1', message: 'Keep going', idle_secs: 60,
+      max_cycles: 0, cycle_count: 7, active: true, last_fire_ts: 123,
+    }
+    // REST shape: an explicitly empty sentinel is a real "no stop file".
+    expect(normalizeAutomationRecord({ ...base, stop_sentinel_path: '' }))
+      .toMatchObject({ kind: 'legacy_goal_loop', stopSentinelPath: '' })
+    expect(normalizeAutomationRecord({ ...base, stop_sentinel_path: '/w/.stop-chat-1' }))
+      .toMatchObject({ stopSentinelPath: '/w/.stop-chat-1' })
+    // Websocket shape: the field is withheld, so the record must not invent one.
+    expect(normalizeAutomationRecord(base)).not.toHaveProperty('stopSentinelPath')
+    // A malformed store value is dropped rather than stringified.
+    expect(normalizeAutomationRecord({ ...base, stop_sentinel_path: null })).not.toHaveProperty('stopSentinelPath')
+  })
+
+  it('carries a held loop\'s approval_stalled, and only when it is true', () => {
+    const base = {
+      id: 'legacy-1', slot_key: 'chat-1', message: 'Keep going', idle_secs: 60,
+      max_cycles: 0, cycle_count: 7, active: true, last_fire_ts: 123,
+    }
+    expect(normalizeAutomationRecord({ ...base, approval_stalled: true }))
+      .toMatchObject({ kind: 'legacy_goal_loop', approvalStalled: true })
+    expect(normalizeAutomationRecord({ ...base, approval_stalled: false })).not.toHaveProperty('approvalStalled')
+    expect(normalizeAutomationRecord({ ...base, approval_stalled: 'true' })).not.toHaveProperty('approvalStalled')
+  })
+
+  it('carries a work-ledger watch\'s waiting_on_person, and only when it is true', () => {
+    const base = {
+      id: 'legacy-1', slot_key: 'chat-1', message: 'Keep going', idle_secs: 60,
+      max_cycles: 0, cycle_count: 7, active: true, last_fire_ts: 123,
+    }
+    expect(normalizeAutomationRecord({ ...base, waiting_on_person: true }))
+      .toMatchObject({ kind: 'legacy_goal_loop', waitingOnPerson: true })
+    expect(normalizeAutomationRecord({ ...base, waiting_on_person: false })).not.toHaveProperty('waitingOnPerson')
+  })
+
+  it('folds channel session keys into dashboard slot keys', () => {
+    const record = normalizeAutomationRecord({
+      id: 'legacy-1', slot_key: 'slack:1785370133.085469', message: 'Keep going',
+      idle_secs: 60, max_cycles: 24, cycle_count: 7, active: true, last_fire_ts: 123,
+    })
+
+    expect(record?.slotKey).toBe('slack_1785370133.085469')
+  })
+
+  it('normalizes the authoritative structured budgets and usage once for REST and WS', () => {
+    const fromRest = normalizeAutomationRecord(structuredLoop())
+    const fromWs = normalizeAutomationRecord({ event: 'updated', slot: 'chat-1', loop: structuredLoop() })
+
+    expect(fromRest).toEqual(fromWs)
+    expect(fromRest?.kind).toBe('structured_monitor')
+    const monitor = fromRest as StructuredMonitor
+    expect(monitor.budgets).toEqual({
+      maxRuntimeSecs: 14_400,
+      maxAgentTurns: 8,
+      maxTokens: 250_000,
+      maxProviderErrors: 3,
+    })
+    expect(monitor.usage).toEqual({
+      probes: 5,
+      wakes: 2,
+      agentTurns: 2,
+      inputTokens: 1200,
+      outputTokens: 300,
+      providerErrors: 1,
+      tokenUsageKnown: true,
+    })
+    expect(monitor.latest).toEqual({
+      classification: 'pending',
+      reasonCode: 'checks_pending',
+      observedAt: 1_800_000_000,
+      decision: 'no_change',
+    })
+    expect(structuredLoop().monitor.last_observation).toEqual(canonicalGitHubObservation)
+  })
+
+  it('fails closed when a structured marker is malformed or from a future version', () => {
+    const malformed = normalizeAutomationRecord({ ...structuredLoop(), monitor: { version: 1 } })
+    const future = normalizeAutomationRecord(structuredLoop({ version: 2 }))
+    const invalidVersion = normalizeAutomationRecord(structuredLoop({ version: 0 }))
+
+    expect(malformed).toMatchObject({ kind: 'structured_monitor', actionable: false })
+    expect(future).toMatchObject({ kind: 'structured_monitor', actionable: false, version: 2 })
+    expect(invalidVersion).toMatchObject({ kind: 'structured_monitor', actionable: false })
+    expect(deriveAutomationStatus(malformed!)).toBe('blocked')
+    expect(deriveAutomationStatus(future!)).toBe('blocked')
+    expect(deriveAutomationStatus(invalidVersion!)).toBe('blocked')
+  })
+
+  it('ignores unrendered canonical evidence from another provider kind', () => {
+    const record = normalizeAutomationRecord(structuredLoop({
+      last_observation: {
+        ...canonicalGitHubObservation,
+        kind: 'gitlab_merge_request',
+      },
+    }))
+
+    expect(record).toMatchObject({ kind: 'structured_monitor', actionable: true })
+  })
+
+  it('ignores unrendered canonical check-name evidence beyond backend bounds', () => {
+    const record = normalizeAutomationRecord(structuredLoop({
+      last_observation: {
+        ...canonicalGitHubObservation,
+        checks: {
+          ...canonicalGitHubObservation.checks,
+          passed: ['x'.repeat(201)],
+        },
+      },
+    }))
+
+    expect(record).toMatchObject({ kind: 'structured_monitor', actionable: true })
+  })
+
+  it('fails closed instead of repairing non-positive structured limits', () => {
+    const record = normalizeAutomationRecord(structuredLoop({
+      budgets: {
+        max_runtime_secs: 14_400,
+        max_agent_turns: 8,
+        max_tokens: 0,
+        max_provider_errors: 3,
+      },
+    }))
+
+    expect(record).toMatchObject({ kind: 'structured_monitor', actionable: false })
+    expect(deriveAutomationStatus(record!)).toBe('blocked')
+  })
+
+  it('keeps quarantined current-schema monitor records non-actionable', () => {
+    const record = normalizeAutomationRecord(structuredLoop({
+      active: false,
+      outcome: 'blocked',
+      stopped_reason: 'invalid_monitor_record',
+    }))
+
+    expect(record).toMatchObject({
+      kind: 'structured_monitor',
+      active: false,
+      actionable: false,
+      terminal: {
+        outcome: 'blocked',
+        reason: 'invalid_monitor_record',
+      },
+    })
+    expect(deriveAutomationStatus(record!)).toBe('blocked')
+  })
+
+  it('keeps session-close tombstones non-actionable', () => {
+    const record = normalizeAutomationRecord(structuredLoop({
+      active: false,
+      outcome: 'session_close',
+      stopped_reason: 'session_closed',
+    }))
+
+    expect(record).toMatchObject({
+      kind: 'structured_monitor',
+      active: false,
+      actionable: false,
+      terminal: {
+        outcome: 'session_close',
+        reason: 'session_closed',
+      },
+    })
+  })
+
+  it.each([
+    { cadence_secs: 86_401 },
+    { budgets: { max_runtime_secs: 2_592_001, max_agent_turns: 8, max_tokens: 250_000, max_provider_errors: 3 } },
+    { budgets: { max_runtime_secs: 14_400, max_agent_turns: 1_001, max_tokens: 250_000, max_provider_errors: 3 } },
+    { budgets: { max_runtime_secs: 14_400, max_agent_turns: 8, max_tokens: 1_000_001, max_provider_errors: 3 } },
+    { budgets: { max_runtime_secs: 14_400, max_agent_turns: 8, max_tokens: 250_000, max_provider_errors: 21 } },
+    { wake_instructions: 'x'.repeat(1001) },
+  ])('fails closed when a structured record exceeds a backend bound', patch => {
+    const record = normalizeAutomationRecord(structuredLoop(patch))
+
+    expect(record).toMatchObject({ kind: 'structured_monitor', actionable: false })
+  })
+
+  // 0 is this budget's unlimited sentinel, so it is IN bounds where its siblings
+  // reject it -- a record carrying it must stay usable rather than fail closed.
+  it('accepts an unlimited wake budget', () => {
+    const record = normalizeAutomationRecord(structuredLoop({
+      budgets: { max_runtime_secs: 14_400, max_agent_turns: 0, max_tokens: 250_000, max_provider_errors: 3 },
+    }))
+
+    expect(record).toMatchObject({ kind: 'structured_monitor' })
+    expect((record as { budgets: { maxAgentTurns: number } }).budgets.maxAgentTurns).toBe(0)
+  })
+
+  it.each([
+    ['token usage boolean', { token_usage_known: 'yes' }],
+    ['wake-in-flight boolean', { wake_in_flight: 1 }],
+    ['wake delivery enum', { wake_delivery: 'later' }],
+    ['completion disposition enum', { last_completion_disposition: 'maybe' }],
+    ['decision enum', { last_decision: 'wait' }],
+    ['provider error enum', { last_provider_error: 'dns' }],
+    ['outcome enum', { active: false, outcome: 'celebrated' }],
+    ['config generation', { config_generation: 0 }],
+    ['last fingerprint', { last_fingerprint: 42 }],
+    ['last wake fingerprint', { last_wake_fingerprint: false }],
+    ['completion fingerprint', { last_completion_fingerprint: {} }],
+    ['terminal reason', { stopped_reason: null }],
+    ['next-probe timestamp', { next_probe_at: Number.POSITIVE_INFINITY }],
+    ['last-observed timestamp', { last_observed_at: -1 }],
+    ['observation status', { last_observation_status: 'maybe' }],
+    ['observation reason', { last_observation_reason_code: null }],
+  ])('fails closed for a malformed current-schema %s', (_name, patch) => {
+    const record = normalizeAutomationRecord(structuredLoop(patch))
+    const expectedActive = !('active' in patch) || patch.active !== false
+
+    expect(record).toMatchObject({
+      kind: 'structured_monitor',
+      actionable: false,
+      active: expectedActive,
+    })
+    if (expectedActive) expect(record).toMatchObject({ terminal: null })
+  })
+
+  it.each([
+    ['blocking review', { ...canonicalGitHubObservation, blocking_review: 'blocked' }],
+    ['nullable blocking review', { ...canonicalGitHubObservation, blocking_review: null }],
+    ['extra root key', {
+      ...canonicalGitHubObservation, raw_provider_payload: { secret: 'must-not-render' },
+    }],
+    ['extra checks bucket', {
+      ...canonicalGitHubObservation,
+      checks: {
+        ...canonicalGitHubObservation.checks,
+        provider_diagnostics: ['must-not-render'],
+      },
+    }],
+    ['check buckets', {
+      ...canonicalGitHubObservation,
+      checks: { ...canonicalGitHubObservation.checks, failed: [{ name: 'raw object' }] },
+    }],
+    ['draft', { ...canonicalGitHubObservation, draft: 'false' }],
+    ['head revision', { ...canonicalGitHubObservation, head_revision: null }],
+    ['kind', { ...canonicalGitHubObservation, kind: 'pull_request' }],
+    ['mergeability', { ...canonicalGitHubObservation, mergeability: 'clean' }],
+    ['review decision', { ...canonicalGitHubObservation, review_decision: 'waiting' }],
+    ['review threads complete', {
+      ...canonicalGitHubObservation, review_threads_complete: 1,
+    }],
+    ['state', { ...canonicalGitHubObservation, state: 'running' }],
+    ['target', { ...canonicalGitHubObservation, target: false }],
+    ['unresolved count', {
+      ...canonicalGitHubObservation, unresolved_review_threads: -1,
+    }],
+  ])('ignores unrendered canonical GitHub %s facts', (_name, lastObservation) => {
+    const record = normalizeAutomationRecord(structuredLoop({
+      last_observation: lastObservation,
+    }))
+
+    expect(record).toMatchObject({
+      kind: 'structured_monitor', actionable: true, active: true,
+    })
+    expect(JSON.stringify(record)).not.toContain('must-not-render')
+  })
+
+  it.each([
+    'gitlab_merge_request',
+    'azure_devops_pull_request',
+    'bitbucket_pull_request',
+  ])('accepts the exact shared observation for %s', monitorKind => {
+    const record = normalizeAutomationRecord(structuredLoop({
+      kind: monitorKind,
+      last_observation: { ...canonicalGitHubObservation, kind: monitorKind },
+    }))
+
+    expect(record).toMatchObject({
+      kind: 'structured_monitor', actionable: true, monitorKind,
+    })
+  })
+
+  it.each([
+    ['inactive without an outcome', { active: false, outcome: null }],
+    ['active with a terminal outcome', { active: true, outcome: 'success' }],
+  ])('fails closed when a structured record is %s', (_name, patch) => {
+    const { active, ...monitorPatch } = patch
+    const record = normalizeAutomationRecord({
+      ...structuredLoop(monitorPatch),
+      active,
+    })
+
+    expect(record).toMatchObject({ kind: 'structured_monitor', actionable: false })
+    expect(deriveAutomationStatus(record!)).toBe('blocked')
+  })
+
+  it('does not turn a removed structured record into a phantom blocked monitor', () => {
+    const record = normalizeAutomationRecord({
+      event: 'removed', slot: 'chat-1', loop: structuredLoop({ probe_count: 1 }),
+    })
+    expect(record).toBeNull()
+  })
+
+  it.each([
+    [{ probe_count: 0 }, 'arm_pending'],
+    [{ probe_count: 1 }, 'active'],
+    [{ probe_count: 1, last_decision: 'retry_provider' }, 'backing_off'],
+    [{ probe_count: 1, wake_in_flight: true, wake_delivery: 'dispatched' }, 'action_running'],
+    [{ active: false, outcome: 'success', stopped_reason: 'success' }, 'success'],
+    [{ active: false, outcome: 'blocked', stopped_reason: 'approval_stall' }, 'blocked'],
+    [{ active: false, outcome: 'budget', stopped_reason: 'token_budget' }, 'budget_stopped'],
+    [{ active: false, outcome: 'user_stop', stopped_reason: 'user_stop' }, 'user_stopped'],
+  ] as const)('reports monitor state %s as %s', (patch, expected) => {
+    const record = normalizeAutomationRecord(structuredLoop(patch))
+    expect(deriveAutomationStatus(record!)).toBe(expected)
+  })
+
+  it('does not retain a stale busy delivery after the wake is no longer in flight', () => {
+    const record = normalizeAutomationRecord(structuredLoop({
+      probe_count: 1,
+      wake_in_flight: false,
+      wake_delivery: 'busy',
+      last_decision: 'no_change',
+    }))
+
+    expect(deriveAutomationStatus(record!)).toBe('active')
+  })
+})
+
+describe('shared active-monitor predicate', () => {
+  const structured = normalizeAutomationRecord(structuredLoop()) as StructuredMonitor
+
+  it('accepts only proven live records', () => {
+    expect(isAutomationActive(structured)).toBe(true)
+    expect(isAutomationActive({
+      kind: 'legacy_goal_loop', id: 'legacy-1', slotKey: 'chat-1', message: '',
+      createdAt: 0, idleSecs: 60, maxCycles: 24, cycleCount: 2, active: true,
+      lastFireAt: 0, nextDueAt: 0, maxRuntimeSecs: 3600, stoppedReason: '',
+      monitorOutcome: '', monitorKind: 'work-ledger',
+    })).toBe(true)
+  })
+
+  it('fails closed for missing, stopped, terminal, or malformed records', () => {
+    expect(isAutomationActive(null)).toBe(false)
+    expect(isAutomationActive({ ...structured, active: false })).toBe(false)
+    expect(isAutomationActive({ ...structured, terminal: { outcome: 'success', reason: '', stoppedAt: 1 } })).toBe(false)
+    expect(isAutomationActive({ ...structured, actionable: false })).toBe(false)
+  })
+})

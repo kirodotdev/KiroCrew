@@ -1,0 +1,39 @@
+# Smoke: the top-bar bell SHEET alone -- open it, read it, dismiss it, and
+# confirm the chat underneath is untouched. This deliberately stops short of
+# the full page: notifications-center-empty-state.yaml already follows the
+# sheet's "Open inbox" link and reads the /notifications PAGE, so this scenario
+# never leaves /chat and covers only what that one passes through in a single
+# step -- that the bell (App.tsx NotificationsBellButton, accessible name
+# "Notifications") slides the sheet in from the right, that the sheet reads
+# as an honest empty state, and that Escape (or the bell again) is the single
+# dismissal path that parks it back offscreen without leaving a scrim or a
+# shifted layout behind. The lane's target never produces a notification
+# (no notifications.jsonl in the seeded home, --no-crons, no chat channel, the
+# fixture's hook posts nothing), so "No notifications" / "Activity will appear
+# here" is deterministic whatever ran earlier in the session and a retry reads
+# the same. Only the newest three screenshots survive (harness.KEEP_IMAGES);
+# with three actions they are the open sheet, the dismissed sheet and the
+# settled page, so the open evidence is read from the first of them.
+name: notifications-bell-sheet-open-close
+tier: smoke
+feature: notifications
+user_story: >-
+  As a user, I want to glance at my notifications from the bell and put them
+  away again, so that I can check for activity without leaving the chat.
+docs_url: docs/system-specs/modules/app-notifications.md
+summary: Click the top-bar bell, read the empty notifications sheet, dismiss it with Escape and confirm the chat is unobstructed
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /chat
+steps:
+  - You are on the chat page. In the top bar, near the right edge, find the small bell icon button named "Notifications" (it carries no number badge) and click it once. A sheet slides in from the right edge with the heading "Notifications".
+  - Read the sheet without clicking anything in it. It says "No notifications" with "Activity will appear here" beneath, and at its bottom right there is a link reading "Open inbox" -- do not click that link. Press the Escape key once.
+  - Wait a second.
+expectations:
+  - The sheet is gone; nothing is overlaying the right side of the page and no dimmed backdrop remains.
+  - The chat page is unobstructed and unchanged; the top bar with the bell is still in place and the address is still the chat page, not the Notifications page.
+  - In the screenshot taken right after you clicked the bell, a sheet was open at the right edge with the heading "Notifications" and read "No notifications" with "Activity will appear here" beneath.
+  - No red error banner is visible and no text is clipped or overlapping.
+max_steps: 6
+max_seconds: 180

@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 270" width="480" height="270" fill="none">
+  <defs>
+    <linearGradient id="sb-bg-l" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f5f3ff"/>
+      <stop offset="100%" stop-color="#ddd6fe"/>
+    </linearGradient>
+  </defs>
+  <rect width="480" height="270" rx="12" fill="url(#sb-bg-l)"/>
+  <circle cx="58" cy="40" r="20" fill="#c4b5fd" opacity="0.5"/>
+  <circle cx="432" cy="234" r="30" fill="#a78bfa" opacity="0.35"/>
+
+  <!-- Phase stepper: Requirements approved, Design approved, Tasks in progress -->
+  <line x1="148" y1="34" x2="186" y2="34" stroke="#7c3aed" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="294" y1="34" x2="332" y2="34" stroke="#c4b5fd" stroke-width="2.5" stroke-linecap="round"/>
+
+  <g>
+    <rect x="40" y="21" width="108" height="26" rx="13" fill="#7c3aed"/>
+    <circle cx="58" cy="34" r="8" fill="#ffffff"/>
+    <path d="M54.4,34 L57,36.6 L61.8,31.2" stroke="#7c3aed" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="72" y="30.5" width="62" height="7" rx="3.5" fill="#ffffff"/>
+  </g>
+
+  <g>
+    <rect x="186" y="21" width="108" height="26" rx="13" fill="#7c3aed"/>
+    <circle cx="204" cy="34" r="8" fill="#ffffff"/>
+    <path d="M200.4,34 L203,36.6 L207.8,31.2" stroke="#7c3aed" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="218" y="30.5" width="54" height="7" rx="3.5" fill="#ffffff"/>
+  </g>
+
+  <g>
+    <rect x="332" y="21" width="108" height="26" rx="13" fill="#ffffff" stroke="#7c3aed" stroke-width="1.5"/>
+    <circle cx="350" cy="34" r="11" fill="#a78bfa" opacity="0.3"/>
+    <circle cx="350" cy="34" r="7" fill="none" stroke="#7c3aed" stroke-width="2"/>
+    <circle cx="350" cy="34" r="2.6" fill="#7c3aed"/>
+    <rect x="364" y="30.5" width="48" height="7" rx="3.5" fill="#c4b5fd"/>
+  </g>
+
+  <!-- Embedded agent conversation that drafts the spec (left) -->
+  <rect x="40" y="74" width="176" height="158" rx="10" fill="#ffffff" stroke="#c4b5fd" stroke-width="1.5"/>
+  <rect x="54" y="90" width="124" height="34" rx="8" fill="#ede9fe"/>
+  <rect x="64" y="99" width="90" height="6" rx="3" fill="#c4b5fd"/>
+  <rect x="64" y="110" width="66" height="6" rx="3" fill="#c4b5fd"/>
+  <rect x="84" y="132" width="118" height="28" rx="8" fill="#7c3aed"/>
+  <rect x="94" y="139" width="84" height="6" rx="3" fill="#ffffff"/>
+  <rect x="94" y="149" width="56" height="6" rx="3" fill="#ddd6fe" opacity="0.8"/>
+  <rect x="54" y="168" width="140" height="34" rx="8" fill="#ede9fe"/>
+  <rect x="64" y="177" width="106" height="6" rx="3" fill="#c4b5fd"/>
+  <rect x="64" y="188" width="74" height="6" rx="3" fill="#c4b5fd"/>
+  <rect x="54" y="212" width="148" height="16" rx="8" fill="#f5f3ff" stroke="#ddd6fe" stroke-width="1.2"/>
+
+  <!-- Reviewable markdown, tab per phase (right) -->
+  <rect x="232" y="74" width="208" height="158" rx="10" fill="#ffffff" stroke="#c4b5fd" stroke-width="1.5"/>
+  <rect x="246" y="86" width="54" height="16" rx="8" fill="#ddd6fe"/>
+  <rect x="304" y="86" width="46" height="16" rx="8" fill="#ddd6fe" opacity="0.55"/>
+  <rect x="354" y="86" width="40" height="16" rx="8" fill="#7c3aed"/>
+  <line x1="232" y1="112" x2="440" y2="112" stroke="#ede9fe" stroke-width="1.2"/>
+  <rect x="248" y="122" width="100" height="10" rx="5" fill="#5b21b6"/>
+  <rect x="248" y="142" width="168" height="6" rx="3" fill="#e9e5ff"/>
+  <rect x="248" y="154" width="146" height="6" rx="3" fill="#e9e5ff"/>
+  <rect x="248" y="180" width="11" height="11" rx="3" stroke="#7c3aed" stroke-width="1.6"/>
+  <path d="M250.6,185.8 L253,188.2 L256.6,182.8" stroke="#7c3aed" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="266" y="183" width="104" height="6" rx="3" fill="#5b21b6" opacity="0.65"/>
+  <rect x="248" y="200" width="11" height="11" rx="3" stroke="#7c3aed" stroke-width="1.6"/>
+  <path d="M250.6,205.8 L253,208.2 L256.6,202.8" stroke="#7c3aed" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="266" y="203" width="84" height="6" rx="3" fill="#5b21b6" opacity="0.65"/>
+  <rect x="248" y="220" width="11" height="11" rx="3" stroke="#c4b5fd" stroke-width="1.6"/>
+  <rect x="266" y="223" width="92" height="6" rx="3" fill="#c4b5fd"/>
+</svg>

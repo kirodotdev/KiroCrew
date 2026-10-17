@@ -1,0 +1,244 @@
+/** The session list the gateway pushes: full `slots` frames with their side
+ *  channels (yolo, channel trust, the folder tree and three process-local
+ *  generations), and one-row `slot_patch` frames. */
+import { useMemo, useRef } from 'react'
+import type { QueryClient } from '@tanstack/react-query'
+import { store, type AppDispatch } from '../../store'
+import { sseSlots, sseYolo, setChannelTrusted, sseSlotPatch, fetchSlots, type SlotPatchFrame } from '../../store/dashboardSlice'
+import { reconcileSubagentQueuedFromSlots, refreshSlot, wireTurnIdentity } from '../../store/chatSlice'
+import type { ChatSlot, ChatFolder } from '../../types'
+import type { FrameData } from './frames'
+import type { StreamBuffers } from './streamBuffers'
+import { clearIdleRowRefreshes, recordIdleRowRefresh } from './idleRowRefresh'
+import { CHAT_FOLDERS_WRITE_KEY } from '../../api/chatFoldersWrite'
+
+export interface SlotListSync {
+  /** A new connection: forget the last-seen generations and raw frame. */
+  resetForConnection(): void
+  onSlots(msg: FrameData, data: ChatSlot[], raw: string): void
+  onSlotPatch(frame: SlotPatchFrame): void
+}
+
+/** Tell AppHost apps (`useAppEvents('slots')`) the session list changed.
+ *  No payload: an app re-reads through its own scoped API client, so the
+ *  owner's full slot list never crosses into app code. */
+function notifyAppsSlotsChanged(): void {
+  window.dispatchEvent(new CustomEvent('mc:app:slots', { detail: null }))
+}
+
+export function useSlotListSync(
+  dispatch: AppDispatch,
+  queryClient: QueryClient,
+  buffers: StreamBuffers,
+): SlotListSync {
+  const lastGitlabHostsGenRef = useRef<number | null>(null)
+  const lastFoldersGenRef = useRef<number | null>(null)
+  const lastGovernanceGenRef = useRef<number | null>(null)
+  const lastSlotsRawRef = useRef<string | null>(null)
+  const lastSlotsArrayRef = useRef<ChatSlot[] | null>(null)
+
+  return useMemo<SlotListSync>(() => ({
+    resetForConnection() {
+      // Forget the last-seen allowlist generation: it is process-local to the
+      // gateway, so after a restart an equal number can mean a different
+      // allowlist. Clearing it makes the next generation frame refetch.
+      lastGitlabHostsGenRef.current = null
+      // Same process-local reasoning for the folder-tree generation.
+      lastFoldersGenRef.current = null
+      // …and for the governance-ceiling generation.
+      lastGovernanceGenRef.current = null
+      // Forget the last raw slots frame too, so a reconnect whose first frame
+      // repeats the last one before it cannot swallow that first frame.
+      lastSlotsRawRef.current = null
+      // A `_done` the old socket never delivered will not arrive on this one.
+      clearIdleRowRefreshes()
+    },
+    onSlots(msg, data, raw) {
+      // The queued-depth reconcile rides this frame only, never `fetchSlots`: a
+      // pushed frame is ordered with the `subagent_queued` frames on this one
+      // socket, while a GET answer can land after a newer frame and undo it.
+      // It runs ahead of the repeat check below: a push identical to the last
+      // one still corrects a count a `subagent_queued` frame moved in between,
+      // which is the very case the reconcile exists for.
+      if (Array.isArray(data)) dispatch(reconcileSubagentQueuedFromSlots(data))
+      // An identical repeat carries identical values for every arm below, but
+      // only while no other writer (fetchSlots) has since replaced the list.
+      // Current history replies carry turn identity and cannot restore busy
+      // for this ended turn. Keep the bypass for an identity-less older
+      // reply, whose pre-existing behavior still relies on the next repeated
+      // idle frame to heal it; a pending local send remains protected.
+      const chat = store.getState().chat
+      const activeKey = chat.activeSlot
+      const activeSlotEnded = !!activeKey && Array.isArray(data)
+        && data.some(s => s.key === activeKey && s.running === false)
+      const mustResettleActiveSlot = activeSlotEnded
+        && (chat.slotState !== 'idle' || chat.slotRunning)
+        && chat.pendingTurnSlot !== activeKey
+      if (raw === lastSlotsRawRef.current
+          && store.getState().dashboard.slots === lastSlotsArrayRef.current
+          && !mustResettleActiveSlot) return
+      lastSlotsRawRef.current = raw
+      // The common server path clears a task and pushes its idle slots row
+      // before broadcasting chat_done; leading/trailing coalescing can also
+      // make either frame observable first. In both orders, text already
+      // received for any slot this frame settles must land before settlement.
+      // Otherwise a still-buffered tail would be dispatched afterwards and
+      // open a second, stranded streaming row.
+      if (Array.isArray(data)
+          && data.some(s => s.running === false && buffers.hasPendingChunks(s.key))) {
+        buffers.flushChunks()
+      }
+      // Query keys this frame has made stale; flushed once at the end.
+      const staleKeys = new Set<'chat-folders' | 'dashboardConfig'>()
+      const beforeSettle = store.getState().chat
+      dispatch(sseSlots(data))
+      lastSlotsArrayRef.current = store.getState().dashboard.slots
+      // When this frame idled the active pane (`settleEndedActiveTurn`), it
+      // ended the turn without a `_done`. `_done` leaves the pane idle AND
+      // re-hydrated: its refresh recovers frames the socket lost. So this end
+      // dispatches the same refresh, and the `_done` that usually follows for
+      // the same turn skips its own (`takeIdleRowRefresh`): one refresh per
+      // turn end. The state is read on both sides of the dispatch because
+      // `mustResettleActiveSlot` misses two such ends: text the flush above
+      // just landed, and a pending send this row itself ends.
+      const afterSettle = store.getState().chat
+      if (activeSlotEnded && activeKey && afterSettle.activeSlot === activeKey
+          && (beforeSettle.slotState !== 'idle' || beforeSettle.slotRunning)
+          && afterSettle.slotState === 'idle' && !afterSettle.slotRunning) {
+        recordIdleRowRefresh(activeKey, wireTurnIdentity(data.find(s => s.key === activeKey) ?? {}))
+        dispatch(refreshSlot(activeKey))
+      }
+      if (msg.yolo !== undefined) {
+        dispatch(sseYolo(msg.yolo))
+      }
+      if (msg.channelTrusted !== undefined) {
+        dispatch(setChannelTrusted(msg.channelTrusted))
+      }
+      // Seed the ['chat-folders'] query cache from the folder tree carried
+      // on this frame so the sidebar groups sessions correctly on the FIRST
+      // paint. Sessions arrive on this WS frame the instant the socket
+      // connects; the folders otherwise come only from a separate HTTP GET,
+      // so without this the sidebar renders every session ungrouped (Unfiled)
+      // until that GET resolves, then visibly re-shuffles them into folders.
+      //
+      // Seed ONLY when the cache has no folder data yet (first paint). Two
+      // reasons this must not run on later frames, both from the shipped
+      // staleTime: Infinity on this query:
+      //   1. A `slots` frame fires on routine session activity, so a frame
+      //      landing inside an in-flight folder mutation's optimistic window
+      //      (collapse / reorder / rename / move) would overwrite the
+      //      optimistic cache value with backend state via a direct
+      //      setQueryData — which the mutation's cancelQueries cannot cancel
+      //      — snapping the folder back to its pre-action state until
+      //      onSettled refetches.
+      //   2. The WS payload omits per-folder `history_count` (the backend
+      //      computes it via a synchronous session scan that must not run on
+      //      this hot path). Seeding count-less data marks the query fresh,
+      //      so a mount-time query would skip GET /api/chat/folders and the
+      //      counts (the "hide when empty" filter's input) would never load.
+      // So seed the tree once, then invalidate to let the HTTP GET backfill
+      // counts; after the cache is populated, live frames leave it alone and
+      // folder create/rename/move propagate through their own mutation +
+      // invalidate path as before.
+      //
+      // Guard on `existing === undefined` (cache NEVER populated), NOT on
+      // `!existing || length === 0`: a user with genuinely zero folders has
+      // the HTTP GET cache the empty array `[]`, and `[].length === 0` would
+      // then re-match on EVERY subsequent slots frame — re-seeding `[]` and
+      // re-invalidating in a loop, hammering the session-scanning
+      // GET /api/chat/folders. `undefined` fires exactly once, on first paint.
+      if (Array.isArray(msg.folders)) {
+        const existing = queryClient.getQueryData<ChatFolder[]>(['chat-folders'])
+        if (existing === undefined) {
+          queryClient.setQueryData<ChatFolder[]>(['chat-folders'], msg.folders as ChatFolder[])
+          // Backfill history_count (omitted from the WS payload) — the seed
+          // marked the query fresh, so nudge the real GET to run.
+          staleKeys.add('chat-folders')
+        }
+      }
+      // Refetch the folder tree when the STORE changed, for every source of
+      // change — an agent, another tab, another device — not just this tab's
+      // own mutation. The seed above deliberately fires once, so without
+      // this a folder created anywhere else stays invisible until a reload:
+      // ['chat-folders'] carries the app-wide staleTime: Infinity, and the
+      // sessions do arrive (their folder_id points at a folder this tab has
+      // never heard of, so they render as Unfiled and the folder looks like
+      // it was never created).
+      //
+      // invalidate, never setQueryData: a refetch is what brings back the
+      // `history_count` the WS payload omits, and the generation only moves
+      // on a real store write, so the value a refetch resolves to already
+      // includes the mutation whose optimistic window it might land in.
+      //
+      // Same process-local trap as gitlabHostsGeneration below: the counter
+      // resets with the gateway, so a restart can hand back a number equal
+      // to the one this client last saw over a different tree. The first
+      // generation frame of each connection is therefore "unknown, refetch",
+      // and comparison only happens within one connection.
+      if (typeof msg.foldersGeneration === 'number') {
+        const prevFoldersGen = lastFoldersGenRef.current
+        lastFoldersGenRef.current = msg.foldersGeneration
+        if (prevFoldersGen === null || prevFoldersGen !== msg.foldersGeneration) {
+          staleKeys.add('chat-folders')
+        }
+      }
+      // Refresh the cached GitLab-hosts allowlist when it may have changed.
+      // The generation is PROCESS-local, so a gateway restart can hand out a
+      // number equal to the one this client last saw even though the
+      // allowlist on disk changed. Treat the first generation frame of each
+      // connection as "unknown, refetch" and only compare within a
+      // connection — one extra fetch per connect, never a stale allowlist.
+      if (typeof msg.gitlabHostsGeneration === 'number') {
+        const prevGen = lastGitlabHostsGenRef.current
+        lastGitlabHostsGenRef.current = msg.gitlabHostsGeneration
+        if (prevGen === null || prevGen !== msg.gitlabHostsGeneration) {
+          staleKeys.add('dashboardConfig')
+        }
+      }
+      // Same contract for the governance ceiling: a centrally pushed policy
+      // swaps it mid-session and bumps this generation, and the config
+      // endpoint derives `social_share_enabled` from that ceiling. Without
+      // this the cached answer would keep offering the Share entry for the
+      // rest of its stale window after the fleet withdrew it.
+      if (typeof msg.governanceGeneration === 'number') {
+        const prevGovGen = lastGovernanceGenRef.current
+        lastGovernanceGenRef.current = msg.governanceGeneration
+        if (prevGovGen === null || prevGovGen !== msg.governanceGeneration) {
+          staleKeys.add('dashboardConfig')
+        }
+      }
+      // One invalidation per key per frame. Several arms above can each
+      // ask for the same key on one frame (the first frame of a connection
+      // trips both generation arms, and the folder seed plus its generation),
+      // and every invalidate cancels the refetch the previous one started
+      // and issues another, so separate calls put two identical GETs on the
+      // wire where one answers them all.
+      //
+      // A folder refetch is deferred while an optimistic folder write is
+      // pending: its reply would be serialized before that write lands and
+      // would snap the folder back (see CHAT_FOLDERS_WRITE_KEY). The write's
+      // own settle refetches, and by then the store holds both the write and
+      // whatever change moved the generation, so nothing is lost by waiting.
+      if (staleKeys.has('chat-folders') && queryClient.isMutating({ mutationKey: CHAT_FOLDERS_WRITE_KEY }) > 0) {
+        staleKeys.delete('chat-folders')
+      }
+      for (const key of staleKeys) queryClient.invalidateQueries({ queryKey: [key] })
+      notifyAppsSlotsChanged()
+    },
+    onSlotPatch(frame) {
+      const dashboard = store.getState().dashboard
+      const removed = new Set(frame.removed ?? [])
+      for (const slot of removed) queryClient.resetQueries({ queryKey: ['dashboard-card', slot] })
+      const hasUnknownRow = (frame.slots ?? []).some(row =>
+        typeof row?.key === 'string'
+        && !removed.has(row.key)
+        && !Object.prototype.hasOwnProperty.call(dashboard.closingSlots ?? {}, row.key)
+        && !dashboard.slots.some(slot => slot.key === row.key))
+      // A stale list can remove a newly created row; its later patch cannot
+      // restore that row, so the authoritative list repairs the omission.
+      if (hasUnknownRow) dispatch(fetchSlots())
+      dispatch(sseSlotPatch(frame))
+      notifyAppsSlotsChanged()
+    },
+  }), [buffers, dispatch, queryClient])
+}

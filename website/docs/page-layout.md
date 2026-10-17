@@ -1,0 +1,531 @@
+# Page Layout Guide
+
+Every dashboard page follows one layout pattern. Copy the skeleton below rather
+than inventing a custom layout: a page that diverges costs a reader the
+orientation cues (title block position, scroll container, section rhythm) that
+every other page gives them for free.
+
+Components come from [`src/components/ui.tsx`](../src/components/ui.tsx); the
+conventions around them (a11y, data fetching, typography) live in
+[frontend-conventions](frontend-conventions.md).
+
+## Page skeleton
+
+### Dashboard in chat and Crew
+
+The task dashboard, the **All Dashboards** page (`/session-dashboards`) and the
+automatic session cards are specified in
+[artifacts](../../docs/system-specs/modules/artifacts.md#dynamic-dashboard-presentation):
+the iframe and live-inventory caps, the automatic-card CSS
+restrictions, and the **Needs you** inbox with its native answer and approval
+controls. The layout rules that belong here:
+
+- In chat, the dock sits above the composer, in the composer's own column
+  (`--mc-input-width`), and its tiles wrap in a narrow column. Long-run status reuses
+  the side-panel dock, expansion and narrow-screen overlay, not another drawer.
+- Crew's permanent **Dashboard** tab renders the crewmate's dynamic dashboard
+  (`CrewDashboardTab`) straight into the panel. There is no Command Center, no
+  Published view selector and no in-chat dock opener. Once visited, its body stays mounted across
+  tab-strip switches (Dashboard to Files), so it keeps its scroll and document.
+- The All Dashboards page uses the standard page header and scroll container, with one
+  column narrow and two wide.
+- Verify at both 320px and 390px: native approval targets at least 44px tall and no
+  horizontal overflow on the page.
+
+### Standard page composition
+
+```tsx
+<>
+  <PageHeader title="PageName" subtitle="Short description" />
+  <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
+    {/* optional StatCard row, then Cards with tables/forms */}
+  </div>
+</>
+```
+
+`PageHeader` owns its own `px-4 md:px-6 pt-2 pb-3` — the SAME horizontal gutter as the
+content container below it, so the title shares a left edge with the cards and rows it
+labels. Keep them equal: a header that drifts off the container's gutter insets the
+title from its own content, and the top bar above is a separate layer that does not
+have to match (see "The title belongs to the content column" below).
+`overflow-y-auto flex-1 min-h-0` is what makes the content the scrolling region while
+the header stays put: the shell is height-locked, so without `min-h-0` the flex child
+refuses to shrink and the whole page scrolls instead.
+
+`PageHeader` also takes an `actions` node, rendered right-aligned on the title
+row. Put page-level buttons there rather than in the first `Card`.
+
+### Read every class here narrow-first
+
+**The unprefixed value is the PHONE's. `md:` adds the desktop.** `px-4 md:px-6` is a
+gutter that starts at 16px and widens; `p-5 max-md:px-4` is the same intent written
+backwards. Both render identically, and only the first one is maintainable.
+
+This is not a style preference. Tailwind is built narrow-first, so a rule whose
+unprefixed value is the desktop one forces every narrow fix to claw the width back
+with `max-md:` and, usually, a negative margin hand-pinned to a number owned in
+another file. That pairing is invisible when it breaks: the pane slides past the
+screen edge, and on a script that breaks between characters nothing overflows, so no
+scroll assertion sees it. Writing the phone value unprefixed removes the second
+number instead of documenting how to keep it in sync.
+
+So the sections below are not exceptions to a desktop standard. They are the
+baseline, and the desktop is what `md:` adds to it.
+
+### The narrow-viewport inset budget
+
+These are **recommendations for the narrow branch only** — nothing here changes a
+page from `md` up, and `AUTOSDE.yaml` does not enforce a gutter value. A page that
+keeps one gutter at every width is conformant.
+
+**Recommended below `md`: a 16px page gutter (`px-4`) and an 8px `Card` horizontal
+inset (`px-2 … md:px-5`)**, serving a budget of **no more than ~25px of stacked inset
+before body text** (16 + a 1px border + 8). 16px is the screen margin Material, Apple
+HIG, Fluent, Carbon, Polaris, Primer and Atlassian all converge on, and two surfaces
+here already ran it before this was written down (`SidePanelLayout`, the Knowledge
+page), so the default is the number the rest of the industry and this app had already
+picked rather than a new one.
+
+Padding stacks, and the eye reads the SUM. The gutter is 24px from `md` up, where
+it is comfortable. At 390px the same 24px plus a 20px card inset put card text
+44px from the screen — 88px of a 390px screen, **22.6%**, spent on nothing, and
+the line that pays is the longest content in the card.
+
+Which layer yields is not arbitrary:
+
+- **Both layers yield, the one against a DRAWN border yields less.** `Card` goes to
+  8px horizontally — narrowed, never flushed. Its inset is often the only gutter its
+  own rows have, so flushing a card to 0 is still wrong (see below). The VERTICAL
+  inset stays 20px: horizontal is the axis a phone cannot spare, and changing the
+  vertical would move every card's height.
+- **The layer against the SCREEN EDGE yields more.** A phone bezel is not a drawn
+  line, so a gutter narrower than the 24px desktop one reads as intentional rather
+  than cramped. 16px is where that stops being true in the other direction: 8px reads
+  as content pressed against the bezel rather than as a deliberately dense page. 16px keeps most of the width the
+  narrow gutter buys while leaving the page visibly inset.
+
+This MATCHES the 16px screen margin that Material, Apple HIG, Fluent, Carbon,
+Polaris, Primer and Atlassian all converge on. Their 16px is content-to-edge for
+content that is **not already inside a bordered container**: a Material list item at
+a 16px margin puts its text at 16px, not at 36px. So this app hits that number
+exactly for content ON the gutter -- a heading, a row, a tab strip -- and a `Card`
+then charges its own 8px on top, putting card text at 25px. The chat transcript runs
+the SAME 16px -- its message row and its composer are both `px-4` -- so a page's
+uncontained content and the agent's own text sit on one vertical line across the whole
+app, and only a `Card` steps inside it. That a card cannot also land on 16px under one
+gutter is arithmetic, not an oversight: the card inset absorbs the difference, which is
+one more reason to reach for a `Card` less often on a phone (see below).
+
+At 390px the card goes from 342px wide (the 24px gutter) to 358px and its text line
+from 300px to 340px, **+13.3%**; at 320px the card goes from 272px to 288px and the
+text line from 230px to 270px, **+17.4%**. Nothing changes from `md` up.
+
+That is the comparison against the DESKTOP gutter. Against an 8px narrow gutter with a
+10px card inset, the same card is 16px narrower and its text line 12px shorter (390px:
+374 -> 358 wide, 352 -> 340 of text). Those 12px buy a 16px screen margin on every
+uncontained surface and one shared left edge; a page that would rather have the width
+should drop the `Card`, not re-cut the gutter. Both sets of figures follow
+from the box arithmetic -- viewport minus two gutters, then minus two 1px borders and
+two card insets -- and the text-line figures subtract the borders because a border is
+opaque to text the same way padding is.
+
+The one exception is `OnboardingChapterShell`, a full-page surface with its own
+`sm:px-10` scale rather than a `PageHeader` + container page.
+
+### The title belongs to the content column, not to the chrome
+
+Going down the left of a phone screen there are two layers, and they are allowed to
+differ:
+
+| | narrow | made of |
+|---|---|---|
+| **content column** — `PageHeader`, page rows, `Card` boxes | **16px** | the page gutter, `px-4` |
+| `Card` body text | 25px | 16 + 1px border + the `Card`'s own 8 |
+| top bar icon BOX (chrome) | 16px | header `pl-2` (8) + each icon button's own 8 |
+| top bar nav mark | 16px | the square product logo (`w-6 h-6`, `object-contain`) in that 16px box; the `Menu` fallback shares the same `w-6` box |
+
+The title shares the container's 16px so it sits directly above the left edge of the
+cards and rows it labels. That is the rule, and it is what decides the number: the
+title follows its CONTENT, never the chrome above it. Moving the header out to meet
+the top bar instead reads worse, because the title then sits inside the very cards
+beneath it.
+
+At 16px the chrome happens to land on the same line, and that is a consequence rather
+than the reason. The top bar's icon BOXES are header inset plus each icon button's own
+8px, so an 8px header inset puts them at 16px: the nav mark, the page title, the
+chat session-list toggle and every card's left edge become one vertical line. Only the
+LEFT cluster is tuned this way — `.tb-right` carries a padding/negative-margin pair
+that keeps the notification badge's 4px overhang from being clipped, and re-tuning it
+needs a real WebKit check rather than a local one. Two things make this line easy to
+break silently: a mobile-only `px-2` on the left cluster stacks on the header's own
+inset and pushes the nav mark out past the page's own edge, and the glyph position
+is never the container's `className` — measure the rendered glyph with
+`getBoundingClientRect`, not the class.
+
+**The nav mark needs no optical correction.** It is the square product logo
+(`w-6 h-6`, `object-contain`, the same asset and treatment as the wide shell) in a `p-2`
+button over the bar's `pl-2`, so its ink lands on the 16px page gutter the title and
+every card's left edge sit on, and the button box is 24 + 16 = 40px for the tap target.
+Until the logo's own `load` event, `MobileNavGlyph` shows the `Menu` hamburger in the
+same `w-6` box, with no translate. `src/test/narrowFirstBaseline.test.ts` re-derives the
+sum.
+
+Chat is on this line too, not beside it: the transcript's message row and the composer
+are `px-4` with no responsive variant. So the nav mark, the page title, a page
+row, a card's left edge and the agent's own text all start at 16px, and a `Card`'s body
+text is the one thing that steps inside (25px). Chat is where a phone user spends most
+of their time, which is why it is the surface the rest is lined up with rather than the
+other way round.
+
+`src/test/narrowFirstBaseline.test.ts` pins the header to the container gutter the
+skeleton above documents, and separately pins the top bar's left cluster against the
+redundant inset coming back.
+
+### If you write a shared primitive, a breakpoint-scoped base padding is a trap
+
+This one is for primitive authors rather than page authors, and it cost this repo a
+silent desktop regression before it was written down.
+
+`twMerge` only collapses classes that collide at the **same** breakpoint. So the
+moment a primitive spells its base inset with a prefix — `md:px-5` — a caller's
+plain `p-3` no longer displaces it. The two sit side by side, the caller gets its
+12px on a phone, and from `md` up the primitive's 20px quietly wins. The call site
+reads as 12px everywhere and is not.
+
+Making every caller spell both halves (`p-3 md:p-3`) does close it, but it is the
+wrong shape twice over: it is a permanent obligation on every future caller, and any
+guard for it has to be lexical, so a computed `className={cond ? 'p-3' : ''}` or a
+class list held in a module const walks straight past.
+
+What `Card` does instead: if the incoming `className` names a padding on an axis,
+the base inset for THAT axis is dropped rather than merged, decided from the final
+string at render time. The caller owns the axis it asked for, at every width, and no
+call site has to know the trap exists. `src/test/cardInsetYield.test.tsx` pins it by
+rendering, including the computed-`className` case.
+
+Any new primitive that pairs a `md:`-prefixed base padding with `twMerge` re-opens
+the same hole, so either yield the axis the same way or keep the base unprefixed.
+Stated honestly: `Card` is currently the ONLY primitive in `ui.tsx` with a
+breakpoint-scoped base padding — `Btn`, `Input` and `StatCard` are all
+unprefixed — so this note has no other instance to fix today. It is here because the
+failure is silent and desktop-only, which is exactly the kind a reader will not
+re-derive when they reach for `md:px-*` in a new primitive.
+
+### Where the narrow-viewport rules live
+
+The measurement record sits in [narrow-viewport.md](narrow-viewport.md), one hop
+away. Everything in it is a recommendation rather than a gate, and each item
+carries the measurement that settled it, so reach for the measurement before
+arguing with the rule.
+
+| Rule | Where it is stated |
+|---|---|
+| Page zoom off on touch, and the surfaces that own their own zoom | [narrow-viewport.md](narrow-viewport.md#layout-and-sizing) |
+| The 44px touch-target rule and its two-tier grading | [narrow-viewport.md](narrow-viewport.md#layout-and-sizing) |
+| The drag-widget `touch-action: none` exemption | [narrow-viewport.md](narrow-viewport.md#a-horizontal-drag-on-mobile-belongs-to-the-nav-drawer-unless-a-page-claims-it) |
+| The 16px gutter derivation | [The narrow-viewport inset budget](#the-narrow-viewport-inset-budget) (this doc) |
+| The field floor that was not adopted | [narrow-viewport.md](narrow-viewport.md#layout-and-sizing) |
+| The nav-drawer swipe contract and `data-owns-swipe` | [narrow-viewport.md](narrow-viewport.md#a-horizontal-drag-on-mobile-belongs-to-the-nav-drawer-unless-a-page-claims-it) |
+| Binding a panel's gesture live to its offset | [narrow-viewport.md](narrow-viewport.md#a-panel-that-gains-a-gesture-must-be-bound-live-to-its-offset) |
+| Horizontal insets below the breakpoint, and `Card`'s measured budget | [narrow-viewport.md](narrow-viewport.md#horizontal-insets-below-the-breakpoint) |
+| The phone chat page's single top bar (`topbar-single`), its portal slots and the drawer rail | [narrow-viewport.md](narrow-viewport.md#the-phone-chat-page-has-one-top-bar) |
+
+### The chat transcript scroller and who moves it
+
+The chat transcript is a page's scrolling region like any other, with one
+difference: it is windowed. Only the rows near the viewport are real DOM, and
+spacers stand in for the rest. The hook that does this,
+`website/src/hooks/virtualizer/useVirtualChat.ts`, keeps the reader's position
+through every change to that window, so a host wires it rather than working
+around it.
+
+A host provides the scroller (`scrollerRef`), one `measureRef(index)` element
+per mounted row, the two sentinels at the list ends, and the `offsetBefore` /
+`offsetAfter` spacers. Chrome it renders inside the scroller above the rows (a
+paging bar, a header band) needs nothing extra: the hook measures that leading
+offset itself and carries a bottom-parked reader through it. A host that steers
+toward a row that may not be mounted (the pinned-prompt glide) asks the hook
+through `mountIndex` and `estimateRowTop`. The page declares `overflow-anchor: auto`
+on the scroller as the browser's own stabiliser for a scrolled-up reader; while
+follow is armed the hook sets it to `none` inline, because the bottom pin owns the
+position and Firefox's anchoring would drag the reader off the end
+(`followAnchorMode`). WebKit ships no anchoring, so the hook carries its own
+anchors as well.
+
+The pinned-prompt card is an overlay beside the scroller, not a row in it, and
+it paints above the composer dock, so nothing but geometry bounds it. Its
+ceiling is the transcript FLOOR: the scroller's bottom less the scroller's own
+`padding-bottom`, which is each host's statement of where readable rows stop
+(the main chat pads by the dock's height plus a clearance). `usePinnedPrompt`
+measures that floor off the scroller rather than taking it as a prop and hands it
+to the card as `maxH`, which lands as `max-height` on the bubble and bounds the
+card whether it is resting, expanded or peeked. The same ceiling clamps the fold's
+live height, which is reported only while a fold is in progress; the body is a shrinkable flex column so the cap
+scrolls the prompt instead of clipping it. A host that moves its floor (a dock
+that grows a status bar) only has to keep its `padding-bottom` honest. A prompt
+whose part still below the band is taller than the resting card is not pinned
+at all: the real bubble stays in the transcript, so a long prompt reads and
+scrolls as itself, and the card takes over only once what remains fits it. The
+resting height belongs to one prompt's card (an image-only card is two lines
+tall, a text card one), so it falls back to the default whenever the pin
+candidate changes, until the card reports it for that prompt — the host hands
+the card the candidate's identity as `promptKey`, so a card that stays mounted
+across the change re-measures and reports too.
+
+| What moves the scroller | Owner (`website/src/hooks/virtualizer/`) |
+|---|---|
+| Following the live turn, the jump-to-latest pill, scrolling to a row | `followPolicy.ts` (every write goes through its `writeScrollTop`) |
+| Holding a scrolled-up reader still when rows or heights change above them | `shiftCompensation.ts` |
+| Reopening a session where the reader left it, and re-placing after a hidden tab returns | `readingPosition.ts` |
+| Which rows are mounted as the reader scrolls, and the spacer heights around them | `windowRange.ts` over `measurement.ts` |
+| When a new row height is allowed to move the page | `geometryScheduling.ts` |
+| Listening to the scroller, its rows and its own box | `observers.ts` |
+
+The full owner map is in
+[history](../../docs/system-specs/modules/history.md#the-dashboard-transcript-window-frontend).
+
+### Decided: the transcript scrolls under the composer glass
+
+This is a design decision, not a defect, and it is settled
+([`docs/decisions/2026-10-02-chat-transcript-scrolls-under-the-composer-glass.md`](../../docs/decisions/2026-10-02-chat-transcript-scrolls-under-the-composer-glass.md)).
+On the main chat page the composer dock floats over the bottom of the transcript
+scroller (the iOS toolbar layout): the scroller runs the full height of the pane,
+the conversation passes under the dock's translucent glass at every scroll
+position, and the scroller pays for the covered strip with its `padding-bottom`
+(the dock's height plus a clearance, measured from the dock by a
+`ResizeObserver`). That holds whether or not the status stack above the composer
+holds a bar and whether or not the jump-to-bottom pill is showing; the pill
+floats over the transcript. Do not make the scroller's box end above the dock,
+reserve the dock's height with a margin, or otherwise clip the transcript so that
+"no text is read through glass": that is a maintainer decision against clipping the
+transcript. Legibility of what sits over the transcript is the glass recipe's job
+(blur and tint), never the scroller's.
+
+The welcome hero (`key="welcome-hero"`) is the one box that ENDS above the dock
+(`marginBottom: dockH`, never padding under it): its suggestion cards are
+controls, and a control under the glass is an ambiguous tap. A failed suggestion
+fetch shows an `ErrorNotice` there instead.
+It is `isolate` so WelcomeView's own z-indexes order its cards against each other
+and never against the composer's, and its column uses `safe center` and compact
+rows under 600px tall so a short window still fits both rows above the dock.
+
+`ChatPane.tsx` (split panes and a crewmate's chat) floats its composer the same
+way: one dock root (`composer-dock-root`) over the scroller's bottom edge holding
+the jump pill, the bars, the queue, the question card, the notices and the
+composer, measured by the same `useComposerDockMetrics` and paid for by the same
+`DOCK_CLEARANCE_PX` (`pages/chat/composerDockMetrics.ts`, shared by both hosts).
+The pane has no welcome hero, so nothing in it ends above the dock.
+
+The same reading applies at the TOP of a chat that a host crowns with a glass
+chip: the Members page's DM header (the Glass identity pill, the switcher, the
+panel opener) floats over the pane's top edge and the conversation scrolls under
+it (#18325). `ChatPane` takes the band's measured height as `topInset` and pads
+its scroller's rows below it (a crewmate's chat draws no pinned-prompt band,
+#18346, so the inset is the only thing it pays); the host measures the header
+with `useMeasuredHeight`, never a constant. Anything with controls that sits between such a header and the pane
+(a notice, a greeting card) stays in flow, padded below the header, and the pane
+then takes no inset: a control under the glass is an ambiguous tap. The row and
+its cells pass pointer events through; only the controls catch them. Details:
+[crew-mode](../../docs/system-specs/modules/crew-mode.md#crewmate-conversation-layout-switcher-profile-dashboard-files).
+
+### Crewmate conversation sends and runtime detail
+
+A `ChatPane` with `crewmate` always uses the `responsive` composer mode:
+one normal Send arrow for idle, busy, delegated and stopping states. Enter,
+click, voice auto-submit and direct question answers use the existing send
+transport with an optional top-level `responsive: true` in
+`POST /api/chat?ws=1`. The gateway validates a human on a real member DM and
+owns prioritization; the frontend neither sends stop nor chooses a model.
+Other panes and Sessions retain their existing Steer/Queue controls and wire.
+
+The same attachment/quote/paste serializer, send-id correlation, draft recovery,
+and measured composer dock remain in use. A responsive optimistic bubble is
+marked locally with `responsiveSend` so an exact-id steer echo can reconcile it
+and buffered streaming text stays above it. A refused send restores the draft;
+a late receipt leaves a visible delivery-pending bubble. If the server really
+queues a send, the existing cancellable queue remains visible rather than
+losing the message. No system-delivery or subagent-progress bar is drawn.
+
+Cold pane mounts hydrate the slot-detail `queue` alongside `messages` through
+the shared queue normalizer and bubble hydrator, retaining the exact send id,
+attachments and quote. The first hydrate fills missing queue cards without
+replacing newer live cards; pop/cancel ids observed before it prevent a stale
+snapshot from resurrecting completed entries, even if no message array existed
+when the frame arrived. A bounded-to-unbounded history upgrade keeps the current
+queue rather than replaying its fetched queue snapshot. Active-slot hydration
+remains owned by Sessions' existing switch/refresh path.
+
+The crewmate transcript filters runtime notices and stop events as well as
+tools, reasoning and injected subagent rows, without changing stored history.
+Historical steer/requeue/decision metadata draws an ordinary user bubble.
+Errors, pending approvals, questions, files and OAuth actions remain accessible.
+The existing footer is the simple working indicator, not a tool-purpose timeline;
+the detailed Sessions view and its normal engineering UI remain available through
+the profile's session links. Narrow screens keep the same width-adaptive composer,
+attachment holds, IME/Enter handling and keyboard-preserving send control.
+
+## Stat cards
+
+OPTIONAL summary metrics above the content. Add a row only when a number is not
+already visible in the content below it: a rolled-up total, a rate, an error
+count. Do NOT add one that restates `items.length` for a list rendered on the
+same screen; it costs roughly 90px above the fold and carries no action. A page
+with no stat card row is conformant.
+
+```tsx
+<div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(150px,1fr))] mb-6">
+  <StatCard label="Total" value={count} accent />
+  <StatCard label="Active" value={active} />
+</div>
+```
+
+`StatCard` renders a pulsing skeleton when `value` is `undefined` or `null`, so
+pass the query result straight through instead of branching on a loading flag.
+Pass `delay` (in ms) to join the grid's stagger. Give it `onClick` only when the
+card is really actionable; it then wires `role="button"`, `tabIndex` and
+Enter/Space itself.
+
+## Data sections
+
+`Card` + `CardTitle` + `InfoTip`:
+
+```tsx
+<Card>
+  <CardTitle>Section Name <InfoTip text="Explanation." /></CardTitle>
+  <SearchInput placeholder="Filter…" value={filter} onChange={…} />
+  {items.length === 0
+    ? <EmptyState icon={<Anchor className="lucide-inline" />} title="None yet" />
+    : <table className="w-full border-collapse table-striped">…</table>}
+</Card>
+```
+
+Inside a **side panel**, a counted list-section header is `PanelSectionHeader`
+(label + count node + hairline rule), never a hand-rolled one. Hierarchy comes
+from weight and size, never from an opacity modifier, and the label is not
+uppercased (`text-transform` is a no-op on CJK).
+
+## Tables
+
+Striped body, one header cell style:
+
+```tsx
+<th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">
+```
+
+`table-striped` shades even rows with `var(--card-hl)`.
+
+## Forms
+
+Inline within a `Card`, built from the shared primitives:
+
+- `Input` for text fields.
+- `SendBtn` for the primary action (accent-colored).
+- `Btn` for secondary actions, `Btn danger` for destructive ones.
+- `Checkbox` from `ui.tsx` for a boolean box.
+- **Dropdowns: never a native `<select>`.** Its popup is drawn by the OS, so it
+  ignores every theme token, cannot be styled per row, and looks nothing like
+  the rest of the app. Pick by list length and purpose:
+  - `SettingsSelect` (`components/settings.tsx`) on a Settings page — label +
+    description + dropdown as one field. The choke point for that surface.
+  - `SimpleSelect` (`components/SimpleSelect.tsx`) anywhere else, up to roughly
+    fifteen options. Radix Select under the hood; takes `options` /
+    `optionLabels` / `value` / `onChange(value)`, and `action` for a trailing
+    "+ New…" row.
+  - `SearchableSelect` (`components/SearchableSelect.tsx`) past that, or any
+    list a user would want to filter (timezones, file lists). Radix Popover plus
+    a filter box.
+  - `DropdownMenu` (`components/ui/dropdown-menu.tsx`) for a menu of *commands*
+    rather than a bound value. It is non-modal by default on touch devices (a modal
+    menu would swallow the first tap outside it), modal with a mouse, and an explicit
+    `modal` prop wins on every device. An open modal menu closes when a file drag from
+    outside the page enters the window (`useCloseOnFileDrag`), so the composer's drop
+    zone can receive the drop.
+  - `AgentSelector` for agent dropdowns specifically (portal-based, ARIA-wired).
+
+  These render a `<button>`, not a `<select>`, so an external
+  `<label htmlFor>` does **not** name them — pass `aria-label`.
+
+  **The one exception is touch, and it is not yours to make.** `SimpleSelect`
+  routes to `NativeSelect` (`components/ui/native-select.tsx`) on a coarse
+  pointer, so the OS draws the list there. The reason above is theming, and
+  theming does not reach a phone: the Radix popup's list is a `position:fixed`
+  overflow scroller inside react-remove-scroll's lock, and iOS Safari does not
+  reliably hand a finger drag to that shape — Settings → Voice → Language showed
+  7 of its ~41 codes with the rest unreachable. A themed list nobody can scroll
+  is worse than an OS-drawn list that works. Because the choice lives inside
+  `SimpleSelect`, no call site makes it — and `SettingsSelect` inherits it by
+  wrapping `SimpleSelect`. It goes no further: `SearchableSelect`,
+  `DropdownMenu` and `AgentSelector` keep the themed popup on a coarse pointer,
+  since a native `<select>` cannot host a filter box, per-option sublabels or a
+  command menu. Reaching for one of those does not mean the touch case has been
+  handled for you; whether that scroller is a real defect on a phone is
+  unresolved in #5551. `NativeSelect` is the single file exempted from the
+  `no-restricted-syntax` rule; do not add a second.
+- `Toggle` for a boolean switch. It carries `role="switch"`, `aria-checked` and
+  `aria-disabled` itself, so do not re-add them.
+
+## Status indicators
+
+- `Badge variant="ok" | "err" | "warn" | "aim" | "muted"`.
+- `SourceBadge source="…"` for provenance (where an agent, app, or skill came
+  from). It maps known sources to colors and falls back to a neutral pill for an
+  unknown one, so pass the raw source string.
+
+## Errors
+
+Render through the shared notice instead of hand-rolling a banner:
+
+```tsx
+<ErrorNotice message={error} onDismiss={() => setError(null)} askAgent />
+```
+
+Enable `askAgent` only when navigating away cannot discard an unsaved draft; otherwise
+leave it off and document what must stay in place.
+
+## Animations
+
+`animate-rise` on cards and banners, `animate-scale-in` on inline reveals. Both
+are Tailwind utilities declared in `src/tailwind-theme.css`, and both use
+`backwards` fill so an `animationDelay` holds the element hidden until its turn.
+
+## Do NOT
+
+- Wrap a page in `<div className="p-6 max-w-[960px] mx-auto">`. Use
+  `PageHeader` + the `px-4 md:px-6 pb-8` container.
+- Use a raw `<input>` / `<button>`. Use `Input`, `Btn`, `SendBtn`,
+  `SearchInput`, `Checkbox`.
+- Use a native `<select>`. There is no styled wrapper for one any more — see
+  §Forms for which dropdown component to reach for, and for the one touch-only
+  exception `SimpleSelect` already makes for you. Enforced by
+  `no-restricted-syntax` in `eslint.config.js`.
+- Use raw status text. Use `Badge` or `SourceBadge`.
+- Use `text-xs`. Use `text-[13px]`.
+- Add a new CSS `@keyframes`. Use Framer Motion, or an existing utility.
+
+
+### Split view: leading edge and focus
+
+The surface's top-left is the sessions-sidebar toggle's. In single chat the
+title row carries it (mobile) or clears the shell's stationary button with a
+60px inset and a hairline at 52px (desktop, sidebar collapsed). Split view does
+not render that row, so `SessionGridLayout` hands `ownsTopLeft` to the one
+geometric top-left leaf and `SessionGridView` gives that pane `leading`:
+`inset` reserves the toggle's column on the pane's own row (`ChatPane`:
+`pl-[49px]`, hairline at 41px; the picker card: `pl-[44px]`, hairline at 36px —
+both are container x 52 and 44, the single-chat row's columns, measured from
+where each pane's content starts), `control` renders the toggle inline ahead
+of the title. The shell's toggle keeps its normal rect (`TOGGLE_RECT`) in split
+view: the pane title row is the same height as the single-chat row, so it
+already centres on it.
+
+Split view marks focus by dimming every other pane as well as by the pane's
+accent border: `PaneDim` lays a background-coloured rectangle over the pane at
+`--pane-dim-opacity` (0.4), the way Ghostty fades an unfocused split, so
+message text, code highlighting and status colours keep their own values
+underneath and only the whole pane reads as "not the one with focus". The
+overlay is always mounted while the pane knows its focus state (opacity 0 when
+focused, so the cue fades both ways), sits at `z-20` above the message chrome
+and below the drop overlay and every shell layer, and takes no pointer events,
+so the click that claims focus lands on the pane. A pane outside split view
+(`focused` undefined) never mounts it. The placeholder pane keeps its accent
+dot as well.

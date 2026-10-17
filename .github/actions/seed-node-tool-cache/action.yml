@@ -1,0 +1,103 @@
+name: Seed Node into the runner tool cache
+description: >-
+  On a CodeBuild-hosted runner, download the newest release of one Node major
+  from nodejs.org into RUNNER_TOOL_CACHE before actions/setup-node runs, so
+  setup-node finds it there and skips its GitHub API manifest lookup. No-op on
+  GitHub-hosted runners, whose images already carry a tool cache.
+inputs:
+  node-version:
+    description: Bare Node major to seed. Must match the following setup-node step's pin.
+    required: false
+    default: "24"
+runs:
+  using: composite
+  steps:
+    # Why: the CodeBuild images ship no tool cache, so every setup-node step
+    # there calls api.github.com for actions/node-versions' manifest to turn
+    # "24" into a release. Per CI run that is one authenticated API call per
+    # setup-node step on CodeBuild (the frontend-test shards alone are four),
+    # and those calls count against the GITHUB_TOKEN hourly budget the fleet
+    # keeps exhausting. setup-node checks RUNNER_TOOL_CACHE/node/<ver>/<arch>
+    # (with the <arch>.complete marker @actions/tool-cache writes) BEFORE the
+    # manifest, so seeding that layout removes the call entirely. The version
+    # comes from nodejs.org's index, which is what the manifest mirrors, and
+    # the tarball is checked against nodejs.org's SHASUMS256.txt.
+    #
+    # Where that order lives, in the pinned actions/setup-node (v7.0.0,
+    # 8207627): src/distributions/official_builds/official_builds.ts
+    # `setupNodeJs` calls `findVersionInHostedToolCacheDirectory` (= tc.find
+    # over RUNNER_TOOL_CACHE) and returns on a hit; `getManifest` /
+    # `getInfoFromManifest` run only on a miss, or for an `lts/*` alias,
+    # `latest`, or `check-latest: true` -- none of which this repo's pins use.
+    # @actions/tool-cache's find() requires the sibling `<arch>.complete`
+    # file, which cacheDir() writes and this step reproduces. Verified on
+    # the fleet: the setup-node step logs `Found in cache @ ...` and no
+    # `Attempting to download`. nodejs.org publishes linux-{x64,arm64}
+    # .tar.xz and win-{x64,arm64} .zip for every current release line.
+    - name: Seed Node ${{ inputs.node-version }} into the tool cache (CodeBuild only)
+      if: runner.environment == 'self-hosted' && runner.os == 'Linux'
+      shell: bash
+      env:
+        NODE_MAJOR: ${{ inputs.node-version }}
+      run: |
+        set -euo pipefail
+        case "$RUNNER_ARCH" in
+          X64) arch=x64 ;;
+          ARM64) arch=arm64 ;;
+          *) echo "::warning::unsupported RUNNER_ARCH=$RUNNER_ARCH; setup-node will download"; exit 0 ;;
+        esac
+        # index.json lists releases newest first, one object per line; the
+        # first match is the newest release of the major. grep only: the image
+        # is not guaranteed to have node or jq before this step.
+        version="$(curl -fsSL --retry 3 https://nodejs.org/dist/index.json \
+          | grep -o "\"version\":\"v$NODE_MAJOR\.[0-9]*\.[0-9]*\"" | head -n 1 \
+          | sed 's/.*"v\([^"]*\)"/\1/')"
+        if [ -z "$version" ]; then
+          echo "::error::no v$NODE_MAJOR.x release in nodejs.org index"; exit 1
+        fi
+        dest="$RUNNER_TOOL_CACHE/node/$version/$arch"
+        if [ -f "$dest.complete" ]; then
+          echo "node $version ($arch) already in the tool cache"
+          exit 0
+        fi
+        file="node-v$version-linux-$arch.tar.xz"
+        work="$(mktemp -d)"
+        curl -fsSL --retry 3 -o "$work/$file" "https://nodejs.org/dist/v$version/$file"
+        curl -fsSL --retry 3 -o "$work/SHASUMS256.txt" "https://nodejs.org/dist/v$version/SHASUMS256.txt"
+        (cd "$work" && grep " $file\$" SHASUMS256.txt | sha256sum -c -)
+        mkdir -p "$dest"
+        tar -xJf "$work/$file" -C "$dest" --strip-components=1
+        touch "$dest.complete"
+        rm -rf "$work"
+        echo "seeded node $version ($arch) at $dest"
+
+    - name: Seed Node ${{ inputs.node-version }} into the tool cache (CodeBuild only)
+      if: runner.environment == 'self-hosted' && runner.os == 'Windows'
+      shell: pwsh
+      env:
+        NODE_MAJOR: ${{ inputs.node-version }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $arch = switch ($env:RUNNER_ARCH) { 'X64' { 'x64' } 'ARM64' { 'arm64' } default { $null } }
+        if (-not $arch) { Write-Host "::warning::unsupported RUNNER_ARCH=$env:RUNNER_ARCH; setup-node will download"; exit 0 }
+        $index = Invoke-RestMethod -Uri 'https://nodejs.org/dist/index.json' -MaximumRetryCount 3 -RetryIntervalSec 2
+        $hit = $index | Where-Object { $_.version -like "v$env:NODE_MAJOR.*" } | Select-Object -First 1
+        if (-not $hit) { throw "no v$env:NODE_MAJOR.x release in nodejs.org index" }
+        $version = $hit.version.Substring(1)
+        $dest = Join-Path $env:RUNNER_TOOL_CACHE "node\$version\$arch"
+        if (Test-Path -LiteralPath "$dest.complete") { Write-Host "node $version ($arch) already in the tool cache"; exit 0 }
+        $file = "node-v$version-win-$arch.zip"
+        $work = Join-Path $env:RUNNER_TEMP ([IO.Path]::GetRandomFileName())
+        New-Item -ItemType Directory -Path $work | Out-Null
+        Invoke-WebRequest -Uri "https://nodejs.org/dist/v$version/$file" -OutFile (Join-Path $work $file) -MaximumRetryCount 3 -RetryIntervalSec 2
+        Invoke-WebRequest -Uri "https://nodejs.org/dist/v$version/SHASUMS256.txt" -OutFile (Join-Path $work 'SHASUMS256.txt') -MaximumRetryCount 3 -RetryIntervalSec 2
+        $expected = (Get-Content (Join-Path $work 'SHASUMS256.txt') | Where-Object { $_ -match "\s$([regex]::Escape($file))$" }) -split '\s+' | Select-Object -First 1
+        $actual = (Get-FileHash -Algorithm SHA256 (Join-Path $work $file)).Hash.ToLowerInvariant()
+        if (-not $expected -or $actual -ne $expected) { throw "sha256 mismatch for $file" }
+        Expand-Archive -LiteralPath (Join-Path $work $file) -DestinationPath $work
+        New-Item -ItemType Directory -Path (Split-Path $dest -Parent) -Force | Out-Null
+        # The zip holds one top-level folder; setup-node expects node.exe at the arch dir root.
+        Move-Item -LiteralPath (Join-Path $work "node-v$version-win-$arch") -Destination $dest
+        New-Item -ItemType File -Path "$dest.complete" | Out-Null
+        Remove-Item -LiteralPath $work -Recurse -Force
+        Write-Host "seeded node $version ($arch) at $dest"

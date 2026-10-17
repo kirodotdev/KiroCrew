@@ -1,0 +1,7 @@
+schema-version: 2026-04-28
+fixture-name: multi-workspace
+description: |
+  Three named workspaces seed distinct memory and agent-pinned sessions.
+  The default, review and research workspaces each carry visibly different
+  memory content, and one session per workspace selects a different agent.
+  Agent identity is stored per session rather than in workspace configuration.

@@ -1,0 +1,335 @@
+/**
+ * TRUE regression test for cross-mode active slot persistence.
+ *
+ * Renders the REAL ChatPage with module-level mocks for child components.
+ * If the useEffect cleanup (refs + unmount persist) is removed from ChatPage.tsx,
+ * this test FAILS.
+ */
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { MemoryRouter } from 'react-router-dom'
+import { createTestStore } from './helpers'
+import { ThemeProvider } from '../hooks/useTheme'
+import { __resetPanelTabs, usePanelTabs } from '../hooks/usePanelTabs'
+import type { ChatSlot } from '../types'
+import type { RootState } from '../store'
+
+// --- Stub child components ---
+vi.mock('react-virtuoso', () => ({ Virtuoso: () => null }))
+vi.mock('../components/ChatInput', async () => {
+  // The page hands the text over through the Composer root's draft store, not
+  // a `value` prop, so the stand-in reads it the way the real ChatInput does.
+  const { useComposerDraftText } = await import('../chat-core/composer/Composer')
+  return {
+    default: function ChatInputStub({ value }: { value?: string }) {
+      const draft = useComposerDraftText()
+      return <textarea aria-label="test chat input" value={draft ?? value ?? ''} readOnly />
+    },
+  }
+})
+vi.mock('../components/PendingQuestionCard', () => ({
+  default: ({ onFallbackSend }: { onFallbackSend: (text: string, questions?: { question: string }[]) => void }) => (
+    <button aria-label="send stale question fallback" onClick={() => onFallbackSend('Public only', [{ question: 'Trust model' }])}>
+      Send fallback
+    </button>
+  ),
+}))
+vi.mock('../components/WelcomeView', () => ({ default: () => null }))
+vi.mock('../components/MarkdownPanel', () => ({ default: () => null }))
+vi.mock('../components/MarkdownRenderer', () => ({ default: () => null }))
+vi.mock('../components/TypewriterText', () => ({ default: () => null }))
+vi.mock('../components/OverlayDrawer', () => ({ default: () => null }))
+vi.mock('../components/AgentDropdownList', () => ({ default: () => null }))
+vi.mock('../components/ModelDropdownList', () => ({ default: () => null }))
+vi.mock('../components/InfoTip', () => ({ default: () => null }))
+vi.mock('../components/SegmentedControl', () => ({ default: () => null }))
+vi.mock('../pages/chat/CollapsibleToolGroup', () => ({ default: () => null }))
+vi.mock('../pages/chat/ActivityViewer', () => ({ default: () => null }))
+vi.mock('../pages/chat/SessionColorPicker', () => ({ default: () => null }))
+vi.mock('../pages/chat', () => ({ ChatFooter: () => null, AssistantMessage: () => null, McpInfoButton: () => null }))
+vi.mock('../pages/ChatSidebar', () => ({ default: () => null, SIDEBAR_MIN: 200, SIDEBAR_MAX: 500 }))
+vi.mock('../pages/chat/ChatSettings', () => ({ loadChatConfig: () => ({ contentWidth: 'compact' }), CONTENT_WIDTH: { compact: { messages: '900px', input: '916px' }, comfortable: { messages: '84%', input: '85%' }, full: { messages: '92%', input: '93%' } } }))
+
+// --- Stub hooks ---
+vi.mock('../hooks/useBranding', () => ({ useBranding: () => ({ botName: 'Test', avatar: '' }) }))
+vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [], defaultAgent: null }) }))
+vi.mock('../hooks/useFilteredDropdown', () => ({ useFilteredDropdown: () => ({ filtered: [], query: '', setQuery: vi.fn(), selectedIndex: 0, setSelectedIndex: vi.fn(), onKeyDown: vi.fn() }) }))
+vi.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: () => ({ recording: false, transcribing: false, toggle: vi.fn() }), voiceInputSupported: false }))
+
+// Crash-recovery reload flag, flipped per test (see lib/safeReload.ts).
+const safeReloadFlag = vi.hoisted(() => ({ on: false }))
+vi.mock('../lib/safeReload', () => ({ isSafeReload: () => safeReloadFlag.on, captureSafeReload: () => safeReloadFlag.on }))
+
+// --- Stub API ---
+vi.mock('../api/client', () => ({
+  api: Object.fromEntries(
+    ['sessions', 'chatSlotDetail', 'createChatSlot', 'deleteChatSlot', 'resumeChatSlot',
+     'deleteSession', 'agentDetail', 'approveChatSlot', 'chatSlotAgent', 'chatSlotModel',
+     'chatSlotWorkspace', 'models', 'planFromChat', 'renameSlot',
+     'resolveApproval', 'screenshot', 'slackChannels', 'slackLink', 'spawnList',
+     'stopChatSlot', 'uploadFiles', 'voiceSynthesize', 'workspaces', 'chatSlots',
+     'notifications', 'status', 'sendChat'].map(k => [k, vi.fn().mockResolvedValue(k === 'chatSlotDetail' ? { messages: [], has_more: false } : {})])
+  ),
+}))
+
+// --- Browser APIs ---
+Object.defineProperty(window, 'matchMedia', {
+  writable: true,
+  value: vi.fn().mockImplementation((q: string) => ({
+    matches: false, media: q, onchange: null,
+    addListener: vi.fn(), removeListener: vi.fn(),
+    addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn(),
+  })),
+})
+globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }) as unknown as typeof fetch
+
+import ChatPage from '../pages/ChatPage'
+import { api } from '../api/client'
+import { setActiveSlot } from '../store/chatSlice'
+
+const slot = (key: string, mode = ''): ChatSlot => ({
+  key, title: key, messages: 0, running: false, mode, created: '', last_ts: '',
+  pending_approval: false, waiting_for_input: false, last_activity_ts: undefined,
+})
+
+function renderChatPage(
+  mode: string | undefined,
+  activeSlot: string | null,
+  slots: ChatSlot[],
+  chatOverrides: Partial<RootState['chat']> = {},
+  connected = false,
+  entry = '/chat',
+) {
+  const store = createTestStore({
+    dashboard: {
+      status: { platform: 'darwin' }, connected, slots, approvalMode: 'normal',
+      channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
+      subagentRunning: {}, subagentDetails: {}, subagentText: {},
+      sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
+    } as unknown as RootState['dashboard'],
+    chat: {
+      activeSlot, messages: [], slotRunning: false, slotStopping: false, slotState: 'idle',
+      slotStatusDetail: {}, slotHasMore: false, slotOldestIndex: 0, loadingOlder: false,
+      lastChunkSeq: undefined, history: [], historyHasMore: false, historyOffset: 0,
+      pendingInput: null, slotContextPct: {}, voicePlaying: false, voiceAudio: null,
+      subagents: {}, toolLog: [], activityOpen: false, activityTab: 'tools', slotActivity: {}, slotHistory: [],
+      slotMessages: {}, slotLoading: false,
+      ...chatOverrides,
+    } as unknown as RootState['chat'],
+  })
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return { store, ...render(
+    <QueryClientProvider client={qc}>
+      <Provider store={store}>
+        <ThemeProvider>
+          <MemoryRouter initialEntries={[entry]}>
+            <ChatPage mode={mode} />
+          </MemoryRouter>
+        </ThemeProvider>
+      </Provider>
+    </QueryClientProvider>,
+  ) }
+}
+
+beforeEach(() => {
+  localStorage.clear()
+  __resetPanelTabs()
+  safeReloadFlag.on = false
+})
+
+const allSlots = [slot('chat-1'), slot('chat-2')]
+
+describe('ChatPage unmount slot persistence (real component)', () => {
+  it('persists activeSlot to localStorage on unmount', async () => {
+    const { unmount } = renderChatPage(undefined, 'chat-2', allSlots)
+    localStorage.clear()
+    await act(() => { unmount() })
+    expect(localStorage.getItem('mc-active-slot-chat')).toBe('chat-2')
+  })
+
+  it('does not cross-contaminate mode keys', async () => {
+    const { unmount } = renderChatPage(undefined, 'chat-2', allSlots)
+    localStorage.clear()
+    await act(() => { unmount() })
+    expect(localStorage.getItem('mc-active-slot-chat')).toBe('chat-2')
+    expect(localStorage.getItem('mc-active-slot-dashboard')).toBeNull()
+  })
+
+  it('each mode persists independently', async () => {
+    const { unmount: u1 } = renderChatPage(undefined, 'chat-2', allSlots)
+    localStorage.clear()
+    await act(() => { u1() })
+    expect(localStorage.getItem('mc-active-slot-chat')).toBe('chat-2')
+    expect(localStorage.getItem('mc-active-slot-dashboard')).toBeNull()
+
+    const { unmount: u2 } = renderChatPage('dashboard', 'chat-1', allSlots)
+    localStorage.removeItem('mc-active-slot-dashboard')
+    await act(() => { u2() })
+    expect(localStorage.getItem('mc-active-slot-dashboard')).toBe('chat-1')
+    expect(localStorage.getItem('mc-active-slot-chat')).toBe('chat-2')
+  })
+
+  it('flushes chat draft to localStorage on beforeunload (crash-recovery path)', async () => {
+    // Pre-seed a draft in localStorage as if the user had typed before.
+    // On mount, ChatPage hydrates the in-memory drafts from localStorage.
+    // beforeunload must NOT wipe this draft (regression guard for the
+    // flush-before-hydrate and stale-inputRef bugs).
+    localStorage.setItem('mc-chat-drafts', JSON.stringify({ 'chat-2': 'mid-sentence crash content' }))
+    localStorage.setItem('mc-chat-drafts-ts', JSON.stringify({ 'chat-2': Date.now() }))
+    renderChatPage(undefined, 'chat-2', allSlots)
+    await act(async () => { window.dispatchEvent(new Event('beforeunload')) })
+    const persisted = JSON.parse(localStorage.getItem('mc-chat-drafts') || '{}')
+    expect(persisted['chat-2']).toBe('mid-sentence crash content')
+  })
+
+  it('preserves a connected stale-question fallback in the existing composer draft', async () => {
+    localStorage.setItem('mc-chat-drafts', JSON.stringify({ 'chat-2': 'existing draft' }))
+    localStorage.setItem('mc-chat-drafts-ts', JSON.stringify({ 'chat-2': Date.now() }))
+
+    const { store } = renderChatPage(undefined, 'chat-2', allSlots, {
+      pendingQuestions: {
+        'chat-2': {
+          slot: 'chat-2',
+          ask_id: 'ask-stale',
+          questions: [{ question: 'Trust model', options: [{ label: 'Public only' }] }],
+        },
+      },
+    }, true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'send stale question fallback' }))
+    const { messages, slotMessages } = store.getState().chat
+    const rows = [...messages, ...(slotMessages['chat-2'] ?? [])]
+    // The row names the question it hands back, not "this question", and it is an
+    // error row: the submit was rejected (errors-use-error-notice).
+    expect(rows.some((m) => m.role === 'error' && /stopped waiting for "Trust model"/.test(m.content))).toBe(true)
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('test chat input')).toHaveValue('existing draft\nPublic only')
+    })
+    // A live WebSocket does not guarantee /api/chat will accept a new turn
+    // (Kiro readiness can return HTTP 503), so stale answers require an
+    // explicit user retry rather than an automatic send.
+    expect(api.sendChat).not.toHaveBeenCalled()
+  })
+
+  it('keeps the Changes tab while uncached slot history is loading', async () => {
+    vi.mocked(api.chatSlotDetail).mockImplementation(() => new Promise(() => {}))
+    const panel = renderHook(() => usePanelTabs('chat-2'))
+    act(() => panel.result.current.openView('changes'))
+    expect(panel.result.current.tabs.map(tab => tab.id)).toEqual(['changes'])
+
+    renderChatPage(undefined, 'chat-2', allSlots, {
+      messages: [],
+      slotLoading: true,
+    })
+    await act(async () => {})
+
+    expect(panel.result.current.tabs.map(tab => tab.id)).toEqual(['changes'])
+    expect(panel.result.current.activeId).toBe('changes')
+  })
+
+  it('keeps the Changes tab pinned when a settled slot has no source links (regression)', async () => {
+    // Changes is a permanent pinned tab; an empty source set must NOT close it.
+    // A source-reconcile effect that called tabsCtl.closeTab('changes') whenever
+    // sourceLinks was empty would fight SidePanel's always-pinned model and make
+    // the Changes tab vanish mid-session (reappearing only on reload, when
+    // syncPinned re-ran).
+    const panel = renderHook(() => usePanelTabs('chat-2'))
+    act(() => panel.result.current.openView('changes'))
+    expect(panel.result.current.tabs.map(tab => tab.id)).toEqual(['changes'])
+
+    // Settled hydration (slotLoading: false) + no messages ⇒ no source links,
+    // which is exactly the branch that used to auto-close the tab.
+    renderChatPage(undefined, 'chat-2', allSlots, {
+      messages: [],
+      slotLoading: false,
+    })
+    await act(async () => {})
+
+    expect(panel.result.current.tabs.map(tab => tab.id)).toEqual(['changes'])
+  })
+})
+
+describe('ChatPage crash-recovery reload (#12907)', () => {
+  it('a normal load reopens the remembered chat', async () => {
+    localStorage.setItem('mc-active-slot-chat', 'chat-2')
+    const { store } = renderChatPage(undefined, null, allSlots)
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2'))
+  })
+
+  it('a safe reload opens no chat, so a chat that froze the window is not reopened', async () => {
+    safeReloadFlag.on = true
+    vi.mocked(api.chatSlotDetail).mockClear()
+    localStorage.setItem('mc-active-slot-chat', 'chat-2')
+    const { store } = renderChatPage(undefined, null, allSlots)
+    await act(async () => {})
+    expect(store.getState().chat.activeSlot).toBeNull()
+    expect(api.chatSlotDetail).not.toHaveBeenCalled()
+    // The remembered choice survives for the next normal load.
+    expect(localStorage.getItem('mc-active-slot-chat')).toBe('chat-2')
+  })
+
+  it('after a safe reload, closing the chat the user opened moves to another chat', async () => {
+    safeReloadFlag.on = true
+    const { store } = renderChatPage(undefined, null, allSlots)
+    await act(async () => {})
+    expect(store.getState().chat.activeSlot).toBeNull()
+    await act(async () => { store.dispatch(setActiveSlot('chat-2')) })
+    await act(async () => { store.dispatch(setActiveSlot(null)) })
+    await waitFor(() => expect(store.getState().chat.activeSlot).not.toBeNull())
+  })
+})
+
+// #16009: a remote-crew pane reloaded on a new port has empty storage; the hub
+// hands back the last chat as ?lastSid=.
+describe('ChatPage last-chat hint from the hub (#16009)', () => {
+  it('opens the hinted chat instead of the first one', async () => {
+    const { store } = renderChatPage(undefined, null, allSlots, {}, false, '/chat?lastSid=chat-2')
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2'))
+  })
+
+  it('falls back quietly when the hinted chat is gone', async () => {
+    localStorage.setItem('mc-active-slot-chat', 'chat-2')
+    vi.mocked(api.chatSlotDetail).mockClear()
+    const { store } = renderChatPage(undefined, null, allSlots, {}, false, '/chat?lastSid=chat-gone')
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2'))
+    // The gone key is never switched to, not even briefly.
+    expect(vi.mocked(api.chatSlotDetail).mock.calls.map(c => c[0])).not.toContain('chat-gone')
+  })
+
+  it('tells the hub which chat the pane shows, at the hub origin only', async () => {
+    const parent = { postMessage: vi.fn() }
+    const spies = [
+      vi.spyOn(window, 'parent', 'get').mockReturnValue(parent as unknown as Window),
+      vi.spyOn(window, 'top', 'get').mockReturnValue(parent as unknown as Window),
+      vi.spyOn(document, 'referrer', 'get').mockReturnValue('http://127.0.0.1:7777/chat'),
+    ]
+    try {
+      renderChatPage(undefined, 'chat-2', allSlots)
+      await waitFor(() => expect(parent.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'mc-pane-active-slot', key: 'chat-2' }), 'http://127.0.0.1:7777'))
+    } finally {
+      spies.forEach(s => s.mockRestore())
+    }
+  })
+
+  it('sends nothing when the hub origin is unknown', async () => {
+    const parent = { postMessage: vi.fn() }
+    const spies = [
+      vi.spyOn(window, 'parent', 'get').mockReturnValue(parent as unknown as Window),
+      vi.spyOn(window, 'top', 'get').mockReturnValue(parent as unknown as Window),
+      vi.spyOn(document, 'referrer', 'get').mockReturnValue(''),
+    ]
+    try {
+      const { store } = renderChatPage(undefined, 'chat-2', allSlots)
+      await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2'))
+      await act(async () => {})
+      expect(parent.postMessage).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'mc-pane-active-slot' }), expect.anything())
+    } finally {
+      spies.forEach(s => s.mockRestore())
+    }
+  })
+})

@@ -1,0 +1,7 @@
+schema-version: 2026-04-28
+fixture-name: skills-custom
+description: |
+  One live user skill plus one crystallized candidate awaiting review under skills/auto/.pending/.
+  The candidate includes the .meta.json consumed by the pending list. This
+  exercises the Skills tab's live-vs-pending split and approve/dismiss paths
+  without touching the builtin skills that ship in the package.

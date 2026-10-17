@@ -1,0 +1,13 @@
+{
+  "name": "fixture-notes",
+  "version": "1.0.0",
+  "displayName": "Fixture Notes",
+  "enabled": true,
+  "installedAt": "2026-01-15T09:00:00Z",
+  "origin": "local",
+  "resources": "gateway",
+  "lifecycle": "gateway",
+  "schemaVersion": 2,
+  "dev": false,
+  "defaultOnBackfilled": false
+}

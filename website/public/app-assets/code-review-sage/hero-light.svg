@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 270" width="480" height="270">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#e8f4fd"/>
+      <stop offset="100%" stop-color="#c5e3f6"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4a9ede"/>
+      <stop offset="100%" stop-color="#2563eb"/>
+    </linearGradient>
+    <linearGradient id="lens" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f0f7ff"/>
+      <stop offset="100%" stop-color="#dbeafe"/>
+    </linearGradient>
+  </defs>
+  <rect width="480" height="270" rx="12" fill="url(#bg)"/>
+  <!-- Decorative circles -->
+  <circle cx="60" cy="40" r="20" fill="#bfdbfe" opacity="0.5"/>
+  <circle cx="420" cy="230" r="30" fill="#93c5fd" opacity="0.4"/>
+  <!-- Magnifying glass -->
+  <circle cx="200" cy="125" r="62" fill="url(#glass)" opacity="0.9"/>
+  <circle cx="200" cy="125" r="52" fill="url(#lens)"/>
+  <!-- Handle -->
+  <rect x="243" y="165" width="14" height="50" rx="7" fill="#2563eb" transform="rotate(40 250 190)"/>
+  <!-- Code brackets inside lens -->
+  <path d="M175 110 L165 125 L175 140" stroke="#1e40af" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M225 110 L235 125 L225 140" stroke="#1e40af" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="185" y1="140" x2="215" y2="110" stroke="#3b82f6" stroke-width="3" stroke-linecap="round"/>
+  <!-- Diff lines -->
+  <rect x="310" y="80" width="110" height="18" rx="4" fill="#dcfce7" stroke="#86efac" stroke-width="1"/>
+  <rect x="316" y="86" width="6" height="6" rx="1" fill="#22c55e"/>
+  <rect x="328" y="86" width="40" height="6" rx="2" fill="#4ade80"/>
+  <rect x="310" y="106" width="110" height="18" rx="4" fill="#dcfce7" stroke="#86efac" stroke-width="1"/>
+  <rect x="316" y="112" width="6" height="6" rx="1" fill="#22c55e"/>
+  <rect x="328" y="112" width="55" height="6" rx="2" fill="#4ade80"/>
+  <rect x="310" y="132" width="110" height="18" rx="4" fill="#fee2e2" stroke="#fca5a5" stroke-width="1"/>
+  <rect x="316" y="138" width="6" height="6" rx="1" fill="#ef4444"/>
+  <rect x="328" y="138" width="35" height="6" rx="2" fill="#f87171"/>
+  <rect x="310" y="158" width="110" height="18" rx="4" fill="#fee2e2" stroke="#fca5a5" stroke-width="1"/>
+  <rect x="316" y="164" width="6" height="6" rx="1" fill="#ef4444"/>
+  <rect x="328" y="164" width="48" height="6" rx="2" fill="#f87171"/>
+  <!-- Approval checkmark badge -->
+  <circle cx="390" cy="210" r="18" fill="#22c55e"/>
+  <circle cx="390" cy="210" r="14" fill="#16a34a"/>
+  <path d="M381 210 L387 216 L399 204" stroke="white" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

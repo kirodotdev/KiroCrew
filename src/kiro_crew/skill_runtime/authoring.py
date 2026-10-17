@@ -1,0 +1,408 @@
+"""Writing skills: create, update, and the ``pinned`` / ``inject_on_trigger`` toggles.
+
+Create and update address the skill directory through a descriptor pinning its
+parent chain where the platform supports it, and keep the by-name floor
+elsewhere. Create rolls back everything it made on failure, verifying identity
+first. ``delete_skill`` stays in the facade, where the link-screen baseline pins it.
+"""
+
+from __future__ import annotations
+
+import errno
+import logging
+import os
+import re
+import stat
+from contextlib import suppress
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from kiro_crew.skills import SkillsLoader
+
+logger = logging.getLogger("kiro_crew.skills")
+
+
+def create_skill(loader: SkillsLoader, name: str, content: str) -> bool:
+    """Create a new skill directory with SKILL.md.  Returns True on success."""
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
+    if not loader._safe_name(name):
+        return False
+    skill_dir = loader._dir / name
+    if skill_dir.exists():
+        return False
+    if not sk._DIR_FD_SUPPORTED:
+        # exist_ok=False so a skill directory that appeared between the
+        # exists() check above and here is REFUSED rather than written
+        # through: two concurrent creates would otherwise both mkdir, both
+        # write_text the same SKILL.md, and both report success, losing one
+        # submitted body. The pinned branch answers the same way, through
+        # its own O_EXCL-equivalent -- os.mkdir under the pinned parent raising
+        # FileExistsError -- so without this the two branches of this fork
+        # disagree on the same request. parents=True
+        # still creates the intermediates a nested name needs; only the leaf
+        # is refused.
+        try:
+            skill_dir.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            return False
+        (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
+        loader._invalidate_iter_cache()  # so the new skill shows in list_skills() now
+        logger.info("Created skill: %s", name)
+        return True
+
+    # Ensure the intermediate tree by name (a nested skill name has parents
+    # the caller owns), then create the leaf skill dir and its SKILL.md
+    # relative to a pinned descriptor so an ancestor swapped for a link after
+    # the exists() check cannot redirect the write. The leaf mkdir refuses a
+    # skill dir that appeared in the meantime, matching the exists() guard.
+    skill_dir.parent.mkdir(parents=True, exist_ok=True)
+    # ONE resolution of the parent chain, and everything below it addressed
+    # through the descriptor it produced: the leaf directory, its SKILL.md, and
+    # the rollback that removes both. A second walk would be a second chance for
+    # an ancestor swapped since the first to be followed, and would also leave
+    # the create and the rollback pointing at different directories.
+    try:
+        parent_fd = sk.pinned_fs.open_dir_pinned(skill_dir.parent, what="skill directory")
+    except sk.pinned_fs.PinnedPathRefusal:
+        return False
+    except OSError:
+        return False
+    try:
+        return loader._create_skill_pinned(name, content, skill_dir, parent_fd)
+    finally:
+        os.close(parent_fd)
+
+
+def _create_skill_pinned(
+    loader: SkillsLoader, name: str, content: str, skill_dir: Path, parent_fd: int
+) -> bool:
+    """Create *skill_dir* and its SKILL.md under *parent_fd*, or leave nothing behind.
+
+    Split out so the rollback has one exit rather than being threaded through
+    ``create_skill``'s branches. A partial create is not merely untidy here: the
+    leftover directory makes ``create_skill``'s ``exists()`` guard answer False
+    forever, so every retry is a 409 over a truncated body that ``list_skills()``
+    still serves. Steering's create already unlinks its partial leaf for exactly
+    that reason; this is the same rule, plus the directory, because this call is
+    the one that created it.
+
+    The leaf directory is created and opened RELATIVE to *parent_fd*, not through
+    ``pinned_fs.create_and_open_dir_pinned``. That helper resolves
+    ``skill_dir.parent`` with its own ``realpath`` and pins it again, discarding
+    the descriptor the caller already walked -- a second resolution, which an
+    ancestor swapped since the first is followed by. It would also leave the
+    create and the rollback addressing two different directories, so on such a
+    swap ``SKILL.md`` lands outside the skills root while the rollback reports an
+    identity mismatch on an unrelated one. The helper's two other jobs are
+    reproduced here rather than borrowed: a name that already exists is refused
+    because ``os.mkdir`` under the pinned parent raises ``FileExistsError`` (the
+    exclusivity is the syscall's, not a flag on a helper), and a link or
+    non-directory at the leaf becomes the one refusal the caller maps rather than
+    a raw errno.
+    """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
+    try:
+        os.mkdir(skill_dir.name, 0o700, dir_fd=parent_fd)
+    except FileExistsError:
+        # Something holds the name that this call did not create, so it is not
+        # ours to write into -- the exists() guard's answer, re-asked without a
+        # window. 0o700 matches create_and_open_dir_pinned's mode for every
+        # caller, so the directory-mode behaviour is unchanged.
+        return False
+    try:
+        dir_fd = os.open(skill_dir.name, sk.pinned_fs.dir_flags(), dir_fd=parent_fd)
+    except OSError as exc:
+        # A link or a plain file raced onto the name between the mkdir and here.
+        # Reclaim the directory this call just made -- rmdir only ever removes an
+        # EMPTY one, so the worst case on a swap is losing a directory nobody has
+        # written to yet, and leaving it would make every retry answer 409.
+        with suppress(OSError):
+            os.rmdir(skill_dir.name, dir_fd=parent_fd)
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            return False
+        raise
+    # Identity of the directory THIS call created, taken from the descriptor before
+    # anything can be swapped at the name, so the rollback below can only ever
+    # remove what this call brought into being. Guarded, because an fstat that
+    # fails (EIO or ESTALE on a network filesystem) would otherwise leak the
+    # descriptor AND strand the directory, and a stranded directory answers every
+    # retry with 409.
+    try:
+        created = os.fstat(dir_fd)
+    except BaseException:
+        os.close(dir_fd)
+        with suppress(OSError):
+            os.rmdir(skill_dir.name, dir_fd=parent_fd)
+        raise
+    try:
+        # The leaf is pinned_fs.write_new_file_pinned's transaction, shared with
+        # the steering and prompt creates: the O_EXCL create under dir_fd, the
+        # identity probe before the first write, the short-write loop, the close
+        # inside the guard, and the rollback that removes SKILL.md through
+        # unlink_verified only while the name still holds the inode this call
+        # created. With no identity (both probes failed) the leaf STAYS, empty --
+        # nothing was written before the probe -- so remove_dir_verified below
+        # finds the directory non-empty and puts the name back, leaving a skill
+        # with an empty body that the Skills tab lists and update_skill and
+        # delete_skill both reach: a save away from correct, where unlinking
+        # whatever answers to the name would destroy a file this code never read.
+        #
+        # 0o666, masked by umask, is what the by-name floor's write_text
+        # produces, so the two branches land the same permissions and the pin
+        # changes no default. This is the mode prompts.py's own pinned O_EXCL
+        # create of user content passes, for the same reason. A tighter default
+        # for user-authored skill bodies is a policy change that has to cover
+        # both branches and both platforms, so it does not ride a migration.
+        sk.pinned_fs.write_new_file_pinned(dir_fd, "SKILL.md", content.encode("utf-8"), mode=0o666)
+    except BaseException:
+        # Roll the directory back through its descriptor. Caught broadly rather
+        # than on OSError: a KeyboardInterrupt or a MemoryError building the buffer
+        # leaves the same half-made skill, and the retry is just as permanently
+        # 409 either way. The leaf's own rollback already ran inside the helper.
+        #
+        # remove_dir_verified renames the directory aside under the pinned
+        # parent, re-checks (st_dev, st_ino), and only then rmdirs -- a directory
+        # swapped in at the name is reported rather than removed. A bare rmdir by
+        # name would delete whatever answers to the name, which is the step this
+        # whole migration exists to remove.
+        outcome = sk.pinned_fs.remove_dir_verified(
+            parent_fd, skill_dir.name, expect=(created.st_dev, created.st_ino)
+        )
+        if not outcome.removed:
+            # Reported, not raised over: the original failure is the one the caller
+            # needs, and a rollback that could not finish leaves a name a human has
+            # to look at. staged_name is set only when the entry was left aside.
+            logger.warning(
+                "skill create rollback left %s behind (%s%s)",
+                name,
+                outcome.reason,
+                f", staged as {outcome.staged_name}" if outcome.staged_name else "",
+            )
+        raise
+    finally:
+        os.close(dir_fd)
+    loader._invalidate_iter_cache()  # so the new skill shows in list_skills() now
+    logger.info("Created skill: %s", name)
+    return True
+
+
+def update_skill(loader: SkillsLoader, name: str, content: str) -> bool:
+    """Overwrite an existing skill's SKILL.md.  Returns True if found."""
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
+    if not loader._safe_name(name):
+        return False
+    skill_dir = loader._dir / name
+    skill_file = skill_dir / "SKILL.md"
+    if not skill_file.exists():
+        return False
+    # Both capabilities, not one: the walk that produces the descriptor and the
+    # descriptor-relative rename that consumes it are separate probes, and
+    # atomic_write REFUSES a descriptor it cannot publish through rather than
+    # quietly writing by name, so the floor is chosen here instead.
+    if not (sk._DIR_FD_SUPPORTED and sk.pinned_parent_replace_supported()):
+        if not loader._write_skill_md(skill_file, content, dir_fd=None):
+            return False
+        loader._invalidate_iter_cache()  # so the edit is reflected in list_skills() now
+        logger.info("Updated skill: %s", name)
+        return True
+
+    # Pin the skill directory so the atomic replace stages and renames
+    # through the walked descriptor rather than by name.
+    #
+    # open_dir_pinned, not pin_parent: ``self._dir / name`` is a lexical join
+    # that nothing canonicalized, so this realpath is the FIRST resolution of
+    # the chain rather than a second one, and there is no earlier canonical form
+    # for pin_parent to walk. pin_parent here would instead refuse the ordinary
+    # symlinks that legitimately sit above the skills root -- a symlinked $HOME
+    # is the common one -- and break every update on such a host.
+    try:
+        dir_fd = sk.pinned_fs.open_dir_pinned(skill_dir, what="skill directory")
+    except sk.pinned_fs.PinnedPathRefusal:
+        return False
+    except OSError:
+        return False
+    try:
+        if not loader._write_skill_md(skill_file, content, dir_fd=dir_fd):
+            return False
+    finally:
+        os.close(dir_fd)
+    loader._invalidate_iter_cache()  # so the edit is reflected in list_skills() now
+    logger.info("Updated skill: %s", name)
+    return True
+
+
+def _write_skill_md(skill_file: Path, content: str, *, dir_fd: int | None) -> bool:
+    """Atomically replace *skill_file*, carrying its access-control xattrs.
+
+    Routes through ``atomic_write`` with the same ACL carry the steering and
+    file-write update paths use: ``mode=`` alone reproduces permission BITS
+    only, so a named POSIX ACL the owner set on a skill's SKILL.md would be
+    dropped the moment the replace installs a fresh inode. When *dir_fd* is a
+    pinned parent the temp create and rename run relative to it, and the ACL
+    source is opened relative to it too -- addressing the leaf by name after
+    the caller pinned its directory would let a directory replaced at that
+    name supply the mode and the ACL while the write published into the pinned
+    original, handing the real skill back with permissions chosen by whoever
+    did the replacing.
+
+    Returns False when the target is REJECTED -- the source open failed, so
+    there is no inode to carry from. A write failure still raises.
+    """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
+    try:
+        src_fd = sk.open_access_control_source(skill_file, dir_fd=dir_fd)
+    except OSError:
+        # The same disposition the steering and file-write updates give this:
+        # a rejected target, not a server fault. Continuing with src_fd=None
+        # would publish a fresh inode carrying only the permission bits, so a
+        # named POSIX ACL the owner set on this SKILL.md would be dropped and
+        # the file handed back protected differently from the one it replaced
+        # -- silently, on the one path that was supposed to fix that.
+        return False
+    try:
+        # By-name stat only on the unpinned floor: with dir_fd the helper
+        # always hands back a descriptor, so the bits and the ACL come from
+        # one inode and neither is re-resolved.
+        mode = (
+            stat.S_IMODE(os.fstat(src_fd).st_mode)
+            if src_fd is not None
+            else stat.S_IMODE(skill_file.stat().st_mode)
+        )
+        sk.atomic_write(
+            skill_file,
+            content,
+            mode=mode,
+            newline="",
+            preserve_access_control_from=src_fd,
+            parent_dir_fd=dir_fd,
+        )
+    finally:
+        if src_fd is not None:
+            try:
+                os.close(src_fd)
+            except OSError:
+                pass
+    return True
+
+
+def set_pinned(loader: SkillsLoader, name: str, pinned: bool) -> bool:
+    """Pin/unpin an auto-skill (exempt from lifecycle eviction).
+
+    Edits the ``pinned:`` frontmatter line in place. Returns True on
+    success. Only auto-generated skills may be pinned.
+    """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
+    if not loader.is_auto_generated(name):
+        return False
+    skill_file = loader._dir / name / "SKILL.md"
+    if not skill_file.exists():
+        return False
+    content = skill_file.read_text(encoding="utf-8")
+    m = re.match(r"^---\n(.*?)\n---\n?(.*)$", content, re.DOTALL)
+    if not m:
+        return False
+    fm_lines = [ln for ln in m.group(1).split("\n") if not ln.strip().startswith("pinned:")]
+    if pinned:
+        fm_lines.append("pinned: true")
+    new_content = "---\n" + "\n".join(fm_lines) + "\n---\n" + m.group(2)
+    # Atomic write (temp + rename): a partial write must never truncate the
+    # live SKILL.md and lose the skill's content on a full-disk failure.
+    sk.atomic_write(skill_file, new_content)
+    loader._invalidate_iter_cache()
+    logger.info("%s auto skill: %s", "Pinned" if pinned else "Unpinned", name)
+    return True
+
+
+def rewrite_inject_on_trigger(content: str, inject: bool) -> str | None:
+    """Return *content* with its ``inject_on_trigger`` setting rewritten.
+
+    The pure frontmatter core shared by :func:`set_inject_on_trigger` (the
+    dashboard toggle) and the builtin-skill sync, which carries the opt-out
+    across a packaged reinstall and recognises the carried line when it
+    verifies an installed tree. Every top-level ``inject_on_trigger:`` line is
+    dropped; ``inject=False`` then appends ``inject_on_trigger: false``.
+
+    The rewritten block keeps the line ending of the opening fence: a CRLF
+    file (a Windows checkout of a packaged skill) stays CRLF and an LF file
+    stays LF, and the body after the block is returned byte-for-byte. The
+    input is expected untranslated (decoded bytes, not a universal-newline
+    read), so the output is what lands on disk.
+
+    Returns None when *content* has no frontmatter block to edit.
+    """
+    m = re.match(r"^---(\r?\n)(.*?)\r?\n---(?:\r?\n)?(.*)$", content, re.DOTALL)
+    if not m:
+        return None
+    nl = m.group(1)
+    fm_lines = [
+        ln.removesuffix("\r")
+        for ln in m.group(2).split("\n")
+        # Only a TOP-LEVEL key, matched without stripping: an indented
+        # `inject_on_trigger:` belongs to a block scalar (a description that
+        # documents the flag, say), and deleting that line would silently
+        # rewrite the skill's prose while toggling a setting.
+        if not ln.lower().startswith("inject_on_trigger:")
+    ]
+    if not inject:
+        fm_lines.append("inject_on_trigger: false")
+    return f"---{nl}" + nl.join(fm_lines) + f"{nl}---{nl}" + m.group(3)
+
+
+def set_inject_on_trigger(loader: SkillsLoader, name: str, inject: bool) -> bool:
+    """Opt a skill in or out of full-body injection on a trigger match.
+
+    Edits the ``inject_on_trigger:`` frontmatter line in place, mirroring
+    :meth:`set_pinned`. ``inject=False`` writes the opt-out; ``inject=True``
+    removes the line rather than writing ``true``, because injecting is the
+    default and an absent key is the honest way to say "unchanged".
+
+    Refuses any skill whose file resolves outside this loader's own skills
+    dir. ``_resolve_path`` also reaches ``skills.extra_paths`` and the
+    kiro-cli user/workspace skill dirs — directories Kiro Crew does not own
+    and may not even be able to write. Rewriting a foreign ``SKILL.md``
+    because a dashboard toggle was flipped is a side effect nobody asked
+    for, so ownership is checked before the write, not left to the UI (which
+    does gate on source, but the endpoint is reachable directly).
+
+    Returns False when the skill cannot be resolved, is not ours, or has no
+    frontmatter block to edit — the caller surfaces that as a failed toggle
+    rather than silently reporting success on a no-op.
+    """
+    if not loader._safe_name(name):
+        return False
+    skill_file = loader._resolve_path(name)
+    if skill_file is None or not skill_file.exists():
+        return False
+    try:
+        owned_root = loader._dir.resolve()
+        if not skill_file.resolve().is_relative_to(owned_root):
+            logger.warning("Refusing to edit a skill outside %s: %s", owned_root, skill_file)
+            return False
+    except OSError:
+        return False
+    try:
+        # Bytes, not read_text: a universal-newline read folds CRLF to LF, and
+        # the verbatim write below would then rewrite every line ending of a
+        # CRLF file while toggling one setting.
+        content = skill_file.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    new_content = rewrite_inject_on_trigger(content, inject)
+    if new_content is None:
+        return False
+    # The same atomic, access-control-carrying replace update_skill uses: the
+    # file's mode AND its named ACL entries are taken from the inode being
+    # replaced. Mode bits alone would keep 0644 but drop a named-user deny, and
+    # a built-in SKILL.md must keep its packaged mode because the builtin-sync
+    # fingerprint hashes it. A rejected target is a failed toggle.
+    if not loader._write_skill_md(skill_file, new_content, dir_fd=None):
+        return False
+    loader._invalidate_iter_cache()
+    logger.info("Skill %s on trigger: %s", "injects fully" if inject else "sends a pointer", name)
+    return True

@@ -1,0 +1,733 @@
+"""Approval and question lifecycles behind the DashboardState facade."""
+
+from __future__ import annotations
+
+import asyncio
+import time
+import uuid
+from collections.abc import Callable
+from typing import Any
+
+_Redactor = Callable[[str], tuple[str, object]]
+
+#: Outcome of a wait that ended without an answer. The client derives every
+#: decided outcome from ``approved`` alone, so this is the one decision that
+#: rides in the ``approval_resolved`` payload: without it an expired card
+#: renders as a rejection.
+_EXPIRED_DECISION = "expired"
+#: The audit outcome of a wait whose id a later same-id request took over.
+_SUPERSEDED_DECISION = "superseded"
+
+
+def _redact(text: object, redact_url: _Redactor, redact_secret: _Redactor) -> str:
+    value, _ = redact_url(str(text or ""))
+    value, _ = redact_secret(value)
+    return value
+
+
+def _push_slots(state: Any) -> None:
+    """Recompute the slot lane flags; a failed push never breaks the approval."""
+    try:
+        state.push_slots_update()
+    except Exception:
+        state._log.debug("push_slots_update failed after approval status change", exc_info=True)
+
+
+def _bounded_purpose(text: str) -> str:
+    """Cap a redacted approval purpose to the display bound native purposes use."""
+    # Circular import: chat_utils imports state, which imports this module.
+    from kiro_crew.dashboard.chat_utils import _MAX_TOOL_PURPOSE, _redact_tool_field
+
+    return _redact_tool_field(text, limit=_MAX_TOOL_PURPOSE)
+
+
+def _slot_decision(approved: bool, rejected_once: bool) -> str:
+    """The decision string a slot's approval future carries."""
+    if approved:
+        return "approved"
+    return "rejected_once" if rejected_once else "rejected"
+
+
+class ApprovalCoordinator:
+    """Own registration, waiting, auditing, and resolution of approvals."""
+
+    @staticmethod
+    async def request(
+        state: Any,
+        approval_id: str,
+        source: str,
+        tool: str,
+        *,
+        tool_input: str,
+        tool_purpose: str,
+        slot: str,
+        is_background: bool,
+        redact_url: _Redactor,
+        redact_secret: _Redactor,
+    ) -> bool:
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[bool] = loop.create_future()
+        state._approval_futures[approval_id] = future
+        state._pending_approvals[approval_id] = {
+            "id": approval_id,
+            # The request id is the caller's and can recur; this names THIS
+            # request, so a card rendered from an earlier record with the same
+            # id cannot resolve its replacement.
+            "instance": uuid.uuid4().hex,
+            "source": source,
+            "tool": _redact(tool, redact_url, redact_secret),
+            "tool_input": _redact(tool_input, redact_url, redact_secret),
+            # Retained and broadcast, so bounded here like the native path's
+            # purpose: a caller's multi-megabyte purpose never reaches the record.
+            "tool_purpose": _bounded_purpose(_redact(tool_purpose, redact_url, redact_secret)),
+            "slot": slot,
+            "ts": time.time(),
+        }
+        state.broadcast_ws("approval", state._pending_approvals[approval_id])
+        # The record names its owning slot, and the slot projection reads the
+        # live records through ``pending_coordinator_approvals``: this push is
+        # what moves the parent slot into the Needs Approval lane. Without it
+        # the lane, the command palette and Crew Companion's session watch all
+        # keep reading the slot as idle until some unrelated push happens.
+        _push_slots(state)
+        timeout = (
+            state._BACKGROUND_APPROVAL_TIMEOUT_SECS if is_background else state._APPROVAL_TIMEOUT
+        )
+        try:
+            return await asyncio.wait_for(future, timeout=timeout)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            return False
+        finally:
+            # The id is the caller's and can recur while this wait is open; a
+            # later request then owns the record and the future under it. Only
+            # this request's own are retired and removed, judged by the future
+            # this wait created: the replacement's card, buttons and resolver
+            # stay live, and its own exit takes the slot out of the lane.
+            if state._approval_futures.get(approval_id) is future:
+                # A future that never carried a decision means the wait expired
+                # or was cancelled: retire the approval BEFORE popping it, or
+                # the rendered card keeps live buttons that answer 404 forever
+                # because no ``approval_resolved`` frame is ever emitted. A
+                # resolved future (done with a result) is retired by
+                # resolve()/resolve_state(); retiring again here would double
+                # the broadcast on the healthy path.
+                if future.cancelled() or not future.done():
+                    ApprovalCoordinator._retire_unresolved(state, approval_id, slot)
+                state._pending_approvals.pop(approval_id, None)
+                state._approval_futures.pop(approval_id, None)
+                # Every exit -- decided, expired, cancelled -- leaves the record
+                # gone, so one push here takes the slot back out of the lane.
+                _push_slots(state)
+            elif future.cancelled() or not future.done():
+                # Superseded by a same-id request: its frame, record and slot
+                # lane now belong to the replacement and are left alone, but
+                # this wait still ended undecided and the audit trail says so,
+                # under its own outcome so the replacement's rows stay distinct.
+                state._audit_approval(slot or "state", approval_id, False, _SUPERSEDED_DECISION)
+
+    @staticmethod
+    def _retire_unresolved(state: Any, approval_id: str, slot_key: str) -> None:
+        """Retire an approval whose wait ends without a decision.
+
+        The card is client-injected from the WS ``approval`` frame, and the
+        ``approval_resolved`` broadcast retires it. The supplied slot key stays
+        the routing identity even when the slot is absent from ``state._slots``.
+        Slot permission rows belong to the chat-runner registry, whose
+        per-connection ids can collide with coordinator ids, so this registry
+        never touches them.
+        """
+        decision = _EXPIRED_DECISION
+        session_key = slot_key if slot_key else "state"
+        try:
+            state._audit_and_broadcast_approval(session_key, approval_id, False, decision)
+        except Exception:
+            state._log.warning(
+                "audit/broadcast failed for expired approval %s", approval_id, exc_info=True
+            )
+
+    @staticmethod
+    def audit(
+        state: Any,
+        session_key: str,
+        approval_id: str,
+        approved: bool,
+        decision: str,
+        *,
+        audit_provider: Callable[[], Any],
+    ) -> None:
+        """Record one approval outcome in the SEL, without telling any client."""
+        try:
+            audit_provider().log_tool_invocation(
+                session_key=session_key,
+                tool_name="approval_decision",
+                outcome=decision or ("approved" if approved else "rejected"),
+                request_id=approval_id,
+                source="dashboard",
+            )
+        except Exception:
+            state._log.warning("SEL audit failed for approval resolution", exc_info=True)
+
+    @staticmethod
+    def audit_and_broadcast(
+        state: Any,
+        session_key: str,
+        approval_id: str,
+        approved: bool,
+        decision: str,
+        *,
+        audit_provider: Callable[[], Any],
+    ) -> None:
+        ApprovalCoordinator.audit(
+            state, session_key, approval_id, approved, decision, audit_provider=audit_provider
+        )
+        try:
+            payload: dict = {"id": approval_id, "approved": approved}
+            if session_key and session_key != "state":
+                payload["slot"] = session_key
+            # A decided approval's payload stays as it is: approved/rejected
+            # is derivable from ``approved``, and the client renders it so.
+            if decision == _EXPIRED_DECISION:
+                payload["decision"] = decision
+            state.broadcast_ws("approval_resolved", payload)
+        except Exception:
+            state._log.warning("WS broadcast failed for approval resolution", exc_info=True)
+
+    @staticmethod
+    def resolve_state(state: Any, approval_id: str, approved: bool) -> bool:
+        future = state._approval_futures.get(approval_id)
+        if future and not future.done():
+            future.set_result(approved)
+            state._audit_and_broadcast_approval("state", approval_id, approved)
+            return True
+        return False
+
+    @staticmethod
+    def resolve(
+        state: Any,
+        approval_id: str,
+        approved: bool,
+        *,
+        rejected_once: bool,
+        permission_marker: Callable[[list[dict], str, str], bool],
+    ) -> bool:
+        if state.resolve_state_approval(approval_id, approved):
+            if rejected_once:
+                state._log.warning(
+                    "approval %s resolved at state level; decision %r downgraded to rejected",
+                    approval_id,
+                    _slot_decision(approved, rejected_once),
+                )
+            return True
+        for slot in state._slots.values():
+            if ApprovalCoordinator.resolve_on_slot(
+                state,
+                slot,
+                approval_id,
+                approved,
+                rejected_once=rejected_once,
+                permission_marker=permission_marker,
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def resolve_on_slot(
+        state: Any,
+        slot: Any,
+        approval_id: str,
+        approved: bool,
+        *,
+        rejected_once: bool,
+        permission_marker: Callable[[list[dict], str, str], bool],
+        expected_future: asyncio.Future[str] | None = None,
+    ) -> bool:
+        """Resolve *approval_id* on *slot*'s own future only; never a state-level one.
+
+        With *expected_future*, resolve only while the slot still holds THAT
+        future under the id: request ids recur within one slot, so a caller that
+        judged one request across an await must not settle a newer same-id one.
+        """
+        future = slot._approval_futures.get(approval_id)
+        if not future or future.done():
+            return False
+        if expected_future is not None and future is not expected_future:
+            return False
+        decision = _slot_decision(approved, rejected_once)
+        future.set_result(decision)
+        if permission_marker(slot.messages, approval_id, decision):
+            # The periodic flush skips clean slots; the resolved marker
+            # must become durable before its future disappears.
+            slot._dirty = True
+        state._audit_and_broadcast_approval(slot.key, approval_id, approved, decision)
+        state.push_slots_update()
+        return True
+
+
+#: Retained outcomes cover one ask per live dashboard slot; terminal entries yield first.
+_AGENT_ASK_RETENTION_LIMIT = 500
+
+#: The coordinator's own clock, so a test can freeze it without patching ``time``.
+_monotonic = time.monotonic
+
+
+class QuestionCoordinator:
+    """Own stateless cards and legacy blocking question futures."""
+
+    _RECENT_RESOLUTION_LIMIT = 200
+    _RECENT_RESOLUTION_TTL_SECS = 600
+
+    @staticmethod
+    def _record_resolution(state: Any, ask_id: str, reason: str) -> None:
+        recent = getattr(state, "_recent_question_resolutions", None)
+        if recent is None:
+            recent = {}
+            state._recent_question_resolutions = recent
+        recent.pop(ask_id, None)
+        recent[ask_id] = (reason, time.monotonic())
+        QuestionCoordinator.recent_resolutions(state)
+
+    @staticmethod
+    def recent_resolutions(state: Any) -> dict[str, str]:
+        """Return recent blocking ask endings after pruning by age and count."""
+        recent = getattr(state, "_recent_question_resolutions", None)
+        if not recent:
+            return {}
+        cutoff = time.monotonic() - QuestionCoordinator._RECENT_RESOLUTION_TTL_SECS
+        for ask_id, (_, retired_at) in list(recent.items()):
+            if retired_at < cutoff:
+                recent.pop(ask_id, None)
+        while len(recent) > QuestionCoordinator._RECENT_RESOLUTION_LIMIT:
+            recent.pop(next(iter(recent)))
+        return {ask_id: reason for ask_id, (reason, _) in recent.items()}
+
+    @staticmethod
+    def redact_questions(
+        questions: list[dict],
+        *,
+        redact_url: _Redactor,
+        redact_secret: _Redactor,
+    ) -> list[dict]:
+        safe_questions: list[dict] = []
+        seen_questions: set[str] = set()
+        for question in questions:
+            safe_question = dict(question)
+            for field in ("question", "header"):
+                safe_question[field] = _redact(safe_question.get(field), redact_url, redact_secret)
+            normalized = " ".join(str(safe_question.get("question") or "").split()).casefold()
+            if normalized in seen_questions:
+                raise ValueError(
+                    "questions collapse to identical text after redaction; "
+                    "rephrase so each question is distinguishable"
+                )
+            seen_questions.add(normalized)
+
+            safe_options: list[dict] = []
+            seen_labels: set[str] = set()
+            for option in safe_question.get("options") or []:
+                safe_option = dict(option)
+                for field in ("label", "description"):
+                    safe_option[field] = _redact(safe_option.get(field), redact_url, redact_secret)
+                normalized_label = " ".join(str(safe_option.get("label") or "").split()).casefold()
+                if normalized_label in seen_labels:
+                    raise ValueError(
+                        "option labels collapse to identical text after redaction; "
+                        "rephrase so every option is distinguishable"
+                    )
+                seen_labels.add(normalized_label)
+                safe_options.append(safe_option)
+            safe_question["options"] = safe_options
+            safe_questions.append(safe_question)
+        return safe_questions
+
+    @staticmethod
+    async def post_card(
+        state: Any, slot_key: str, questions: list[dict], *, native: bool = False
+    ) -> int:
+        """Post one non-blocking card and record it on the slot.
+
+        ``native`` marks kiro-cli's own ``AskUserQuestion`` card, raised while
+        its turn is still running and waiting on the answer. The client routes
+        that card's answer as a steer into the live turn, where the MCP
+        ``ask_question`` card (posted after the turn ended) starts a next turn
+        even while sub-agents keep the slot busy. Both are otherwise the same
+        server-owned card: one ``card_id``, one record, one retirement. The
+        flag rides the frame AND the record so a reload rehydrates the routing
+        with the card.
+        """
+        safe_questions = state._redact_questions(questions)
+        card_id = f"card-{uuid.uuid4().hex[:16]}"
+        # Register before an await so a user row racing a backpressured socket
+        # can retire the card instead of leaving needs_input stuck afterward.
+        state.mark_question_pending(
+            slot_key,
+            blocking=False,
+            card_id=card_id,
+            questions=safe_questions,
+            native=native,
+        )
+        payload = {
+            "slot": slot_key,
+            "card_id": card_id,
+            "questions": safe_questions,
+            "native": native,
+            "ts": time.time(),
+        }
+        return int(await state.deliver_ws_owners("question_card", payload))
+
+    @staticmethod
+    def mark_pending(
+        state: Any,
+        slot_key: str,
+        *,
+        blocking: bool,
+        card_id: str,
+        questions: list[dict] | None,
+        native: bool = False,
+    ) -> None:
+        slot = state._slots.get(slot_key)
+        if slot is None or not card_id:
+            return
+        if not blocking:
+            # The UI renders one stateless card per slot, so a replacement must
+            # retire the old stateless record while preserving blocking asks.
+            for existing_id, record in list(slot._question_pending.items()):
+                if not record.get("blocking"):
+                    slot._question_pending.pop(existing_id, None)
+        entry: dict = {"ts": time.time(), "blocking": blocking}
+        if questions is not None:
+            entry["questions"] = questions
+        if native:
+            entry["native"] = True
+        slot._question_pending[card_id] = entry
+        state._push_slots()
+
+    @staticmethod
+    def clear_pending(
+        state: Any,
+        slot_key: str,
+        *,
+        blocking: bool | None,
+        card_id: str | None,
+        reason: str | None = None,
+    ) -> bool:
+        slot = state._slots.get(slot_key)
+        if slot is None or not slot._question_pending:
+            return False
+        retired = [
+            (current_id, bool(record.get("blocking")))
+            for current_id, record in slot._question_pending.items()
+            if (card_id is None or current_id == card_id)
+            and (blocking is None or bool(record.get("blocking")) == blocking)
+        ]
+        if not retired:
+            return False
+        for current_id, _ in retired:
+            slot._question_pending.pop(current_id, None)
+        state._broadcast_question_retired(slot_key, retired, reason=reason)
+        state._push_slots()
+        return True
+
+    @staticmethod
+    def broadcast_retired(
+        state: Any,
+        slot_key: str,
+        cards: list[tuple[str, bool]],
+        *,
+        reason: str | None = None,
+    ) -> None:
+        for card_id, blocking in cards:
+            if not card_id:
+                continue
+            payload = (
+                {"ask_id": card_id, "slot": slot_key, "reason": reason or "withdrawn"}
+                if blocking
+                else {"card_id": card_id, "slot": slot_key}
+            )
+            try:
+                state.broadcast_ws_owners("question_card_resolved", payload)
+            except Exception:
+                state._log.warning("WS broadcast failed for card retirement", exc_info=True)
+
+    @staticmethod
+    def push_slots(state: Any) -> None:
+        try:
+            state.push_slots_update()
+        except Exception:
+            state._log.debug("push_slots_update failed after question status change", exc_info=True)
+
+    @staticmethod
+    async def request(
+        state: Any,
+        ask_id: str,
+        slot_key: str,
+        questions: list[dict],
+        timeout: int | None,
+    ) -> dict[str, str] | None:
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[dict[str, str] | None] = loop.create_future()
+        safe_questions = state._redact_questions(questions)
+        payload = {
+            "ask_id": ask_id,
+            "slot": slot_key,
+            "questions": safe_questions,
+            "ts": time.time(),
+        }
+        state._pending_questions[ask_id] = payload
+        state._question_futures[ask_id] = future
+        state.mark_question_pending(slot_key, blocking=True, card_id=ask_id)
+        state.broadcast_ws_owners("question_card", payload)
+
+        window = timeout if timeout is not None else state._QUESTION_TIMEOUT_DEFAULT
+        window = max(1, min(int(window), state._QUESTION_TIMEOUT_MAX))
+        terminal_reason = "withdrawn"
+        try:
+            answers = await asyncio.wait_for(future, timeout=window)
+            terminal_reason = QuestionCoordinator.recent_resolutions(state).get(ask_id) or (
+                "answered" if answers is not None else "dismissed"
+            )
+            return answers
+        except asyncio.TimeoutError:
+            terminal_reason = "expired"
+            QuestionCoordinator._record_resolution(state, ask_id, terminal_reason)
+            return None
+        except asyncio.CancelledError:
+            QuestionCoordinator._record_resolution(state, ask_id, terminal_reason)
+            return None
+        finally:
+            state._pending_questions.pop(ask_id, None)
+            state._question_futures.pop(ask_id, None)
+            state.clear_question_pending(
+                slot_key,
+                blocking=True,
+                card_id=ask_id,
+                reason=terminal_reason,
+            )
+            try:
+                state.broadcast_ws_owners(
+                    "question_card_resolved",
+                    {"ask_id": ask_id, "reason": terminal_reason},
+                )
+            except Exception:
+                state._log.warning("WS broadcast failed for question resolution", exc_info=True)
+
+    @staticmethod
+    def resolve(
+        state: Any, ask_id: str, answers: dict[str, str] | None, *, reason: str | None = None
+    ) -> bool:
+        future = state._question_futures.get(ask_id)
+        if future is None or future.done():
+            return False
+        terminal_reason = reason or ("answered" if answers is not None else "dismissed")
+        ask = getattr(state, "_agent_asks", {}).get(ask_id)
+        if ask is not None:
+            # Why the wait ended, for the tool result. The answer map alone
+            # cannot say it: None is a Dismiss, a composer reply, an expiry and
+            # a slot reset all at once, and the agent acts differently on each.
+            ask["reason"] = terminal_reason
+        QuestionCoordinator._record_resolution(state, ask_id, terminal_reason)
+        future.set_result(answers)
+        if ask is not None:
+            # Synchronously, not as a done-callback: a callback runs a loop tick
+            # later, and in that window the card is still on screen and still
+            # counted as needs_input for a wait that has already ended.
+            QuestionCoordinator._retire_agent_card(state, ask_id, reason=terminal_reason)
+        return True
+
+    @staticmethod
+    def cancel_for_slot(state: Any, slot_key: str) -> int:
+        pending_ids = [
+            ask_id
+            for ask_id, payload in state._pending_questions.items()
+            if payload.get("slot") == slot_key
+        ]
+        cancelled = 0
+        for ask_id in pending_ids:
+            if QuestionCoordinator.resolve(state, ask_id, None, reason="withdrawn"):
+                cancelled += 1
+        return cancelled
+
+    # ── Agent asks: the blocking MCP ``ask_question`` ────────────────────────
+    #
+    # The tool call itself blocks, so the answers return as its TOOL RESULT and
+    # never as a message the user appears to have typed. That is the whole point
+    # of this path: question text is agent-authored, and echoing it back inside a
+    # user-role turn would hand that text the user's authority.
+    #
+    # It is split into open + bounded waits rather than one held request so the
+    # MCP subprocess can ping the session keepalive between slices. A single
+    # request held for the whole ask is exactly what the legacy
+    # ``request``'s ``_QUESTION_TIMEOUT_MAX`` exists to cap: the ACP tool-stall
+    # watchdog kills a tool call that stays silent for 600s.
+
+    @staticmethod
+    def _reserve_agent_ask_slot(state: Any) -> bool:
+        now = _monotonic()
+        while len(state._agent_asks) >= _AGENT_ASK_RETENTION_LIMIT:
+            # Only an outcome past its staleness grace yields; a fresh one may still be collected.
+            terminal_id = next(
+                (
+                    current_id
+                    for current_id, ask in state._agent_asks.items()
+                    if ask["future"].done()
+                    and ask.get("watcher") is not None
+                    and now - ask["last_poll"] > state._AGENT_ASK_STALE_SECS
+                ),
+                None,
+            )
+            if terminal_id is None:
+                return False
+            terminal = state._agent_asks.pop(terminal_id)
+            watcher = terminal.get("watcher")
+            if watcher is not None and not watcher.done():
+                watcher.cancel()
+        return True
+
+    @staticmethod
+    async def open_agent_ask(
+        state: Any,
+        ask_id: str,
+        slot_key: str,
+        session_key: str,
+        questions: list[dict],
+    ) -> int | None:
+        """Show a blocking card for *session_key*'s own slot; return clients reached.
+
+        The window is the fixed ``state._AGENT_ASK_WINDOW_DEFAULT``; no caller sets it.
+        Zero clients means nobody can answer. The ask is then torn down at once so
+        the caller can fall back instead of blocking on a card no one sees, unless it
+        was already settled during the send, whose outcome is kept for collection.
+        An ask withdrawn while the send was still awaiting its sockets also yields 0.
+        ``None``
+        means only live asks occupy the retention cap, so this ask was not registered.
+        """
+        safe_questions = state._redact_questions(questions)
+        if not QuestionCoordinator._reserve_agent_ask_slot(state):
+            return None
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[dict[str, str] | None] = loop.create_future()
+        payload = {
+            "ask_id": ask_id,
+            "slot": slot_key,
+            "questions": safe_questions,
+            "ts": time.time(),
+        }
+        now = _monotonic()
+        state._agent_asks[ask_id] = {
+            "session_key": session_key,
+            "slot": slot_key,
+            "questions": safe_questions,
+            "future": future,
+            "reason": None,
+            "deadline": now + state._AGENT_ASK_WINDOW_DEFAULT,
+            "last_poll": now,
+        }
+        state._pending_questions[ask_id] = payload
+        state._question_futures[ask_id] = future
+        state.mark_question_pending(slot_key, blocking=True, card_id=ask_id)
+        clients = int(await state.deliver_ws_owners("question_card", payload))
+        retained = state._agent_asks.get(ask_id)
+        if retained is None or retained["future"] is not future:
+            # The tool gave up while this send was awaiting a slow socket, and its
+            # withdrawal already retired the card: nothing is left to watch.
+            return 0
+        if clients == 0 and not future.done():
+            QuestionCoordinator.resolve(state, ask_id, None, reason="no_client")
+            state._agent_asks.pop(ask_id, None)
+            return 0
+        # A card reloaded from /pending can be settled while this send is still
+        # awaiting the sockets in its snapshot. That outcome was already accepted, so
+        # keep it for the tool to collect even when the send itself reached nobody.
+        clients = max(clients, 1)
+        retained["watcher"] = asyncio.create_task(
+            QuestionCoordinator._watch_agent_ask(state, ask_id, state._AGENT_ASK_STALE_SECS)
+        )
+        return clients
+
+    @staticmethod
+    def _retire_agent_card(state: Any, ask_id: str, *, reason: str) -> None:
+        """Take the card off every screen the moment its wait ends, however it ended."""
+        payload = state._pending_questions.pop(ask_id, None)
+        state._question_futures.pop(ask_id, None)
+        slot_key = (payload or {}).get("slot") or (state._agent_asks.get(ask_id) or {}).get("slot")
+        if slot_key:
+            state.clear_question_pending(
+                slot_key,
+                blocking=True,
+                card_id=ask_id,
+                reason=reason,
+            )
+        try:
+            state.broadcast_ws_owners(
+                "question_card_resolved",
+                {"ask_id": ask_id, "reason": reason},
+            )
+        except Exception:
+            state._log.warning("WS broadcast failed for question resolution", exc_info=True)
+
+    @staticmethod
+    async def wait_agent_ask(
+        state: Any, ask_id: str, session_key: str, slice_secs: float
+    ) -> dict[str, Any] | None:
+        """Wait up to *slice_secs* for the ask; ``None`` if *session_key* does not own it.
+
+        Returns ``{"status": "pending"}`` while the user is still deciding, else the
+        final outcome. The outcome stays readable until the watcher drops it, so a
+        wait whose response was lost can be retried.
+        """
+        ask = state._agent_asks.get(ask_id)
+        if ask is None or ask["session_key"] != session_key:
+            return None
+        future = ask["future"]
+        now = _monotonic()
+        ask["last_poll"] = now
+        if not future.done() and now >= ask["deadline"]:
+            QuestionCoordinator.resolve(state, ask_id, None, reason="expired")
+        if not future.done():
+            remaining = max(0.0, ask["deadline"] - now)
+            try:
+                await asyncio.wait_for(asyncio.shield(future), timeout=min(slice_secs, remaining))
+            except asyncio.TimeoutError:
+                if _monotonic() < ask["deadline"]:
+                    return {"status": "pending"}
+                QuestionCoordinator.resolve(state, ask_id, None, reason="expired")
+        answers = future.result()
+        return {
+            "status": ask.get("reason") or ("answered" if answers is not None else "dismissed"),
+            "questions": [
+                {"question": q.get("question", ""), "header": q.get("header", "")}
+                for q in ask["questions"]
+            ],
+            "answers": answers or {},
+        }
+
+    @staticmethod
+    def withdraw_agent_ask(state: Any, ask_id: str, session_key: str) -> bool:
+        """The tool call was cancelled: pull the card and forget the ask."""
+        ask = state._agent_asks.get(ask_id)
+        if ask is None or ask["session_key"] != session_key:
+            return False
+        QuestionCoordinator.resolve(state, ask_id, None, reason="withdrawn")
+        state._agent_asks.pop(ask_id, None)
+        return True
+
+    @staticmethod
+    async def _watch_agent_ask(state: Any, ask_id: str, stale_after: float) -> None:
+        """Expire the ask at its deadline, or once its tool call stops polling.
+
+        Without the staleness half a crashed MCP subprocess would leave its card
+        on screen for the whole window, collecting an answer nothing will read.
+        A resolved ask nobody collects is dropped after the same grace.
+        """
+        tick = max(1.0, min(15.0, stale_after / 4))
+        while True:
+            ask = state._agent_asks.get(ask_id)
+            if ask is None:
+                return
+            now = _monotonic()
+            if ask["future"].done():
+                if now - ask["last_poll"] > stale_after:
+                    state._agent_asks.pop(ask_id, None)
+                    return
+            elif now - ask["last_poll"] > stale_after or now >= ask["deadline"]:
+                QuestionCoordinator.resolve(state, ask_id, None, reason="expired")
+            await asyncio.sleep(tick)

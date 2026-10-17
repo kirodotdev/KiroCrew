@@ -1,0 +1,37 @@
+# Smoke: the notification centre when nothing has happened yet, reached the way
+# a person reaches it -- the bell in the top bar, then the popover's "Open
+# inbox" link to the full page. The lane's target never produces a
+# notification: the seeded home ships no notifications.jsonl, the gateway runs
+# with --no-crons, no chat channel is configured, the fixture's one hook runs a
+# command and posts nothing, and the fake backend never calls a notifying tool,
+# so the popover's empty state ("No notifications" / "Activity will appear
+# here") and the page's zero counters are deterministic whatever ran before in
+# the same session -- which is also why a retry reads the same. The backlog
+# record names the `empty` seed; the lane boots `rich`, and on this surface the
+# two are the same because neither carries a note. Two clicks and a wait keep
+# the surviving screenshots to the popover, the page and the settled page, so
+# the expectations read the page and the screenshot taken right after the bell.
+name: notifications-center-empty-state
+tier: smoke
+feature: notifications
+user_story: >-
+  As a new user, I want the Notifications page to show an honest empty state,
+  so that I understand nothing has happened yet.
+docs_url: docs/system-specs/modules/app-notifications.md
+summary: Open the top-bar bell, read its empty popover, follow "Open inbox" and read the empty Notifications page
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /chat
+steps:
+  - You are on the chat page. In the top bar, near the right edge, find the small bell icon (it carries no number badge) and click it once. A panel slides in from the right with the heading "Notifications".
+  - Read the panel. It says "No notifications" with "Activity will appear here" beneath. At the panel's bottom right click the link reading "Open inbox".
+  - Wait a second for the page to load.
+expectations:
+  - The main area shows the Notifications page, headed "Notifications" with "All agent activity, cron results, webhooks, and approvals" beneath it, and the bell panel has closed.
+  - A row of counters near the top reads "Total" 0, "Unread" 0, "Cron" 0, "Hooks" 0 and "Heartbeat" 0.
+  - An "Activity Feed" card reads "No notifications" with "Activity will appear here" beneath, and lists no items; beside it a card reads "Select a notification".
+  - In the screenshot taken right after you clicked the bell, the panel was open with the heading "Notifications" and read "No notifications".
+  - No red error banner is visible and no text is clipped or overlapping.
+max_steps: 6
+max_seconds: 180

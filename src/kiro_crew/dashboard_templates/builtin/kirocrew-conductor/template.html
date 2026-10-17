@@ -1,0 +1,412 @@
+<div class="cb">
+  <style>
+    .cb {
+      --c-card: var(--bg-elevated, #15151c); --c-ink: var(--text, #ececf1); --c-strong: var(--text-strong, #ffffff);
+      --c-mute: var(--muted, #9a9aa8); --c-edge: var(--border, #2a2a35); --c-acc: var(--accent, #818cf8);
+      --c-ok: var(--ok, #4ade80); --c-warn: var(--warn, #fbbf24); --c-bad: var(--danger, #f87171); --c-info: var(--info, #60a5fa);
+      display: flex; flex-direction: column; gap: 10px; color: var(--c-ink);
+      font: 13px/1.45 system-ui, -apple-system, 'Segoe UI', sans-serif; font-variant-numeric: tabular-nums;
+    }
+    @media (prefers-color-scheme: light) {
+      .cb {
+        --c-card: var(--bg-elevated, #ffffff); --c-ink: var(--text, #111827); --c-strong: var(--text-strong, #030712);
+        --c-mute: var(--muted, #6b7280); --c-edge: var(--border, #e5e7eb); --c-acc: var(--accent, #4f46e5);
+        --c-ok: var(--ok, #15803d); --c-warn: var(--warn, #b45309); --c-bad: var(--danger, #b91c1c); --c-info: var(--info, #1d4ed8);
+      }
+    }
+    .cb * { box-sizing: border-box; }
+    .cb .ghost { position: relative; overflow: hidden; padding: 10px 12px; border: 1px solid var(--c-edge); border-radius: 12px;
+      background: var(--c-card); box-shadow: 0 8px 24px -14px var(--c-acc); }
+    .cb .k0 { margin: 0; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--c-acc); }
+    .cb h1 { margin: 2px 0 0; font-size: 15px; font-weight: 650; color: var(--c-strong); overflow-wrap: anywhere; }
+    .cb .meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 2px; font-size: 11px; color: var(--c-mute); }
+    .cb .band { border: 1px solid var(--c-warn); border-left-width: 4px; border-radius: 10px; padding: 8px 10px;
+      background: var(--warn-subtle, rgba(251, 191, 36, .12)); animation: cb-glow 2.6s ease-in-out 3; }
+    .cb .k { display: block; color: var(--c-warn); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+    .cb .v { margin: 3px 0 0; font-weight: 500; color: var(--c-strong); overflow-wrap: anywhere; }
+    .cb .tag { display: inline-block; margin-left: 6px; font-size: 10px; font-weight: 600; text-transform: none; letter-spacing: 0;
+      color: var(--c-mute); }
+    .cb .calm { margin: 0; color: var(--c-mute); font-size: 12px; }
+    .cb .calm::before { content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--c-ok);
+      margin-right: 6px; vertical-align: 1px; }
+    .cb .meter { display: flex; flex-direction: column; gap: 6px; }
+    .cb .row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--c-mute); }
+    .cb .row b { color: var(--c-strong); font-weight: 600; }
+    .cb .track { height: 8px; border-radius: 999px; background: var(--c-edge); overflow: hidden; }
+    .cb .fill { height: 100%; width: 0; border-radius: 999px; background: var(--c-ok);
+      transition: width .9s cubic-bezier(.2,.8,.2,1); }
+    .cb .note { border: 1px solid var(--c-edge); border-radius: 10px; padding: 8px 10px; background: var(--c-card); }
+    .cb .note p { margin: 3px 0 0; overflow-wrap: anywhere; }
+    .cb .note .lbl { color: var(--c-mute); }
+    .cb h2 { margin: 0; font-size: 12px; font-weight: 600; color: var(--c-strong); }
+    .cb .grid { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px;
+      grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr)); }
+    .cb .card { min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; background: var(--c-card);
+      border: 1px solid var(--c-edge); border-top: 3px solid var(--tone); border-radius: 10px; }
+    .cb .card.pop { animation: cb-pop .42s cubic-bezier(.2,1.4,.4,1) both; }
+    .cb .top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+    .cb .t { margin: 0; font-size: 13px; font-weight: 600; color: var(--c-strong); overflow-wrap: anywhere; }
+    .cb .pill { flex: none; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; border-radius: 999px;
+      padding: 1px 8px; font-size: 11px; font-weight: 600; color: var(--tone); border: 1px solid var(--tone); }
+    .cb .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--tone); animation: cb-blink 1.1s ease-in-out 6; }
+    .cb .sub { font-size: 11.5px; color: var(--c-mute); overflow-wrap: anywhere; }
+    .cb .tone-ok { --tone: var(--c-ok); }
+    .cb .tone-run { --tone: var(--c-info); }
+    .cb .tone-test { --tone: var(--c-mute); }
+    .cb .tone-test .pill { border-style: dashed; }
+    .cb button.reply { margin-top: 6px; font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 6px; cursor: pointer;
+      border: 1px solid var(--c-warn); background: var(--c-card); color: var(--c-strong); font-weight: 600; }
+    .cb #cb-more button.reply, .cb #cb-more .hint { display: block; width: fit-content; }
+    .cb button.reply:focus-visible { outline: 2px solid var(--c-acc); outline-offset: 1px; }
+    .cb .tone-wait { --tone: var(--c-mute); }
+    .cb .tone-you { --tone: var(--c-warn); }
+    .cb .tone-bad { --tone: var(--c-bad); }
+    .cb .tone-other { --tone: var(--c-mute); }
+    .cb .empty { margin: 0; color: var(--c-mute); font-size: 12px; }
+    @keyframes cb-pop { from { opacity: 0; transform: translateY(6px) scale(.96); } to { opacity: 1; transform: none; } }
+    @keyframes cb-blink { 0%, 100% { opacity: 1; } 50% { opacity: .2; } }
+    @keyframes cb-glow { 0%, 100% { box-shadow: 0 0 0 0 transparent; } 50% { box-shadow: 0 0 0 4px var(--warn-subtle, rgba(251, 191, 36, .22)); } }
+    /* Every animation above is decoration: with motion off the page reads the same. */
+    @media (prefers-reduced-motion: reduce) {
+      .cb *, .cb *::before, .cb *::after { animation: none !important; transition: none !important; }
+    }
+  </style>
+
+  <header class="ghost">
+    <p class="k0" data-i18n="title">Task board</p>
+    <h1 data-dashboard-field="goal">-</h1>
+    <div class="meta">
+      <span id="cb-round"><span data-i18n="round">conductor round</span> <span data-dashboard-field="round">-</span></span>
+      <span id="cb-updated"><span data-i18n="updated">updated</span> <span data-dashboard-field="last_entry_at">-</span></span>
+    </div>
+  </header>
+
+  <section id="cb-you" aria-live="polite"></section>
+  <div class="meter" id="cb-meter"></div>
+  <section id="cb-note"></section>
+
+  <h2 data-i18n="tasks">Tasks</h2>
+  <ul class="grid" id="cb-tasks"></ul>
+  <p class="sub">
+    <span id="cb-more"><span data-dashboard-field="omitted">-</span> <span data-i18n="more">more not shown (list truncated)</span></span>
+    <span data-dashboard-field="items" hidden></span>
+    <span data-dashboard-field="forgotten" hidden></span>
+    <span data-dashboard-field="needs_you" hidden></span>
+    <span data-dashboard-field="note" hidden></span>
+    <span data-dashboard-field="note_at" hidden></span>
+  </p>
+
+  <script>
+    (function () {
+      var DASH = '\u2014';
+
+      // The page's own words, one table per UI language. A key a language lacks
+      // falls back to English. Values the ledger or a crewmate wrote are never
+      // looked up here. The zh-CN strings are \u-escaped so the source stays ASCII.
+      var I18N = {
+        en: {
+          title: 'Task board', round: 'conductor round', updated: 'updated', tasks: 'Tasks',
+          more: 'more tasks not shown', ask_all: '\u270e Ask in chat for all tasks', ask_all_say: 'Show me the full task list.',
+          needs_you: 'Needs you', calm: 'Nothing needs you right now.', wrote: 'your crewmate wrote this',
+          done_of: '{d} of {n} accepted by the conductor', running: '{n} working', next: 'Next', note: 'Last note',
+          note_at: 'sent {t}', empty: 'No tasks on this board yet.', untitled: 'Untitled task',
+          t_done: 'accepted', t_working: 'working', t_reported: 'conductor checking', t_you: 'needs you',
+          t_waiting: 'not started', t_rejected: 'rejected', t_abandoned: 'abandoned',
+          status_question: 'has a question', status_blocked: 'is stuck',
+          reason_approval: 'approval', reason_needs_human: 'needs a person', pr: 'PR #{n}',
+          how: 'The button fills your chat box. Nothing sends until you press send.', reply: '\u270e Reply in chat',
+          reply_title: 'Puts a line in your chat box to finish and send',
+          about: 'About "{t}": ', reviewing: '{n} conductor checking', no_goal: 'No goal yet. Give this crewmate one in chat.'
+        },
+        'zh-CN': {
+          title: '\u4efb\u52a1\u770b\u677f', round: '\u6307\u6325\u8f6e\u6b21', updated: '\u66f4\u65b0\u4e8e', tasks: '\u4efb\u52a1',
+          more: '\u9879\u4efb\u52a1\u672a\u663e\u793a', ask_all: '\u270e \u5728\u804a\u5929\u91cc\u8981\u5168\u90e8\u4efb\u52a1', ask_all_say: '\u8bf7\u7ed9\u6211\u5b8c\u6574\u7684\u4efb\u52a1\u5217\u8868\u3002',
+          needs_you: '\u9700\u8981\u4f60', calm: '\u73b0\u5728\u6ca1\u6709\u9700\u8981\u4f60\u5904\u7406\u7684\u4e8b\u3002',
+          wrote: '\u961f\u53cb\u5199\u7684',
+          done_of: '{d} / {n} \u5df2\u7531\u6307\u6325\u63a5\u53d7', running: '{n} \u5de5\u4f5c\u4e2d', next: '\u4e0b\u4e00\u6b65',
+          note: '\u6700\u65b0\u7559\u8a00', note_at: '\u53d1\u9001\u4e8e {t}',
+          empty: '\u770b\u677f\u4e0a\u8fd8\u6ca1\u6709\u4efb\u52a1\u3002', untitled: '\u672a\u547d\u540d\u4efb\u52a1',
+          t_done: '\u5df2\u63a5\u53d7', t_working: '\u5de5\u4f5c\u4e2d', t_reported: '\u6307\u6325\u6b63\u5728\u68c0\u67e5',
+          t_you: '\u9700\u8981\u4f60', t_waiting: '\u5c1a\u672a\u5f00\u59cb', t_rejected: '\u5df2\u62d2\u7edd',
+          t_abandoned: '\u5df2\u653e\u5f03', status_question: '\u6709\u95ee\u9898', status_blocked: '\u88ab\u5361\u4f4f',
+          reason_approval: '\u7b49\u5f85\u6279\u51c6', reason_needs_human: '\u9700\u8981\u4eba\u5de5',
+          how: '\u6309\u94ae\u53ea\u4f1a\u586b\u5165\u4f60\u7684\u804a\u5929\u6846\u3002\u4f60\u6309\u53d1\u9001\u524d\u4e0d\u4f1a\u53d1\u51fa\u3002', reply: '\u270e \u5728\u804a\u5929\u91cc\u56de\u590d',
+          reply_title: '\u586b\u5165\u4f60\u7684\u804a\u5929\u6846\uff0c\u5199\u5b8c\u540e\u518d\u53d1\u9001',
+          about: '\u5173\u4e8e\u201c{t}\u201d\uff1a', reviewing: '{n} \u6307\u6325\u6b63\u5728\u68c0\u67e5',
+          no_goal: '\u8fd8\u6ca1\u6709\u76ee\u6807\u3002\u8bf7\u5728\u804a\u5929\u91cc\u7ed9\u8fd9\u4f4d\u961f\u53cb\u4e00\u4e2a\u3002'
+        }
+      };
+      function locale() {
+        var l = (window.kirocrew || {}).locale;
+        return typeof l === 'string' && Object.prototype.hasOwnProperty.call(I18N, l) ? l : 'en';
+      }
+      function has(key) { return Object.prototype.hasOwnProperty.call(I18N.en, key); }
+      function i18n(key, vars) {
+        var table = I18N[locale()];
+        var s = Object.prototype.hasOwnProperty.call(table, key) ? table[key] : I18N.en[key];
+        if (s === undefined) s = key;
+        if (vars) {
+          s = s.replace(/\{(\w+)\}/g, function (m, k) {
+            return Object.prototype.hasOwnProperty.call(vars, k) ? String(vars[k]) : m;
+          });
+        }
+        return s;
+      }
+      function applyStatic() {
+        var nodes = document.querySelectorAll('[data-i18n]');
+        for (var i = 0; i < nodes.length; i++) nodes[i].textContent = i18n(nodes[i].getAttribute('data-i18n'));
+      }
+
+      function text(v) { return typeof v === 'string' && v.trim() ? v.trim() : null; }
+      function num(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
+      function el(tag, cls, words) {
+        var n = document.createElement(tag);
+        if (cls) n.className = cls;
+        if (words) n.textContent = words;
+        return n;
+      }
+      function bag() { return (window.kirocrew || {}).fields || {}; }
+      function act(say) {
+        try { parent.postMessage({ type: 'kirocrew-dashboard:act', text: say }, '*'); }
+        catch (e) { /* no host: the button simply does nothing */ }
+      }
+      // A stamp in the reader's language, or as recorded when it does not parse.
+      function when(v) {
+        var t = text(v);
+        var ms = t ? Date.parse(t) : NaN;
+        if (!isFinite(ms)) return t || DASH;
+        try {
+          return new Date(ms).toLocaleString(locale(), { dateStyle: 'medium', timeStyle: 'short' });
+        } catch (e) { return t; }
+      }
+      // The host's own list of which fields a crewmate wrote. A LIST, so read with
+      // indexOf: a value arriving some other way cannot borrow the label.
+      function written(name) {
+        var a = (window.kirocrew || {}).agentic;
+        return Array.isArray(a) && a.indexOf(name) !== -1;
+      }
+      function items() {
+        var f = bag();
+        return Array.isArray(f.items) ? f.items.filter(function (i) { return i && typeof i === 'object'; }) : [];
+      }
+
+      // One tone per reading of a task. The ledger's STATE first, then, for an open
+      // task, the worker's own last word. A worker's `done` is a claim the conductor
+      // has not ruled on yet, so it is its own tone and not "done".
+      function tone(it) {
+        var state = text(it.state);
+        if (state === 'accepted') return ['ok', 't_done'];
+        if (state === 'rejected') return ['bad', 't_rejected'];
+        if (state === 'abandoned') return ['other', 't_abandoned'];
+        if (state !== 'open') return ['other', state || 'unknown'];
+        if (it.status === 'question' || it.status === 'blocked') return ['you', 't_you'];
+        if (it.status === 'progress') return ['run', 't_working'];
+        if (it.status === 'done') return ['test', 't_reported'];
+        return ['wait', 't_waiting'];
+      }
+      function label(key) { return has(key) ? i18n(key) : key; }
+
+      // THE CHAT BOX, never the wire: the host fills the person's composer with a line
+      // naming this one request, and the person presses send. The same bridge
+      // goal-board's Reply button uses.
+      function replyFor(subject) {
+        var b = el('button', 'reply', i18n('reply'));
+        b.type = 'button';
+        b.title = i18n('reply_title');
+        var say = i18n('about', { t: subject.length > 80 ? subject.slice(0, 79) + '\u2026' : subject });
+        b.addEventListener('click', function () { act(say); });
+        return b;
+      }
+
+      function drawYou(list) {
+        var host = document.getElementById('cb-you');
+        if (!host) return;
+        host.textContent = '';
+        var said = Array.isArray(bag().needs_you) ? bag().needs_you.filter(function (x) { return !!text(x); }) : [];
+        // A task the conductor already wrote a line about is not listed again.
+        var asking = list.filter(function (it) {
+          if (tone(it)[0] !== 'you') return false;
+          var title = text(it.title);
+          return !(title && said.some(function (s) { return s.indexOf(title) !== -1; }));
+        });
+        if (!said.length && !asking.length) { host.appendChild(el('p', 'calm', i18n('calm'))); return; }
+        var band = el('div', 'band');
+        var k = el('span', 'k', i18n('needs_you'));
+        if (said.length && written('needs_you')) k.appendChild(el('span', 'tag', i18n('wrote')));
+        band.appendChild(k);
+        for (var i = 0; i < said.length && i < 12; i++) {
+          band.appendChild(el('p', 'v', text(said[i])));
+          band.appendChild(replyFor(text(said[i])));
+        }
+        for (var j = 0; j < asking.length; j++) {
+          var it = asking[j];
+          var why = text(it.reason);
+          var line = (text(it.title) || text(it.item_id) || DASH) + ' \u2014 ' + label('status_' + it.status) +
+            (why ? ' (' + label('reason_' + why) + ')' : '');
+          band.appendChild(el('p', 'v', line));
+          var summary = text(it.summary);
+          if (summary) band.appendChild(el('p', 'sub', summary));
+          band.appendChild(replyFor(text(it.title) || text(it.item_id) || DASH));
+        }
+        band.appendChild(el('p', 'sub', i18n('how')));
+        host.appendChild(band);
+      }
+
+      // The closed items the fold no longer lists, counted per closing state. The
+      // fold keeps only open items and the newest closed ones, so every whole-board
+      // number adds these to what `items` holds. Missing or odd reads as zeros.
+      function forgotten() {
+        var f = bag().forgotten;
+        var g = f && typeof f === 'object' && !Array.isArray(f) ? f : {};
+        function n(k) { var v = num(g[k]); return v && v > 0 ? Math.floor(v) : 0; }
+        return { items: n('items'), accepted: n('accepted') };
+      }
+
+      function drawMeter(list) {
+        var host = document.getElementById('cb-meter');
+        if (!host) return;
+        host.textContent = '';
+        var done = 0, run = 0, review = 0;
+        for (var i = 0; i < list.length; i++) {
+          var t = tone(list[i])[0];
+          if (t === 'ok') done += 1;
+          if (t === 'run') run += 1;
+          if (t === 'test') review += 1;
+        }
+        var gone = forgotten();
+        done += gone.accepted;
+        // Every task on the board: the listed ones plus the closed ones the fold
+        // forgot, the way goal-board counts them. `omitted` counts dropped log
+        // ENTRIES, not tasks, so it is not added.
+        var total = list.length + gone.items;
+        var row = el('div', 'row');
+        row.appendChild(el('b', null, i18n('done_of', { d: done, n: total })));
+        row.appendChild(el('span', null, i18n('running', { n: run }) +
+          (review ? ' \u00b7 ' + i18n('reviewing', { n: review }) : '')));
+        host.appendChild(row);
+        if (!total) return;
+        var track = el('div', 'track');
+        track.setAttribute('role', 'progressbar');
+        track.setAttribute('aria-label', i18n('done_of', { d: done, n: total }));
+        track.setAttribute('aria-valuemin', '0');
+        track.setAttribute('aria-valuemax', String(total));
+        track.setAttribute('aria-valuenow', String(done));
+        var fill = el('div', 'fill');
+        track.appendChild(fill);
+        host.appendChild(track);
+        var pct = (done / total * 100).toFixed(2) + '%';
+        // Set after first paint so the width eases in; reduced motion jumps there.
+        requestAnimationFrame(function () { requestAnimationFrame(function () { fill.style.width = pct; }); });
+      }
+
+      // The conductor's last panel_publish, from its OWN record. A page that shows
+      // it says who wrote it.
+      function drawNote() {
+        var host = document.getElementById('cb-note');
+        if (!host) return;
+        host.textContent = '';
+        var note = bag().note;
+        if (!note || typeof note !== 'object' || Array.isArray(note)) return;
+        var next = text(note.next);
+        // Only `next`. Needs-you has one home, the band above, so the note's own
+        // needs_you line is never drawn beside it.
+        if (!next) return;
+        var box = el('div', 'note');
+        var k = el('span', 'k', i18n('note'));
+        k.appendChild(el('span', 'tag', i18n('wrote')));
+        box.appendChild(k);
+        if (next) {
+          var np = el('p');
+          np.appendChild(el('span', 'lbl', i18n('next') + ': '));
+          np.appendChild(document.createTextNode(next));
+          box.appendChild(np);
+        }
+        var at = text(bag().note_at);
+        if (at) box.appendChild(el('p', 'sub', i18n('note_at', { t: when(at) })));
+        host.appendChild(box);
+      }
+
+      // Ids already drawn once, so a host refill does not replay the pop-in.
+      var seen = {};
+
+      function drawTasks(list) {
+        var host = document.getElementById('cb-tasks');
+        if (!host) return;
+        host.textContent = '';
+        // Tasks that need the reader come first; the rest keep the ledger's order.
+        list = list.filter(function (it) { return tone(it)[0] === 'you'; })
+          .concat(list.filter(function (it) { return tone(it)[0] !== 'you'; }));
+        for (var i = 0; i < list.length; i++) {
+          var it = list[i];
+          var id = text(it.item_id) || String(i);
+          var reading = tone(it);
+          var card = el('li', 'card tone-' + reading[0] + (seen[id] ? '' : ' pop'));
+          if (!seen[id]) card.style.animationDelay = (Math.min(i, 12) * 45) + 'ms';
+          seen[id] = true;
+          var top = el('div', 'top');
+          top.appendChild(el('p', 't', text(it.title) || i18n('untitled')));
+          var pill = el('span', 'pill');
+          if (reading[0] === 'run') {
+            var dot = el('span', 'dot');
+            dot.setAttribute('aria-hidden', 'true');
+            pill.appendChild(dot);
+          }
+          pill.appendChild(document.createTextNode(label(reading[1])));
+          top.appendChild(pill);
+          card.appendChild(top);
+          var pr = num(it.pr);
+          if (pr) card.appendChild(el('span', 'sub', i18n('pr', { n: pr })));
+          var summary = text(it.summary);
+          if (summary) card.appendChild(el('span', 'sub', summary));
+          // The same Reply the band gives this task, so either copy can be acted on.
+          if (reading[0] === 'you') card.appendChild(replyFor(text(it.title) || text(it.item_id) || DASH));
+          host.appendChild(card);
+        }
+        if (!list.length) host.appendChild(el('li', 'empty', i18n('empty')));
+      }
+
+      function render() {
+        var list = items();
+        applyStatic();
+        // A conductor that opened no board leaves the goal and stamps empty, which
+        // reads as a page that failed to load, so each becomes a dash.
+        var cells = document.body.querySelectorAll('[data-dashboard-field]');
+        for (var c = 0; c < cells.length; c++) {
+          if (!cells[c].textContent.trim()) cells[c].textContent = DASH;
+        }
+        // Round 0 means no round has started, which the number alone does not say.
+        var round = document.getElementById('cb-round');
+        if (round) round.hidden = !(num(bag().round) > 0);
+        var updated = document.getElementById('cb-updated');
+        if (updated) updated.hidden = !text(bag().last_entry_at);
+        var goal = document.querySelector('[data-dashboard-field="goal"]');
+        if (goal && !text(bag().goal)) goal.textContent = i18n('no_goal');
+        var stamp = document.querySelector('[data-dashboard-field="last_entry_at"]');
+        if (stamp && text(bag().last_entry_at)) stamp.textContent = when(bag().last_entry_at);
+        drawYou(list);
+        drawMeter(list);
+        drawNote();
+        drawTasks(list);
+        // A list the fold did not cut needs no line saying so.
+        var more = document.getElementById('cb-more');
+        if (more) {
+          more.hidden = !(num(bag().omitted) > 0);
+          var old = more.querySelectorAll('button.reply, .hint');
+          for (var o = 0; o < old.length; o++) old[o].remove();
+          if (!more.hidden) {
+            var ask = el('button', 'reply', i18n('ask_all'));
+            ask.type = 'button';
+            ask.title = i18n('reply_title');
+            ask.addEventListener('click', function () { act(i18n('ask_all_say')); });
+            more.appendChild(ask);
+            more.appendChild(el('span', 'sub hint', ' ' + i18n('how')));
+          }
+        }
+      }
+
+      render();
+      window.addEventListener('load', render);
+      window.addEventListener('message', function () { setTimeout(render, 0); });
+    }());
+  </script>
+</div>

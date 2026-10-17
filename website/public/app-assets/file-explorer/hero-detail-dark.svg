@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 288" fill="none">
+  <rect width="1200" height="288" fill="#1a1b26"/>
+  <!-- full-width scattered accents so side-crop only trims decoration -->
+  <circle cx="60" cy="46" r="2.5" fill="#f59e0b" opacity="0.3"/>
+  <circle cx="150" cy="250" r="2" fill="#fbbf24" opacity="0.3"/>
+  <circle cx="1050" cy="44" r="2" fill="#fbbf24" opacity="0.3"/>
+  <circle cx="1150" cy="248" r="2.5" fill="#f59e0b" opacity="0.3"/>
+  <!-- left floating folder + dots -->
+  <rect x="60" y="122" width="16" height="12" rx="2" fill="#f59e0b" opacity="0.7"/>
+  <rect x="60" y="119" width="8" height="3" rx="1" fill="#f59e0b" opacity="0.5"/>
+  <circle cx="92" cy="100" r="2.5" fill="#d97706" opacity="0.5"/>
+  <circle cx="80" cy="170" r="2.5" fill="#d97706" opacity="0.5"/>
+  <!-- right floating folder + dots -->
+  <rect x="1116" y="120" width="16" height="12" rx="2" fill="#f59e0b" opacity="0.7"/>
+  <rect x="1116" y="117" width="8" height="3" rx="1" fill="#f59e0b" opacity="0.5"/>
+  <circle cx="1108" cy="98" r="2.5" fill="#d97706" opacity="0.5"/>
+  <circle cx="1132" cy="168" r="2.5" fill="#d97706" opacity="0.5"/>
+
+  <!-- LEFT PANEL: file tree -->
+  <rect x="180" y="44" width="300" height="200" rx="8" stroke="#334155" stroke-width="1.5" fill="#1e293b"/>
+  <rect x="204" y="72" width="16" height="12" rx="2" fill="#f59e0b" opacity="0.8"/>
+  <rect x="204" y="69" width="8" height="3" rx="1" fill="#f59e0b" opacity="0.6"/>
+  <rect x="228" y="75" width="60" height="4" rx="2" fill="#fbbf24" opacity="0.6"/>
+  <rect x="204" y="98" width="16" height="12" rx="2" fill="#f59e0b" opacity="0.7"/>
+  <rect x="204" y="95" width="8" height="3" rx="1" fill="#f59e0b" opacity="0.5"/>
+  <rect x="228" y="101" width="44" height="4" rx="2" fill="#fbbf24" opacity="0.5"/>
+  <circle cx="216" cy="128" r="2.5" fill="#d97706" opacity="0.6"/><rect x="228" y="125" width="66" height="4" rx="2" fill="#92400e" opacity="0.6"/>
+  <circle cx="216" cy="150" r="2.5" fill="#d97706" opacity="0.6"/><rect x="228" y="147" width="82" height="4" rx="2" fill="#fbbf24" opacity="0.7"/>
+  <circle cx="216" cy="172" r="2.5" fill="#d97706" opacity="0.5"/><rect x="228" y="169" width="52" height="4" rx="2" fill="#92400e" opacity="0.5"/>
+  <circle cx="216" cy="194" r="2.5" fill="#d97706" opacity="0.6"/><rect x="228" y="191" width="72" height="4" rx="2" fill="#fbbf24" opacity="0.6"/>
+  <circle cx="216" cy="216" r="2.5" fill="#d97706" opacity="0.5"/><rect x="228" y="213" width="44" height="4" rx="2" fill="#92400e" opacity="0.4"/>
+
+  <!-- dashed connector between panels -->
+  <line x1="480" y1="144" x2="520" y2="144" stroke="#f59e0b" stroke-width="1" stroke-dasharray="4 3" opacity="0.4"/>
+
+  <!-- RIGHT PANEL: code -->
+  <rect x="520" y="44" width="500" height="200" rx="8" stroke="#334155" stroke-width="1.5" fill="#1e293b"/>
+  <g opacity="0.7"><rect x="548" y="94" width="40" height="4" rx="2" fill="#f59e0b"/><rect x="620" y="200" width="30" height="4" rx="2" fill="#f59e0b"/><rect x="572" y="150" width="34" height="4" rx="2" fill="#f59e0b"/></g>
+  <g opacity="0.5"><rect x="596" y="94" width="26" height="4" rx="2" fill="#fbbf24"/><rect x="632" y="128" width="22" height="4" rx="2" fill="#fbbf24"/><rect x="700" y="182" width="26" height="4" rx="2" fill="#fbbf24"/><rect x="852" y="94" width="60" height="4" rx="2" fill="#fbbf24"/></g>
+  <g opacity="0.6"><rect x="560" y="116" width="58" height="4" rx="2" fill="#4ade80"/><rect x="636" y="172" width="44" height="4" rx="2" fill="#4ade80"/><rect x="560" y="216" width="54" height="4" rx="2" fill="#4ade80"/><rect x="716" y="128" width="50" height="4" rx="2" fill="#4ade80"/><rect x="628" y="150" width="50" height="4" rx="2" fill="#4ade80"/><rect x="860" y="216" width="70" height="4" rx="2" fill="#4ade80"/></g>
+  <g opacity="0.6"><rect x="632" y="116" width="30" height="4" rx="2" fill="#60a5fa"/><rect x="560" y="128" width="40" height="4" rx="2" fill="#60a5fa"/><rect x="614" y="182" width="58" height="4" rx="2" fill="#60a5fa"/><rect x="660" y="216" width="64" height="4" rx="2" fill="#60a5fa"/><rect x="788" y="150" width="90" height="4" rx="2" fill="#60a5fa"/><rect x="700" y="94" width="120" height="4" rx="2" fill="#60a5fa"/></g>
+  <g opacity="0.5"><rect x="636" y="128" width="64" height="4" rx="2" fill="#c084fc"/><rect x="560" y="172" width="70" height="4" rx="2" fill="#c084fc"/><rect x="740" y="200" width="60" height="4" rx="2" fill="#c084fc"/><rect x="836" y="128" width="80" height="4" rx="2" fill="#c084fc"/></g>
+</svg>

@@ -1,0 +1,5 @@
+{
+  "_comment": "Unexcepted Python advisories in the dev environment. Generated - regenerate with `python3 scripts/check_python_audit.py --update-baseline`. This gate REPORTS and never blocks: its exit status is non-zero only when the audit could not run at all, so a rising count changes the log and not the build. Drive the number to zero; never raise one to silence the note. An absent count reads as unmeasured rather than as zero, so the first run cannot report advisories that predate it as newly introduced. Advisories are excepted through the shared .vulnerability-exceptions.json, which carries an owner and an expiry for each entry.",
+  "version": 1,
+  "environments": {}
+}

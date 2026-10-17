@@ -1,0 +1,329 @@
+"""Sections that configure the gateway's background services.
+
+Owns the DTOs and defaults for ``taskrunner``, ``messaging``,
+``cron_history``, ``monitoring``, ``heartbeat`` and ``watchdog``. The monitoring
+runtime bounds come from ``monitoring.limits``, their single owner.
+``config.sections`` re-exports every name; this module never imports it, the
+loader, schema or validation.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from kiro_crew.config.fields import _meta, field_default
+from kiro_crew.monitoring.limits import DEFAULT_RUNTIME_CEILING_SECS, MAX_RUNTIME_CEILING_SECS
+
+DEFAULT_MAX_PARALLEL_STEPS = (
+    0  # 0 = auto: host memory over the per-agent cost (compute_memory_sized_parallel_cap)
+)
+
+
+@dataclass
+class TaskRunnerConfig:
+    max_parallel_steps: int = field(
+        default=DEFAULT_MAX_PARALLEL_STEPS,
+        metadata=_meta(
+            "Max Parallel Steps",
+            "Maximum task steps to run in parallel. 0 = auto: a host-safe cap sized from available memory and agent.subagent_cost_gb, between 3 and agent.subagent_auto_max (3 when memory cannot be read). A positive value only *lowers* concurrency — it is capped at the auto maximum and can never exceed the host-safe limit.",
+        ),
+    )
+    workspace_dir: str = field(
+        default="",
+        metadata=_meta(
+            "Workspace Folder",
+            "Absolute path where task runner executions run. When set, "
+            "every execution operates in this folder instead of a per-run scratch "
+            "directory, so the task runner works on the intended target location. "
+            "Empty = use the default per-run workspace directory.",
+        ),
+    )
+    test_command: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Test Command",
+            'Argument list run after each step, no shell (e.g. ["python", "-m", '
+            '"pytest", "-q"]). Exit 0 verifies the step. Empty = not configured.',
+            restart=True,
+        ),
+    )
+    require_verification: bool = field(
+        default=False,
+        metadata=_meta(
+            "Require Verification",
+            "Fail a step unless its test command exited 0; refuse a run with none to run.",
+            restart=True,
+        ),
+    )
+
+
+@dataclass
+class MessagingConfig:
+    use_transport: bool = field(
+        default=True,
+        metadata=_meta(
+            "Use Transport",
+            "Route inbound Slack messages through the SlackTransport → TurnDriver → "
+            "SlackRenderer channel-neutral path instead of the native handle_message "
+            "monolith. Default ON in Kiro Crew (the transport abstraction is the canonical "
+            "path, shared with future channels). Set to false to fall back to the legacy "
+            "native handler.",
+        ),
+    )
+    dm_scope: str = field(
+        default="per-channel-peer",
+        metadata=_meta(
+            "DM Session Scope",
+            "How direct-message conversations map to sessions. 'per-channel-peer' "
+            "(default) keeps one session per (channel, user), so the same person on "
+            "Telegram vs WeCom stays isolated. 'unified' collapses all DMs into one "
+            "shared session per agent for cross-surface continuity. Takes effect at "
+            "the next restart: each conversation's generation counter is seeded from "
+            "the namespace in force at boot, so switching namespaces live could "
+            "resume a stale session persisted under the other one.",
+            restart=True,
+        ),
+    )
+    idle_reset_minutes: int = field(
+        default=0,
+        metadata=_meta(
+            "DM Idle Reset (minutes)",
+            "Start a fresh session generation when a DM arrives after this many "
+            "minutes of inactivity. 0 (default) disables idle reset.",
+        ),
+    )
+    daily_reset_hour: int = field(
+        default=-1,
+        metadata=_meta(
+            "DM Daily Reset Hour",
+            "Local-time hour (0-23) at which the next DM starts a fresh session "
+            "generation once per day. -1 (default) disables daily reset.",
+        ),
+    )
+    queue_mode: str = field(
+        default="steer",
+        metadata=_meta(
+            "DM Queue Mode",
+            "How a DM that arrives while a turn is running is handled. 'steer' "
+            "(default) folds it into the running reply; 'queue' holds it and runs "
+            "it after the current turn finishes.",
+        ),
+    )
+
+    def __post_init__(self) -> None:
+        # Fail safe on hand-edited values (mirrors WeComConfig): an unknown scope
+        # narrows to per-peer sessions whatever the default is, since "unified"
+        # puts two people's DMs in one session; an unknown mode falls back to the
+        # field default; and the reset windows clamp to valid ranges so a bad
+        # config can't wedge dispatch.
+        if self.dm_scope not in ("per-channel-peer", "unified"):
+            self.dm_scope = "per-channel-peer"
+        if self.queue_mode not in ("steer", "queue"):
+            self.queue_mode = field_default(MessagingConfig, "queue_mode")
+        self.idle_reset_minutes = max(0, self.idle_reset_minutes)
+        if not 0 <= self.daily_reset_hour <= 23:
+            self.daily_reset_hour = -1
+
+
+@dataclass
+class CronHistoryConfig:
+    cron_summary_cap: int = field(
+        default=200,
+        metadata=_meta("Summary Cap", "Max characters for run summary field."),
+    )
+    cron_trace_cap_kb: int = field(
+        default=50,
+        metadata=_meta("Trace Cap KB", "Max kilobytes for run trace field."),
+    )
+    cron_max_records_per_job: int = field(
+        default=100,
+        metadata=_meta("Max Records Per Job", "Max history records kept per job file."),
+    )
+    cron_max_index_records: int = field(
+        default=2000,
+        metadata=_meta("Max Index Records", "Max records in the global index."),
+    )
+
+
+@dataclass
+class MonitoringConfig:
+    """Monitor arming preference and finite wall-clock policy.
+
+    The preference changes tool guidance, not eligibility. The runtime ceiling
+    is checked whenever a budget is written (monitor tools, API mutations,
+    structured-monitor writes); persisted records are not re-checked on load.
+    Raising it never extends an existing loop's stored budget or creation time.
+    """
+
+    max_runtime_secs: int = field(
+        default=DEFAULT_RUNTIME_CEILING_SECS,
+        metadata=_meta(
+            "Maximum monitoring runtime (seconds)",
+            "Finite wall-clock ceiling for new and updated monitors. Accepts up to "
+            "2592000 seconds (30 days). Raising this limit never extends an existing deadline.",
+            min=1,
+            max=MAX_RUNTIME_CEILING_SECS,
+        ),
+    )
+
+    prefer_structured_arming: bool = field(
+        default=False,
+        metadata=_meta(
+            "Prefer the structured monitor when arming",
+            "Which side has to justify itself before a supported pull request is "
+            "watched. Off, the default and the shipped wording: the structured "
+            "monitor monitor_watch is admissible only once the caller has "
+            "satisfied itself that the objective is fully determined by typed "
+            "provider facts, a judgement that leans to the prompt loop whenever "
+            "the caller is unsure. On: a supported pull request is enough, and "
+            "the prompt loop monitor_start becomes the exception that needs its "
+            "own reason. Both positions send evidence the typed provider cannot "
+            "observe -- comments, advisory review findings -- to the prompt loop, "
+            "so this moves the burden rather than swapping two defaults. What it "
+            "changes is the text those two descriptions give the agent: it does "
+            "not refuse either tool and cannot guarantee which one the agent "
+            "picks. Neither path is gated by this key -- both are armable with it "
+            "off -- so turning it on grants no new unattended capability. The "
+            "value is read afresh every time the tool list is built, so no "
+            "gateway restart is needed; a session already open keeps the tool "
+            "list it was given, so the change reaches the next session. Two "
+            "things to know before turning it on. The structured path observes "
+            "typed provider facts only -- lifecycle, checks, mergeability, "
+            "review decision, review threads -- and not generic comments or "
+            "advisory review findings, so an objective that depends on reading "
+            "those still needs the prompt loop. And this key is reversible but "
+            "an already-armed structured monitor is not: stopping one records a "
+            "retained USER_STOP outcome that refuses a re-arm, so moving such a "
+            "session to the prompt loop needs its owner to clear that record in "
+            "the dashboard's monitor popover first.",
+        ),
+    )
+
+
+@dataclass
+class HeartbeatConfig:
+    """Heartbeat background task queue (~/.kiro/crew/workspace/HEARTBEAT.md)."""
+
+    default_deliver: str = field(
+        default="slack",
+        metadata=_meta(
+            "Default delivery",
+            "Where a heartbeat completion with no inline <!-- deliver:... --> tag is "
+            "routed: 'slack' (Slack DM + dashboard bell, the default) or 'dashboard' "
+            "(dashboard slot + bell only, no Slack). Per-task deliver tags always "
+            "override this.",
+        ),
+    )
+
+
+@dataclass
+class WatchdogConfig:
+    """ACP per-session watchdog / liveness-oracle tuning (acp/session_handle.py).
+
+    Wellness (the liveness oracle) is the primary detector; these windows govern
+    only the UNKNOWN-verdict backstop class. A WORKING verdict is never acted on
+    at any elapsed time, and every watchdog action is non-lethal (auto-recovery,
+    never a silent kill).
+    """
+
+    check_after_secs: float = field(
+        default=60.0,
+        metadata=_meta(
+            "Check after (s)",
+            "Idle seconds on a turn before the liveness oracle is consulted at all. "
+            "Below this, the dispatch loop does no watchdog work.",
+        ),
+    )
+    stale_window_secs: float = field(
+        default=600.0,
+        metadata=_meta(
+            "Stale probe window (s)",
+            "Idle seconds before an UNKNOWN-verdict model-wait turn is safe-probed "
+            "via session/cancel. Probes are non-lethal, but a probe of a LIVE think "
+            "cancels and regenerates it, so the window must clear an ordinary "
+            "silent think. Default 10 min. A think the oracle can attest (an "
+            "established backend socket) gets the longer model-silent window "
+            "instead, so this one governs only thinks with no such evidence: a "
+            "host without procfs, or a backend connection that is momentarily "
+            "down. Its cost is wedge-recovery latency on a runtime that is "
+            "already dead, never lost work.",
+        ),
+    )
+    tool_stall_suspect_secs: float = field(
+        default=5400.0,
+        metadata=_meta(
+            "Tool stall suspect (s)",
+            "Idle seconds before an UNKNOWN-verdict in-flight tool is cancelled and "
+            "the turn routed to tool-stall recovery (continue-nudge, no re-run of "
+            "the original message). WORKING tools (a matched live build child, an "
+            "MCP subtree with CPU movement) are never cancelled regardless of "
+            "duration, so this window governs only what the liveness oracle cannot "
+            "attest. Default 90 min: it clears every shipped budget a single tool "
+            "call can legitimately spend silent (the task runner's 90-minute test "
+            "command, a full test suite with one retry in one shell call) while "
+            "still landing inside the turn's own ceiling "
+            "(agent.chat_turn_timeout_secs) so recovery is reachable. Enforcement is "
+            "at handle construction, not config load: a window past the headroom "
+            "fraction of the transport's per-prompt timeout is clamped with a "
+            "warning, while one that merely exceeds agent.chat_turn_timeout_secs is "
+            "warned about but left as set, because the same handle also serves "
+            "callers that pass a larger prompt timeout (review and cron turns).",
+        ),
+    )
+    tool_stall_hard_cap_secs: float = field(
+        default=7200.0,
+        metadata=_meta(
+            "Hard cap (s)",
+            "Absolute ceiling for UNKNOWN-verdict forbearance (e.g. the extended "
+            "probably-thinking window) and for any per-agent "
+            "watchdog_tool_stall_* override. Also bounds an opaque MCP tool "
+            "whose only WORKING evidence is movement somewhere in the runtime's "
+            "process tree. Every other WORKING reading (a matched shell child, "
+            "a declared wait, a keepalive-pinging core tool) is deferred before "
+            "this cap is consulted and is bounded only by the turn's own ceiling. "
+            "Default 2h, clamped against the transport's per-prompt timeout like "
+            "the suspect window.",
+        ),
+    )
+    model_silent_probe_secs: float = field(
+        default=1800.0,
+        metadata=_meta(
+            "Silent-think probe window (s)",
+            "Extended probe window for a model-wait with an established backend "
+            "connection but flat counters (non-streamed server-side reasoning, "
+            "e.g. long xhigh thinks). Probing a live think cancels and regenerates "
+            "it, so this window is deliberately generous: 30 min clears the long "
+            "end of an extended-effort think.",
+        ),
+    )
+    remote_flat_probe_secs: float = field(
+        default=0.0,
+        metadata=_meta(
+            "Remote-call stall window (s)",
+            "Idle seconds before an MCP tool that looks blocked on its own remote "
+            "call is cancelled and the turn routed to tool-stall recovery. The "
+            "shape is a tool whose process tree shows no CPU or IO movement while "
+            "the tool's own MCP server, or a process it started, holds an "
+            "established TCP connection: a remote call waiting on a peer that may "
+            "never answer. The server is recognized by the command the session "
+            "launched it with, so another server's persistent connection never "
+            "counts; a server that cannot be recognized exactly once (a launcher "
+            "that re-executes under a different command line, or a second copy "
+            "of it on the same runtime) keeps the full window. The window is "
+            "measured from the last stream frame or the last probe that saw the "
+            "tree move, whichever is later, so a slow stream that moves bytes now "
+            "and then keeps the full tool_stall_suspect_secs window. Linux and "
+            "macOS only; Windows has no socket view and keeps the full window. "
+            "Off (0) by default; 900 is the suggested value when opting in. "
+            "Clamped against the transport's per-prompt timeout like the other "
+            "windows.",
+        ),
+    )
+    wellness_sample_secs: float = field(
+        default=3.0,
+        metadata=_meta(
+            "Wellness sample interval (s)",
+            "Minimum spacing between CPU/IO counter samples used for movement "
+            "deltas in the liveness oracle.",
+        ),
+    )

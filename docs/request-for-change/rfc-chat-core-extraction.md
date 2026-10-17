@@ -1,0 +1,162 @@
+---
+title: Extract a chat core shared by every chat surface
+status: partial
+author: zezhexu
+created: 2026-08-22
+last-audited: 2026-09-05
+audited-at: 8ed028b0b
+doc-pr:
+implementation-prs: [5128, 5909, 8689, 8713, 8733, 9538, 9576, 9577, 9593, 9787, 10146, 14227]
+tracking-issues: ["#8651", "#9570"]
+supersedes: []
+superseded-by: []
+---
+# RFC: Extract a chat core shared by every chat surface
+
+- Status: **partial** — the shared `sendTurn` transport, renderer registry,
+  `VirtualTranscript`, and the `Composer` root with its voice slice now ship
+  across the main page and secondary chat hosts. `sendTurn` carries ChatPage,
+  ChatPane, ChatEmbed (over the permission-scoped app-sdk wire), the app-sdk
+  seed, SideChat (over a `/side/*` wire) and the app and background seeders;
+  the mochi panel bridge reads the same receipt classifier on its own fetch.
+  The remaining composer atoms,
+  model-layer seam, non-destructive error hand-off, and final page migration are
+  still incomplete. Current implementations live under `website/src/chat-core/`,
+  `website/src/app-sdk/ChatMessageList.tsx`, and
+  `website/src/pages/chat/transcriptRenderers.tsx`; §4.2 keeps the dated
+  per-PR slice descriptions beside each PR's merge state.
+- Author: zezhexu (drafted with Kiro)
+- Created: 2026-08-22 · Last audited: 2026-09-05 at `8ed028b0b`
+- Related: [`rfc-everything-is-an-app.md`](rfc-everything-is-an-app.md) (apps need first-class chat embeds); the error-to-agent hand-off work ([PR #5002](https://github.com/kirodotdev/KiroCrew/pull/5002)), whose review concluded the per-page draft-risk audit only disappears once a non-destructive side-panel chat exists.
+
+## 1. Summary
+
+The dashboard ships at least five chat UIs. Only the message list is partially shared; the send discipline, the streaming transport, the composer, and half of the role renderers are re-implemented per surface. This RFC proposes extracting a **chat core** — transport, message model, renderer registry, composer — so every surface composes the same primitives and differs only in chrome. The extraction is a strangler migration in five phases, each independently shippable.
+
+## 2. The problem
+
+### 2.1 Inventory (measured on `main` at creation, 2026-08-22)
+
+| Surface | File | Lines | Send logic | Transport | Composer | Renderers |
+|---|---|---|---|---|---|---|
+| Main chat | `pages/ChatPage.tsx` | 7,347 | own (`ChatPage.send`) | WebSocket | real `ChatInput` | own `renderMessage` (9 role cases) |
+| Session grid pane | `components/ChatPane.tsx` | 626 | own (mirrors `ChatPage.send`, comment says so) | shared store | real `ChatInput` | app-sdk `ChatMessageList` |
+| Side panel chat | `pages/chat/SideChat.tsx` | 647 | own submit queue | shared store | bare `<textarea>` | app-sdk `ChatMessageList` |
+| App embed | `app-sdk/ChatEmbed.tsx` | 220 | own | **polling** (1s/5s `refetchInterval`; bounded to a page since P5-e; incremental since-cursor reads since P5-f) | bounded `<textarea>` via `useComposerDraft` | app-sdk `ChatMessageList` |
+| Full-page app mount | `app-sdk/ChatPanel.tsx` | 37 | delegates | (mounts entire ChatPage) | (entire ChatPage) | (entire ChatPage) |
+
+The real composer, `components/ChatInput.tsx`, was **2,981 lines** (queue stack, IME guard, attachments, slash menu, skill picker, browser-use toggle) and reached only two of the five surfaces. `app-sdk/` is an earlier partial extraction (`ChatMessageList`, `useChatSession`, `useComposerDraft`) that stopped at the message list.
+
+**Inventory correction (2026-09-05, found during P2).** Beyond the five surfaces there are further hand-written `POST /api/chat` senders: `app-sdk/useChatSession.ts` (seed send; converted in #8599), `App.tsx` (the feedback send), `apps/mochi/panel/panelBridge.ts` (echoes the user bubble before the POST, never reads the receipt), `apps/design-tweak/api.ts` (resolves a non-JSON 2xx as `{ok:true}`), `hooks/useSceneInteraction.tsx` (re-implements the receipt classifier without the deadline; also the last `api.steerChat` caller), `apps/design-critique/api.ts` (the same `.catch(SyntaxError)` swallow ChatEmbed had), and the two non-interactive `api.sendChat` callers `apps/issue-radar/agentSession.ts` and `apps/auto-improvement/agentSession.ts` (no composer to restore into; they need the receipt classification, not the recovery policy). Each is its own P2 slot after ChatPage.
+
+### 2.2 Evidence this hurts
+
+- **Double-wiring defect class (already shipped).** A new message role had to be handled in BOTH `ChatPage.renderMessage` and `app-sdk/ChatMessageList` — `mcp_oauth` was wired only in app-sdk and rendered as raw text in the main chat. There was no catch-all; every future role repeated the trap. *(Closed by P1.)*
+- **Send-receipt defect class (already shipped).** The `sendChat` `?ws=1` receipt contract (`{ok,queued,error}`; HTTP failures RESOLVE) had to be re-learned per call site; a refused send silently reached "running" state in one caller, and ChatEmbed reported an SSE stream that failed JSON parsing as a *successful* send. *(Closed per surface by P2.)* P2 also found a second-order instance: the client's `j()` helper collapses a post-2xx body-read failure into the same `TypeError` a never-sent request throws, so "accepted, receipt lost" and "never left" are indistinguishable. The proposed tag for the former (`AcceptedBodyUnreadable`, #8655) is not on main.
+- **Capability cliff.** Companion/side/app chats silently lacked queueing, attachments, slash commands, skills, approvals affordances — users experienced an arbitrarily degraded agent depending on which pane they typed into.
+- **Product features blocked.**
+  - *Non-destructive error hand-off*: "Ask the agent" navigates to `/chat` today, so it must stay off every form-adjacent error. The durable fix (per the Design review on PR #5002) is handing off into a side-panel chat — which requires the side panel to be a full-capability chat, not a 647-line textarea fork.
+  - *Everything is an app*: apps get either a polling toy (`ChatEmbed`) or the entire page (`ChatPanel`); nothing in between.
+  - *Artifact companion chat*: same cliff.
+
+### 2.3 Root cause
+
+`ChatPage.tsx` grew as the product; each new surface copied the smallest usable subset instead of extracting, because there was no seam to extract into. `app-sdk/` proved partial extraction works (five surfaces share `ChatMessageList`) and also where it stopped: rendering was extracted, behavior was not.
+
+## 3. Proposal
+
+Extract `website/src/chat-core/` as four headless layers plus per-surface chrome. Dependency rule: each layer depends only on layers below it; **no Redux imports inside chat-core** (app contexts have no store) — surfaces adapt their own state at the edge.
+
+| Layer | Contents | Replaces today |
+|---|---|---|
+| 1. `transport` | one session handle: `send / steer / queue / abort`, the `?ws=1` receipt contract, streaming events (WebSocket, polling fallback for app iframes). **Landed shape:** `sendTurn` classifies every outcome into a receipt (`dispatched / queued / refused / unknown / response-late / transport-error`) and never rejects; `mintSendId` is shared. The wire is injectable per surface (`SendWire`: the dashboard client by default, the permission-scoped app-sdk wire `appSendWire`, the `/side/*` adapter `sideTurnWire`), with the abort-race helper `settleUnderSignal`, the `indeterminate()` rejection and the `AcceptedBodyUnreadable` tag for a 2xx whose body could not be read. | 4+ hand-rolled send paths; ChatEmbed's polling |
+| 2. `model` | headless message store: role/turn grouping, tool-call collapsing, queue state, optimistic submits. **Includes the composer's slot-state seam (#8651)** so layer 4 stops reading Redux directly. | per-surface ad-hoc state |
+| 3. `render` | **single role-renderer registry** (register once, every surface renders it), transcript, turn block, tool group, approval cards. **Landed shape:** `app-sdk/messageRenderers.tsx` with a parity contract test; ChatPage dispatches its transcript rows through the registry (`createTranscriptRenderers` spread into `mergeRenderers`, #8713 and #8733). | `renderMessage` + `ChatMessageList` double wiring |
+| 4. `composer` | **Target shape (ratified 2026-09-09): a `Composer` root plus atoms, not a 110-prop `ChatInput`.** The root holds one small context a host fills in a few lines — `{ slotKey, editor: { onChange, inputRef, draft } }` today (`draft` is the host's `ComposerDraftStore` from `chat-core/composer/draftStore.ts`, or `null`), plus a `capabilities` record once a surface needs to turn an atom off (its first writer is the ChatEmbed `embedded` preset, P3-f — landed as `{ voice: false }`; until then a surface that wants nothing simply does not mount the root, and no flag ships ahead of a writer) — and each atom owns its own state and hooks, reads the context, and exposes only its minimal configuration: `Composer.Editor` (textarea), `Composer.Voice`, `Composer.Attach`, `Composer.Paste` (behaviour, no UI), `Composer.Mention`, `Composer.Slash`, `Composer.Skills`, `Composer.Send` (idle / steer / queue tri-state from capabilities), `Composer.FollowUps`. Surfaces compose: ChatPage everything; ChatPane (Members DM, split pane) everything minus `queue` (#8852); SideChat / ChatEmbed their subset. No atom imports the Redux store — the context and hooks are the seam (#8651). **Why:** every capability used to be one more row of prop plumbing per host, and a host that skipped a row shipped without the feature — that is exactly how the panes ended up without a microphone (#9775). **Landed shape:** `chat-core/composer/Composer.tsx` root with a root-mounted Voice atom (P3-b; module-private — there is deliberately no `Composer.Voice` export, see the closing note in `Composer.tsx`); the root mounts the atom beside the host's children (never inside a subscriber — a publish must not be able to re-render the atom that produced it), `ChatInput` reads the atom's state from the context, its 23 voice props are gone; `ChatInput` itself is on the way to becoming a preset composition of atoms and then being deleted (P3-f). Capabilities-as-props on `ChatInput` (the `embedded` preset) remain until each atom moves. | input reachable by only 2 surfaces; per-host prop plumbing |
+| chrome (stays per-surface) | ChatPage's sidebars/URL sync/panels; SideChat's rail; ChatEmbed's card | — |
+
+## 4. Migration plan (strangler; each phase ships alone)
+
+- **P0 — Contract inventory.** Enumerate roles, send/receipt semantics, streaming event shapes; pin them with tests. *Status: receipt contract pinned as tests (#5909, extended in #8689); streaming event shape not yet inventoried.*
+- **P1 — Renderer registry.** One role registry consumed by both `ChatPage.renderMessage` and `ChatMessageList`; a role registered in one path but not the other fails a contract test. *Status: merged (#5128).*
+- **P2 — Transport.** One send/steer/receipt implementation; every composer becomes a caller. *Status: ChatPane (#5909), ChatPage send and steer (#8689), the issue-radar / auto-improvement seeds (#9576) and the scene popover / feedback sends (#9593) merged. ChatEmbed, the app-sdk seed, SideChat (including the composer's `/side` command), design-critique and design-tweak move onto `sendTurn` in the takeover of #8599 (tracking #19994), which carries #8655 and the #9570 batch-B senders; the mochi panel bridge already classifies its receipt with the shared `readSendReceipt` on main and stays as it is. Remaining: the other app-local senders in §2.1.*
+- **P3 — Composer.** `ChatInput` extraction with capability flags; SideChat and ChatEmbed adopt it. *Status: SideChat merged (#5128); ChatEmbed's adoption (#8631) was never merged. P3-b (Composer root + Voice atom, #9787) merged. The first P3-f slice merged with #14227: the root accepts a `draft` store (`chat-core/composer/draftStore.ts`) and exposes it as `editor.draft`. The Attach slice (#19994, P-c) shares the store-free `ComposerAttach` file input between `ChatInput` and `ChatEmbed`, with real host staging callbacks rather than another isolated list. Only the picker moves: the embed's upload, staging and failed-send recovery stay in the SDK with its explicit upload grant and scoped transport. A shared attachment lifecycle remains open under #19994. Main-chat persistence, mention writers and cancel controls stay in their existing hosts. This slice does not change polling or add upload permissions. Model-layer follow-on: the store-free seam, #8651.* **Strangler order to the atom shape (§3, layer 4):** each slice moves one capability out of `ChatInput` into an atom the root mounts and `ChatInput` reads through the root's context, so ChatPage's behaviour never changes and every other host gains the capability by mounting the root. **P3-b** Voice (the first atom; the root; ChatPane gains dictation). **P3-c** Paste (collapsed long-paste blocks: expand-on-send, carry-back-on-failure, bubble store — today duplicated by hand at every host). **P3-d** Mention (`@` file/folder picker + token/chip contract). **P3-e** Slash + Skills pickers. **P3-f** Editor + Send + Attach + FollowUps; `ChatInput` becomes a preset composition of atoms, then is deleted; the `embedded` capability preset moves onto the root. A capability atom that needs a store-free slot seam waits on #8651.
+- **P4 — Surface adoption + the payoffs.** SideChat becomes full-capability → error hand-off retargets to the side panel → the `askAgent` draft-risk audit dies and the button becomes default-on. `ChatEmbed` becomes the recommended app chat.
+- **P5 — Deletion.** Remove the superseded forks; `ChatPage.tsx` shrinks to chrome + composition. *First cut, P5-a (merged, #8713): ChatPage's transcript rows consume the registry (ChatPage-only chrome injected as extra renderers / props), narrowing the parity allowlist.* *P5-e: the transcript scroller. ChatPage's private virtualized transcript (`useVirtualChat` + `TranscriptScrollShell` + its row-identity rules) becomes `chat-core/transcript/VirtualTranscript`, mounted by `ChatMessageList` behind a `transcript` prop, so the split/DM pane, the side panel and the app embed render only their viewport window and gain the earlier-history bar; the embed's poll is bounded (`?limit`) the same way. ChatPage keeps its inline wiring until P5-f switches it onto the same unit.*
+
+### 4.1 Pre-publish gate: store-free composer seam (added and ratified 2026-09-05)
+
+**Decision (2026-09-05): `ChatEmbed` is host-only for now.** Decoupling `ChatInput` from the store is P3 model-layer work, not a P2 prerequisite. Tracked in **#8651**. *Superseded for `ChatEmbed` by the gate below: it mounts without the store.*
+
+Background: P3's ChatEmbed adoption (#8631, to land after #8599) mounts the real `ChatInput`, whose subtree reads slot state from the dashboard Redux store. That flips `ChatEmbed`'s contract from "no Redux dependency" to "must mount under the host store", and points the `app-sdk → components/providers/hooks` dependency opposite to the standalone-publish plan in `app-sdk/index.ts`. Both in-tree hosts (spec-builder, ops-mission-control) already mount in-host, so nothing breaks today.
+
+**Gate: met (2026-10-11).** The gate was that `@kirocrew/app-sdk` must not publish standalone until `ChatEmbed` mounts without a `Provider`. #8651 [closed as delivered](https://github.com/kirodotdev/KiroCrew/issues/8651#issuecomment-6113694017) on 2026-10-11: #8631 never reached `main`, so `ChatEmbed` never mounted the store-bound `ChatInput`; it mounts the store-free `Composer` root and atoms (P3-f), and `ChatEmbed.composerStoreFree.test.tsx` pins that statically. The standalone publish no longer waits on #8651. What stays true: the dashboard `ChatInput` is still store-bound, so a later change that mounts it inside `ChatEmbed` has to bring the store-free seam with it.
+
+### 4.2 Progress (2026-09-05)
+
+Slice descriptions are the 2026-09-05 record. The PR and State columns give each PR's merge state on `main`.
+
+| Phase | Slice | PR | State |
+|---|---|---|---|
+| P1 | Renderer registry + parity contract test | #5128 | merged |
+| P2 | ChatPane → `sendTurn` | #5909 | merged |
+| P2 | ChatEmbed + app-sdk seed → `sendTurn` over an app-sdk wire; receipt policy; injectable `SendWire` | [#8599](https://github.com/kirodotdev/KiroCrew/pull/8599) → takeover PR (#19994) | in review (transport only; #8631 is not part of it) |
+| P3 | ChatEmbed mounts the real `ChatInput` (fail-closed `embedded` preset) | [#8631](https://github.com/kirodotdev/KiroCrew/pull/8631) | not merged (split back out of #8599 on 2026-09-10) |
+| P2 | SideChat → `sendTurn` over a `/side/*` wire; shared core-owned receipt copy; `AcceptedBodyUnreadable` | [#8655](https://github.com/kirodotdev/KiroCrew/pull/8655) | carried by the #8599 takeover |
+| P2 | ChatPage send + steer → `sendTurn` (`steer`, `colorTheme` flags) | [#8689](https://github.com/kirodotdev/KiroCrew/pull/8689) | merged |
+| P2 | issue-radar / auto-improvement `agentSession` seeds → `sendTurn` (#9570 batch A) | [#9576](https://github.com/kirodotdev/KiroCrew/pull/9576) | merged |
+| P2 | design-critique, design-tweak → `sendTurn`; receipt defects fixed (#9570 batch B; mochi `panelBridge` already reads the shared receipt on main) | [#9587](https://github.com/kirodotdev/KiroCrew/pull/9587) → carried by the #8599 takeover | in review |
+| P2 | `useSceneInteraction` (last `api.steerChat` caller), `App.tsx` feedback → `sendTurn`; `api.steerChat` deleted (#9570 batch C) | [#9593](https://github.com/kirodotdev/KiroCrew/pull/9593) | merged |
+| P3 | Store-free `ChatInput` seam | [#8651](https://github.com/kirodotdev/KiroCrew/issues/8651) | closed as delivered 2026-10-11 (`ChatEmbed` mounts without the store; `ChatInput` itself is still store-bound) |
+| P3-b | `Composer` root + root-mounted Voice atom (`chat-core/composer/`): dictation orchestration leaves `ChatPage` for the atom, the root mounts it and `ChatInput` reads its state from the root's context (23 voice props deleted), ChatPage behaviour unchanged, ChatPane wraps the `ChatInput` preset in the root and gains dictation. One mic across all mounted composers; transcript inbox becomes multi-subscriber with owner claim and holds an unowned transcript until its composer is back on screen | [#9787](https://github.com/kirodotdev/KiroCrew/pull/9787) (closes [#9775](https://github.com/kirodotdev/KiroCrew/issues/9775)) | merged |
+| P3-c | Paste atom (`chat-core/composer/composerPastes.ts`): the host's paste blocks ride the `Composer` root (`pastes`), `ChatInput` reads them from the root's paste context instead of its two paste props. The module owns the block state (`useComposerPastes`), carry-back (`carry`: renumbered and synchronous, so two in one batch compose; the panes use it, the main chat keeps its own until #16990) and the bubble store (`storeSentPastes`). Expand-on-send is the outgoing turn (`chat-core/composer/outgoingTurn.ts`: `buildOutgoingTurn(input, 'send' \| 'steer')`, `isEmptyTurn`), the one owner of the message order that ChatPage, its steer, ChatPane's send and steer, and SideChat each spelled out by hand. The panes already collapsed pastes (#11337); SideChat mounts no root (it would gain the Voice atom) and adopts only the turn | — | in review |
+| P3-f | ChatEmbed mounts the `Composer` root (Voice off through the root's first `capabilities` writer, `{ voice: false }`: the Voice atom reads STT config through the dashboard client, outside the app's `allowedApiPaths`) with the first store-free Editor + Send atoms (`chat-core/composer/atoms.tsx`; Send draws idle and queue — the queue state carries a visible "Queue" label; its attachment inputs, `hasAttachments` (a file-only turn is sendable and queues) and `uploading` (the press is refused), arrived with their first writer, ChatEmbed's attach control (#19917); the stop state arrives with its writer, #19898); its own textarea and button are gone. A static import-graph test pins the composer modules as store-free (tracking #19994, phase P-b). Attach staging (#19994, phase P-c): upload, staging and send-time recovery (`clear` / `restore` / `removeFile`) move into the store-free `chat-core/composer/useComposerAttachments.ts`, which takes the grant, the POST and the refusal text from its host; ChatEmbed's `useEmbedAttachments` keeps only the declared-path grant (off by default) and the scoped `raw` POST, and the import-graph test covers the new module. ChatPage and ChatPane keep their own staging: adopting the hook there is not a pure swap (they keep per-slot file drafts across a slot switch, which the hook clears, and `@` mention writers share their staged list), so they are unchanged | — | in review |
+| P3-d | `Composer.Mention` atom (`@` picker, `pendingDirs`, token-strip-on-remove, project-aware dir tokens); panes gain it | — | not started |
+| P5-a | `ChatPage.renderMessage` → registry (`resolveRenderer` over `mergeRenderers`; page chrome as host entries) | [#8713](https://github.com/kirodotdev/KiroCrew/pull/8713) | merged |
+| P5-b | One dashboard row set: ChatPage spreads `createTranscriptRenderers`, the factory ChatPane already used; page-specific behaviour becomes factory options | [#8733](https://github.com/kirodotdev/KiroCrew/pull/8733) | merged |
+| P5-c | Delete ChatPage's last private copies of registry rows (`stop_event`, `notice`, `mcp_oauth` drew the same component from the same inputs as the SDK defaults); parity contract now rejects any page-local override of a default outside the spread | [#9577](https://github.com/kirodotdev/KiroCrew/pull/9577) | merged |
+| P5-d | Pinned-prompt banner sinks into `ChatPane` (Crew Members DM, split panes): `usePinnedPrompt` hook extracted from the transcript controller, `ChatMessageList` `onDisplayItems` / `hiddenRow` row-indexing seam | [#9538](https://github.com/kirodotdev/KiroCrew/pull/9538) | merged |
+| P5-e | Virtualized transcript for every non-page host: `chat-core/transcript/` (`VirtualTranscript` over `useVirtualChat` + `TranscriptScrollShell`, the page's row-identity builders as `rowKeys`, `useStableMessageKey`), mounted by `ChatMessageList` through its `transcript` prop; ChatPane, SideChat, ChatEmbed (and the spec-builder column through it) drop their own scroll div + `useChatScrollFollow`; ChatEmbed's poll is bounded to a page (`?limit=200`) with a load-earlier bar widening it to the handler ceiling. Stopgap for [#10005](https://github.com/kirodotdev/KiroCrew/issues/10005) lands separately in [#10026](https://github.com/kirodotdev/KiroCrew/pull/10026) | [#10146](https://github.com/kirodotdev/KiroCrew/pull/10146) (PR-2 of #10005) | merged |
+| P5-f | ChatPage mounts `VirtualTranscript` (deleting its inline virtualizer wiring, `TranscriptScrollShell` moves into chat-core); ChatPane's load-earlier becomes a `before`-cursor pager instead of a wider re-read; MeasureFarm pre-measurement offered to hosts | — | not started |
+| P5-f | ChatEmbed poll becomes incremental: slot detail issues a `cursor` (`from`, `since`, a hash of the rendered rows before `since`) and an echoed one answers only the rows from `since` on, or the full page when an earlier row changed (`dashboard/slot_detail_delta.py`, `app-sdk/embedIncrementalRead.ts`). Chosen over the WebSocket stream: the embed keeps its one scoped read, its stale-poll notice and its load-earlier bar, and needs no store-free copy of the chat frame reducer or a `slots:*` event grant (tracking #19994, phase P-d) | — | in review |
+| P4 | Error hand-off → side panel; `askAgent` default-on | — | after P5-a |
+
+Follow-ups recorded during review, not yet scheduled: route SideChat's four remaining panel-local statuses (queue cancel/edit failure, question-too-long, demotion notice) through the per-slot `sideSendStatus` store channel (#8655 FP).
+
+### 4.3 P4 scoping — non-destructive error hand-off, `askAgent` default-on (2026-09-05, measured at `main` e76341d16)
+
+**Today.** `ErrorNotice` takes `askAgent?: boolean`, **default `false`**, and the doc comment names that default as the safety property: the hand-off (`AskAgentButton` → `sendErrorToChat` → stage the prompt in `sessionStorage` → `softNavigate('/chat')`, or a hard reload for crash boundaries) unmounts whatever rendered the banner, so an opt-out default would turn "forgot the prop" into silent loss of a half-filled form. 23 files opt in explicitly (aws-control drive/console/page, Schedule, Instances, Skills, Browser, RemoteCrew, JobLogs, Prompts, Cfg, Agents, CommentsSidebar, Executions, PullRequestPanel, ChatSidebar, AwsConsentGate). `ChatPage` drains the staged prompt on mount and via `subscribeChatHandoff` when already mounted.
+
+**The constraint the RFC assumed away.** "Hand off into the side-panel chat" presumes a side panel exists where the error is. It does not: `SidePanel` (and the `ActivityViewer` `side` tab that hosts `SideChat`) is mounted only by `pages/ChatPage.tsx` and `pages/members/MembersPage.tsx`, neither of which is an `askAgent` route. Every `askAgent` opt-in site above is on a non-chat route. So the P3 work that made `SideChat` full-capability (#5128; #8655's transport did not merge) is necessary but not sufficient: P4 needs a **host surface for a companion chat on non-chat routes** before the default can flip.
+
+**Options for the host (product decision, not mine to make):**
+
+| | Host | Destroys the page? | Cost | Notes |
+|---|---|---|---|---|
+| A | App-level right drawer mounting `ChatEmbed` (host-only, per §4.1) for a fresh or last-used slot, opened by the hand-off; stays over the current route | No | Medium — one drawer in `App.tsx`, a `handoffToDrawer` seam beside `sendErrorToChat`, drawer state in `dashboardSlice`; reuses `ChatEmbed` as-is | Closes the "artifact companion chat" cliff (§2.2) at the same time. Needs the store-free seam (#8651) only if the drawer must work inside app iframes — in-host it does not |
+| B | Open `/chat` in a **new browser tab** with the prompt staged in `localStorage` (sessionStorage does not cross tabs) | No | Small — a `target` option on `sendErrorToChat` + a cross-tab staging key ChatPage also drains | Cheapest; loses the "beside the error" affordance, and popups may be blocked |
+| C | Keep navigating, but stage the page's unsaved form state so the user can come back (draft-preserving hand-off) | Yes, but recoverable | High — every form needs a draft store | Rejected by the #5002 Design review as whack-a-mole; listed for completeness |
+
+**Recommendation:** A, staged as (P4-a) the drawer + `handoffToDrawer` with `askAgent` still opt-in; (P4-b) flip `askAgent`'s default to `true` once every existing opt-in site renders through the drawer and the `ErrorNotice` doc comment's safety argument no longer applies (the button no longer unmounts anything); (P4-c) retire the per-page draft-risk audit. `askAgentHard` (crash boundaries) keeps the full-page hand-off — a drawer over a tree that threw is not a recovery. Sequence after #8599 (the drawer wants `ChatEmbed`'s real composer and receipt policy) and #8713.
+
+**Open question for the owner:** A vs B — does the companion chat need to sit *beside* the error (A), or is "the agent already knows what broke, in a new tab" enough (B)? A is the RFC's stated payoff; B ships in a day.
+
+## 5. Non-goals
+
+- No backend/session-protocol changes; chat-core is a frontend refactor over existing APIs.
+- No visual redesign; pixels stay put per surface.
+- Slack/Telegram/CLI surfaces (different runtimes) and the mochi Electron renderer are out of scope; mochi may adopt chat-core later.
+
+## 6. Risks
+
+- `ChatPage.tsx` is entangled with Redux slots, URL sync, and panels; extraction pulls threads. Mitigation: strangler order (registry first, page last), per-surface capture-harness screenshots as regression evidence, and contract tests before any move.
+- `app-sdk` modules are exposed to third-party apps via `window.__kirocrew_modules`; renaming/removing exports is a compat break. Mitigation: keep `app-sdk` exports as thin re-exports over chat-core.
+- P2 touches every send path. Mitigation: receipt-contract tests run against old and new implementations before cutover; each surface's existing send tests pass unmodified as compatibility evidence (the rule every P2 slice has held to).
+- Layer-4 adoption by an app surface couples app-sdk to the dashboard store until #8651 — see §4.1.
+
+## 7. Open questions
+
+1. Does chat-core live in `website/src/chat-core/` or become the new backbone of `app-sdk/`? *Landed: `website/src/chat-core/transport/` exists; app-sdk imports it.*
+2. Should the renderer registry allow apps to register custom roles (plugin surface), or stay internal for now? (Leaning: internal first; plugin API is a separate RFC.)
+3. P4 sequencing with the error-hand-off default-on decision — same PR series or separate?
+4. ~~§4.1 — store-free composer seam vs host-only `ChatEmbed`~~ *Decided 2026-09-05: host-only now; seam is P3 model-layer work, #8651.*

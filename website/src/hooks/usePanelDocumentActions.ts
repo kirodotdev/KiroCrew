@@ -1,0 +1,247 @@
+import { useCallback } from 'react'
+import type { QueryClient } from '@tanstack/react-query'
+
+import { api, type MemberRosterRow } from '../api/client'
+import { MEMBERS_ROSTER_QUERY_KEY } from '../api/membersQuery'
+import { noteStaleOwnerResponse } from '../api/staleOwnerSignal'
+import { clearInlineDraft, getInlineDraft, type usePanelTabs } from './usePanelTabs'
+import { i18nT } from '../i18n/t'
+import type { Artifact } from '../types'
+import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS, isPartialRead } from '../utils/fileReadQuery'
+import { announceDashboardPreviewOpened, dashboardPreviewRef, dashboardPreviewTargetFromRef } from '../utils/dashboardPreview'
+import { errMessage } from '../utils/thunkError'
+import { optsForReplace } from '../pages/chat/replaceGuard'
+
+type MutableRef<T> = { current: T }
+
+export interface PanelDocumentActionsOptions {
+  tabsCtl: ReturnType<typeof usePanelTabs>
+  /** The slot a document is opened FOR — read at call time, not at render, so
+   *  an open that resolves after a chat switch still lands in the slot that
+   *  asked (the tab carries `slot`, and artifact breadcrumbs are per slot). */
+  slotRef: MutableRef<string | null>
+  queryClient: QueryClient
+  /** Where a failed read is reported. Nothing in the viewer to lose at that
+   *  point, so the host's notice may hand off to the agent. */
+  showActionError: (message: string, title?: string) => void
+  /** Runs after a tab was opened and focused. ChatPage uses it to reveal the
+   *  right dock and dismiss the find pane, which shares that dock; a host whose
+   *  panel is permanent passes nothing. Never called on a failed open. */
+  onOpened?: () => void
+}
+
+/**
+ * The three document actions every SidePanel host needs — open a file as a
+ * tab, open an artifact as a tab, save a file tab's buffer — shared by ChatPage
+ * (through `useChatPageResourcesController`) and the Crew Members page.
+ *
+ * One implementation, not a copy per host: the read path decides how a 404
+ * renders versus how any other failure is REPORTED, the artifact path records
+ * the session-involvement breadcrumb, and the save path restamps the tab's
+ * dirty baseline and reconciles the inline draft. Each of those is a contract
+ * a second hand-written copy would drift from (the Members page's earlier
+ * surfaces were exactly such copies of chat infrastructure).
+ */
+export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showActionError, onOpened }: PanelDocumentActionsOptions) {
+  // Open a file as a panel tab. Its content is fetched through React Query so
+  // repeated opens within 10s hit the cache. A 404 (file not on disk) renders a
+  // placeholder tab; any other failure is REPORTED rather than shown as the
+  // file's text. Bypassed entirely when the IntelliJ plugin handles file opens
+  // — the user wanted IDE-native, not in-dashboard.
+  const openFile = useCallback(async (filePath: string, opts?: { replaceId?: string; line?: number; endLine?: number; diffMode?: boolean; canReplace?: () => boolean; slot?: string | null }) => {
+    try { window.dispatchEvent(new CustomEvent('kirocrew-file-open', { detail: { path: filePath } })) } catch { /* the IDE bridge is optional; the dashboard path below still runs */ }
+    if ((window as unknown as { __kirocrewPluginHandlesFiles?: boolean }).__kirocrewPluginHandlesFiles) return
+    // Capture the slot BEFORE awaiting the read — the same discipline as
+    // `saveFile`. `tabsCtl` was bound at the click, so the tab lands in the
+    // INITIATING slot's bucket; stamping it with whatever slot is active once
+    // the read resolves would route its comment submissions to a chat the user
+    // switched to mid-load. In split view every pane shares ONE host opener but
+    // has its OWN slot, so a pane passes `opts.slot` to stamp the tab with the
+    // slot that owns the transcript the file was opened FROM, not whichever
+    // pane the host currently treats as active (#9487 / #9921). An `undefined`
+    // override falls back to the ref, keeping the single-chat and member-DM
+    // hosts byte-for-byte unchanged; an explicit `null` is a deliberate
+    // "no slot" and is honoured.
+    const slot = opts?.slot !== undefined ? opts.slot : (slotRef.current ?? null)
+    try {
+      const [read] = await Promise.all([
+        queryClient.fetchQuery({
+          queryKey: fileReadQueryKey(filePath),
+          // The shared fetch carries the backend's binary verdict with the text
+          // (from the `X-File-Binary` header), so the tab knows whether it has
+          // a buffer to edit at all.
+          queryFn: ({ signal }) => fetchFileRead(filePath, signal),
+          staleTime: FILE_READ_STALE_MS,
+        }),
+        queryClient.prefetchQuery({
+          queryKey: ['file-diff', filePath],
+          queryFn: () => api.fileDiff(filePath),
+        }),
+      ])
+      const { text, ok, status, binary } = read
+      if (!ok && status !== 404) {
+        // Read failure — nothing in the viewer to lose, so the notice hands off.
+        showActionError(i18nT('pages.chatPage.could_not_read_file_reason', { path: filePath, reason: i18nT('pages.chatPage.http_status', { status }) }))
+        return
+      }
+      // A 404 is a real answer about the file (it is not on disk), so the
+      // panel shows that placeholder. Any other failure was reported above.
+      // The read's partial verdicts travel with its text: this is the seed
+      // read that fills the tab before any panel mounts, so a verdict left
+      // behind here would be lost to the panel for good.
+      const body = ok ? text : i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')
+      tabsCtl.openFile(filePath, body, slot, { ...optsForReplace(opts), binary: ok && binary, partial: ok && isPartialRead(read) })
+      onOpened?.()
+    } catch (e) {
+      // The read itself threw (network, aborted). Reported above the composer
+      // rather than as a tab whose "content" is the error sentence.
+      showActionError(i18nT('pages.chatPage.could_not_read_file_reason', { path: filePath, reason: errMessage(e) || i18nT('pages.chatPage.unknown_error') }))
+    }
+  }, [queryClient, tabsCtl, slotRef, showActionError, onOpened])
+
+  // Open a file's WORKING-TREE DIFF as its OWN panel tab (keyed `wtdiff:<path>`),
+  // coexisting with the plain file tab rather than flipping it into diff mode
+  // (#9695). The file twin of openFile: same seed read (body + binary verdict)
+  // and same diff prefetch, so the panel paints its diff immediately; only the
+  // tab identity and initial mode differ. Honours the IntelliJ file-bridge the
+  // same way openFile does.
+  const openWorkingTreeDiff = useCallback(async (filePath: string, opts?: { slot?: string | null }) => {
+    try { window.dispatchEvent(new CustomEvent('kirocrew-file-open', { detail: { path: filePath } })) } catch { /* ignore */ }
+    if ((window as unknown as { __kirocrewPluginHandlesFiles?: boolean }).__kirocrewPluginHandlesFiles) return
+    const slot = opts?.slot !== undefined ? opts.slot : (slotRef.current ?? null)
+    try {
+      const [read] = await Promise.all([
+        queryClient.fetchQuery({
+          queryKey: fileReadQueryKey(filePath),
+          queryFn: ({ signal }) => fetchFileRead(filePath, signal),
+          staleTime: FILE_READ_STALE_MS,
+        }),
+        queryClient.prefetchQuery({
+          queryKey: ['file-diff', filePath],
+          queryFn: () => api.fileDiff(filePath),
+        }),
+      ])
+      const { text, ok, status, binary } = read
+      if (!ok && status !== 404) {
+        showActionError(i18nT('pages.chatPage.could_not_read_file_reason', { path: filePath, reason: i18nT('pages.chatPage.http_status', { status }) }))
+        return
+      }
+      const body = ok ? text : i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')
+      tabsCtl.openWorkingTreeDiff(filePath, body, slot, { binary: ok && binary, partial: ok && isPartialRead(read) })
+      onOpened?.()
+    } catch (e) {
+      showActionError(i18nT('pages.chatPage.could_not_read_file_reason', { path: filePath, reason: errMessage(e) || i18nT('pages.chatPage.unknown_error') }))
+    }
+  }, [queryClient, tabsCtl, slotRef, showActionError, onOpened])
+  // the single entry point every in-panel artifact affordance routes through
+  // (the Artifacts tab's rows and `/artifacts/<slug>` links inside messages).
+  // Rendering inline here instead of hard-navigating to the standalone detail
+  // page keeps the host's conversation mounted.
+  const openArtifact = useCallback(async (slug: string) => {
+    if (!slug) return
+    const slot = slotRef.current ?? null
+    // A STAGED dashboard (`dashboardPreviewRef`), a crewmate's or a root session's,
+    // not an artifact: no artifact read and no involvement breadcrumb, because there
+    // is no artifact. The tab body renders the staged page (SidePanel's artifact branch).
+    const preview = dashboardPreviewTargetFromRef(slug)
+    if (preview) {
+      // Every open re-reads the staged page. Staging sends no frame and the link
+      // never changes, so a cached read could show page A while B is what
+      // `dashboard_apply` would install.
+      let name: string
+      if (preview.kind === 'member') {
+        void queryClient.invalidateQueries({ queryKey: ['member-dashboard', preview.slug] })
+        // The roster's own name when it is cached and unambiguous; the slug otherwise.
+        const named = (queryClient.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY) ?? []).filter(r => r.slug === preview.slug)
+        name = named.length === 1 ? named[0].name : preview.slug
+      } else if (preview.kind === 'member-name') {
+        // The page link names the crew, not the slug: no slug to key on, so every
+        // open crewmate read is re-read. The panel resolves the slug from the roster.
+        void queryClient.invalidateQueries({ queryKey: ['member-dashboard'] })
+        name = preview.member
+      } else {
+        void queryClient.invalidateQueries({ queryKey: ['session-dashboard', preview.slot] })
+        name = i18nT('commandCenter.title')
+      }
+      tabsCtl.openArtifact({ slug, kind: 'html', title: i18nT('pages.chat.dashboardPreviewPanel.tab_title', { name }) }, '', slot)
+      // A panel already open on this reference may have handed its last preview
+      // over to the live page; this puts it back on the staged one.
+      announceDashboardPreviewOpened(dashboardPreviewRef(preview))
+      onOpened?.()
+      return
+    }
+    // Opening an artifact is an act of session involvement: record the
+    // `referenced` breadcrumb so a merely-read (or merely-linked) artifact
+    // joins "This session" instead of sitting in the library section forever.
+    // Deliberately fire-and-forget and deliberately NOT awaited — the panel
+    // must open at click speed, and the store already enforces
+    // one-breadcrumb-per-session so a double click cannot spam the event log.
+    // The 403 an incognito slot returns is expected, not an error to surface.
+    if (slot) {
+      api.recordArtifactReference(slug, slot)
+        .then(() => {
+          // Re-run the involvement scan so the row moves sections live.
+          queryClient.invalidateQueries({ queryKey: ['session-artifact-records', slot] })
+        })
+        .catch((e) => {
+          // An incognito slot answers 403 by design; anything else -- an
+          // auth-required 403 included -- is a real failure that leaves the
+          // session's artifact list stale.
+          const r = e as { status?: unknown; authRequired?: unknown; edgeChallenge?: unknown } | null
+          if (r?.status === 403 && !r.authRequired && !r.edgeChallenge) return
+          showActionError(i18nT('pages.chatPage.artifact_reference_failed_reason', { reason: errMessage(e) || i18nT('pages.chatPage.unknown_error') }))
+        })
+    }
+    // Seed the tab from the artifact list cache when it is already warm so the
+    // body paints immediately; ArtifactPanel's own query is authoritative and
+    // overrides kind/content once it resolves, so a miss here costs a spinner,
+    // not correctness.
+    let kind: Artifact['kind'] = 'markdown'
+    let content = ''
+    try {
+      const art = await queryClient.fetchQuery<Artifact>({
+        queryKey: ['artifact', slug],
+        queryFn: () => api.artifact(slug),
+        staleTime: 10_000,
+      })
+      kind = art.kind
+      content = art.content ?? ''
+    } catch { /* fall through — the panel's own query renders the error state */ }
+    tabsCtl.openArtifact({ slug, kind }, content, slot)
+    onOpened?.()
+  }, [queryClient, tabsCtl, slotRef, showActionError, onOpened])
+
+  const saveFile = useCallback(async (filePath: string, content: string) => {
+    // Capture the slot BEFORE awaiting: if the user switches chats mid-save, the
+    // draft we reconcile must be the one that owned this save, not whatever slot
+    // is active when the write resolves.
+    const requestSlot = slotRef.current ?? ''
+    const res = await fetch('/api/file-write', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: filePath, content }),
+    })
+    if (!res.ok) {
+      // An owner-gated direct fetch: a session minted before the owner was
+      // configured is denied `401 stale_session_reauth`, which `j` would turn
+      // into the re-auth prompt. Raise it here too, then fail the save as usual
+      // so the editor keeps its unsaved buffer.
+      if (res.status === 401) noteStaleOwnerResponse(res.status, await res.text().catch(() => ''))
+      throw new Error(`Save failed: ${res.status}`)
+    }
+    // The saved bytes become the file tab's dirty baseline, so a later re-open
+    // of the same path refreshes the buffer instead of (needlessly) preserving
+    // it as if it still held unsaved work. The `file:` tab is the ONLY editable
+    // buffer for a path — the coexisting `wtdiff:` tab (#9695) is a read-only
+    // working-tree diff, so there is no second editor to reconcile and no
+    // sibling save to race. Best-effort: a tab not open right now is not found.
+    tabsCtl.patchTab(`file:${filePath}`, { savedContent: content })
+    // Reconcile the inline-preview draft for the SAVING slot (drafts are
+    // slot+path keyed). Clear it ONLY if it still equals what we just saved -
+    // if the user typed more while the write was in flight, the draft now holds
+    // newer content and must be preserved, not dropped.
+    if (getInlineDraft(requestSlot, filePath) === content) clearInlineDraft(requestSlot, filePath)
+  }, [tabsCtl, slotRef])
+
+  return { openFile, openWorkingTreeDiff, openArtifact, saveFile }
+}

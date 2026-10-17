@@ -1,0 +1,118 @@
+rules:
+  # ─── Supply Chain: Download + Execute ──────────────────────────────
+  # Inspired by COE-358507 / AWS-2025-015: attacker modified build
+  # process to download external payload and execute it at startup.
+
+  - id: kirocrew.download-and-exec-subprocess
+    patterns:
+      - pattern-either:
+          - pattern: |
+              subprocess.run(["curl", ...], ...)
+          - pattern: |
+              subprocess.run(["wget", ...], ...)
+          - pattern: |
+              subprocess.Popen(["curl", ...], ...)
+          - pattern: |
+              subprocess.Popen(["wget", ...], ...)
+    paths:
+      exclude:
+        - test/*
+        - src/kiro_crew/_vendor/*
+    message: >
+      Subprocess call downloads from an external URL (curl/wget).
+      Supply-chain risk: build-time download of external payload can
+      introduce malicious code. Pin the dependency or vendor it instead.
+    severity: WARNING
+    languages: [python]
+    metadata:
+      category: security
+      subcategory: supply-chain
+      cwe: "CWE-829: Inclusion of Functionality from Untrusted Control Sphere"
+      references:
+        - https://aws.amazon.com/security/security-bulletins/AWS-2025-015/
+
+  - id: kirocrew.download-and-exec-urlretrieve
+    patterns:
+      - pattern-either:
+          - pattern: urllib.request.urlretrieve($URL, ...)
+          - pattern: urlretrieve($URL, ...)
+    paths:
+      exclude:
+        - test/*
+        - src/kiro_crew/_vendor/*
+    message: >
+      urlretrieve downloads a file from an external URL at runtime.
+      If this runs during build or startup, it is a supply-chain risk.
+      Prefer vendored dependencies with integrity checks.
+    severity: WARNING
+    languages: [python]
+    metadata:
+      category: security
+      subcategory: supply-chain
+      cwe: "CWE-829: Inclusion of Functionality from Untrusted Control Sphere"
+
+  - id: kirocrew.download-then-exec
+    patterns:
+      - pattern: |
+          $RESP = requests.get($URL, ...)
+          ...
+          exec($RESP. ...)
+      - pattern-not-inside: |
+          # nosemgrep: kirocrew.download-then-exec
+          ...
+    paths:
+      exclude:
+        - test/*
+    message: >
+      HTTP response content passed directly to exec(). This is the
+      canonical supply-chain attack pattern (download + execute).
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: security
+      subcategory: supply-chain
+      cwe: "CWE-94: Code Injection"
+
+  - id: kirocrew.download-then-subprocess
+    patterns:
+      - pattern: |
+          $PATH = ...
+          ...
+          subprocess.run([$PATH, ...], ...)
+      - metavariable-regex:
+          metavariable: $PATH
+          regex: ".*download.*|.*tmp.*|.*temp.*"
+    paths:
+      exclude:
+        - test/*
+        - src/kiro_crew/_vendor/*
+    message: >
+      Downloaded file path passed to subprocess execution. Ensure
+      the file has verified integrity (SHA-256 check) before execution.
+    severity: WARNING
+    languages: [python]
+    metadata:
+      category: security
+      subcategory: supply-chain
+      cwe: "CWE-829: Inclusion of Functionality from Untrusted Control Sphere"
+
+  # ─── Frontend: script injection via external URL ───────────────────
+
+  - id: kirocrew.frontend-external-script-inject
+    pattern: |
+      $EL.src = $URL
+    paths:
+      include:
+        - website/src/**
+      exclude:
+        - website/src/**/*.test.*
+    message: >
+      Dynamic script src assignment. If URL is externally controlled,
+      this enables supply-chain code injection (similar to the
+      aws-toolkit-vscode build process modification attack).
+    severity: WARNING
+    languages: [typescript, javascript]
+    metadata:
+      category: security
+      subcategory: supply-chain
+      cwe: "CWE-829: Inclusion of Functionality from Untrusted Control Sphere"

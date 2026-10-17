@@ -1,0 +1,2595 @@
+"""Credential redaction on every output path.
+
+This is the OUTPUT side of the module, and the widest external surface in it:
+the batch redactors run on every path that persists, displays or forwards text,
+so a name here is called from most of the codebase rather than from one caller.
+
+The alternation and its pre-filter are ONE unit. The pre-filter is a documented
+strict superset of the alternation, and the batch redactor SKIPS the scan
+entirely when the pre-filter returns False, so an input the alternation would
+have matched but the pre-filter rejects is a silent leak rather than a missed
+optimisation. They are declared adjacent, with the comment that records the
+relation, and the superset property is asserted by test.
+
+The entropy machinery behind them answers a different question from the
+alternation: a bare high-entropy run carries no marker to anchor on, so it is
+judged by shape -- length, character classes, entropy, decodability -- and every
+gate is a separate predicate so a refusal can name which one fired.
+"""
+
+from __future__ import annotations
+
+import base64
+import bisect
+import contextvars
+import functools
+import hashlib
+import hmac
+import json
+import math
+import os
+import posixpath
+import re
+import secrets
+import zlib
+from collections import Counter
+from collections.abc import Callable, Iterator
+from typing import NamedTuple
+
+import kiro_crew.security.pem_scan as pem_scan
+from kiro_crew.credential_patterns import AWS_KEY_ID, JWT_MULTI_SEGMENT
+from kiro_crew.security.redaction_switch import bare_secret_pass_enabled, credential_pass_bypassed
+
+# ── Credential Output Redaction ──
+# Catches raw credential patterns in LLM output / tool results,
+# including base64-encoded variants.  Applied on all output paths
+# alongside redact_exfiltration_urls().
+#
+# ⚠ THIS PATTERN HAS A DEPENDENT PRE-FILTER. `_might_contain_credential` below
+# gates the scan of this pattern on a cheap necessary condition, and
+# `redact_credentials` SKIPS the scan entirely when that gate returns False. The
+# gate is therefore part of the redaction boundary, not an optimisation detail:
+# any input a branch here accepts but the gate rejects is a silent leak.
+#
+# So EDITING A BRANCH IS A TWO-SITE CHANGE:
+#   * ADDING a branch     -> register a sample in `test_credential_prefilter.py`
+#                            and an anchor in `_might_contain_credential`.
+#                            `test_every_pattern_branch_has_a_prefilter_anchor`
+#                            fails on the branch count until you do.
+#   * WIDENING a branch   -> widen the corresponding anchor to match, because the
+#                            anchor must stay a SUPERSET of the branch. A widened
+#                            branch does NOT change the branch count, so the count
+#                            assertion cannot see it. Two tests cover this:
+#                            `test_a_widened_branch_cannot_outgrow_its_anchor`
+#                            enumerates each branch's own alternatives, so a NEW
+#                            alternative (a second token prefix) is caught; and
+#                            `test_widening_a_branch_cannot_outgrow_its_anchor`
+#                            perturbs each sample, so a case-fold or homoglyph
+#                            relaxation is caught.
+#   * Making a branch CASE-INSENSITIVE -> the anchor MUST use the same regex
+#                            engine. A case-sensitive literal cannot gate a
+#                            `(?i:…)` branch, and neither can `str.lower()` —
+#                            see `_CREDENTIAL_PREFILTER_AUTHORIZATION_RE` for the
+#                            bypass that cost.
+_CREDENTIAL_PATTERNS = re.compile(
+    r"(?:"
+    # ── AWS ──
+    f"{AWS_KEY_ID}"  # AWS access key ID (shared spelling: credential_patterns)
+    # key-value forms: tolerate an optional closing quote after the key name and an
+    # optional opening quote before the value so JSON (`"aws_secret_access_key": "v"`)
+    # is redacted, not just bare `key=v` / `key: v`. Without the `["']?` the closing
+    # quote in JSON sits between the key and `:` and defeats the match → secret leaks.
+    # The value class is [^\s"',}]+ (NOT \S+): \S+ is greedy and, in compact JSON
+    # like {"aws_secret_access_key":"SECRET","region":"x"}, swallows everything
+    # through the closing brace (`"`, `,`, `}` all match \S) — destroying adjacent
+    # fields and consuming a following credential key so it's never matched/counted.
+    # Stopping at JSON structural delimiters bounds the value while still matching
+    # bare key=value forms.
+    r'|(?:SecretAccessKey|aws_secret_access_key)["\']?\s*[:=]\s*["\']?[^\s"\',}]+'
+    r'|(?:SessionToken|aws_session_token)["\']?\s*[:=]\s*["\']?[^\s"\',}]+'
+    r'|(?:AccessKeyId|aws_access_key_id)["\']?\s*[:=]\s*["\']?[^\s"\',}]+'
+    # PEM private key: match the ENTIRE block (header + base64 body), not just
+    # the header phrase. redact_credentials() replaces the matched SPAN, so a
+    # header-only match (the original form) left the secret base64 body verbatim.
+    # Two mutually exclusive tails after the header:
+    #   1. Full block — ``[\s\S]*?`` (any char, incl. newlines) spans the body
+    #      lazily to the first END marker. ``[\s\S]`` (not a base64 char class)
+    #      is required so encrypted keys — whose ``Proc-Type:``/``DEK-Info:``
+    #      headers carry ``:`` and ``,`` — are fully spanned rather than cut
+    #      short at the first non-base64 char.
+    #   2. Truncated block (no END) — consume only *subsequent* PEM body lines:
+    #      each continuation must start with a newline and be a base64 line or a
+    #      ``Proc-Type:``/``DEK-Info:`` metadata header. This deliberately does
+    #      NOT use ``$``/``\Z``: without re.MULTILINE ``$`` means end-of-STRING,
+    #      so a lazy ``[\s\S]*?`` with a ``|$`` fallback swallowed everything
+    #      from a header mentioned inline in prose (LLM output, docs) to the end
+    #      of the string — silently deleting all trailing lines. Requiring a
+    #      leading newline per line means an inline header in prose (real key
+    #      material always begins on the line *after* the header) matches only
+    #      the header phrase, leaving trailing content intact, while a genuine
+    #      truncated key still has its body lines redacted.
+    #      The final ``(?=\r?\n[A-Za-z0-9+/=])`` lookahead alternative lets the
+    #      run cross a SINGLE blank line when the *next* line begins with base64
+    #      material. RFC 1421 ENCRYPTED PEMs put a MANDATORY blank line between
+    #      the ``DEK-Info:`` header and the base64 body; without this lookahead
+    #      the per-line "every continuation must contain a base64 char" rule
+    #      stopped at that blank line and leaked the whole encrypted body (for
+    #      both a truncated key AND a complete encrypted key whose body exceeds
+    #      the full-block cap). Because the lookahead consumes nothing, TWO+
+    #      consecutive blank lines still terminate the run — trailing prose is
+    #      preserved (no over-redaction).
+    f"|{pem_scan.HEADER}"
+    r"(?:"
+    f"{pem_scan.FULL_BLOCK}"
+    r"|(?:\r?\n(?:Proc-Type:[^\n]*|DEK-Info:[^\n]*|[A-Za-z0-9+/=]+(?=\r?\n|\Z)"
+    r"|(?=\r?\n[A-Za-z0-9+/=])))*"
+    r")"
+    r"|xox[bpas]-[0-9a-zA-Z-]{10,}"  # Slack token
+    # Telegram bot token: ``<bot_id>:<secret>`` — bot_id is 6+ digits, secret is
+    # ~35 URL-safe base64 chars. The ``{30,}`` floor sits deliberately below the
+    # real length so shortened/rotated test tokens are still caught. Analogue to
+    # the Slack token above. Telegram tokens can live in ``config.json``
+    # (agent-readable), so an echoed config would otherwise leak a full
+    # bot-control credential unredacted. The value class ``[A-Za-z0-9_-]`` stops
+    # at structural delimiters (space, quote, comma, brace), so it can't swallow
+    # adjacent fields; over-redacting a rare ``digits:token`` lookalike is the
+    # safe direction.
+    r"|[0-9]{6,}:[A-Za-z0-9_-]{30,}"  # Telegram bot token
+    # Discord bot token: three base64url segments — ``base64(application_id)``,
+    # a 6-char timestamp, and an HMAC. The first segment is base64 of a decimal
+    # snowflake, so its leading character is fixed by the id's first digit
+    # (``M``/``N``/``O`` for the 1-9 range every live snowflake starts with), and
+    # the timestamp segment is always EXACTLY 6 characters. Both anchors matter:
+    # the same rule written as three open-ended runs matches an ordinary dotted
+    # identifier or a base64 blob with periods in it, and a redactor that eats
+    # arbitrary text is a different bug. Length floors sit below the real ones so
+    # a shortened/rotated test token is still caught. Same reasoning as Telegram
+    # above — ``discord.bot_token`` can live in ``config.json``, which the agent
+    # can read, so an echoed config would otherwise leak bot control verbatim.
+    # The boundary guards keep the leading ``[MNO]`` from landing mid-run inside
+    # a longer base64 blob and redacting an arbitrary tail of it, the same way
+    # the link-token branch below guards its own ``eyJ`` anchor.
+    r"|(?<![A-Za-z0-9_-])[MNO][A-Za-z0-9_-]{22,30}"
+    r"\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{25,}(?![A-Za-z0-9_-])"  # Discord bot token
+    # ── Third-party developer credentials ──
+    # Distinctive, fixed-case prefixes → very low false-positive risk.  Minimum
+    # lengths are kept slightly below the real token lengths so shortened test /
+    # rotated variants are still redacted (over-redaction on a prefix match is the
+    # safe direction).  Case-sensitive by design (these prefixes are issued in a
+    # fixed case); do NOT fold — folding would broaden false positives.
+    r"|gh[opsur]_[A-Za-z0-9]{30,255}"  # GitHub PAT (ghp_) + oauth/user/server/refresh
+    r"|github_pat_[A-Za-z0-9_]{40,}"  # GitHub fine-grained PAT
+    r"|glpat-[A-Za-z0-9_-]{16,}"  # GitLab PAT
+    r"|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}"  # Stripe secret / restricted keys
+    r"|SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}"  # SendGrid API key
+    r"|sk-proj-[A-Za-z0-9_-]{16,}"  # OpenAI project key
+    r"|sk-ant-[A-Za-z0-9_-]{16,}"  # Anthropic API key
+    r"|npm_[A-Za-z0-9]{24,}"  # npm access token
+    r"|pypi-[A-Za-z0-9_-]{16,}"  # PyPI API token
+    r"|do[opr]_v1_[A-Za-z0-9]{40,}"  # DigitalOcean PAT/OAuth/refresh
+    r"|GOCSPX-[A-Za-z0-9_-]{20,}"  # Google OAuth client secret
+    # Connection/fetch URIs with embedded credentials — redact the
+    # ``scheme://user:pass@`` prefix (the password lives here). http(s)/ftp(s)
+    # are included because URL userinfo is a credential wherever it appears
+    # (e.g. a token-bearing artifact CDN base quoted by an update-failure
+    # message); the user:pass@ shape cannot false-positive on a bare URL — a
+    # port (``:8080``) is never followed by ``@`` within the authority.
+    r"|(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis(?:s)?|amqp(?:s)?"
+    r"|https?|ftps?)"
+    # User portion is `*` (not `+`): an empty-user string (`mongodb+srv://:secret@…`) still redacts.
+    # Password segment allows ``@`` (``[^\s/]`` not ``[^\s/@]``): an unencoded
+    # ``@`` inside a password is common, and stopping the match at the FIRST
+    # ``@`` would redact only the head and leak the rest (``…ss@host``) to
+    # logs. ``/`` still bounds the authority, so greedy ``+`` consumes through
+    # the FINAL ``@`` — the real userinfo/host separator — and never past it.
+    r"://[^\s:/@]*:[^\s/]+@"
+    # ── JWT / JWE / OAuth Bearer tokens ──
+    # `eyJ` is the base64url encoding of every JWT header's `{"` prefix; a signed
+    # JWT (JWS) is three `.`-separated base64url segments (header.payload.sig), an
+    # encrypted JWT (JWE, RFC 7516) is five (header.key.iv.ciphertext.tag), and our
+    # OWN dashboard link token is two — `base64url(payload).base64url(hmac_sig)`,
+    # see `dashboard.token_auth.generate_token`. The 3-and-5-segment shapes are
+    # matched by the `{2,4}` quantifier below; the 2-segment link token has its
+    # OWN separately bounded alternative.
+    #
+    # The floor stays at 2 because the two-segment dashboard token is what a higher
+    # floor drops: it would not match here at all and would fall through to the
+    # bare-secret entropy pass, whose run class `[A-Za-z0-9+/]` is STANDARD base64
+    # and excludes base64url's `-`/`_`. That makes redaction depend on which
+    # characters a random HMAC signature happens to contain. That rate is derivable,
+    # so it is stated as a closed form rather than as a sample. HMAC-SHA256 is 256
+    # bits and base64url-unpadded gives 43 chars. The first 42 each carry a full 6
+    # bits, so each is uniform over the 64-char alphabet, of which exactly 2 are
+    # `-`/`_`. The 43rd carries only the leftover 4 bits (256 - 42*6), and they
+    # land in the HIGH bits of its 6-bit
+    # group with the low 2 bits zero, so it spans exactly the 16 alphabet indices
+    # divisible by 4 (`048AEIMQUYcgkosw`) and can never be `-`/`_`, which sit at
+    # 62/63. Hence P(no `-`/`_`) = (62/64)^42 = 26.4%, verified by encoding all
+    # 256 possible final digest bytes.
+    # So roughly a quarter of tokens would have only the signature replaced (leaving
+    # the payload claims verbatim in a URL that still looks complete but is not
+    # authenticated), and the other ~74% would stream out entirely unredacted.
+    # Matching the whole token here makes the outcome deterministic and replaces it
+    # as one unit. The 2-segment token gets its OWN alternative rather than
+    # relaxing the segment floor to `{1,4}`. Relaxing
+    # the floor over-redacts ordinary code and prose, because the pattern has no left
+    # boundary and post-header segments allow an EMPTY match: `keyJson.get(raw)` then
+    # redacts to `k[REDACTED…](raw)`, and a JWT quoted at the end of a sentence loses
+    # its trailing period. The 3-to-5-segment alternative (`credential_patterns.JWT_MULTI_SEGMENT`,
+    # `*` on post-header segments so an empty JWE segment matches) consumes such a period too, an
+    # accepted over-redaction cost. The 2-segment alternative therefore carries a left boundary
+    # (`(?<![A-Za-z0-9_.-])`: base64url's `-`/`_` plus `.` so `obj.eyJ…` is excluded too;
+    # `_BARE_SECRET_RUN_RE` uses `(?<![A-Za-z0-9+/])`) and per-segment lengths taken from
+    # the generator, not from guesswork, because a length FLOOR alone is beatable by a
+    # sufficiently verbose identifier: at `{40,}` the 40-char
+    # `eyJsonSerializerConfigurationFactoryBuilder.deserializeFromStringValue` matched.
+    #
+    # `token_auth._sign` is HMAC-SHA256 base64url-unpadded, so the signature is
+    # EXACTLY 43 chars for every token ever minted; that is a property of the digest,
+    # not of the payload, so it is pinned as `{43}` rather than a floor. See
+    # `test_link_token_signature_is_43_chars`, which fails loudly if `_sign` changes
+    # digest, instead of letting redaction silently stop matching.
+    #
+    # `generate_token` always emits 6 claims (`sub`/`exp`/`session_exp`/`iat`/`nonce`/
+    # `gen`), with a 16-hex-char nonce and float timestamps; `app`, `prompt` and
+    # `extra` only ADD. Payload length is NOT fixed. It scales with `len(sub)`, and
+    # `json.dumps` writes each float timestamp at its own repr width, which base64
+    # then quantises into 4-char steps. So the floor is derived, not sampled: a
+    # 1-char `sub` (the narrowest a caller passes: the app validator requires at
+    # least one char and the other call sites supply a literal fallback), `gen=0`,
+    # and all three timestamps at their shortest 12-char repr (an exactly-integral
+    # `time.time()` in the current 10-digit epoch era) measures 145 chars past
+    # `eyJ`, which leaves the `{96,}` floor 49 chars of headroom against a future
+    # shorter claim set while still excluding `eyJ2IjoxfQ.json`. ONLY that derived
+    # floor is pinned, by `test_link_token_payload_clears_the_96_char_floor`, which
+    # reads the bound from the compiled pattern and the claim keys from a real mint
+    # so a dropped claim fails loudly instead of silently disabling redaction. Live
+    # payloads are much larger and are NOT pinned, because the exact spread moves
+    # with float reprs and caller mix: measured 168-185 for the mandatory-only
+    # callers and 192-223 for the two that also pass `app=` (`handlers/core.py`,
+    # `token_auth.py`), which adds an `"app"` claim.
+    #
+    # Order matters: the 3-to-5-segment
+    # alternative is tried first at each position, so a real JWS still redacts whole
+    # instead of matching `header.payload` and leaving `.signature` exposed.
+    # The 3-to-5-segment alternative keeps `*` (not `+`) on post-header segments so an
+    # EMPTY segment still counts: a compact JWE with direct
+    # (`alg:dir`) or key-agreement (`ECDH-ES`) key management has an empty Encrypted
+    # Key (2nd) segment — shape `header..iv.ciphertext.tag` — which a `+` quantifier
+    # would fail to match, leaking the ciphertext + tag.
+    # The HTTP `Authorization: Bearer <token>` header carries opaque or JWT bearer
+    # creds. The JWT alternative is case-sensitive (`eyJ` is a fixed base64url
+    # prefix). The header name + scheme are matched case-insensitively via scoped
+    # `(?i:…)` groups because HTTP header names are case-insensitive (RFC 7230
+    # §3.2), HTTP/2 mandates lowercase names, and the `Bearer` scheme is
+    # case-insensitive (RFC 6750 §2.1) — so `authorization: bearer …` emitted by
+    # requests / net/http / HTTP2 frame logs is redacted too. The separator is
+    # JSON-aware: an optional quote may precede the
+    # `:`/`=` and the token, so a serialized header `{"Authorization": "Bearer
+    # <tok>"}` in a structured-log/JSON request dump is redacted as well. Both
+    # alternatives are scoped tightly: the JWT segment class cannot cross the
+    # literal `.` separators and the Bearer token class (`[A-Za-z0-9._~+/-]`, RFC
+    # 6750 `b64token`) stops at whitespace/quotes, so neither over-captures. A
+    # Bearer header carrying a JWT redacts as one match (the Bearer class subsumes
+    # the JWT); a bare JWT is still caught independently (defense in depth).
+    f"|{JWT_MULTI_SEGMENT}"  # JWS (3-seg) / JWE (5-seg incl. dir/ECDH-ES), shared spelling
+    r"|(?<![A-Za-z0-9_.-])eyJ[A-Za-z0-9_-]{96,}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])"  # 2-seg link token
+    r"|(?i:Authorization)[\"\']?\s*[:=]\s*[\"\']?(?i:Bearer)\s+[A-Za-z0-9._~+/-]+=*"  # HTTP/JSON bearer
+    r")",
+)
+
+
+def get_credential_patterns() -> list[re.Pattern[str]]:
+    """Public accessor for the canonical credential regexes.
+
+    Lets other modules (e.g. deploy-web's pre-publish content scan) reuse the
+    same patterns without coupling to the private ``_CREDENTIAL_PATTERNS`` name,
+    so a future rename here can't silently turn a downstream scan into a no-op.
+    Returns a list so callers can iterate uniformly; the fork keeps a single
+    combined compiled regex, so the list has one element.
+    """
+    return [_CREDENTIAL_PATTERNS]
+
+
+# The JWS/JWE branch is shape-only (it matches `honeyJar.example.com`), so its hits need a
+# JSON-object header. Only it and the one-dot link token start with `eyJ`: two dots mark them.
+_CREDENTIAL_PATTERNS_SANS_JWT = re.compile(
+    _CREDENTIAL_PATTERNS.pattern.replace(f"|{JWT_MULTI_SEGMENT}", "", 1)
+)
+
+# Telegram bot token, as `_CREDENTIAL_PATTERNS` spells it.
+_TELEGRAM_BRANCH = r"[0-9]{6,}:[A-Za-z0-9_-]{30,}"
+_TELEGRAM_AT_RE = re.compile(_TELEGRAM_BRANCH)
+
+# Leftmost start of a non-JWT branch, found in linear time. Unguarded, the Telegram
+# branch re-walks a digit run from every digit in it. A later digit has fewer digits
+# before the same ``:``, so only the run's first digit can win; `_sans_jwt_start`
+# checks the one exception, a run that begins before the scan position.
+#
+# It also drops the PEM full-block tail. A header starts a match whether or not an
+# END marker follows (the truncated tail beside it can be empty), so every start is
+# unchanged, and the tail would send each header with no END after it to the end of
+# the text: quadratic over a text that repeats the header. See `pem_scan`.
+_CREDENTIAL_STARTS_SANS_JWT = re.compile(
+    _CREDENTIAL_PATTERNS_SANS_JWT.pattern.replace(f"{pem_scan.FULL_BLOCK}|", "", 1).replace(
+        f"|{_TELEGRAM_BRANCH}", f"|(?<![0-9]){_TELEGRAM_BRANCH}", 1
+    )
+)
+
+# `_CREDENTIAL_PATTERNS` for a PEM header that no END marker follows: only the
+# truncated tail is left to try there.
+_CREDENTIAL_PATTERNS_NO_PEM_BLOCK = re.compile(
+    _CREDENTIAL_PATTERNS.pattern.replace(f"{pem_scan.FULL_BLOCK}|", "", 1)
+)
+
+
+def _sans_jwt_start(text: str, pos: int) -> int:
+    """Leftmost index >= *pos* where a non-JWT branch matches, else ``len(text) + 1``."""
+    if "0" <= text[pos - 1 : pos] <= "9" and _TELEGRAM_AT_RE.match(text, pos):
+        return pos
+    found = _CREDENTIAL_STARTS_SANS_JWT.search(text, pos)
+    return len(text) + 1 if found is None else found.start()
+
+
+def _is_json_object_segment(segment: str) -> bool:
+    """Whether *segment* base64url-decodes to a JSON object: JOSE, itsdangerous, Flask session."""
+    try:
+        header = json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)))
+    except (ValueError, RecursionError):
+        return False
+    return isinstance(header, dict)
+
+
+_JWT_SEGMENT_RUN_RE = re.compile(r"[A-Za-z0-9_-]*")
+
+
+def _segment_run_end(text: str, pos: int) -> int:
+    """End of the run of JWT segment characters starting at *pos*."""
+    run = _JWT_SEGMENT_RUN_RE.match(text, pos)
+    return run.end() if run is not None else pos
+
+
+def _jwt_branch_matches_at(text: str, i: int, run_end: int) -> bool:
+    """Whether ``JWT_MULTI_SEGMENT`` matches at the ``eyJ`` at *i*, its run ending at *run_end*.
+
+    The branch needs one segment character after ``eyJ``, then two ``.`` separators with
+    a possibly empty run between them. Segment characters exclude ``.``, so the first
+    separator can only sit at *run_end*.
+    """
+    return (
+        run_end > i + 3
+        and text.startswith(".", run_end)
+        and text.startswith(".", _segment_run_end(text, run_end + 1))
+    )
+
+
+def _next_jwt_branch_start(text: str, pos: int, matched_run_end: int) -> tuple[int, int]:
+    """Leftmost index >= *pos* where the JWT branch matches, and that start's run end.
+
+    Every ``eyJ`` in one segment run shares the run's end, and a later one leaves fewer
+    characters before it, so one failure settles the whole run and the scan jumps past
+    it. ``search`` instead re-walks the run from each ``eyJ``, which is quadratic on a
+    long ``eyJ`` repeat. For the same reason one success settles every later ``eyJ`` with
+    a character after it in that run, so *matched_run_end*, the end of the run the last
+    start matched in, is reused rather than walked again when an overlapping match of
+    another branch moved *pos* past that start. No start: ``(len(text) + 1, -1)``.
+    """
+    if pos < matched_run_end:
+        i = text.find("eyJ", pos, matched_run_end - 1)
+        if i != -1:
+            return i, matched_run_end
+        pos = matched_run_end
+    while (i := text.find("eyJ", pos)) != -1:
+        run_end = _segment_run_end(text, i)
+        if _jwt_branch_matches_at(text, i, run_end):
+            return i, run_end
+        pos = run_end
+    return len(text) + 1, -1
+
+
+def _credential_search(text: str, pos: int, starts: list[int]) -> re.Match[str] | None:
+    """``_CREDENTIAL_PATTERNS.search(text, pos)``, in time linear over a whole scan.
+
+    The leftmost match starts at the earlier of the leftmost JWT-branch start and the
+    leftmost start of every other branch, and ``match`` there applies the alternation's
+    own branch order. *starts* caches both starts, and the JWT start's run end, across
+    calls with a rising *pos*; its last slot is the start of the text's last PEM END
+    marker, ``-2`` until first needed.
+
+    At a PEM header the full-block tail needs an END marker starting at or after the
+    header's end, so the last marker alone says whether one exists. When none does,
+    the match is made without that tail: it would fail only after reading to the end
+    of the text, once per header, and the result is the same.
+    """
+    if starts[0] < pos:
+        starts[0] = _sans_jwt_start(text, pos)
+    if starts[1] < pos:
+        starts[1], starts[2] = _next_jwt_branch_start(text, pos, starts[2])
+    first = min(starts[0], starts[1])
+    if first > len(text):
+        return None
+    if text.startswith(pem_scan.HEADER_PREFIX, first):
+        if starts[3] == -2:
+            starts[3] = pem_scan.last_end_start(text)
+        if pem_scan.has_no_end_after(text, first, starts[3]):
+            return _CREDENTIAL_PATTERNS_NO_PEM_BLOCK.match(text, first)
+    return _CREDENTIAL_PATTERNS.match(text, first)
+
+
+def _credential_matches(text: str) -> Iterator[re.Match[str]]:
+    """``_CREDENTIAL_PATTERNS.finditer(text)``, minus JWT-branch hits whose header is not JSON.
+
+    A rejected hit retries the other branches at its start, then resumes one character on,
+    so a credential nested inside the rejected span is still found. A header holding a
+    second ``eyJ`` stays a credential: rejecting it would rescan that header once per ``eyJ``.
+    """
+    pos = 0
+    starts = [-1, -1, -1, -2]
+    while (m := _credential_search(text, pos, starts)) is not None:
+        header = m.group().split(".", 1)[0]
+        if (
+            m.group().startswith("eyJ")
+            and m.group().count(".") >= 2
+            and header.find("eyJ", 1) == -1
+            and not _is_json_object_segment(header)
+        ):
+            alt = _CREDENTIAL_PATTERNS_SANS_JWT.match(text, m.start())
+            if alt is None:
+                pos = m.start() + 1
+                continue
+            m = alt
+        yield m
+        pos = max(m.end(), m.start() + 1)
+
+
+def _contains_credential_pattern(text: str) -> bool:
+    """Validated ``_CREDENTIAL_PATTERNS.search``: see :func:`_credential_matches`."""
+    return next(_credential_matches(text), None) is not None
+
+
+# ── Cheap pre-filter for `_CREDENTIAL_PATTERNS` (performance only) ──
+# `_CREDENTIAL_PATTERNS` is a 23-branch alternation, so `re` retries every branch
+# at essentially every position: measured 117 ns/char, and it is the single
+# hottest line in the gateway's event loop (38.2% of all py-spy samples, reached
+# per message per dirty-slot flush). The scan cost is paid in full even though
+# real text almost never contains a credential — measured 0 matches across 1,804
+# live session-history messages (1.47 MB).
+#
+# So `_might_contain_credential` answers the cheap question "could a match exist
+# at all?" and lets `redact_credentials` skip the expensive scan when the answer
+# is no. It is a strict SUPERSET of `_CREDENTIAL_PATTERNS`, i.e. for every string
+# the pattern matches, this returns True. That direction is the security
+# property: a false POSITIVE only costs a scan we would have run anyway, while a
+# false NEGATIVE would skip redaction and leak a credential into persisted chat
+# history. Every condition below is therefore a NECESSARY condition of a branch,
+# never a restatement of it — each is deliberately looser than the branch it
+# stands in for.
+#
+# THE MAINTENANCE HAZARD this is built against: adding a 24th branch to
+# `_CREDENTIAL_PATTERNS` without adding a matching anchor here would silently
+# disable redaction for it. Nothing about the pattern edit would look wrong, and
+# the failure is invisible in output — the branch simply stops firing. So
+# `test_credential_prefilter.py` splits `_CREDENTIAL_PATTERNS.pattern` on its
+# top-level `|`, asserts the branch count equals the number of registered sample
+# credentials, and asserts the pre-filter fires for each. A new branch fails that
+# count assertion loudly instead of quietly widening the leak.
+#
+# Literals are case-sensitive because the branches they stand for are (these
+# prefixes are issued in a fixed case); the sole case-insensitive branch
+# (`Authorization: Bearer`) is handled separately below.
+_CREDENTIAL_PREFILTER_LITERALS: tuple[str, ...] = (
+    "AKIA",  # AWS access key ID
+    "ASIA",  # AWS access key ID (STS)
+    "AccessKey",  # SecretAccessKey + AccessKeyId (shared substring)
+    "aws_secret_access_key",
+    "aws_session_token",
+    "aws_access_key_id",
+    "SessionToken",
+    "PRIVATE KEY-----",  # PEM header AND footer both carry it
+    "xox",  # Slack token
+    "github_pat_",
+    "glpat-",
+    "k_live_",  # sk_live_ / rk_live_ (shared substring)
+    "k_test_",  # sk_test_ / rk_test_ (shared substring)
+    "SG.",  # SendGrid
+    "sk-proj-",  # OpenAI
+    "sk-ant-",  # Anthropic
+    "npm_",
+    "pypi-",
+    "_v1_",  # do[opr]_v1_ DigitalOcean
+    "GOCSPX-",  # Google OAuth client secret
+    "eyJ",  # JWS / JWE / 2-segment link token
+)
+
+# Branches with no usable literal anchor. Each is the branch's own leading shape
+# with its expensive tail dropped, so it stays a superset while keeping a narrow
+# first-character set that `re` can skip on.
+#   `gh[opsur]_`     — GitHub PAT family; a bare "gh" literal matches ordinary
+#                      prose ("through", "might"), so the class is kept.
+#   `[0-9]{6,}:…{30}` — Telegram bot token. The trailing 30-char run matters: a
+#                      bare `[0-9]{6,}:` matches an epoch timestamp followed by a
+#                      colon, which fired on 29 of 614 real messages.
+#   `[MNO]…\.`        — Discord bot token (first segment is base64 of a snowflake).
+#   `://…:…@`         — URI userinfo. The scheme alternation is dropped, which is
+#                      what leaves a `://` literal prefix for `re` to search on;
+#                      a bare `://` would match every ordinary URL.
+#
+# Each anchor is written to START WITH A LITERAL, because that is the one shape
+# `re` searches at memchr speed; a pattern starting with a class or a
+# case-insensitive letter is tried at every position (measured 6-12 ns/char).
+# The literal is the rarest character every match must contain, and the rest of
+# the shape is checked around it with fixed-width look-behinds, so each anchor
+# accepts EXACTLY the strings its plain spelling does:
+#   Telegram `[0-9]{6,}:X{30}`     == `:` preceded by 6 digits, then X{30}.
+#   Discord  `[MNO]X{22,30}\.`     == `.` preceded by X{23} (cheap reject) and,
+#                                     for some n in 22..30, by [MNO]X{n}.
+# `test_rewritten_anchors_agree_with_their_plain_spelling` holds each one to
+# its plain spelling.
+_CREDENTIAL_PREFILTER_GH_RE = re.compile(r"gh[opsur]_")
+_CREDENTIAL_PREFILTER_TELEGRAM_RE = re.compile(r":(?<=[0-9]{6}:)[A-Za-z0-9_-]{30}")
+_CREDENTIAL_PREFILTER_DISCORD_RE = re.compile(
+    r"\.(?<=[A-Za-z0-9_-]{23}\.)(?:"
+    + "|".join(rf"(?<=[MNO][A-Za-z0-9_-]{{{n}}}\.)" for n in range(22, 31))
+    + ")"
+)
+_CREDENTIAL_PREFILTER_URI_RE = re.compile(r"://[^\s:/@]*:[^\s/]+@")
+
+# The `Authorization: Bearer` branch is the ONLY case-insensitive branch, and it is
+# spelled `(?i:Authorization)`. This anchor reuses that exact sub-pattern, so it is
+# a superset of the branch BY CONSTRUCTION — same engine, same folding rules.
+#
+# `"authorization" in text.lower()` is NOT a valid anchor for it, because
+# `str.lower()` and `re.IGNORECASE` are two DIFFERENT case-folding
+# implementations and they disagree. `re` folds via `sre_compile._equivalences`,
+# which treats U+0131 (LATIN SMALL LETTER DOTLESS I) and U+0130 (LATIN CAPITAL
+# LETTER I WITH DOT ABOVE) as equivalent to `i`/`I`; `str.lower()` leaves U+0131
+# unchanged and expands U+0130 to two code points. So the branch MATCHES
+# `Authorızation: Bearer <token>` while a `.lower()` anchor MISSES it, which skips
+# pass 1 and leaves the bearer token verbatim in persisted chat history. The same
+# disagreement holds for U+017F/`s` and U+212A/`k`, so it is a class of defect
+# rather than one homoglyph: a case-insensitive branch is only safely anchored by
+# the SAME regex engine, never by a hand-rolled fold.
+# Pinned by `test_unicode_case_folding_cannot_bypass_the_prefilter`.
+#
+# For speed the anchor is split on its `z`, the one letter `re.IGNORECASE` folds
+# onto nothing but `z` and `Z`: each half starts with that literal (searched at
+# memchr speed) and leaves every other letter to the same `(?i:…)` sub-pattern,
+# so the folding is still the engine's own. Together the two accept exactly what
+# `(?i:Authorization)` does.
+_CREDENTIAL_PREFILTER_AUTHORIZATION_RE = re.compile(r"z(?<=(?i:Authori)z)(?i:ation)")
+_CREDENTIAL_PREFILTER_AUTHORIZATION_UPPER_RE = re.compile(r"Z(?<=(?i:Authori)Z)(?i:ation)")
+
+
+def _might_contain_credential(text: str) -> bool:
+    """Return True if *text* could contain a `_CREDENTIAL_PATTERNS` match.
+
+    A strict superset of `_CREDENTIAL_PATTERNS.search(text) is not None`: it may
+    return True where the pattern would not match, but it MUST NOT return False
+    where the pattern would match. Callers use it only to skip a scan whose
+    result is already known to be empty, so output is unchanged either way.
+    """
+    for literal in _CREDENTIAL_PREFILTER_LITERALS:
+        if literal in text:
+            return True
+    return (
+        _CREDENTIAL_PREFILTER_GH_RE.search(text) is not None
+        or _CREDENTIAL_PREFILTER_TELEGRAM_RE.search(text) is not None
+        or _CREDENTIAL_PREFILTER_DISCORD_RE.search(text) is not None
+        or _CREDENTIAL_PREFILTER_URI_RE.search(text) is not None
+        or _CREDENTIAL_PREFILTER_AUTHORIZATION_RE.search(text) is not None
+        or _CREDENTIAL_PREFILTER_AUTHORIZATION_UPPER_RE.search(text) is not None
+    )
+
+
+# Minimum string length at which `_might_contain_credential` is cheaper than the
+# `_CREDENTIAL_PATTERNS` alternation it gates. The pre-filter has a fixed ~590 ns
+# floor (21 substring searches plus 5 anchored regex calls) that does not shrink
+# with the input, so on a very short string the alternation simply wins: measured
+# 684 ns against 494 ns at 8 characters, crossing over at 12 and reaching 3.4x by
+# 256. Callers scanning SHORT strings -- a decoded base64 blob is typically 16-30
+# characters -- must gate on this rather than assume the pre-filter is
+# unconditionally cheaper.
+#
+# Held at 16 rather than the measured crossover of 12, deliberately: the gate is
+# verdict-neutral (the pre-filter is a proven superset, so either route reaches the
+# same answer), which makes a conservative threshold cost at most one alternation
+# scan on a 12-15 character blob and makes it robust to the crossover drifting as
+# the pre-filter's own cost changes. It has already drifted once -- adding the
+# case-insensitive Authorization anchor moved it from 16 to 12.
+_PREFILTER_MIN_LEN = 16
+
+
+# Base64 alphabet: at least 40 chars of [A-Za-z0-9+/] ending with optional =
+_B64_CHUNK_RE = re.compile(r"[A-Za-z0-9+/]{40,}={0,2}")
+
+
+# ── Label-independent bare-secret detection ──
+# A 40-char AWS *secret access key* (the value paired with an AKIA/ASIA access
+# key ID) is a bare run of the base64 alphabet with NO distinctive prefix and NO
+# key= label, so none of the labelled/prefixed patterns in _CREDENTIAL_PATTERNS
+# catch it when it appears standalone (e.g. echoed alone, in a log line, or in a
+# JSON array element). We add a conservative, entropy-gated detector for this
+# shape. This is the HIGHEST false-positive-risk redaction rule in the module, so
+# it is deliberately over-gated: a token must clear EVERY gate below to be
+# redacted. The gates are ordered cheapest-first.
+#
+# AWS secret access keys are exactly 40 base64 characters. We match ANY isolated
+# run of >=40 base64-alphabet chars (word-boundary look-arounds keep surrounding
+# prose intact and stop a longer high-entropy blob from being split and missed),
+# then require the *specific 40-char secret shape* per token.
+#
+# NOT CONSULTED BY `redact_credentials`. Pass 3 derives its runs from
+# `_B64_CHUNK_RE` instead (`run = chunk.rstrip("=")`), because that one scan feeds
+# both pass 2 and pass 3 and the two patterns select identical spans. The only
+# remaining consumer here is `_text_contains_bare_secret`. That split is a
+# desync hazard: WIDENING THIS PATTERN ALONE (adding base64url `-_`, say) would
+# change the URL scan and leave the redactor untouched, silently. Any edit to the
+# character class or the `{40,}` floor must be mirrored in `_B64_CHUNK_RE` above.
+# `test_the_two_base64_run_patterns_stay_structurally_coupled` pins both literals
+# so such an edit fails loudly rather than drifting.
+_BARE_SECRET_RUN_RE = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}(?![A-Za-z0-9+/])")
+
+# Exactly-40 is the AWS secret-key length. Keeping the shape check length-exact
+# (rather than ">=40") is what lets the structural gates below cleanly separate
+# real keys from 64-char sha256 hex, base64 document blobs, etc.
+_SECRET_KEY_LEN = 40
+
+#: Inside code text (``redaction_switch.code_text``) pass 3 leaves a run alone only when it is
+#: one of two things that can be told from a key by what they are, never by a name near them.
+#: A data URI payload: a run of ``_DATA_URI_PAYLOAD_MIN`` characters or more that follows
+#: ``data:<type>;base64,``. An alphabet: every 40-character window of the run has at least
+#: ``_ALPHABET_STEPS`` adjacent pairs that step up by one character code (``abc...``,
+#: ``ABC...``, ``012...``), which a table a program indexes into has and a random key does
+#: not. Everything else, a glued run included, is judged exactly as outside the scope.
+_DATA_URI_BEFORE_RE = re.compile(
+    r"data:[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+(?:;[A-Za-z0-9=.+-]+)*;base64,\Z", re.IGNORECASE
+)
+#: How far back from a run the data URI header may start.
+_DATA_URI_REACH = 128
+#: A payload shorter than this is judged, so a lone key behind a ``data:`` header is masked.
+_DATA_URI_PAYLOAD_MIN = 64
+#: An alphabet run longer than this is judged, which bounds the cost of reading one.
+_ALPHABET_RUN_MAX = 4096
+#: Adjacent pairs in a 40-character window (39) that must step up by one. A table of the
+#: letters and digits has 59 of 61 per 62; a random key has one such pair in about 64.
+_ALPHABET_STEPS = 30
+
+
+def _steps_up(run: str, at: int) -> int:
+    """1 when the character after ``run[at]`` is the next character code, else 0."""
+    return 1 if ord(run[at + 1]) == ord(run[at]) + 1 else 0
+
+
+def _is_code_literal(text: str, start: int, run: str) -> bool:
+    """Whether the run at *start* is a data URI payload or an ordered alphabet.
+
+    Both are read off the run and the few characters before it, and a run that is neither
+    stops the read at the first window that fails, so the cost of one run is fixed by
+    ``_DATA_URI_REACH`` and ``_ALPHABET_RUN_MAX`` whatever the text holds. A run this cannot
+    place is judged, which is the side that masks.
+    """
+    if len(run) >= _DATA_URI_PAYLOAD_MIN and _DATA_URI_BEFORE_RE.search(
+        text, max(0, start - _DATA_URI_REACH), start
+    ):
+        return True
+    if not _SECRET_KEY_LEN <= len(run) <= _ALPHABET_RUN_MAX:
+        return False
+    window = _SECRET_KEY_LEN - 1
+    total = sum(_steps_up(run, i) for i in range(window))
+    if total < _ALPHABET_STEPS:
+        return False
+    for i in range(window, len(run) - 1):
+        total += _steps_up(run, i) - _steps_up(run, i - window)
+        if total < _ALPHABET_STEPS:
+            return False
+    return True
+
+
+# Shannon-entropy floor (bits/char). A uniformly-random 40-char base64 string
+# averages ~4.78 bits/char and empirically almost never drops below ~4.4;
+# English-word identifiers, hex digests, and repeated/low-alphabet runs sit
+# below this. 4.3 is a conservative floor that admits real keys (the canonical
+# AWS example scores 4.66) while rejecting camelCase code identifiers and file
+# paths, which cluster around 4.0-4.3.
+_SECRET_ENTROPY_MIN = 4.3
+
+# Even after the entropy floor, camelCase / PascalCase code identifiers and
+# slash-delimited file paths (e.g. src/main/java/com/Example/FooBarBazClas1) can
+# survive on entropy ALONE. Two structural signals separate a random secret from
+# a word-based identifier or path: (a) a random key almost never contains a long
+# unbroken lowercase run, whereas identifiers/paths are built from dictionary
+# words that do; (b) a random key has a low vowel ratio, whereas English words
+# do not. NOTE: unlike a naive design we deliberately do NOT treat the presence
+# of '/' or '+' as a free pass to redact — 40-char mixed-case file paths contain
+# '/' yet are benign, so a '/' token must still clear both structural gates.
+# Neither gate can speak for a path LONGER than one window, though: its straddling
+# sub-windows are built from fragments of several components and clear both, which
+# is what `_SECRET_MAX_SLASHES` below is for.
+# Thresholds are chosen from measured distributions (see test_security.py) with a
+# wide margin toward NOT redacting.
+_SECRET_MAX_LOWER_RUN = 5
+_SECRET_MAX_VOWEL_RATIO = 0.30
+
+# Ceiling on the separators a window CUT OUT OF A LONGER RUN may hold, applied by
+# :func:`_contains_bare_secret`. A window straddling several path components is a
+# token nobody wrote, and it clears both gates above; its separator density is
+# what gives it away -- `/` is 1 base64 character in 64, so a real 40-char key
+# averages 0.6 of them, while a window spanning components carries one per
+# component. Measured on 200,000 uniformly random 40-char keys: this declines
+# 0.36% on its own, against 9.29% for the lowercase-run gate and 6.60% for the
+# vowel-ratio gate. Three is the knee: four leaves the reported paths redacted.
+_SECRET_MAX_SLASHES = 3
+
+# The second ceiling a window CUT OUT OF A LONGER RUN is held to: it may not cross
+# the opening `/` of a routed commit and take twelve of its digits. A commit
+# permalink is one run (`com/Owner/RepoName/blob/<commit>/src/file`), and its window
+# straddling `RepoName/blob/` and the start of the commit clears every gate on two
+# separators: capitals from the repository name, lowercase and digits from the hex.
+# A routed commit is a path segment of exactly 40 or 64 lowercase hex digits, as git
+# prints one, right after one of the code-host routes below and ending at a `/` or
+# the run's edge. The route is what keeps a key out: a key's own window crosses the
+# opening `/` of a routed commit only when the key itself holds that `/` and twelve
+# hex digits after it, which makes the text a permalink whose route runs into the
+# key. A window starting inside a commit is judged as before, and so is hex a key
+# carries anywhere else. Measured on ten commits of each of the 1,000 most-starred
+# GitHub repositories: 3.58% of their blob permalinks fire without this and 0.02%
+# with it, and none of 20,000 key-shaped random keys is lost glued before, after or
+# inside a commit, after a letter, after a route, or in a URL path. The residuals
+# are a repository name whose own capitals fill most of a window, a window that
+# starts inside the commit and runs into a path with capitals (1.08% of links to a
+# path like `src/File.py`, against 4.64% before), a key that carries a route word
+# and a `/` followed by twelve or more hex digits running to its end,
+# raw.githubusercontent.com links, which have no route word, and commits typed in
+# upper or mixed case, which git never prints.
+_ROUTED_COMMIT_RE = re.compile(
+    r"(?:(?<=/)|\A)(?:blob|tree|blame|raw|commits?|src)/"
+    r"(?P<commit>[0-9a-f]{64}|[0-9a-f]{40})(?=/|\Z)"
+)
+_ROUTED_COMMIT_PIECE_MIN = 12
+
+# A token that base64-decodes to >=85% printable ASCII is encoded *text*, not a
+# random key (random 40-char keys decode to mostly non-printable bytes). Such a
+# token is left to the existing base64 decode-and-scan path in redact_credentials
+# so we do not double-count or mis-classify it here.
+_SECRET_PRINTABLE_DECODE_RATIO = 0.85
+
+_VOWELS: frozenset[str] = frozenset("aeiouAEIOU")
+
+# All-hex runs are git SHAs (40 hex), sha256 (64 hex), md5 (32 hex), etc. — never
+# an AWS secret key (which uses the full base64 alphabet). Reject them outright.
+_HEX_ONLY_RE = re.compile(r"\A[0-9a-fA-F]+\Z")
+
+# The macOS per-user directory id: ``confstr`` names the temp and cache roots
+# ``/var/folders/<2>/<30>/T`` and ``.../C``, the two variable components an
+# OS-generated lowercase encoding of the user's UUID and uid. ``/`` is in the run
+# alphabet, so a path under them is one run whose window straddling the id and
+# the ``T`` clears every gate, and every temp path -- a computer-use screenshot
+# echoed as ``![](path)`` among them -- would read as a key. Pass 3 therefore
+# scans the original run, exempting only windows that share at least
+# ``_HOST_ID_EXEMPT_OVERLAP`` bytes IN PLACE with THIS host's OS-reported id. Any
+# other positive window overlapping the id is still a hit, and pass 3 redacts
+# every uncovered piece such a window touches; the id and the prefix stay
+# plaintext because they are withheld from the scan, not redacted. Fast paths,
+# the fragment separator ceiling and printable-base64 exclusion use whole-run
+# context. In free text a writer picks an id's bytes and could fill most of a
+# key-shaped window, while the host's id is chosen by nobody who writes text. The
+# prefix must start a path (no run-alphabet byte, ``/`` included, before it) and
+# the byte after the directory letter must not continue the run: ``/`` starts the
+# next component, and any byte outside the run alphabet ends the run there, so a
+# bare root printed, quoted, or followed by a newline is the same two-byte ``/T``
+# piece as one that ends the text. ``/Tevil`` is a chosen name and gets no
+# exemption. A key after ``/T_evil`` sits in the next run and is judged there;
+# the pieces the exemption leaves in this run are the prefix and the ``/T``, both
+# shorter than one key, so no key-shaped window survives in them.
+#: Least overlap at which a key-shaped window is exempted from the bare-secret
+#: scan: a key can occupy an exempt window only by sharing this many of its bytes
+#: IN PLACE with an id the OS chose, which no writer controls. 24 exempts the
+#: screenshot spooler path (32), the bare root (33) and an ``mkdtemp`` ``tmpXXXXXXXX``
+#: dir with a one-character leaf (24); a temp path whose run goes 15 or more run-alphabet
+#: bytes past the directory letter can still yield a positive window below 24 and stays
+#: redacted, as without the exemption. A key glued across the id with less overlap is judged.
+_HOST_ID_EXEMPT_OVERLAP = 24
+_DARWIN_USER_DIR_PREFIX_RE = r"(?<![A-Za-z0-9+/])(?:/private)?/var/folders/"
+_DARWIN_USER_DIR_SUFFIX_RE = r"/[CT](?![A-Za-z0-9+])"
+# ``_CS_DARWIN_USER_TEMP_DIR`` in Darwin's ``<unistd.h>``; Python has no name for
+# it, and its answer is the temp root with a trailing separator.
+_CS_DARWIN_USER_TEMP_DIR = 65537
+_DARWIN_USER_TEMP_DIR_RE = re.compile(
+    r"\A(?:/private)?/var/folders/(?P<id>[a-z0-9_]{2}/[a-z0-9_]{30})/T/?\Z"
+)
+
+# The Shannon term ``(c / _SECRET_KEY_LEN) * log2(c / _SECRET_KEY_LEN)``, indexed by
+# the character count ``c``. Element 0 is a ``0.0`` placeholder that keeps ``c``
+# usable as a direct index; it is never read, because a count of zero cannot appear
+# in a :class:`~collections.Counter` built from an iterable, and ``log2(0)`` would
+# raise.
+#
+# Built for ONE length rather than parameterised over lengths, because
+# :func:`_looks_like_secret_key` reaches the entropy gate only through its
+# exactly-``_SECRET_KEY_LEN`` check, so that is the only length any production call
+# can ask about. A per-length table would need a size cap and an eviction policy to
+# bound what an arbitrary caller could materialise -- machinery guarding a caller
+# that does not exist. Any other length falls through to the inline formula, which
+# is what this table was derived from, so the general path is exactly as it was
+# before the table existed.
+#
+# The terms are computed with the same operations the inline expression used, which
+# is what makes this a pure precomputation rather than a re-derivation.
+_ENTROPY_TERMS_KEY_LEN: tuple[float, ...] = (0.0,) + tuple(
+    (c / _SECRET_KEY_LEN) * math.log2(c / _SECRET_KEY_LEN) for c in range(1, _SECRET_KEY_LEN + 1)
+)
+
+
+def _shannon_entropy(token: str) -> float:
+    """Return the Shannon entropy of *token* in bits per character.
+
+    The result is compared against :data:`_SECRET_ENTROPY_MIN` by
+    :func:`_looks_like_secret_key`, so this is a gate on a redaction verdict and
+    NOT a statistic anybody displays. A one-ULP drift at the boundary flips that
+    verdict, and a flip in the permissive direction leaks a credential. The
+    optimisation below is therefore built to be BIT-IDENTICAL, not merely close,
+    and is pinned that way by ``TestShannonEntropyIsBitIdentical``.
+
+    Each addend is ``(c / length) * log2(c / length)``. The sole production caller
+    reaches this only through the exactly-``_SECRET_KEY_LEN`` check in
+    :func:`_looks_like_secret_key`, and reaches it over and over --
+    :func:`_contains_bare_secret` slides a 40-char window byte by byte across each
+    base64-alphabet run that clears its prefilters -- so at that one length every
+    addend is drawn from the fixed set :data:`_ENTROPY_TERMS_KEY_LEN` holds. That
+    retires TWO true divisions and one ``math.log2`` call per DISTINCT CHARACTER per
+    call -- ``c / length`` appears twice in the expression and CPython evaluates it
+    twice, and a 40-char base64 window holds ~30 distinct characters -- plus the
+    generator frames, in favour of a C-level ``map`` over a tuple index.
+
+    Any other length takes the inline formula, unchanged from before the table
+    existed. That keeps the fast path to the single length that is actually asked
+    for, so no size cap or cache-eviction policy is needed to bound what an
+    arbitrary caller could make this allocate.
+
+    Why this is bit-identical rather than approximately equal:
+
+    * Each addend is produced by the same three IEEE-754 operations on the same
+      operands as before -- divide, ``log2``, multiply -- so each addend carries
+      the same bit pattern. Precomputation changes WHEN a term is computed, never
+      HOW.
+    * ``Counter(token).values()`` still supplies the addends, in the same
+      first-occurrence order, and ``map`` is consumed in order, so ``sum``
+      accumulates identical addends in an identical sequence. The equality
+      therefore does not rest on float addition being associative, which it is
+      not. An algebraic rearrangement such as
+      ``log2(length) - sum(c * log2(c)) / length`` IS mathematically equal and is
+      measurably NOT bit-equal, which is why it is not used here.
+    """
+    if not token:
+        return 0.0
+    counts = Counter(token)
+    length = len(token)
+    if length != _SECRET_KEY_LEN:
+        return -sum((c / length) * math.log2(c / length) for c in counts.values())
+    return -sum(map(_ENTROPY_TERMS_KEY_LEN.__getitem__, counts.values()))
+
+
+def _has_all_three_char_classes(text: str) -> bool:
+    """Return True if *text* holds at least one lowercase, uppercase AND digit.
+
+    One pass with early exit, rather than three ``any()`` scans. Semantically
+    identical, but this is the hottest predicate in the redaction path:
+    :func:`_contains_bare_secret` slides a 40-char window BYTE BY BYTE across a
+    base64-alphabet run that clears its prefilters, so a 512-char run reaching that
+    loop asks this question 473 times. Three ``any()`` scans build three generators
+    per call and cost the SUM of their three first-match offsets; one loop breaks on
+    completion and costs the MAX. Both forms short-circuit, so the saving is
+    generator frames plus that sum-vs-max difference.
+
+    Absence of a class is closed under substring, which is what lets
+    :func:`_contains_bare_secret` ask this about a whole run and retire every
+    window at once.
+    """
+    has_lower = has_upper = has_digit = False
+    for ch in text:
+        if not has_lower and ch.islower():
+            has_lower = True
+        elif not has_upper and ch.isupper():
+            has_upper = True
+        elif not has_digit and ch.isdigit():
+            has_digit = True
+        if has_lower and has_upper and has_digit:
+            return True
+    return False
+
+
+# The byte set counted as "printable" by :func:`_decodes_to_printable_text`: tab,
+# LF, CR and the printable ASCII range 0x20-0x7E. Held as ``bytes`` so the count
+# can be delegated to ``bytes.translate``, which runs in C.
+_PRINTABLE_BYTES: bytes = bytes(sorted({0x09, 0x0A, 0x0D} | set(range(0x20, 0x7F))))
+
+
+def _decodes_to_printable_text(token: str) -> bool:
+    """Return True if *token* base64-decodes to mostly-printable ASCII.
+
+    Encoded human-readable text (a base64 document blob) decodes to printable
+    bytes; a random 40-char secret key decodes to mostly non-printable bytes. We
+    use this to exclude encoded-text blobs from the bare-secret heuristic (they
+    are handled by the existing decode-and-scan pass instead).
+    """
+    try:
+        raw = base64.b64decode(token + "=" * (-len(token) % 4), validate=False)
+    except Exception:
+        return False
+    if not raw:
+        return False
+    # Count the printable bytes by DELETING them in C and measuring what is left,
+    # rather than testing every byte in a Python loop. ``translate(None, set)``
+    # returns exactly the bytes NOT in *set*, so ``len(raw) - len(...)`` is the
+    # member count -- an integer identity, so the ratio and the comparison below
+    # are bit-identical to the previous per-byte sum (asserted against a verbatim
+    # copy of that sum in ``test_printable_count_matches_the_per_byte_sum``,
+    # including all 256 single-byte inputs exhaustively).
+    #
+    # This is the single most expensive operation in pass 3, because the helper
+    # runs once per base64-alphabet run AND again per 40-char window as gate 7 of
+    # `_looks_like_secret_key`, and the old loop cost scaled with the DECODED byte
+    # count rather than with the 40-char window. Measured 14.6x at 48 bytes rising
+    # to 69x at 1500; a 2 KB encoded blob fell from 86.3 us to 1.2 us, which is
+    # 98% of what `_contains_bare_secret` spent on such a run.
+    printable = len(raw) - len(raw.translate(None, _PRINTABLE_BYTES))
+    return printable / len(raw) >= _SECRET_PRINTABLE_DECODE_RATIO
+
+
+def _lowercase_run_exceeds(token: str, cap: int) -> bool:
+    """Return True if any run of consecutive lowercase letters is longer than *cap*.
+
+    Dictionary-word identifiers and file-path segments contain long lowercase
+    word runs; a uniformly random base64 secret almost never does. This is the
+    primary discriminator that keeps camelCase identifiers and mixed-case file
+    paths out of the bare-secret heuristic.
+
+    The only question the caller asks is whether the longest run EXCEEDS a
+    threshold, so this stops at cap+1 rather than scanning the whole token to
+    find the true maximum. On the tokens this gate exists to reject -- the ones
+    with a long lowercase run -- it exits after a handful of characters instead
+    of all 40, which measured 3.97 -> 1.65 us per window.
+    """
+    current = 0
+    for ch in token:
+        if ch.islower():
+            current += 1
+            if current > cap:
+                return True
+        else:
+            current = 0
+    return False
+
+
+def _vowel_ratio(token: str) -> float:
+    """Return the fraction of alphabetic characters in *token* that are vowels.
+
+    Deliberately left in this two-pass comprehension form. A single-pass rewrite
+    measured 1.18x -- about 0.4 us on a 2.89 us gate -- which does not justify
+    replacing the clearest possible expression of "fraction of letters that are
+    vowels", and would owe its own independent-oracle test. Its neighbour
+    :func:`_lowercase_run_exceeds` WAS rewritten because that one measured 2.4x.
+    Do not optimise this unmeasured.
+    """
+    letters = [ch for ch in token if ch.isalpha()]
+    if not letters:
+        return 0.0
+    return sum(1 for ch in letters if ch in _VOWELS) / len(letters)
+
+
+def _looks_like_secret_key(token: str) -> bool:
+    """Return True if *token* has the shape of a bare AWS secret access key.
+
+    Conservative, multi-gate classifier for a label-less 40-char base64 secret.
+    Every gate must pass; the design bias is toward NOT
+    redacting (a false negative merely reverts to today's behavior, a false
+    positive corrupts benign output).
+
+    Gates are ordered by MEASURED cost per rejection, cheapest-per-reject first.
+    Every gate is a pure predicate whose failure returns False, so the order is
+    verdict-neutral and can be chosen purely for cost. Measured on a corpus of
+    1705 windows that clear gates 1-3 (cost per window, share of windows that
+    gate rejects on its own):
+
+        lowercase run   1.65 us   66.5%  ->  2.5 us per rejection
+        vowel ratio     2.89 us   62.3%  ->  4.6 us per rejection
+        entropy         8.48 us   54.5%  -> 15.5 us per rejection
+        decode          3.01 us    0.0%  ->  rejected nothing in that corpus
+
+    These numbers are a SNAPSHOT from one corpus on one machine: treat them as a
+    relative ranking, not a budget, and do not turn them into assertions (this
+    repo's CI enables coverage on 3.12 only, so absolute durations are not
+    comparable across shards). The ordering is the durable claim, and it is
+    guarded by a test that counts which gates get evaluated -- see
+    ``TestSecretGateOrderIsCostOrdered``.
+
+    Putting the two cheap structural gates ahead of the entropy computation, and
+    the decode check last, halves the cost of gates 4-7 and measured -47% on
+    ``redact_credentials`` end to end. Do not reorder these back into
+    "structural last" without re-measuring: the structural gates are both
+    cheaper AND higher-yield than entropy, which is the opposite of the
+    intuition that entropy is the primary discriminator.
+
+    1. Length is EXACTLY 40 (AWS secret-key length).
+    2. Contains all three of lower + upper + digit (rejects all-lower prose runs,
+       all-upper CONSTANT_NAMES, base32, digit strings).
+    3. Not an all-hex run (rejects git SHAs, sha256/md5 digests).
+    4. No lowercase run longer than _SECRET_MAX_LOWER_RUN.
+    5. Vowel ratio <= _SECRET_MAX_VOWEL_RATIO. Gates 4 and 5 are the
+       structural-randomness pair: they separate a random key from word-based
+       identifiers and slash-delimited file paths that survive the entropy
+       floor. Both apply to EVERY token (a '/' or '+' does not exempt a token,
+       so 40-char mixed-case file paths stay intact).
+    6. Shannon entropy >= _SECRET_ENTROPY_MIN (rejects low-entropy repeats/prose
+       and most code identifiers, which cluster below 4.3).
+    7. Does not base64-decode to printable text (rejects encoded-text blobs).
+       Last because it is the lowest-yield gate, not because it is optional --
+       it is what keeps legitimate OAuth ``code_challenge`` values in sign-in
+       URLs from being redacted (guarded by the OAuth-URL corpus).
+
+    BOUNDARY ASSUMPTION: this classifier deliberately evaluates an EXACTLY-40-char
+    window (gate 1). It does NOT itself scan longer runs — a real key glued to an
+    adjacent base64 char with no delimiter (e.g. ``X`` + key, key + ``A``,
+    ``SECRET=`` + key + ``ABC``, key + ``X`` + key) forms a 41+ char run that would
+    fail the exact-40 gate and leak verbatim. Callers that receive raw ``{40,}``
+    runs MUST use :func:`_contains_bare_secret`, which slides a 40-char window
+    across the run so a glued secret is still caught. Keep the exact-40 shape here:
+    it is what lets the structural gates cleanly separate real keys from 64-char
+    sha256 hex, base64 document blobs, etc.
+    """
+    if len(token) != _SECRET_KEY_LEN:
+        return False
+    if not _has_all_three_char_classes(token):
+        return False
+    if _HEX_ONLY_RE.match(token):
+        return False
+    if _lowercase_run_exceeds(token, _SECRET_MAX_LOWER_RUN):
+        return False
+    if _vowel_ratio(token) > _SECRET_MAX_VOWEL_RATIO:
+        return False
+    if _shannon_entropy(token) < _SECRET_ENTROPY_MIN:
+        return False
+    return not _decodes_to_printable_text(token)
+
+
+def _contains_bare_secret(run: str) -> bool:
+    """Return True if any 40-char window of *run* looks like a bare secret key.
+
+    :func:`_looks_like_secret_key` only accepts an EXACTLY-40-char token, but the
+    ``_BARE_SECRET_RUN_RE`` boundary look-arounds capture the longest possible run
+    of base64-alphabet chars. A genuine 40-char secret glued to an adjacent
+    base64 char with no delimiter (``X`` + key, key + ``A``, ``SECRET=`` + key +
+    ``ABC``, key + ``X`` + key) produces a 41+ char run that would fail the
+    exact-40 gate and leak verbatim. We slide a 40-char window across the run and
+    report a hit if ANY window clears every gate. This stays linear in the run
+    length (the regex yields disjoint spans), so cost is bounded overall.
+
+    ENCODED-TEXT-BLOB EXCLUSION: if the WHOLE run base64-decodes to printable
+    text it is a cohesive encoded blob (e.g. an OAuth/PKCE ``code_challenge``,
+    which is ``base64(sha256-hex)``), not a bare secret — those are handled by
+    the decode-and-scan pass instead. We must skip it here because sliding a
+    40-char window byte-by-byte across such a blob creates base64-*misaligned*
+    sub-windows whose garbage decode looks high-entropy and would clear every
+    per-window gate, wrongly redacting a legitimate sign-in URL (regression
+    guarded by the OAuth-URL corpus). This is the same bias-toward-not-redacting
+    that :func:`_looks_like_secret_key` already applies per-window (gate 7),
+    lifted to run granularity so a misaligned window cannot defeat it. A genuine
+    glued secret (``X`` + key, key + ``ABC``, key + ``X`` + key) does NOT decode
+    cleanly as a whole run, so it still reaches the sliding window below.
+
+    SEPARATOR AND COMMIT CEILINGS FOR A FRAGMENT. ``/`` is in the run alphabet, so
+    a deep absolute path, or a permalink carrying a commit hash, is one run whose
+    straddling sub-windows clear every per-window gate. A key-shaped window
+    carrying a path's separator density (``_SECRET_MAX_SLASHES``) or crossing into a
+    routed commit (``_ROUTED_COMMIT_RE``, ``_ROUTED_COMMIT_PIECE_MIN``) is declined,
+    on two conditions that keep this a gate rather than a hole: only when the run is
+    LONGER than one whole key (a 40-char run IS the token somebody wrote, so a
+    standalone key is never subject to it), and only AFTER
+    :func:`_looks_like_secret_key` has answered, so every offset is still classified
+    and a glued key is still found at its own offset.
+    """
+    return next(_bare_secret_window_starts(run), None) is not None
+
+
+def _bare_secret_window_starts(
+    run: str, skip_spans: tuple[tuple[int, int], ...] = ()
+) -> Iterator[int]:
+    """Omit windows with >= _HOST_ID_EXEMPT_OVERLAP bytes in a run-relative *skip_spans* entry."""
+    if len(run) < _SECRET_KEY_LEN:
+        return
+    # RUN-LEVEL FAST PATH. Two of the per-window gates reject on a property that
+    # is closed under substring, so asking about the whole run once can retire
+    # every window without classifying any of them:
+    #   gate 2 -- a character class absent from the run is absent from all of its
+    #             substrings, so no window can hold all three;
+    #   gate 3 -- every substring of an all-hex run is itself all-hex.
+    # Both answers are False either way, so this only reorders WHICH check
+    # returns False, never the verdict. Guarded on a run longer than one window,
+    # because at exactly 40 chars the sole window pays the same two gates anyway
+    # and the pre-check would be pure duplicate work. This is what keeps the
+    # slide affordable on long non-secret runs (hex digests, lowercase blobs),
+    # which are the common shape in tool output.
+    is_fragment = len(run) > _SECRET_KEY_LEN
+    if is_fragment:
+        if not _has_all_three_char_classes(run):
+            return
+        if _HEX_ONLY_RE.match(run):
+            return
+    if _decodes_to_printable_text(run):
+        return
+    commit_starts = (
+        [match.start("commit") for match in _ROUTED_COMMIT_RE.finditer(run)] if is_fragment else []
+    )
+    for start in range(len(run) - _SECRET_KEY_LEN + 1):
+        if skip_spans and any(
+            min(start + _SECRET_KEY_LEN, end) - max(start, begin) >= _HOST_ID_EXEMPT_OVERLAP
+            for begin, end in skip_spans
+        ):
+            continue
+        window = run[start : start + _SECRET_KEY_LEN]
+        if not _looks_like_secret_key(window):
+            continue
+        if is_fragment and (
+            window.count("/") > _SECRET_MAX_SLASHES
+            or _crosses_into_a_routed_commit(start, commit_starts)
+        ):
+            # Key-shaped, but a fragment carrying a path's separators or a commit.
+            continue
+        yield start
+
+
+def _crosses_into_a_routed_commit(start: int, commit_starts: list[int]) -> bool:
+    """Whether the window at *start* crosses a routed commit's opening ``/`` and
+    takes ``_ROUTED_COMMIT_PIECE_MIN`` of its digits.
+
+    Commits are a whole window long and a route apart, so only the first one
+    starting after *start* can be crossed: one bisect, however many the run holds.
+    """
+    index = bisect.bisect_right(commit_starts, start)
+    return (
+        index < len(commit_starts)
+        and commit_starts[index] + _ROUTED_COMMIT_PIECE_MIN <= start + _SECRET_KEY_LEN
+    )
+
+
+def _decode_b64_chunk(chunk: str) -> str:
+    """Decode ONE `_B64_CHUNK_RE` match; return decoded credential text or ''.
+
+    Equivalent to `_decode_b64_safe(chunk)` when *chunk* is itself a
+    `_B64_CHUNK_RE` match, but without re-scanning it. `_decode_b64_safe` exists
+    to find chunks inside arbitrary text; re-running that scan over a string that
+    IS already one chunk can only rediscover the same single span —
+    `[A-Za-z0-9+/]{40,}` is greedy so it consumes the whole run, and `={0,2}`
+    takes the padding — so the inner `finditer` was pure duplicate work on the
+    hot path, once per base64-looking run in every redacted message.
+    """
+    # NO LENGTH SHORT-CIRCUIT HERE, deliberately. It is tempting to skip the decode
+    # when `len(chunk) % 4` is non-zero, on the reasoning that `validate=True`
+    # rejects a length that is not a multiple of 4. That reasoning is INTERPRETER
+    # DEPENDENT and would be a redaction bypass: `binascii.a2b_base64`'s padding
+    # leniency changed with `strict_mode`, so on Python 3.10 and 3.11 a chunk of 40
+    # data characters plus one `=` (length 41) DECODES, while on 3.12 it raises.
+    # Skipping it would leave a base64-encoded credential in that shape unredacted
+    # on exactly the interpreters CI still builds. No version-invariant form of the
+    # test exists either -- 43 data characters plus `==` decodes on 3.10 while
+    # failing both a total-length and a stripped-length predicate. Pinned by
+    # `test_a_decode_length_precondition_would_be_version_dependent`.
+    try:
+        decoded = base64.b64decode(chunk, validate=True).decode("utf-8", errors="ignore")
+    except Exception:
+        return ""
+    # Gate the alternation behind the cheap superset pre-filter, exactly as pass 1
+    # does. `_might_contain_credential` may return True where the pattern would not
+    # match but never False where it would, so the verdict cannot move -- only the
+    # cost. Real decoded blobs almost never look like credentials: 0 of 18 in the
+    # session corpus and 1 of 849 in a hash-heavy corpus reach the alternation.
+    #
+    # LENGTH-GATED, because here the pre-filter is NOT unconditionally cheaper. Its
+    # ~540 ns floor is fixed while the alternation's cost scales with length, so
+    # below `_PREFILTER_MIN_LEN` the alternation wins outright. A decoded blob is
+    # exactly the size where that matters -- 48 raw bytes from a 64-char run, and
+    # shorter once `errors="ignore"` drops invalid sequences, measured 12-31
+    # characters -- so this straddles the crossover instead of sitting above it.
+    if len(decoded) >= _PREFILTER_MIN_LEN and not _might_contain_credential(decoded):
+        return ""
+    return decoded if _contains_credential_pattern(decoded) else ""
+
+
+def _decode_b64_safe(text: str) -> str:
+    """Try to base64-decode chunks in text; return decoded content or ''.
+
+    Deliberately left UNOPTIMISED. `_decode_b64_chunk` above is the hot-path
+    single-chunk form, and this function is what pins it: the differential test
+    asserts the two agree on every chunk in the corpus, and the pre-optimisation
+    reference oracle calls this one. Applying the same gates here would make both
+    sides of that comparison share the change and the check would stop detecting
+    anything.
+    """
+    for m in _B64_CHUNK_RE.finditer(text):
+        try:
+            decoded = base64.b64decode(m.group(), validate=True).decode("utf-8", errors="ignore")
+            if _contains_credential_pattern(decoded):
+                return decoded
+        except Exception:
+            continue
+    return ""
+
+
+def _contains_fixed_credential(text: str) -> bool:
+    """Return True for canonical literal or base64-encoded credentials.
+
+    Deliberately excludes the bare 40-character entropy heuristic. OAuth
+    front-channel state and PKCE values are high-entropy by design, while the
+    canonical signatures and decoded credentials remain unambiguous.
+    """
+    return bool(_contains_credential_pattern(text) or _decode_b64_safe(text))
+
+
+def _text_contains_bare_secret(text: str) -> bool:
+    """Return True when *text* contains an isolated bare AWS-secret run."""
+    return any(_contains_bare_secret(match.group()) for match in _BARE_SECRET_RUN_RE.finditer(text))
+
+
+# ── Document links the bare-secret pass leaves alone ──
+# `/` is in the run alphabet, so in `https://docs.google.com/document/d/<id>/edit`
+# the whole of `com/document/d/<id>/edit` is ONE run, and a Google document id is
+# ~44 uniformly random base64url characters: a 40-char window inside it clears
+# every gate of `_looks_like_secret_key`. No entropy or structural gate can tell
+# that id from a key, so the decision is made on the link instead. Pass 3 skips a
+# run only when the run lies wholly inside a match of `_DOCUMENT_LINK_RE`, which
+# admits nothing but a fixed route on a fixed host:
+#   * HTTPS, a lowercase literal host right after the scheme (no userinfo, no
+#     port), `docs.google.com`, `drive.google.com`, `<tenant>.atlassian.net`, or
+#     a PlantUML server: a host whose first label is `plantuml` (after an
+#     optional `www.`), such as `www.plantuml.com`;
+#   * every path segment fixed or drawn from a closed class: a Google id is
+#     25-72 chars of `[A-Za-z0-9_-]`, a Confluence space key is alphanumeric, a
+#     page id is digits, a PlantUML diagram is `[/plantuml]/<png|svg|txt|uml>/`
+#     then its deflate text in PlantUML's `[0-9A-Za-z_-]` alphabet;
+#   * no piece of the link is a whole key: a piece exactly 40 characters long
+#     voids the match when `_looks_like_secret_key` accepts it. Pieces are cut
+#     twice, once at every non-run character (`/`, `-`, `_`, `%`, `.`, `~`)
+#     and once also at `+`, the space of a Confluence title slug, so a key
+#     pasted in as the id or as a title word is still redacted. A PlantUML
+#     diagram is random-looking by construction, so it is judged by decoding
+#     instead: it must inflate, whole, to printable text with nothing after the
+#     stream but the encoder's zero padding, and every credential pass must
+#     leave that text unchanged. The text inflated per call is capped (see
+#     `_PLANTUML_SOURCE_CAP`). A key as the diagram, glued to one, or written
+#     in its source voids the match;
+#   * the link ends where the route ends, with one optional trailing `/`: a
+#     further base64-alphabet character (a glued key, another `/segment`)
+#     fails the match.
+# The query and fragment are outside the match, so a key there, a `?token=`
+# value and every pass-1 and pass-2 hit are judged exactly as before.
+#
+# ACCEPTED RESIDUAL: a markerless key without `/` glued to more letters or
+# digits inside the id or the page title, or carrying its own `+` inside a
+# title, is indistinguishable from the text it sits in and is not redacted.
+# About 2% of real Google ids carry a key-shaped 40-char piece between their
+# random `-`/`_` and stay redacted. That placement is not an accidental leak,
+# and pass 3 is no control against a deliberate one: a single `-` already
+# splits any run.
+_DOCUMENT_ID = r"[A-Za-z0-9_-]{25,72}"
+_PLANTUML_DIAGRAM = r"[A-Za-z0-9_-]{1,16384}"
+_GOOGLE_USER = r"(?:u/[0-9]{1,2}/)?"
+_RUN_PIECE_RES = (re.compile(r"[A-Za-z0-9+]+"), re.compile(r"[A-Za-z0-9]+"))
+_DOCUMENT_LINK_RE = re.compile(
+    r"(?<![A-Za-z0-9+.-])https://(?:"
+    r"docs\.google\.com/(?:document|spreadsheets|presentation|drawings|forms)/"
+    + _GOOGLE_USER
+    + r"d/(?:e/)?"
+    + _DOCUMENT_ID
+    + r"(?:/(?:edit|view|preview|copy|viewform|pub|pubhtml|htmlview))?"
+    r"|drive\.google\.com/"
+    + _GOOGLE_USER
+    + r"(?:file/d/"
+    + _DOCUMENT_ID
+    + r"(?:/(?:view|edit|preview))?"
+    r"|drive/" + _GOOGLE_USER + r"folders/" + _DOCUMENT_ID + r")"
+    r"|[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.atlassian\.net/wiki/spaces/~?[A-Za-z0-9]{1,64}/"
+    r"(?:overview|pages/(?:edit-v2/)?[0-9]{1,20}"
+    r"(?:/[A-Za-z0-9+%._~-]{1,255})?)"
+    r"|(?:www\.)?plantuml(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?:/plantuml)?/(?:png|svg|txt|uml)/"
+    r"(?P<diagram>" + _PLANTUML_DIAGRAM + r")"
+    r")/?(?![A-Za-z0-9+/_-])"
+)
+_PLANTUML_ALPHABET = {
+    c: i for i, c in enumerate("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_")
+}
+#: Decoded diagram text one call may inflate, in total, and per encoded
+#: character. Real diagrams stay under 10x; anything larger keeps its link
+#: masked, which is how it was judged before this route. The total bounds the
+#: extra scan a call can be made to do to that of a plain text this long.
+_PLANTUML_SOURCE_CAP = 16384
+_PLANTUML_RATIO_CAP = 16
+#: Set while a decoded diagram is being scanned, so a diagram link inside it is
+#: judged as any other link and decoding never nests.
+_IN_DIAGRAM_SCAN: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_IN_DIAGRAM_SCAN", default=False
+)
+
+
+def _plantuml_source(encoded: str, limit: int) -> str | None:
+    """Return the diagram text *encoded* inflates to, whole, or None."""
+    if limit <= 0 or len(encoded) % 4:
+        return None
+    bits = [_PLANTUML_ALPHABET[c] for c in encoded]
+    raw = bytearray()
+    for i in range(0, len(bits), 4):
+        word = bits[i] << 18 | bits[i + 1] << 12 | bits[i + 2] << 6 | bits[i + 3]
+        raw += word.to_bytes(3, "big")
+    inflater = zlib.decompressobj(-zlib.MAX_WBITS)
+    try:
+        source = inflater.decompress(bytes(raw), limit).decode("utf-8")
+    except (zlib.error, UnicodeDecodeError):
+        return None
+    # The encoder emits whole 4-character groups and pads only the last one,
+    # with at most two zero bytes. A further group, a stream cut short, or one
+    # over the limit is not a whole diagram, so text glued after a diagram, or a
+    # diagram cut mid-group, is never kept.
+    padding = inflater.unused_data
+    if not inflater.eof or len(padding) > 2 or padding.strip(b"\0") or not source.strip():
+        return None
+    if not all(c.isprintable() or c in "\t\n\r" for c in source):
+        return None
+    return source
+
+
+def _plantuml_verdict(encoded: str, limit: int) -> tuple[bool, int]:
+    """Judge one diagram; also return how much text was inflated for it."""
+    source = _plantuml_source(encoded, min(limit, _PLANTUML_RATIO_CAP * len(encoded)))
+    if source is None:
+        return False, min(limit, _PLANTUML_RATIO_CAP * len(encoded))
+    # The link carries its source, so the source is judged by every credential
+    # pass; anything they would mask leaves the link masked.
+    previous = _IN_DIAGRAM_SCAN.get()
+    _IN_DIAGRAM_SCAN.set(True)
+    try:
+        return redact_credentials(source)[0] == source, len(source)
+    finally:
+        _IN_DIAGRAM_SCAN.set(previous)
+
+
+def _document_link_spans(text: str) -> list[tuple[int, int]]:
+    """Return the spans of the :data:`_DOCUMENT_LINK_RE` matches that hold no key."""
+    spans = []
+    budget = 0 if _IN_DIAGRAM_SCAN.get() else _PLANTUML_SOURCE_CAP
+    for m in _DOCUMENT_LINK_RE.finditer(text):
+        if m["diagram"]:
+            kept, spent = _plantuml_verdict(m["diagram"], budget)
+            budget -= spent
+        else:
+            kept = not any(
+                len(piece) == _SECRET_KEY_LEN and _looks_like_secret_key(piece)
+                for piece_re in _RUN_PIECE_RES
+                for piece in piece_re.findall(m.group())
+            )
+        if kept:
+            spans.append(m.span())
+    return spans
+
+
+#: Code-point ranges of the printable-ASCII tail of the standard baseline JPEG AC
+#: Huffman symbol table -- the ``HUFFVAL`` list of ITU-T T.81 Annex K, Table K.5 --
+#: in the order the table writes them. Everything before and after this tail is
+#: outside printable ASCII, so a container holding the standard table delimits
+#: exactly these characters with its own non-text bytes.
+#:
+#: Assembled from the ranges rather than pasted as a literal on purpose: the
+#: assembled string IS the credential shape this masker exists to cancel, so a
+#: pasted copy reads as key material to every secret scanner over this file.
+_BASELINE_SYMBOL_TABLE_RANGES: tuple[tuple[int, int], ...] = (
+    (0x25, 0x2A),
+    (0x34, 0x3A),
+    (0x43, 0x4A),
+    (0x53, 0x5A),
+    (0x63, 0x6A),
+    (0x73, 0x7A),
+)
+
+#: The ONE fixed 45-character string the container false positive is made of.
+#: Masking is pinned to this value, which is what bounds the masker: the only
+#: characters it can ever remove are characters of this constant, so no
+#: attacker-supplied byte is removable and no generated credential is maskable.
+_BASELINE_SYMBOL_TABLE = "".join(
+    chr(code) for low, high in _BASELINE_SYMBOL_TABLE_RANGES for code in range(low, high + 1)
+)
+
+#: Shortest slice of :data:`_BASELINE_SYMBOL_TABLE` any detector in this module
+#: flags. Measured against the catalogue, not chosen: every shorter slice already
+#: passes the scan unmasked, so masking one could not change an answer, and
+#: ``test_no_shorter_slice_of_the_table_is_flagged`` fails if that stops holding.
+#: It is the region floor below, which is what keeps this cheap on real media: a
+#: 400 KB photograph holds tens of thousands of text runs and exactly one this
+#: long.
+_BASELINE_SYMBOL_TABLE_MIN = 37
+
+#: Masked regions retained before this gives up and returns the buffer UNMASKED.
+#: The bound matters because the region floor is 37 text bytes, so a crafted 50 MB
+#: upload could carry over a million qualifying regions and the retained slices
+#: would amplify it several times over in memory. Real containers are nowhere near
+#: it -- one table per embedded image -- and exceeding it returns the unmasked
+#: buffer, which is the REFUSING direction: the scan then answers exactly as it
+#: did before this masker existed.
+_MASKED_REGION_CAP = 4096
+
+#: Substituted for the ALPHANUMERIC characters of a masked table; its punctuation
+#: is copied through untouched. See :func:`_mask_region`, which explains why the
+#: split is there.
+#:
+#: A tilde, and the property that matters is which character classes admit it, in
+#: BOTH directions, because blanking a region can break a match as well as build
+#: one.
+#:
+#: It must be admitted by every value class that can cross the region's boundary.
+#: A credential's match can ANCHOR ACROSS a masked region: the non-text bytes that
+#: delimit the region are themselves inside ``[^\s/]+``, ``[^\s"',}]+`` and
+#: ``[^\s:/@]*``, so a URL password can begin before a table and reach its ``@``
+#: after it. A filler those classes reject -- a space, most obviously -- TERMINATES
+#: that run, and the match the raw bytes had disappears from the scanned copy.
+#: ``~`` is admitted by all three, so a crossing match survives masking intact.
+#:
+#: It must be admitted by no class that builds a contiguous token: not
+#: ``[A-Za-z0-9+/]`` (``_BARE_SECRET_RUN_RE``), ``[A-Za-z0-9_-]``, ``[0-9]`` or a
+#: PEM body. ``~`` is in none of them, so blanking can only SHORTEN such a run,
+#: never lengthen one into a match the raw bytes lacked -- which is also what
+#: cancels the table's own bot-token shape, the point of masking at all.
+_MASKED_TABLE_FILLER = "~"
+
+#: A maximal region of TEXT bytes -- the only bytes a credential can be written
+#: in. Maximality is load-bearing rather than an optimisation: a region is bounded
+#: by non-text bytes, so a region equal to the table is one a container delimited,
+#: and any credential written beside a table shares the table's region and makes
+#: it unmaskable.
+#:
+#: The floor is :data:`_BASELINE_SYMBOL_TABLE_MIN`, so the regex engine skips a
+#: shorter run in one C-speed pass and Python never sees it.
+_TEXT_REGION_RE = re.compile(r"[\t\n\r\x20-\x7e]{%d,}" % _BASELINE_SYMBOL_TABLE_MIN)
+
+
+def _mask_region(region: str) -> str:
+    """*region* with its alphanumerics filled and its punctuation copied through.
+
+    A credential's match does not have to lie inside the region, and it can depend
+    on the region in two different ways. One is a value RUN that crosses the
+    boundary, which :data:`_MASKED_TABLE_FILLER` is chosen to survive. The other is
+    a required LITERAL the match borrows FROM the region, and no choice of filler
+    can survive that -- removing the character removes the literal.
+
+    The standard table's printable tail contains ``:``, so a URL can borrow it:
+    ``://[^\\s:/@]*:[^\\s/]+@`` matches with ``[^\\s:/@]*`` running from ``://``
+    into the region, the separator ``:`` being the TABLE's own, and ``[^\\s/]+``
+    running out of the region to the password and its ``@``. Fill the region and no
+    colon follows ``://`` at all, so a password the raw scan refused is delivered.
+
+    Splitting on alphanumeric is what settles this as a rule rather than one more
+    exception. What masking exists to cancel is the table's credential SHAPE, and
+    every unlabelled shape in the catalogue is built from alphanumerics -- six
+    digits then thirty-two letters, a forty-character base64 run. What a pattern
+    can require as a literal is punctuation. So filling only the alphanumerics
+    removes the whole shape while leaving every literal the region could ever lend,
+    which for this constant is ``%&'()*:`` rather than the one colon that happened
+    to be found.
+
+    The shape really does die: the bot-token form needs ``[0-9]{6,}`` before its
+    colon and the bare-secret form needs forty characters of ``[A-Za-z0-9+/]``, and
+    :data:`_MASKED_TABLE_FILLER` is in neither class, so a region of filler and
+    punctuation matches no detector in this module.
+    """
+    return "".join(_MASKED_TABLE_FILLER if char.isalnum() else char for char in region)
+
+
+def mask_baseline_symbol_tables(text: str) -> str:
+    """Blank the standard container symbol tables in *text*, leaving all else.
+
+    For the BINARY delivery scans only. A JPEG's ``DHT`` segment carries the
+    standard baseline Huffman symbol table, and that table's printable tail reads
+    as six digits, a colon and thirty-two letters -- exactly the shape of an
+    unlabelled bot token. Every image written with the default tables holds it,
+    including a blank 694-byte one carrying no metadata at all, so the shared
+    binary delivery scan refuses essentially every such image.
+
+    The detectors cannot see this on their own. Their entropy floor scores the
+    character multiset, and the table's characters are all distinct, so it scores
+    the full bits per character a generated secret does.
+
+    Safety rests on two bounds, and one alone is not enough. WHAT MAY BE REMOVED:
+    a region is masked only when it EQUALS a contiguous slice of
+    :data:`_BASELINE_SYMBOL_TABLE`, one fixed public 45-character constant, so the
+    only characters this function can remove are characters of that constant and a
+    value is maskable only if whoever wrote it already knows it. No reasoning about
+    shapes is involved, which is the point: a credential-shaped run that merely
+    resembles a table -- ascending, high-diversity, delimited -- is not a slice of
+    the constant and keeps its whole match.
+
+    WHAT THE REMOVAL MAY BREAK is the second bound, and it belongs to
+    :func:`_mask_region` rather than to the region test. A credential's match can
+    depend on the region without lying inside it: it can ANCHOR ACROSS it, because
+    the non-text bytes delimiting the region are inside the value classes that
+    carry no literal label, and it can BORROW a required literal from it, because
+    the constant contains punctuation such as ``:``. So removing only PUBLIC
+    characters can still destroy a match. Both are closed there: the filler is
+    admitted by every boundary-crossing class and by no contiguous-token class, so
+    a crossing run survives and a token run can only shorten, and only the region's
+    alphanumerics are filled, so every literal it could lend stays in place.
+
+    Whole-region equality is what keeps a table from covering for a neighbour.
+    Regions are maximal, so a table written next to a credential shares one region
+    with it, that region is longer than the constant, and neither is masked. The
+    same holds in the other direction: a credential whose match runs INTO the
+    table's characters cannot have those characters taken away, because the region
+    carrying both is not a slice of the constant either.
+
+    The TEXT path deliberately keeps the unmasked scan. There a match costs a
+    redaction tag; here it costs the delivery of the file, and the only way past
+    that refusal is the durable class-wide grant in
+    :mod:`kiro_crew.file_delivery_consent`, which then disarms the refusal for
+    every content kind on every owner-facing gate. Noise on this path spends the
+    control, so this path is where the noise has to go.
+
+    Returns *text* ITSELF when nothing is masked, which the callers read as
+    identity to skip re-scanning a buffer whose answer they already hold.
+    """
+    pieces: list[str] = []
+    cursor = 0
+    masked = 0
+    for match in _TEXT_REGION_RE.finditer(text):
+        if match.group() not in _BASELINE_SYMBOL_TABLE:
+            continue
+        masked += 1
+        if masked > _MASKED_REGION_CAP:
+            # Bounded, and bounded towards refusal: the caller re-scans the
+            # unmasked buffer and answers as it did before this masker existed.
+            return text
+        start, end = match.span()
+        pieces.append(text[cursor:start])
+        pieces.append(_mask_region(text[start:end]))
+        cursor = end
+    if not pieces:
+        return text
+    pieces.append(text[cursor:])
+    return "".join(pieces)
+
+
+# Standard replacement tag for a redacted credential. Shared between the batch
+# redactor (`redact_credentials`) and the streaming fail-closed path
+# (`StreamRedactor.feed`) so the on-the-wire marker is identical everywhere.
+_REDACTED_CREDENTIAL_TAG = "[REDACTED: credential]"
+
+# Public alias for modules that must emit the SAME tag rather than duplicate the
+# literal — e.g. the pptx-maker preview, which excises a credential-bearing bitmap
+# itself because this module's redactor recognises a narrower token set than that
+# scan matches.
+REDACTED_CREDENTIAL_TAG = _REDACTED_CREDENTIAL_TAG
+
+#: Replacement tag for pass 2 (a base64-encoded credential). DISTINCT from
+#: ``_REDACTED_CREDENTIAL_TAG`` and deliberately not a superstring of it, so a
+#: consumer counting one tag does not accidentally match the other. Kept PRIVATE:
+#: consumers should ask ``CREDENTIAL_REDACTION_TAGS`` below rather than name
+#: individual tags, which is the whole point of that registry.
+_REDACTED_ENCODED_CREDENTIAL_TAG = "[REDACTED: encoded credential]"
+
+#: EVERY tag :func:`redact_credentials` can substitute for a credential, owned
+#: HERE beside the passes that emit them rather than enumerated by each caller.
+#: A consumer that needs to answer "did the CREDENTIAL redactor replace something
+#: in this text" must check all of them: pass 1 (plaintext patterns) and pass 3
+#: (bare secret runs) write ``_REDACTED_CREDENTIAL_TAG``, pass 2 (base64-encoded)
+#: writes ``_REDACTED_ENCODED_CREDENTIAL_TAG``.
+#:
+#: Scope is deliberately CREDENTIALS ONLY, and a consumer must not read it as "was
+#: this text rewritten at all". :func:`redact_exfiltration_urls` is a separate
+#: rewriter that substitutes ``[REDACTED: suspicious URL to <domain>]`` -- a
+#: variable string, so it is prefix-matched rather than compared, which is why it
+#: is not a member here. Its stable prefix is exported as
+#: :data:`kiro_crew.security.exfil.EXFILTRATION_REDACTION_TAG_PREFIX` (beside
+#: the rewriter itself), and a consumer that needs the full "was this text
+#: rewritten" answer must check that constant by prefix ALONGSIDE this tuple --
+#: the dashboard chat notice does exactly that.
+#:
+#: This tuple exists so the enumeration lives beside the tags instead of at the
+#: call site, where it silently misses a tag and under-reports redactions on the
+#: dashboard chat notice. Co-locating it means a NEW tag is added next to the list
+#: that must name it; ``test_every_redaction_tag_constant_is_registered`` fails if
+#: one is added without registering it, so the drift cannot happen silently.
+#:
+#: Invariant relied on by callers that SUM per-tag counts: no tag is a substring
+#: of another, so one substitution cannot be counted twice.
+CREDENTIAL_REDACTION_TAGS = (_REDACTED_CREDENTIAL_TAG, _REDACTED_ENCODED_CREDENTIAL_TAG)
+
+
+# ── `?token=` / `&token=` URL parameter values (pass 4) ──
+# Keyed on the parameter NAME, not the value's shape, so an OPAQUE bearer value
+# -- one that looks nothing like a JWT -- is redacted where every shape-based
+# pattern above sees ordinary text. A parameter name is a context: `?token=`
+# cannot match a filename, an identifier or a sourcemap name, so this adds
+# coverage without inheriting shape-based false positives (the five measured
+# `eyJ…` lookalikes recorded on the two-segment link-token alternative).
+#
+# Group 1 is the VALUE, and only the value is replaced: `token=` stays visible
+# so a redacted URL still reads as a token URL. The precedent is
+# `instances/token_mint._TOKEN_RE` (`[?&]token=([^\s&]+)`), which one caller
+# kept privately because this module lacked the pass; the value class here is
+# WIDER-terminated per the issue's requirement -- it also stops at quotes and
+# `#` so a match cannot run past the parameter into a quoted string or a URL
+# fragment -- and additionally excludes the RFC 3986-forbidden bytes
+# (`<>{}|\^` and backtick): no legal URL query can carry them, while SOURCE
+# and DOC text quoting a token URL does (`?token={token}` in an f-string,
+# `` ?token=` `` in markdown, `?token=<your-token>` in prose). Without the
+# exclusion, pass 4 matches the template placeholder and the chip-diff path
+# (`chat_runner.py`) redacts a snapshot of `dashboard/urls.py` IN PLACE with
+# no recovery -- the exact non-cosmetic false-positive surface this module
+# cites as its reason for refusing to relax the JWT floor. A template whose
+# value starts with an excluded byte now yields an empty value and no match.
+#
+# The parameter NAME folds ASCII case (`(?ai:token)`) -- unlike `eyJ`, a
+# parameter name is not a fixed encoding prefix, and `?Token=` / `?TOKEN=`
+# from a third-party provider carries the same bearer value. ASCII scope keeps
+# Unicode lookalikes such as the Kelvin sign from spoofing the parser-visible
+# name; the value bytes are still matched exactly as written.
+#
+# ACCEPTED RESIDUAL: a template value made of LEGAL query bytes
+# (`?token=$TOKEN`, `?token=%s`) still matches and is redacted -- the class
+# excludes only bytes no legal query can carry, and a shape test on the value
+# would reintroduce the false-negative lever this pass exists to avoid.
+#
+# Deliberately NOT a `_CREDENTIAL_PATTERNS` branch, for two reasons. A branch
+# replaces its WHOLE span, which would swallow the `token=` anchor this pass
+# exists to keep visible. And `_contains_fixed_credential` -- which gates
+# request-BLOCKING decisions in `exfil.py` -- searches `_CREDENTIAL_PATTERNS`,
+# so a branch would turn every `?token=` URL into a blocked request: a
+# behaviour change the issue explicitly excludes. This pass redacts output
+# only; the blocking surface is unchanged. The other credential-bearing
+# parameter names (`access_token`, `id_token`, `api_key`, `code`) are excluded
+# on the issue's own scoping ground -- each name wants its own false-positive
+# analysis (`code=` especially collides with OAuth authorization codes AND
+# ordinary prose) -- not because adding them HERE would change the blocking
+# surface; a pass-4 name never feeds `_contains_fixed_credential`.
+_TOKEN_PARAM_VALUE_CLASS = r"[^\s&\"'#<>{}|\\^`]"
+
+_HTML_REF_AMP = (
+    r"&(?:amp;|AMP;|amp(?![0-9A-Za-z])|AMP(?![0-9A-Za-z])"
+    r"|#0{0,8}38(?:;|(?![0-9;]))|#[Xx]0{0,8}26(?:;|(?![0-9A-Fa-f;])))"
+)
+_HTML_REF_QUEST = r"&(?:quest;|#0{0,8}63(?:;|(?![0-9;]))|#[Xx]0{0,8}3[Ff](?:;|(?![0-9A-Fa-f;])))"
+_HTML_REF_EQUALS = r"&(?:equals;|#0{0,8}61(?:;|(?![0-9;]))|#[Xx]0{0,8}3[Dd](?:;|(?![0-9A-Fa-f;])))"
+_TOKEN_PARAM_SEP_ENTITY_RE = rf"(?:{_HTML_REF_AMP}|{_HTML_REF_QUEST})"
+_TOKEN_PARAM_SEP_RE = rf"(?:[?&]|{_TOKEN_PARAM_SEP_ENTITY_RE})"
+_TOKEN_PARAM_EQ_RE = rf"(?:=|{_HTML_REF_EQUALS})"
+
+
+# Apply one standard decode per pipeline stage. An HTML parser decodes these
+# references into structure BEFORE handing an attribute value to a query parser,
+# while that query parser splits on raw separators BEFORE percent-decoding the
+# parameter name. HTML references are therefore structure here, while encoded
+# `%26` / `%3D` remain later-stage data rather than separators.
+#
+# Deliberate declines follow the HTML5 parser's actual table and attribute state:
+# `&amptoken=` is unchanged because semicolon-less `&amp`/`&AMP` is decoded
+# only before a NON-alphanumeric per the WHATWG flush rule; `&Amp;`,
+# `&quest`, and `&equals` are absent from the table; `&amp;amp;token=` decodes only once to a non-token parameter name;
+# and `%26token=` / `?token%3D` are data when the query parser performs its split.
+#
+# Numeric references stop at eight leading zeros. An unbounded `0*` would make
+# the streaming WEAK holdback unbounded, so this is a DoS bound rather than a
+# claim that longer spellings differ in the HTML specification.
+# Each letter composes bounded HTML references over its literal byte and all
+# three bytes of its percent escape.
+def _html_numeric_refs(cp: int) -> list[str]:
+    """The two bounded HTML numeric spellings of one code point.
+
+    Mirrors `_HTML_REF_AMP`'s shape byte for byte, including the <=8-leading-zero
+    DoS bound and the WHATWG flush rule (a semicolon-less numeric reference is
+    decoded when the next byte cannot extend the number).
+
+    The `;` is excluded from the zero-width alternative so a PRESENT semicolon
+    MUST be consumed by the reference. Without it the engine can backtrack the
+    reference to its semicolon-less branch and hand the `;` to a FOLLOWING pattern
+    that accepts it: on `?token&#61;` with an empty value, `_TOKEN_PARAM_RE`'s EQ
+    gave up its `;` and the value class captured it, so pass 4 spliced the
+    credential tag over the semicolon in text `chat_runner.py` redacts IN PLACE.
+    A real parser never leaves the terminator behind (`&#61;` decodes to `=`,
+    `&#61;;` to `=;`), so the zero-width branch with `;` next models a decode no
+    parser performs. Today only `_HTML_REF_EQUALS` is reachable -- `;` matches no
+    name-letter, nibble, or separator alternative -- but the exclusion is uniform
+    in this generator so the invariant is structural rather than per-site. The
+    named `amp`/`AMP` lookaheads are deliberately NOT changed: `amp;` is ordered
+    first and wins on every match, and the name position rejects `;`.
+    """
+    return [
+        rf"&#0{{0,8}}{cp}(?:;|(?![0-9;]))",
+        rf"&#[Xx]0{{0,8}}{cp:x}(?:;|(?![0-9A-Fa-f;]))",
+    ]
+
+
+def _html_or_literal(chars: str) -> str:
+    """One anchor byte: its literal spellings, or an HTML reference to any of them.
+
+    The literal class is left for the surrounding scoped `(?ai:...)` to fold, as
+    the percent ladder already relies on. A numeric reference carries DIGITS,
+    which no case fold reaches, so a letter byte emits references for BOTH cases
+    explicitly -- without that, `%6&#102;` matched while `%6&#70;` did not.
+    """
+    literals = sorted(set(chars))
+    alternatives = ["[" + "".join(literals) + "]" if len(literals) > 1 else literals[0]]
+    for char in literals:
+        alternatives += _html_numeric_refs(ord(char))
+        if char.isalpha():
+            alternatives += _html_numeric_refs(ord(char.swapcase()))
+    return "(?:" + "|".join(alternatives) + ")"
+
+
+#: `%` at the HTML stage. `&percnt;` REQUIRES its semicolon: unlike `amp`, it is
+#: absent from the 106-entry semicolon-less legacy set, so `&percnt74` is data.
+#: Named references are case-sensitive, so disable the surrounding name ladder's
+#: ASCII case fold for this literal while numeric references keep folding `X`.
+_PERCENT_SIGN_RE = "(?:" + "|".join(["%", *_html_numeric_refs(0x25), "(?-i:&percnt;)"]) + ")"
+
+
+def _token_name_letter(letter: str) -> tuple[str, str]:
+    """(complete, partial) spellings of one `token` letter.
+
+    COMPLETE is every spelling that decodes to the letter: the literal
+    (ASCII-case folded by the caller's `(?ai:...)`), an HTML reference to either
+    case, and a percent escape whose three bytes are EACH spellable at the HTML
+    stage -- the composition the two modelled stages admit (`&#37;74`,
+    `%&#55;&#52;`). ASCII case differs in the HIGH nibble only, so the low nibble
+    is case-invariant and the high nibble is a two-digit class.
+
+    PARTIAL adds every end-of-chunk prefix whose last byte is NOT in
+    `_CRED_CLASS` -- i.e. one ending at a `;` -- because `natural_cut` already
+    holds every other prefix. The bare-`%` forms are kept from the round-4
+    ladder so its committed behaviour is unchanged.
+    """
+    lower, upper = format(ord(letter), "x"), format(ord(letter.upper()), "x")
+    assert lower[1] == upper[1], letter
+    high = _html_or_literal(lower[0] + upper[0])
+    low = _html_or_literal(lower[1])
+    complete = (
+        "(?:"
+        + "|".join(
+            [
+                letter,
+                *_html_numeric_refs(ord(letter)),
+                *_html_numeric_refs(ord(letter.upper())),
+                _PERCENT_SIGN_RE + high + low,
+            ]
+        )
+        + ")"
+    )
+    partial = (
+        "(?:"
+        + "|".join(
+            [
+                complete,
+                _PERCENT_SIGN_RE + high,
+                _PERCENT_SIGN_RE,
+                rf"%[{lower[0]}{upper[0]}]?",
+            ]
+        )
+        + ")"
+    )
+    return complete, partial
+
+
+_TOKEN_PARAM_NAME_SPELLINGS = tuple(_token_name_letter(c) for c in "token")
+_TOKEN_PARAM_NAME_RE = "".join(c for c, _ in _TOKEN_PARAM_NAME_SPELLINGS)
+_TOKEN_PARAM_NAME_PREFIX_RE = (
+    "(?:"
+    + "|".join(
+        "".join(c for c, _ in _TOKEN_PARAM_NAME_SPELLINGS[:k]) + _TOKEN_PARAM_NAME_SPELLINGS[k][1]
+        for k in range(len(_TOKEN_PARAM_NAME_SPELLINGS))
+    )
+    + ")"
+)
+_TOKEN_PARAM_RE = re.compile(
+    rf"{_TOKEN_PARAM_SEP_RE}(?ai:{_TOKEN_PARAM_NAME_RE}){_TOKEN_PARAM_EQ_RE}(?!\$\{{)({_TOKEN_PARAM_VALUE_CLASS}+)"
+)
+
+# The in-progress form of the same anchor, for `StreamRedactor.feed`'s
+# credential-anchored holdback escalation (mirrors `_BEARER_ANCHOR_PARTIAL_RE`).
+# `?` `&` `=` are all in `_CRED_CLASS`, so a token URL is one withheld run --
+# but a run longer than the 512-char DoS floor with NO recognised credential
+# anchor is BISECTED, and for a >=512-char opaque value the bisection point
+# lands inside the value: the committed prefix carries the `token=` anchor
+# (and is redacted), while the tail reaches `flush()` anchor-less and streams
+# raw. Recognising the trailing partial escalates the tail to the 4096
+# ceiling and the fail-closed drop past it, exactly like a Bearer token.
+#
+# Every alternative below is one possible end-of-chunk prefix. For a percent
+# spelling, `%(?:[57]4?)?` (and its siblings) includes the bare `%`, the first
+# hex nibble, and the complete escape. The surrounding scoped `(?ai:...)` folds
+# both literal letters and hex letters without admitting Unicode lookalikes.
+# The same generated entity composition supplies complete-or-partial spellings
+# at every letter boundary.
+# `*` (not `+`): a buffer ending at a complete separator/name/equals spelling is
+# already an in-progress value match. A mid-entity tail needs no extra
+# alternative: every byte of `&amp` / `&#x2` belongs to `_CRED_CLASS`, while the
+# terminating `;` does not. The explicit entity-only alternative holds the
+# completed spelling at buffer end before that semicolon can release it.
+_TOKEN_PARAM_PARTIAL_RE = re.compile(
+    rf"(?:{_TOKEN_PARAM_SEP_RE}(?:(?ai:{_TOKEN_PARAM_NAME_PREFIX_RE})"
+    rf"|(?ai:{_TOKEN_PARAM_NAME_RE})(?P<eq>{_TOKEN_PARAM_EQ_RE}){_TOKEN_PARAM_VALUE_CLASS}*)"
+    rf"|{_TOKEN_PARAM_SEP_ENTITY_RE})\Z"
+)
+
+
+#: One redaction the batch redactor has decided on, positioned against the
+#: ORIGINAL text: ``(start, end, replacement)``. Every pass produces these and
+#: nothing is written until every pass has spoken.
+_RedactionSpan = tuple[int, int, str]
+
+
+def _span_end(span: _RedactionSpan) -> int:
+    return span[1]
+
+
+def _uncovered(start: int, end: int, taken: list[_RedactionSpan]) -> list[tuple[int, int]]:
+    """Return the parts of ``[start, end)`` that no span in *taken* covers.
+
+    *taken* must be sorted and pairwise disjoint, which is how
+    :func:`redact_credentials` builds it, so the spans are ordered by ``end`` as
+    well as by ``start`` and one bisect on ``end`` lands on the first span that
+    can still reach into ``[start, end)``. From there a forward walk over the
+    spans that begin before ``end`` yields each gap between them.
+    """
+    gaps: list[tuple[int, int]] = []
+    cursor = start
+    i = bisect.bisect_right(taken, start, key=_span_end)
+    while i < len(taken) and taken[i][0] < end:
+        if taken[i][0] > cursor:
+            gaps.append((cursor, taken[i][0]))
+        cursor = max(cursor, taken[i][1])
+        i += 1
+    if cursor < end:
+        gaps.append((cursor, end))
+    return gaps
+
+
+#: A well-formed companion prefix: ``https://host/path`` with no whitespace, query or
+#: fragment. One without a path is dropped, since a bare host matches ``host.evil.example``.
+_TOKEN_PARAM_EXEMPT_PREFIX_RE = re.compile(r"https://[^\s/?#&]+/[^\s?#&]*")
+
+# A streaming window cannot prove the whole-message preceding-context guard.
+_TOKEN_PARAM_EXEMPT_SUSPENDED: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "token_param_exempt_suspended", default=False
+)
+
+
+def _token_param_exempt_prefixes() -> tuple[str, ...]:
+    """Companion ``https://host/path`` prefixes whose ``?token=`` value pass 4 leaves alone.
+
+    Read from ``CredentialPolicy.token_param_exempt_url_prefixes`` on the INSTALLED
+    context only, degrading like ``exfil._exempt_exact_hosts``: no context, a
+    pre-method adapter or an exception yields the empty tuple; malformed members are
+    ignored. Both outcomes mean MORE redaction. No logging inside stdio MCP servers.
+    """
+    from kiro_crew.platform.context import installed_context
+
+    ctx = installed_context()
+    if ctx is None:
+        return ()
+    try:
+        getter = getattr(ctx.credentials, "token_param_exempt_url_prefixes", None)
+        if getter is None:
+            return ()
+        prefixes = (p for p in getter() if isinstance(p, str))
+        return tuple(sorted(p for p in prefixes if _TOKEN_PARAM_EXEMPT_PREFIX_RE.fullmatch(p)))
+    except Exception:
+        return ()
+
+
+#: Single-character wrappers that may open an exempt URL. A ``(`` is accepted only
+#: as the second half of a markdown ``](`` opener by ``_TokenParamExemptScan.boundary``.
+_TOKEN_PARAM_EXEMPT_OPENERS = frozenset("<\"'`*")
+_TOKEN_PARAM_EXEMPT_WHITESPACE = " \t\r\n"
+
+#: An exempt value is ONE run of URL-unreserved, base64 or percent-encoded bytes plus
+#: sentence/markdown-link closers. `_TOKEN_PARAM_VALUE_CLASS` admits `)`, `,`, `(`, `[`,
+#: `:` and `?`, so one pass-4 match can swallow a second URL (`?token=k?token=SECRET`);
+#: such a value is redacted whole, which is also its re-redaction fixed point.
+_TOKEN_PARAM_EXEMPT_VALUE_RE = re.compile(r"[A-Za-z0-9._~%+/=-]+")
+_TOKEN_PARAM_EXEMPT_TRAIL = frozenset(")].,;:!?*")
+#: Scanned over RAW text, never decoded: any ``&`` (a character reference such as
+#: ``&sol;`` or ``&#47;`` that a renderer decodes inside ``<...>`` or an attribute can
+#: spell a destination) and any ``<`` (a tag or angle wrapper) are signals themselves.
+_TOKEN_PARAM_DESTINATION_SIGNAL_RE = re.compile(r"//|\\|&|<|:(?=\S)")
+_TOKEN_PARAM_SCHEME_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+.-"
+)
+
+
+def _token_param_has_scheme_before(text: str, start: int, colon: int) -> bool:
+    """Does the colon end a scheme-like run containing an ASCII letter?"""
+    has_letter = False
+    i = colon - 1
+    while i >= start and text[i] in _TOKEN_PARAM_SCHEME_CHARS:
+        has_letter = has_letter or "A" <= text[i] <= "Z" or "a" <= text[i] <= "z"
+        i -= 1
+    return has_letter
+
+
+def _token_param_destination_signal(text: str, start: int, end: int) -> bool:
+    """Find a raw destination signal in ``text[start:end]`` in linear work."""
+    for signal in _TOKEN_PARAM_DESTINATION_SIGNAL_RE.finditer(text, start, end):
+        if signal.group() != ":" or _token_param_has_scheme_before(text, start, signal.start()):
+            return True
+    return False
+
+
+class _TokenParamExemptScan:
+    """The two whole-message guards of the exemption, for ONE text's pass-4 matches.
+
+    Both guards are stated against the text before a candidate -- the boundary
+    guard against the whitespace-free run ending at the prefix, the destination
+    guard against everything earlier with proven exempt URLs blanked -- and
+    `_credential_redaction_plan` visits candidates left to right. So each guard
+    keeps a cursor and reads every character once, which keeps pass 4 linear
+    when untrusted text repeats an exempt URL thousands of times. Fixed-width
+    signal matches plus disjoint colon-delimited scheme walks preserve that bound.
+    The answers are those of the whole-prefix statements:
+
+    * A destination signal found before one candidate is before every later one
+      (a later exempt URL only blanks text after it, since a signal before it
+      would have rejected it), so the first hit is sticky. Text before the last
+      exempt URL's end is blanked or already scanned clear, so a scan starts there;
+      a candidate's own ``<`` autolink opener is not a tag and is left out, and the
+      segment ends where the URL would be blanked, so no signal straddles it.
+    * The prefix has no whitespace, so the whitespace boundary of every candidate
+      of one match is the last whitespace before its ``?``, which only moves right.
+    * A whitespace-free run that already holds a matched prefix (exempt or not)
+      puts that prefix's ``://`` inside every later candidate's ``left`` in the same
+      run, so one rejected or accepted run is settled for the rest of it.
+    """
+
+    __slots__ = ("text", "cursor", "signal_seen", "sep", "ws_cursor", "last_ws", "left_floor")
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.cursor = 0  # end of the last exempt URL: text before it is blanked or clear
+        self.signal_seen = False
+        self.sep = -1  # the `?` of the match whose candidates are being tried
+        self.ws_cursor = 0
+        self.last_ws = -1  # last whitespace before `sep`
+        self.left_floor = 0  # a boundary below it has an earlier matched prefix in `left`
+
+    def boundary(self, sep: int, start: int) -> bool:
+        """Is *start* a standalone URL boundary rather than a URL nested in another?"""
+        text = self.text
+        if sep != self.sep:
+            if self.sep >= 0:
+                self.left_floor = max(self.left_floor, self.last_ws + 2)
+            if sep > self.ws_cursor:
+                last_ws = max(
+                    text.rfind(c, self.ws_cursor, sep) for c in _TOKEN_PARAM_EXEMPT_WHITESPACE
+                )
+                if last_ws >= 0:
+                    self.last_ws = last_ws
+                self.ws_cursor = sep
+            self.sep = sep
+        boundary = self.last_ws + 1
+        if boundary < self.left_floor:
+            return False
+        left = text[boundary:start]
+        if "://" in left:
+            return False
+        markdown_opener = re.fullmatch(r"\[[^][]*\]\(", left) is not None
+        return not left or left in _TOKEN_PARAM_EXEMPT_OPENERS or markdown_opener
+
+    def preceding_context(self, start: int) -> bool:
+        """Does the text before *start* lack evidence of an enclosing destination?"""
+        if self.signal_seen:
+            return False
+        text = self.text
+        # The one `<` that `boundary` accepted as the URL's own autolink opener is
+        # not a tag; it is blanked with the URL once the URL is exempt.
+        if start > 0 and text[start - 1] == "<":
+            start -= 1
+        # Unrelated earlier destinations may over-redact; that is the safe direction.
+        if start > self.cursor and _token_param_destination_signal(text, self.cursor, start):
+            self.signal_seen = True
+            return False
+        return True
+
+    def accept(self, exempt_url: tuple[int, int]) -> None:
+        """Record an exempt URL; its span is blanked for every later candidate."""
+        self.cursor = exempt_url[1]
+
+
+def _token_param_exempt(
+    text: str,
+    m: "re.Match[str]",
+    prefixes: tuple[str, ...],
+    scan: _TokenParamExemptScan,
+) -> tuple[int, int] | None:
+    """Return the exempt URL span for pass-4 match *m*, or ``None``."""
+    sep = m.start()
+    if not text.startswith("?token=", sep):
+        return None
+    run = _TOKEN_PARAM_EXEMPT_VALUE_RE.match(text, m.start(1))
+    if run is None or not set(text[run.end() : m.end(1)]) <= _TOKEN_PARAM_EXEMPT_TRAIL:
+        return None
+    for prefix in prefixes:
+        start = sep - len(prefix)
+        if (
+            start >= 0
+            and text.startswith(prefix, start)
+            and scan.boundary(sep, start)
+            and scan.preceding_context(start)
+        ):
+            return start, run.end()
+    return None
+
+
+@functools.lru_cache(maxsize=1)
+def _host_darwin_user_dir_id() -> str | None:
+    """This user's ``<2>/<30>`` directory id as the OS reports it, asked once.
+
+    ``confstr``, not ``tempfile.gettempdir()``, which follows ``$TMPDIR``. Windows
+    has no ``os.confstr`` and other POSIX systems refuse the name; either, or an
+    answer outside the grammar, means None and nothing withheld.
+    """
+    confstr = getattr(os, "confstr", None)
+    if confstr is None:
+        return None
+    try:
+        match = _DARWIN_USER_TEMP_DIR_RE.match(confstr(_CS_DARWIN_USER_TEMP_DIR) or "")
+    except (OSError, ValueError):
+        return None
+    return match.group("id") if match else None
+
+
+@functools.lru_cache(maxsize=4)
+def _darwin_user_dir_id_re(host_id: str) -> re.Pattern[str]:
+    return re.compile(
+        _DARWIN_USER_DIR_PREFIX_RE + f"(?P<id>{re.escape(host_id)})" + _DARWIN_USER_DIR_SUFFIX_RE
+    )
+
+
+def _darwin_user_dir_ids(text: str) -> list[_RedactionSpan]:
+    """This host's directory id in *text*, as spans for :func:`_uncovered` to subtract."""
+    host_id = _host_darwin_user_dir_id()
+    # The substring check keeps the regex off the almost-every text that does not
+    # carry this host's id.
+    if host_id is None or f"folders/{host_id}/" not in text:
+        return []
+    return [(*m.span("id"), "") for m in _darwin_user_dir_id_re(host_id).finditer(text)]
+
+
+def _splice(text: str, spans: list[_RedactionSpan]) -> str:
+    """Apply *spans* (sorted, disjoint) to *text* in one left-to-right pass."""
+    parts: list[str] = []
+    cursor = 0
+    for start, end, replacement in spans:
+        parts.append(text[cursor:start])
+        parts.append(replacement)
+        cursor = end
+    parts.append(text[cursor:])
+    return "".join(parts)
+
+
+def redact_credentials(text: str, *, defer_token_param: bool = False) -> tuple[str, list[str]]:
+    """Redact raw credential patterns from text, including base64-encoded.
+
+    Returns (cleaned_text, list_of_warnings).
+
+    ``defer_token_param`` is for ONE caller: a streamed delta whose complete
+    segment is redacted again, whole, before it is stored or sent as final. A
+    delta cannot show pass 4 the companion prefix in front of a ``?token=``, so
+    while ``CredentialPolicy.token_param_exempt_url_prefixes()`` is non-empty a
+    ``token=`` value no earlier pass touched is left to that whole-segment run;
+    a value an earlier pass already partly claimed is still redacted here, and
+    every other pass still runs. With the empty default prefix set the output is
+    byte-identical to a plain call.
+    """
+    spans, warnings, _rules = _credential_redaction_plan(text, defer_token_param=defer_token_param)
+    if not spans:
+        return text, warnings
+    return _splice(text, spans), warnings
+
+
+#: Label forms of the key-value AWS branches: the key name, its separator and
+#: an optional opening quote. The redactor replaces the WHOLE match, label
+#: included, so a record keeps the label to let the reader see which field
+#: the removed value belonged to. A label is a fixed key name, never secret.
+_AWS_LABEL_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"(?:SecretAccessKey|aws_secret_access_key)[\"']?\s*[:=]\s*[\"']?"),
+        "aws_secret_access_key",
+    ),
+    (re.compile(r"(?:SessionToken|aws_session_token)[\"']?\s*[:=]\s*[\"']?"), "aws_session_token"),
+    (re.compile(r"(?:AccessKeyId|aws_access_key_id)[\"']?\s*[:=]\s*[\"']?"), "aws_access_key_id"),
+)
+
+#: Unlabelled pass-1 branches, in the alternation's order, each with the rule
+#: id a record names. The first whose pattern fully matches the redacted span
+#: wins; a span none of them matches is ``credential_pattern``.
+_PASS1_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(AWS_KEY_ID), "aws_access_key_id"),
+    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*"), "private_key"),
+    (re.compile(r"xox[bpas]-[\s\S]*"), "slack_token"),
+    (re.compile(r"[0-9]{6,}:[A-Za-z0-9_-]{30,}"), "telegram_bot_token"),
+    (
+        re.compile(r"[MNO][A-Za-z0-9_-]{22,30}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{25,}"),
+        "discord_bot_token",
+    ),
+    (re.compile(r"(?:gh[opsur]_|github_pat_)[\s\S]*"), "github_token"),
+    (re.compile(r"glpat-[\s\S]*"), "gitlab_token"),
+    (re.compile(r"(?:sk|rk)_(?:live|test)_[\s\S]*"), "stripe_key"),
+    (re.compile(r"SG\.[\s\S]*"), "sendgrid_key"),
+    (re.compile(r"sk-proj-[\s\S]*"), "openai_key"),
+    (re.compile(r"sk-ant-[\s\S]*"), "anthropic_key"),
+    (re.compile(r"npm_[\s\S]*"), "npm_token"),
+    (re.compile(r"pypi-[\s\S]*"), "pypi_token"),
+    (re.compile(r"do[opr]_v1_[\s\S]*"), "digitalocean_token"),
+    (re.compile(r"GOCSPX-[\s\S]*"), "google_oauth_secret"),
+    (re.compile(r"[a-z+]+://[^\s:/@]*:[^\s/]+@"), "url_userinfo"),
+    (re.compile(r"eyJ[\s\S]*"), "jwt"),
+)
+
+
+def _pass1_rule(matched: str) -> tuple[str, str]:
+    """``(rule_id, label)`` for one pass-1 match; ``label`` is ``""`` when none."""
+    for pattern, rule in _AWS_LABEL_RULES:
+        head = pattern.match(matched)
+        if head is not None:
+            return rule, head.group()
+    for pattern, rule in _PASS1_RULES:
+        if pattern.fullmatch(matched):
+            return rule, ""
+    return "credential_pattern", ""
+
+
+class CredentialMatch(NamedTuple):
+    """One credential placeholder the redactor wrote, described for a record.
+
+    ``ordinal`` is the placeholder's index among EVERY credential tag in the
+    cleaned text (tags already present in the input count too), which is how a
+    renderer pairs the record with the tag it describes. ``value`` is the
+    removed plaintext: it exists so the caller can look for where the value
+    came from while the turn is still in memory, and it must never be stored,
+    logged or sent anywhere.
+    """
+
+    ordinal: int
+    rule: str
+    label: str
+    value: str
+
+
+def redact_credentials_with_records(text: str) -> tuple[str, list[str], list[CredentialMatch]]:
+    """:func:`redact_credentials`, plus one :class:`CredentialMatch` per tag written.
+
+    The cleaned text and warnings are byte-identical to ``redact_credentials``;
+    both share one plan, so the records cannot describe a redaction the text
+    does not contain.
+    """
+    spans, warnings, rules = _credential_redaction_plan(text)
+    if not spans:
+        return text, warnings, []
+    matches: list[CredentialMatch] = []
+    ordinal = 0
+    cursor = 0
+    for start, end, tag in spans:
+        ordinal += sum(text.count(t, cursor, start) for t in CREDENTIAL_REDACTION_TAGS)
+        rule, label = rules.get(start, ("credential_pattern", ""))
+        matches.append(CredentialMatch(ordinal, rule, label, text[start:end][len(label) :]))
+        ordinal += 1
+        cursor = end
+    return _splice(text, spans), warnings, matches
+
+
+def _credential_redaction_plan(
+    text: str,
+    *,
+    defer_token_param: bool = False,
+) -> tuple[list[_RedactionSpan], list[str], dict[int, tuple[str, str]]]:
+    """Every span :func:`redact_credentials` rewrites, with its warnings and rules.
+
+    Returns ``(spans, warnings, rules)``: ``spans`` sorted and disjoint against
+    the input, ``rules`` mapping each span's start to its ``(rule_id, label)``.
+    ``defer_token_param`` is :func:`redact_credentials`'s keyword of that name.
+
+    Unconditional on every surface EXCEPT inside an explicit
+    ``redaction_switch.owner_view()`` scope: there, and only there, the owner's
+    switch is consulted, and ``enabled: false`` returns ``text`` unchanged with
+    no warnings. A caller that has not opened the scope -- every channel egress,
+    every admission gate, every log -- gets the full pass whatever the owner
+    chose (see the ``redaction_switch`` module docstring for the seams that do
+    open it).
+
+    Every pass positions its redactions as spans against the IMMUTABLE input,
+    and the string is rewritten exactly once at the end. Redacting by matched
+    VALUE (``result.replace(matched, tag, 1)``) rewrites the first textual
+    occurrence of the value, which is not necessarily the span that matched:
+    when a later match also occurs as a substring of an earlier, longer run
+    that is NOT itself redacted, the tag lands inside the innocent host and the
+    real standalone credential survives in plaintext. Splicing by span makes
+    that unreachable in all three passes.
+
+    Passes are ranked: pass 1 outranks pass 2 outranks pass 3 outranks pass 4.
+    A later pass's span never rewrites text an earlier pass already claimed; it
+    redacts only the part of its span still standing in plaintext, so no
+    character is redacted twice and no character a pass flagged is left behind.
+
+    Inside a ``redaction_switch.code_text()`` scope pass 3 alone stands down.
+    """
+    if credential_pass_bypassed():
+        return [], [], {}
+
+    warnings: list[str] = []
+    rules: dict[int, tuple[str, str]] = {}
+
+    # 1. Plaintext credential patterns.
+    #
+    # Gated on the cheap superset pre-filter: when no branch of
+    # `_CREDENTIAL_PATTERNS` can possibly match, `finditer` would yield nothing
+    # and the loop body would not run, so skipping it cannot change the output.
+    # This is the hot path — the alternation is 23 branches retried at nearly
+    # every position, and real text almost never contains a credential.
+    #
+    # `taken` is every span an earlier pass has claimed, kept sorted and
+    # disjoint; it is what the later passes subtract from.
+    taken: list[_RedactionSpan] = []
+    if _might_contain_credential(text):
+        for m in _credential_matches(text):
+            # Emit ONLY non-sensitive metadata (length). Do NOT slice any part of
+            # the match into the warning: `_CREDENTIAL_PATTERNS` matches the raw
+            # secret value itself (e.g. `ghp_…`, `sk-ant-…`), so even a short prefix
+            # is genuine plaintext key material — a fixed-length token prefix leaves
+            # ~12-16 secret chars in a 20-char slice. The warnings list is a
+            # redaction-subsystem output expected to be safe to log/surface, so it
+            # must carry no secret bytes. The base64 / bare-secret passes below
+            # likewise log length only.
+            warnings.append(f"Redacted credential pattern ({len(m.group())} chars)")
+            taken.append((m.start(), m.end(), _REDACTED_CREDENTIAL_TAG))
+            rules[m.start()] = _pass1_rule(m.group())
+
+    # Passes 2 and 3 both scan the ORIGINAL `text` for runs of the base64
+    # alphabet, and they select the SAME spans: `[A-Za-z0-9+/]{40,}` is greedy and
+    # leftmost, so it yields exactly the maximal runs of length >= 40 — which is
+    # also precisely what `_BARE_SECRET_RUN_RE`'s `(?<![A-Za-z0-9+/])` /
+    # `(?![A-Za-z0-9+/])` boundaries select. The only difference is the trailing
+    # `={0,2}` padding that `_B64_CHUNK_RE` additionally consumes, and `=` is not
+    # in the run's character class, so `rstrip("=")` recovers the bare run
+    # exactly. So one scan feeds both passes instead of two.
+    #
+    # The two loops stay SEPARATE and in their original order: `warnings` is a
+    # contract (all pass-2 warnings precede all pass-3 warnings), and pass 3
+    # subtracts every pass-2 claim, so pass 2 must have finished first.
+    b64_matches = list(_B64_CHUNK_RE.finditer(text))
+
+    # 2. Base64-encoded credentials.
+    #
+    # The warning is emitted for every chunk that decodes to a credential, even
+    # one that pass 1 already claimed in full: the encoded credential IS
+    # redacted, and the warning counts credentials found, not splices made.
+    pass2: list[_RedactionSpan] = []
+    for m in b64_matches:
+        chunk = m.group()
+        if not _decode_b64_chunk(chunk):
+            continue
+        warnings.append(f"Redacted base64-encoded credential ({len(chunk)} chars)")
+        for start, end in _uncovered(m.start(), m.end(), taken):
+            pass2.append((start, end, _REDACTED_ENCODED_CREDENTIAL_TAG))
+            rules[start] = ("encoded_credential", "")
+    # Pass-2 chunks are disjoint from each other and were cut around `taken`,
+    # so the union is disjoint and a sort restores the order.
+    taken = sorted(taken + pass2)
+
+    # 3. BARE 40-char AWS secret keys with no label/prefix. These carry no
+    # distinctive marker for _CREDENTIAL_PATTERNS to anchor on, so an entropy +
+    # structural heuristic is the only way to catch a standalone secret value.
+    #
+    # A run an earlier pass has claimed in full (it was a labelled value, or an
+    # encoded-credential chunk) is skipped WITHOUT a warning. The check is
+    # positional: a second occurrence of the same run elsewhere in the text is
+    # judged on its own span, never on whether the value still appears
+    # somewhere. A run only PARTLY claimed — a glued key whose tail is the first
+    # word of a `aws_secret_access_key=` label, say — has the part still in
+    # plaintext redacted, because the run as a whole was judged to hold a key
+    # and the earlier pass consumed only its label.
+    #
+    # Only windows sharing >= _HOST_ID_EXEMPT_OVERLAP bytes with this host's id are exempt;
+    # whole-run context preserves every other base verdict, including smaller overlaps.
+    #
+    # A `redaction_switch.code_text()` scope leaves alone a data URI payload and an ordered
+    # alphabet (see `_is_code_literal`); every other run is judged as outside the scope.
+    bare_runs = (
+        b64_matches
+        if bare_secret_pass_enabled()
+        else [
+            m for m in b64_matches if not _is_code_literal(text, m.start(), m.group().rstrip("="))
+        ]
+    )
+    withheld = _darwin_user_dir_ids(text)
+    pass3: list[_RedactionSpan] = []
+    link_spans: list[tuple[int, int]] | None = None
+    for m in bare_runs:
+        run_end = m.start() + len(m.group().rstrip("="))
+        run = text[m.start() : run_end]
+        pieces = _uncovered(m.start(), run_end, withheld)
+        if pieces == [(m.start(), run_end)]:
+            if not _contains_bare_secret(run):
+                continue
+        else:
+            first = bisect.bisect_right(withheld, m.start(), key=_span_end)
+            last = bisect.bisect_left(withheld, run_end, key=lambda span: span[0])
+            skip_spans = tuple(
+                (start - m.start(), end - m.start()) for start, end, _ in withheld[first:last]
+            )
+            # A non-skipped positive window overlaps the id by < the exempt
+            # bound, so it falls wholly inside one piece or spans a piece
+            # boundary where the id sits; either way it keys every piece it
+            # touches. Windows ascend, so per piece advance past windows ending
+            # at or before its start, then it is keyed if the current window
+            # starts before its end.
+            windows = _bare_secret_window_starts(run, skip_spans)
+            hit = next(windows, None)
+            keyed_pieces = []
+            for start, end in pieces:
+                while hit is not None and m.start() + hit + _SECRET_KEY_LEN <= start:
+                    hit = next(windows, None)
+                if hit is not None and m.start() + hit < end:
+                    keyed_pieces.append((start, end))
+            pieces = keyed_pieces
+            if not pieces:
+                continue
+        # A run wholly inside a validated document link is its host and route,
+        # not a key (see `_DOCUMENT_LINK_RE`). Scanned only after a run fires,
+        # so text with no key-shaped run never pays for it.
+        if link_spans is None:
+            link_spans = _document_link_spans(text)
+        if any(start <= m.start() and run_end <= end for start, end in link_spans):
+            continue
+        for piece_start, piece_end in pieces:
+            piece = text[piece_start:piece_end]
+            gaps = _uncovered(piece_start, piece_end, taken)
+            if not gaps:
+                continue
+            for start, end in gaps:
+                pass3.append((start, end, _REDACTED_CREDENTIAL_TAG))
+                rules[start] = ("bare_aws_secret", "")
+            warnings.append(f"Redacted bare secret key ({len(piece)} chars)")
+    taken = sorted(taken + pass3)
+
+    # 4. `?token=` / `&token=` URL parameter VALUES, keyed on the parameter
+    # name (see `_TOKEN_PARAM_RE`). Ranked LAST so a value an earlier pass
+    # already caught -- an AKIA key, a JWT, a link token -- keeps that pass's
+    # tag, warning and span byte-identically; this pass only claims the opaque
+    # values nothing shape-based can see.
+    #
+    # UNGATED, deliberately: the name folds case (`(?i:token)`), and a
+    # case-insensitive pattern is only safely anchored by the SAME regex
+    # engine (see `_CREDENTIAL_PREFILTER_AUTHORIZATION_RE` for the
+    # `str.lower()` bypass this rule exists to prevent) -- so the cheapest
+    # valid gate is a same-engine search whose cost equals the scan it would
+    # skip, which is no gate at all. This pass is one two-alternation-free
+    # regex, not the 23-branch alternation pass 1's pre-filter exists for.
+    #
+    # A value that is already one of this module's fixed credential tags is
+    # skipped, not re-redacted: several surfaces run the redactor twice (the
+    # streaming path re-redacts the persisted copy; `redact_path_segments`
+    # requires its candidate to be a fixed point), and the value class stops at
+    # a tag's interior space. Matching a canonical tag again would mangle
+    # `token=[REDACTED: credential]` into
+    # `token=[REDACTED: credential] credential]` on the second run.
+    #
+    # Trust is BYTE-IDENTITY with a module-owned fixed literal, never a shape.
+    # `_TOKEN_PARAM_VALUE_CLASS` admits `[`, `]` and `:`, so a prefix test lets
+    # adversary-authored `?token=[REDACTED<secret>` bypass this terminal pass.
+    # `CREDENTIAL_REDACTION_TAGS` is the key because it contains ONLY fixed
+    # literals. The exfiltration prefix is excluded for exactly that reason:
+    # skipping a domain-bounded exfil shape is the same bypass --
+    # `?token=[REDACTED: suspicious URL to <secret>.co]` satisfies the domain
+    # class while carrying attacker-controlled bytes.
+    #
+    # ACCEPTED RESIDUAL: a genuine exfil tag value is redacted at its 10-byte
+    # `[REDACTED:` head, yielding
+    # `?token=[REDACTED: credential] suspicious URL to <domain>]`. That text is
+    # already redacted and contains no secret; it is stable on re-redaction
+    # because the second pass sees the exact credential literal and skips, and
+    # the bare domain tail cannot re-trigger the exfil pass (`_URL_RE` requires
+    # a scheme). One notice count moves from exfil to credential.
+    #
+    # COMPANION URL-PREFIX SEAM: a value this pass would claim WHOLE (no earlier
+    # pass found anything in it) is left alone when `_token_param_exempt` ties it to
+    # a `CredentialPolicy.token_param_exempt_url_prefixes()` member, e.g. an
+    # approval-workflow link the user must click. The prefixes are read lazily, on
+    # the first such match, so text with no `token=` never touches the context.
+    #
+    # DEFERRED DELTA: a streamed delta can carry the `?token=` without the prefix
+    # that precedes it, so the exemption cannot be judged here; with a prefix set
+    # installed, a value this pass would claim WHOLE is left to the caller's
+    # whole-segment run (see `redact_credentials`). Only such values are eligible
+    # for the exemption, so only they are deferred: a value an earlier pass has
+    # already partly claimed is redacted now, gaps and all, exactly as without the
+    # keyword -- the whole-segment run skips a value that begins with a fixed tag,
+    # so an uncovered tail left here would never be revisited. The stream
+    # suspension wins when both are set: it pins the prefixes empty, and an empty
+    # set defers nothing.
+    pass4: list[_RedactionSpan] = []
+    exempt_prefixes: tuple[str, ...] | None = () if _TOKEN_PARAM_EXEMPT_SUSPENDED.get() else None
+    exempt_scan = _TokenParamExemptScan(text)
+    for m in _TOKEN_PARAM_RE.finditer(text):
+        value_start, value_end = m.start(1), m.end(1)
+        if any(text.startswith(tag, value_start) for tag in CREDENTIAL_REDACTION_TAGS):
+            continue
+        gaps = _uncovered(value_start, value_end, taken)
+        if not gaps:
+            continue
+        if gaps == [(value_start, value_end)]:
+            if exempt_prefixes is None:
+                exempt_prefixes = _token_param_exempt_prefixes()
+            if exempt_prefixes:
+                if defer_token_param:
+                    continue
+                exempt_url = _token_param_exempt(text, m, exempt_prefixes, exempt_scan)
+                if exempt_url is not None:
+                    exempt_scan.accept(exempt_url)
+                    continue
+        for start, end in gaps:
+            pass4.append((start, end, _REDACTED_CREDENTIAL_TAG))
+            rules[start] = ("token_parameter", "")
+        warnings.append(f"Redacted token parameter value ({value_end - value_start} chars)")
+
+    return sorted(taken + pass4), warnings, rules
+
+
+# Absolute filesystem paths, POSIX and Windows. Deliberately narrow: anchored to
+# real filesystem roots rather than "any slash-separated token", and both branches
+# refuse to start mid-token so a URL is never mistaken for a path -- without the
+# lookbehinds, ``https://api.github.com/repos/x`` matches twice (``s:/`` as a drive
+# letter, ``/repos`` as a root) and the URL is destroyed.
+#
+# The drive-letter branch accepts BOTH separators: ``C:\`` and ``C:/`` name the
+# same file on Windows, and tools that normalise separators (Git Bash, Python's
+# pathlib/posixpath, Node, MSYS) routinely print the forward-slash spelling, so
+# matching only ``C:\`` left ``C:/Users/<login>/...`` -- the login and host
+# layout -- unredacted wherever this shared scrub runs. The forward-slash form
+# carries a ``(?!/)`` guard so a one-letter URI scheme (``x://host``) is never
+# mistaken for a drive; longer schemes (``https:``) are already refused by the
+# ``(?<![A-Za-z])`` lookbehind on the drive letter itself.
+_LOCAL_PATH_RE = re.compile(
+    r"(?:"
+    r"(?<![\w:/])/(?:local/home|home|Users|root|tmp|var|opt|usr|etc|private|mnt|srv|workspace|workplace)"
+    r"|(?<![A-Za-z])[A-Za-z]:(?:\\|/(?!/))"
+    r")"
+    r"[^\s'\"<>|]*"
+)
+_LOCAL_PATH_PLACEHOLDER = "[redacted-path]"
+
+
+def redact_local_paths(text: str) -> tuple[str, list[str]]:
+    """Strip absolute host filesystem paths from *text*.
+
+    Complements :func:`redact_credentials`, which matches credential *patterns*
+    and leaves a bare path such as
+    ``[Errno 2] No such file or directory: '/home/alice/.kiro/crew/vaults/v1'``
+    untouched. That string is the common shape of an OS or subprocess error, and
+    on an error surface that reaches a browser it discloses the account name and
+    on-disk layout of the host (CWE-209).
+
+    Returns the redacted text and a list of human-readable notes, matching the
+    signature of the sibling passes so callers can chain them uniformly.
+    """
+    notes: list[str] = []
+
+    def _sub(match: re.Match[str]) -> str:
+        notes.append(f"Redacted local path ({len(match.group(0))} chars)")
+        return _LOCAL_PATH_PLACEHOLDER
+
+    return _LOCAL_PATH_RE.sub(_sub, text), notes
+
+
+#: A random key generated once per gateway process and held only in memory: it
+#: is never persisted, logged or exposed. It keys the per-segment label below.
+_PATH_LABEL_KEY = secrets.token_bytes(32)
+
+#: Joins a redacted path segment to the label :func:`redact_path_segments`
+#: appends. Outside the credential alphabet, so the label can never be glued
+#: onto a neighbouring run and read as part of one; and not a path separator, so
+#: the segment count is kept.
+_PATH_SEGMENT_DISCRIMINATOR_SEP = "~"
+
+
+def _path_segment_label(segment: str) -> str:
+    """The opaque, process-stable label for a redacted path *segment*.
+
+    ``HMAC-SHA256(_PATH_LABEL_KEY, segment)``, truncated to 12 hex digits (48
+    bits). Equal segments carry equal labels for the life of this process, and
+    that equality is the point: the dashboard joins the project-tree response
+    with the git-status response by path, so the same original must label the
+    same way in both. Distinct segments carry distinct labels except with
+    negligible probability (48 bits over the handful of collisions one tree can
+    hold). The digest is KEYED: without the key nothing about the segment can be
+    checked against the label, so a low-entropy secret behind a redaction tag is
+    not exposed to an offline dictionary guess the way an unkeyed hash prefix
+    would be. The key is fresh per gateway process, so the label changes across
+    a restart; both responses of one join come from one process, so the join
+    holds.
+    """
+    return hmac.new(
+        _PATH_LABEL_KEY, segment.encode("utf-8", "surrogatepass"), hashlib.sha256
+    ).hexdigest()[:12]
+
+
+def redact_path_segments(path: str, redactor: Callable[[str], str] | None = None) -> str:
+    """Redact a ``/``-separated *path* segment by segment, labelling each
+    redacted segment so distinct originals stay distinct.
+
+    The whole-string redactors replace a matched token wherever it sits, so a
+    path whose filename is credential-shaped (``AKIA…_model.txt``) keeps its
+    directory prefix and its non-secret tail but not the token. Here each segment
+    is redacted on its own, so a credential-shaped segment is replaced by the tag
+    while every clean segment around it is kept verbatim. Every segment the
+    redactor changes is then suffixed with :data:`_PATH_SEGMENT_DISCRIMINATOR_SEP`
+    and :func:`_path_segment_label` of its ORIGINAL bytes -- not only on a
+    collision, because a single call cannot know what else the listing holds.
+
+    The label is the one shape that meets all five properties the listings need
+    at once:
+
+    1. Distinct inputs stay distinct: two different credential-shaped segments
+       collapse to the same tag but carry different labels, so a de-duplicating
+       listing keeps both.
+    2. No byte of the secret is in the output: the tag replaces the token whole
+       and the label is a digest, not a substring.
+    3. No UNKEYED digest of the secret: the label is an HMAC under a per-process
+       random key, so a reader cannot enumerate low-entropy candidates offline
+       and match them against the label.
+    4. No dependence on listing position or order: the label is a function of
+       the segment alone, so a sorted listing does not correlate the label with
+       the secret's lexicographic rank, and the same path labels the same way
+       whatever else is listed with it.
+    5. Stable across responses within one gateway process: the dashboard joins
+       the tree response with the git-status response by path, and a
+       per-response label breaks that join when only one of two colliding paths
+       appears in the status response. A keyed label is the same in every
+       response this process serves.
+
+    The key is regenerated when the gateway restarts, so labels differ across
+    restarts; both responses of one join come from the same process, so that
+    is fine.
+
+    *redactor* is the whole-string redactor to apply -- callers on an egress
+    surface pass the context-aware ``redact`` shim so a loaded companion's extra
+    patterns apply; the default is the credential pass alone. Whatever it is,
+    this function never emits LESS redaction than it would: the segment-wise
+    result is returned only when redacting each segment on its own removes
+    EXACTLY the bytes the whole-string pass removes (their unlabelled joins are
+    equal) and the labelled result is itself a fixed point of the redactor;
+    otherwise the whole-string result is returned unchanged. Equality with the
+    whole-string pass is the load-bearing check: a token that spans a separator
+    (a ``key=value`` whose value carries a ``/``) is matched by the whole pass
+    but only up to the separator by the segment pass, and the leftover tail is
+    not a match on its own, so a fixed-point check alone would let it through.
+    A path the redactor leaves alone is returned as is. Splits on
+    :data:`posixpath.sep` only, on every host: the project listings this serves
+    emit POSIX-relative paths, not native ones.
+    """
+    _redact: Callable[[str], str] = redactor or (lambda s: redact_credentials(s)[0])
+    whole = _redact(path)
+    if whole == path:
+        return path
+    segments = path.split(posixpath.sep)
+    outs = [_redact(segment) for segment in segments]
+    # Floor 1: segment-wise redaction must reproduce the whole-string result
+    # byte for byte before any label is added. Anything the whole pass removed
+    # that a single segment did not is a tail the caller must not see.
+    if posixpath.sep.join(outs) != whole:
+        return whole
+    labelled = [
+        (
+            out
+            if out == segment
+            else f"{out}{_PATH_SEGMENT_DISCRIMINATOR_SEP}{_path_segment_label(segment)}"
+        )
+        for segment, out in zip(segments, outs)
+    ]
+    candidate = posixpath.sep.join(labelled)
+    # Floor 2: the labelled result must itself be a fixed point of the redactor
+    # (a shape that only matches in context, or one the labels complete).
+    if _redact(candidate) != candidate:
+        return whole
+    return candidate

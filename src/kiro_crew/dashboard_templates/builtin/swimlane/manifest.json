@@ -1,0 +1,17 @@
+{
+  "id": "swimlane",
+  "version": 1,
+  "title": "Swimlanes",
+  "description": "The board as columns inside a lane per round. A flat kanban answers how much work sits in each column; a swimlane also answers which round it belongs to, which is the question a conductor running several rounds at once actually has. The lane is the item's own round rather than an invented epic field, because round is what the work fold stamps and a grouping nobody records would be a label this page made up. The columns are derived from state together with the worker's last status, so an item whose worker reported done and which nothing has ruled on yet gets its own column instead of reading as work still moving.",
+  "source": "builtin",
+  "fields": {
+    "goal": { "type": "string", "source": { "fold": "work", "path": "conductor.goal" } },
+    "round": { "type": "number", "source": { "fold": "work", "path": "conductor.round" } },
+    "depth": { "type": "number", "source": { "fold": "work", "path": "conductor.depth" } },
+    "entries": { "type": "number", "source": { "fold": "work", "path": "conductor.entries" } },
+    "generation": { "type": "string", "source": { "fold": "work", "path": "conductor.generation" } },
+    "last_entry_at": { "type": "string", "source": { "fold": "work", "path": "conductor.last_entry_at" } },
+    "items": { "type": "array", "source": { "fold": "work", "path": "items" } },
+    "omitted": { "type": "number", "source": { "fold": "work", "path": "omitted" } }
+  }
+}

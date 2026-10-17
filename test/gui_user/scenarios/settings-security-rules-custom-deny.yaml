@@ -1,0 +1,44 @@
+# Smoke: the "Your custom denies" card on Settings > Security > Denied Commands.
+# A custom deny is a user-authored regex enforced at the PreToolUse gate next
+# to the built-in rules; adding one is a single input plus an "Add" button, and
+# each listed pattern carries a trash button (accessible name "Delete pattern
+# <pattern>") that removes it with no confirm dialog. The flow is add -> read
+# -> delete, so the run leaves the rule list exactly as it found it. The
+# pattern is a literal that no real command would match
+# (`rm -rf ./scratch-gui-test`), so a half-finished attempt that leaves it
+# behind denies nothing real. Each mutating step names the FINAL STATE of the
+# list (the pattern present, the pattern absent) rather than "click Add" /
+# "click the trash", so a retry against the un-reseeded target that starts
+# from a half-finished attempt converges instead of adding a duplicate or
+# deleting nothing. The three surviving screenshots are the pattern listed,
+# the note-free row read back and the list after deletion, so the expectations
+# read the "present" evidence from the screenshot right after the add step and
+# the "absent" evidence from the last one. Only this card is judged: the
+# built-in rule table above it is read by the rail scenario and is never
+# toggled here.
+name: settings-security-rules-custom-deny
+tier: smoke
+feature: security
+user_story: >-
+  As a user, I want to add my own denied-command pattern under Settings >
+  Security > Denied Commands and remove it again, so that I can block commands
+  the built-in rules do not cover and undo that when I no longer need it.
+docs_url: docs/feature-map/README.md
+summary: Add one custom deny pattern, see it listed under "Your custom denies", then delete it so the list is as it was
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /settings/security/rules
+steps:
+  - You are on the Settings page, Security tab, opened at its Denied Commands section; the pane heading reads "Denied Commands" and the address bar ends in "/settings/security/rules". Scroll down past the long table of built-in rules until you see a card headed "Your custom denies" with the text "Add your own deny patterns" beneath the heading. Do not toggle or disable any built-in rule on the way.
+  - Make sure the list under "Your custom denies" has exactly one row whose pattern reads rm -rf ./scratch-gui-test. If it is not there yet, click the text box whose placeholder reads "Add a custom deny pattern (regex), e.g. rm -rf /tmp/mine", type exactly rm -rf ./scratch-gui-test, leave the optional "why" box empty, and click the "Add" button beside it. If that row is already listed, add nothing.
+  - Read the row back without clicking it. The row shows the pattern text rm -rf ./scratch-gui-test, a switch that is on, and a small trash-can icon button at its right end whose accessible name is "Delete pattern rm -rf ./scratch-gui-test". The text box is empty again and no red error text is shown under the card.
+  - Now make sure no row in the list reads rm -rf ./scratch-gui-test, by clicking that row's trash-can button once. There is no confirmation dialog; the row disappears. If the row is already gone, click nothing.
+  - Wait a second.
+expectations:
+  - Under "Your custom denies", no row reads rm -rf ./scratch-gui-test, and the "Add a custom deny pattern" text box is empty.
+  - In the screenshot taken right after you added the pattern, a row reading rm -rf ./scratch-gui-test was listed under "Your custom denies" with a trash-can button at its right end.
+  - The built-in rules table above the card is unchanged, with no built-in rule switch turned off and no "Disable this denied command" dialog open.
+  - No red error banner or red error text is visible anywhere on the page.
+max_steps: 10
+max_seconds: 300

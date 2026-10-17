@@ -1,0 +1,2787 @@
+"""Portable zip export/import for KiroCrew state (dashboard endpoint).
+
+Creates a zip archive of all KiroCrew settings and memory for download
+via the dashboard, and restores from uploaded zip archives. Designed to
+work over HTTP for remote users (e.g. Linux Cloud Desktop → macOS browser).
+
+Credentials (.env, session secrets) are always excluded from exports.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import io
+import json
+import logging
+import math
+import os
+import re
+import shutil
+import socket
+import stat
+import tempfile
+import time
+import zipfile
+import zlib
+from collections import deque
+from collections.abc import Callable, Iterable, Iterator
+from datetime import datetime, timezone
+from pathlib import Path, PurePath, PurePosixPath
+from typing import Any, cast
+
+from kiro_crew import crew_teams, pinned_fs, platform_compat, ui_prefs
+from kiro_crew._sqlite_compat import sqlite3
+from kiro_crew.agent_discovery import clear_list_agents_cache, parsed_agent_specs
+from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
+from kiro_crew.atomic_write import atomic_write
+from kiro_crew.chat_attachments import ATTACHMENTS_DIR_SUFFIX
+from kiro_crew.config.loader import (
+    ConfigReadError,
+    ConfigWriteRefused,
+    update_config_locked,
+)
+from kiro_crew.config.paths import config_dir, kiro_agents_dir
+from kiro_crew.history import (
+    ARCHIVE_DIR_NAME,
+    ARCHIVE_SEGMENT_DELIMITER,
+    INCOGNITO_MEMORY_MODES,
+    SESSIONS_DIR_NAME,
+    THREADS_DIR_NAME,
+    THREADS_SIDECAR_SUFFIX,
+    TRANSCRIPT_HEADER_MAX_BYTES,
+    ConversationLog,
+    _safe_key,
+    memory_mode_from_header_line,
+)
+from kiro_crew.mcp_cron import _log_cron_denial, _vet_shell_command
+from kiro_crew.member_memory_backup import hold_stores_for_read
+from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME, is_host_local_store_state
+from kiro_crew.notifications.settings import ChannelSettings, parse_imported_settings
+from kiro_crew.platform.governance import sanitize_agent_config_governance
+from kiro_crew.security import is_sensitive_path
+from kiro_crew.snapshot import (
+    _DB_SIDECAR_GLOBS,
+    COMPONENTS,
+    EXPORT_MANIFEST_VERSION,
+    NotificationCopyUnsupported,
+    _copy_notifications,
+    _copy_tree_no_overwrite,
+    _core_file_not_installed,
+    _do_replace,
+    _install_core_file_if_absent,
+    _merge_crons,
+    _merge_memory,
+    _merge_named_stores,
+    _merge_notifications,
+    _refuse_corrupt_source_databases,
+    _staging_is_pinned,
+    is_product_tree_database,
+)
+from kiro_crew.user_json import MAX_DOCUMENT_NESTING, exceeds_nesting, strip_utf8_bom
+from kiro_crew.zip_vet import ZipInventoryRejected, vet_zip_inventory
+
+logger = logging.getLogger(__name__)
+
+EXPORT_EXCLUDE = frozenset(
+    {
+        ".env",
+        ".local_secret",
+        "sel_hmac.key",
+        "telemetry_salt",
+        # NOTE: the beacon's per-install identity files (beacon_install_id /
+        # beacon_last_sent) are deliberately NOT listed here. This set is matched by
+        # BASENAME and `_is_excluded` runs over the workspace/, plan_memory/ and
+        # skills/ trees, so an entry here would silently drop any USER file that
+        # happens to share the name. They need no entry: root-level export is a
+        # hard-coded allowlist (config.json, the settings documents in
+        # `_SETTINGS_DOCUMENTS`, hooks.json, crons.json, notifications.jsonl,
+        # project_dir, workspace_dir, crew-teams/teams.json), so a root beacon file is
+        # never selected in the first place.
+        "session_map.json",
+        "kiro_session_pids.txt",
+        "kiro_pids.txt",
+    }
+)
+
+#: The settings documents beside ``config.json`` -- everything else a dashboard Settings
+#: choice is persisted in. ``config.local.json`` is the overlay that ``config set --local``
+#: and ``save()`` keep overlay-owned values in, so those values exist ONLY there;
+#: ``ui-prefs.json`` is the host backup of the browser-held Settings (`ui_prefs.py`);
+#: ``notification_settings.json`` holds the Settings > Notifications mutes and priorities
+#: (`notifications/settings.py`). The snapshot ``config`` component carries the same
+#: three, so the two whole-install backups agree on what a setting is.
+_SETTINGS_DOCUMENTS: tuple[str, ...] = (
+    "config.local.json",
+    "ui-prefs.json",
+    "notification_settings.json",
+)
+
+EXCLUDE_DIRS = frozenset(
+    {
+        "snapshots",
+        "outbox",
+        "uploads",
+        "__pycache__",
+    }
+)
+
+
+def _mc_dir() -> Path:
+    return Path(os.environ.get("KIROCREW_HOME", config_dir()))
+
+
+#: The snapshot ``memory`` component, which a memory-only export carries and a
+#: memory-only import applies: its two databases, the memory half of the workspace,
+#: and every named store (``memory_stores/``, walked by its own filter below).
+MEMORY_ONLY_FILES: tuple[str, ...] = COMPONENTS["memory"].files
+MEMORY_ONLY_TREES: tuple[str, ...] = tuple(
+    t for t in COMPONENTS["memory"].trees if t != MEMORY_STORES_DIR_NAME
+)
+
+
+#: The manifest version a memory-only export writes. It sits outside the range a
+#: whole-install import accepts (``1..EXPORT_MANIFEST_VERSION``), so a reader that does
+#: not know memory bundles refuses one instead of applying it as a whole install, where
+#: a Replace would reset every component the bundle does not carry.
+MEMORY_EXPORT_MANIFEST_VERSION = 1001
+
+
+def manifest_is_memory_only(manifest: object) -> bool:
+    """True when an export manifest declares it carries the memory component only."""
+    return isinstance(manifest, dict) and manifest.get("components") == ["memory"]
+
+
+def _is_memory_member(rest: tuple[str, ...]) -> bool:
+    """Whether an archive member (its path below the export prefix) is memory.
+
+    Lexical only, on the member NAME, so a memory-only import never extracts any
+    other component -- whatever else the archive carries stays in the zip.
+    """
+    if not rest:
+        return True  # the prefix directory itself
+    if rest == ("MANIFEST.json",):
+        return True
+    if len(rest) == 1:
+        return rest[0] in MEMORY_ONLY_FILES
+    if rest[0] == MEMORY_STORES_DIR_NAME:
+        return True
+    return any(rest[: len(t.split("/"))] == tuple(t.split("/")) for t in MEMORY_ONLY_TREES)
+
+
+def _is_excluded(rel_path: PurePosixPath) -> bool:
+    if rel_path.name in EXPORT_EXCLUDE:
+        return True
+    if rel_path.name.endswith(".pid"):
+        return True
+    for part in rel_path.parts:
+        if part in EXCLUDE_DIRS:
+            return True
+    return False
+
+
+def _wal_checkpoint(db_path: Path) -> None:
+    if db_path.is_file():
+        try:
+            conn = sqlite3.connect(str(db_path))
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            conn.close()
+        except Exception:
+            logger.debug("WAL checkpoint failed for %s", db_path)
+
+
+def _backup_sqlite(src: Path, dst_buffer: io.BytesIO) -> None:
+    """Use SQLite backup API for a consistent copy."""
+    src_conn = sqlite3.connect(src.absolute().as_uri() + "?mode=ro", uri=True)
+    mem_conn = sqlite3.connect(":memory:")
+    try:
+        src_conn.backup(mem_conn)
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
+        tmp.close()
+        try:
+            disk_conn = sqlite3.connect(tmp.name)
+            try:
+                mem_conn.backup(disk_conn)
+            finally:
+                disk_conn.close()
+            dst_buffer.write(Path(tmp.name).read_bytes())
+        finally:
+            os.unlink(tmp.name)
+    finally:
+        src_conn.close()
+        mem_conn.close()
+
+
+#: A Windows junction is a reparse point whose tag is not the symlink tag, so
+#: ``islink``/``DirEntry.is_symlink`` are False for one. The ATTRIBUTE is what
+#: every kind of reparse point has in common. Absent off Windows, where the
+#: concept does not exist.
+_FILE_ATTRIBUTE_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
+def _entry_is_link(entry: os.DirEntry) -> bool:
+    """True if *entry* is a symlink or, on Windows, any other reparse point.
+
+    Answered entirely from the directory listing the kernel has ALREADY
+    returned: ``FindFirstFileW`` carries ``dwFileAttributes`` and the reparse tag
+    inline, so ``entry.stat(follow_symlinks=False)`` reads cached bytes rather
+    than issuing a lookup -- and, decisively, never a lookup THROUGH the child.
+    That is the property this walk is built on. The ordinary way to ask the same
+    question, ``Path(child).is_file()`` or ``is_sensitive_path(str(child))``,
+    resolves the name; if a junction there aims at ``\\\\host\\share`` that
+    resolution IS an outbound SMB authentication, and no later refusal recalls
+    it.
+
+    ``DirEntry.is_symlink()`` alone is not enough and is exactly how ``rglob``
+    came to descend a junction: a junction's tag is ``IO_REPARSE_TAG_MOUNT_POINT``
+    rather than ``IO_REPARSE_TAG_SYMLINK``, so that method reports False for one
+    while ``is_dir(follow_symlinks=False)`` reports True.
+
+    Every reparse point is treated the same rather than only link-shaped ones,
+    because that is already what the layer below refuses --
+    :func:`platform_compat.pin_directory` rejects any reparse point at a
+    directory name and :func:`platform_compat.open_file_no_reparse` rejects one
+    at a file name. This classifies what those opens would refuse anyway: a cheap
+    skip, never the enforcement. On POSIX the attribute check is skipped
+    entirely; ``is_symlink()`` uses ``d_type`` and costs nothing, and asking for
+    a stat there would add a real syscall for a concept the platform lacks.
+    """
+    if entry.is_symlink():
+        return True
+    if os.name != "nt":
+        return False
+    try:
+        info = entry.stat(follow_symlinks=False)
+    except OSError:
+        return True  # unclassifiable -> refuse to walk into it
+    return bool(getattr(info, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _keep_for_export(rel: PurePath) -> bool:
+    """The old loop's by-name filters, unchanged and in the same order.
+
+    Purely lexical, and it has to stay that way: this runs on a child the walk
+    has not verified yet, so a filesystem call here would be the very probe the
+    walk exists to remove.
+
+    The old loop also asked ``is_sensitive_path`` at this point, about the
+    PATHNAME. That call is gone rather than moved, because resolving an
+    unverified name is the probe. The same question is still asked -- in
+    :func:`_open_verified`, of the descriptor's real path -- and that was always
+    the load-bearing one: a name can be re-pointed between the check and the
+    open, a descriptor cannot.
+    """
+    # ``PurePosixPath(*rel.parts)``, never ``PurePosixPath(str(rel))``: on Windows
+    # ``str(rel)`` is backslash-separated, so ``PurePosixPath`` parses the whole
+    # relative path as a SINGLE component. ``.name`` is then the entire path and
+    # ``.parts`` has length one, so the ``EXPORT_EXCLUDE`` basename set and the
+    # ``EXCLUDE_DIRS`` walk both stop matching -- ``workspace/notes/.env`` was
+    # exported on Windows. Rebuilding from ``parts`` keeps the separator the
+    # exclusion rules are written against.
+    if _is_excluded(PurePosixPath(*rel.parts)):
+        return False
+    return not (rel.parts[0] == "skills" and "auto" in rel.parts)
+
+
+def _keep_store_for_export(rel: PurePath) -> bool:
+    """`_keep_for_export` for the ``memory_stores/`` tree, plus that tree's own two rules.
+
+    Host-local state -- the member signing key, execution logs, local backup directories --
+    stays on this host (`memory_stores.is_host_local_store_state`, the same predicate the
+    snapshot applies). SQLite sidecars stay too: a store's databases are copied through the
+    backup API below, which yields a self-contained file, and a ``-wal`` archived next to
+    that copy would be replayed into a database it never belonged to. Lexical only, like
+    the filter it extends.
+    """
+    if not _keep_for_export(rel):
+        return False
+    posix = PurePosixPath(*rel.parts)
+    if is_host_local_store_state(posix.parts):
+        return False
+    return not any(posix.match(glob) for glob in _DB_SIDECAR_GLOBS)
+
+
+def _walk_contained(
+    root_real: str,
+    rel_dir: PurePath,
+    keep: Callable[[PurePath], bool],
+    *,
+    fenced_ok: bool = False,
+) -> Iterator[tuple[PurePath, int]]:
+    """Yield ``(rel, fd)`` for every regular file under ``root_real / rel_dir``.
+
+    The export's own enumeration, in place of ``rglob``. ``rglob`` DESCENDS a
+    Windows junction, and every by-name question then asked about what it yields
+    resolves that junction before any guard has run. Measured on this module
+    before the change, exporting a workspace holding one pre-planted junction:
+    twelve resolving calls went out through it -- four ``os.path.realpath``,
+    eight ``ntpath._getfinalpathname`` -- while the export correctly archived
+    nothing from behind it. Nothing being archived was never the question. If the
+    junction names a UNC share those resolutions are the outbound authentication,
+    and containment refusing the bytes afterwards has already paid the cost it
+    exists to prevent.
+
+    So this descends and verifies in one motion, root first:
+
+    1. the directory is PINNED. :func:`platform_compat.pin_directory` opens it
+       with ``OPEN_REPARSE_POINT``, so a junction sitting at the name fails here
+       instead of being traversed -- the refusal and the open are one operation,
+       not a check followed by an open. On Windows the handle also omits
+       ``FILE_SHARE_DELETE``, so while it lives neither that directory nor
+       anything above it can be renamed or deleted;
+    2. only then is it listed, and each child classified from the listing itself
+       (:func:`_entry_is_link`) -- nothing resolves a child;
+    3. a child directory is descended only by re-entering at step 1, so the path
+       the kernel walks to reach component *n* runs entirely through components
+       already opened and verified;
+    4. a child file is opened by :func:`_open_verified`, which does not follow a
+       reparse point at the final name, while its whole parent chain is still
+       held.
+
+    Each pin is held for as long as the subtree under it is being produced --
+    a generator frame stays alive across ``yield``, so an outer level's handle
+    outlives the inner walk -- and released in ``finally``, which also runs when
+    the consumer abandons the walk. Depth, not breadth, bounds how many are open.
+
+    *keep* is asked about relative paths only and must not touch the filesystem.
+    It is applied to FILES only, exactly where the old loop applied it: matching
+    a directory NAME does not prune its contents, because ``_is_excluded``
+    decides that through ``parts`` and did so before.
+
+    On POSIX ``pin_directory`` is ``O_RDONLY | O_DIRECTORY | O_NOFOLLOW``. Its
+    refusal of a symlinked directory is real there and is what ``rglob`` already
+    did, so the set of exported files is unchanged; the anti-rename property is
+    NOT real there -- POSIX has no such lock -- and nothing here relies on it.
+    Containment on POSIX rests where it always did, on ``_open_verified``
+    checking the descriptor's real path.
+    """
+    yield from _walk_pinned(root_real, PurePath(), rel_dir.parts, keep, fenced_ok=fenced_ok)
+
+
+def _walk_pinned(
+    root_real: str,
+    rel_dir: PurePath,
+    descend: tuple[str, ...],
+    keep: Callable[[PurePath], bool],
+    *,
+    fenced_ok: bool = False,
+) -> Iterator[tuple[PurePath, int]]:
+    """Pin ``root_real / rel_dir``, then walk it -- or step into *descend*'s first name.
+
+    One frame per directory, and the frame that lists a directory is the frame
+    that pinned it, so nothing is ever listed by a frame that did not verify it.
+    The chain therefore starts at the crew root itself: the kernel walks that name
+    to reach every candidate, so leaving it unpinned would leave the whole export
+    hanging off a component that could still be renamed away.
+
+    *descend* carries the components between the root and the tree being exported
+    (``workspace``, ``plan_memory``, ``skills``). They are stepped through by NAME
+    with no classification, which is safe for the same reason the walk needs no
+    pre-check anywhere else: :func:`platform_compat.pin_directory` refuses a
+    reparse point at the name itself, so a junction planted at ``workspace``
+    fails at its own open rather than being followed.
+    """
+    here = os.path.join(root_real, *rel_dir.parts)
+    try:
+        pin = platform_compat.pin_directory(here)
+    except OSError:
+        return  # not a real directory, or a reparse point: refused, not followed
+    try:
+        if descend:
+            yield from _walk_pinned(
+                root_real, rel_dir / descend[0], descend[1:], keep, fenced_ok=fenced_ok
+            )
+            return
+        try:
+            with os.scandir(here) as scan:
+                entries = sorted(scan, key=lambda e: e.name)
+        except OSError:
+            return
+        for entry in entries:
+            if _entry_is_link(entry):
+                continue
+            rel = rel_dir / entry.name
+            if entry.is_dir(follow_symlinks=False):
+                yield from _walk_pinned(root_real, rel, (), keep, fenced_ok=fenced_ok)
+            elif entry.is_file(follow_symlinks=False) and keep(rel):
+                fd = _open_verified(
+                    os.path.join(root_real, *rel.parts), root_real, fenced_ok=fenced_ok
+                )
+                if fd is not None:
+                    yield rel, fd
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(pin)
+
+
+def _open_verified(target: str, root_real: str, *, fenced_ok: bool = False) -> int | None:
+    """Open *target* without following a link at its name, and vet the descriptor.
+
+    Split out so :func:`_open_inside` can hold the ancestor pins across the whole
+    of it: the descriptor checks below are only worth anything while the path they
+    were reached through is still the path that was verified.
+
+    *fenced_ok* admits a file the agent fence (`is_sensitive_path`) covers, and is set
+    for exactly one walk: ``memory_stores/``. That whole tree is fenced so a crew's agent
+    cannot read another crew's memory; the export is the OPERATOR downloading their own
+    install, and a private store is their memory as much as the default one is. The
+    fence is not the only screen, so lifting it lifts nothing else: containment in the
+    data home, the regular-file and single-link checks and the tree's own lexical filter
+    all still apply, and the filter is what keeps the one credential that lives under
+    the tree (the member signing key) out of the archive.
+    """
+    try:
+        fd = platform_compat.open_file_no_reparse(target, nonblocking=True)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return None
+        if st.st_nlink > 1:
+            # A hardlink is invisible to every path-based guard: it shares the
+            # target's inode, so the fd's real path is the ALIAS's own name --
+            # `fd_real_path` reports the path the descriptor was opened by, not a
+            # canonical one -- and `is_sensitive_path` is then asked about an
+            # innocent workspace name while the bytes behind it are a credential
+            # file's. `O_NOFOLLOW` has no link to refuse, because there is no
+            # symlink. Only the link COUNT, read off this descriptor, sees it.
+            #
+            # Refused rather than resolved: there is no way to ask "which of my
+            # names is the sensitive one?", and the cost is honest and small --
+            # a workspace file that legitimately has a second link is left out of
+            # the export. Same rule and same reasoning as
+            # `pinned_fs.refuse_hardlink_alias` and
+            # `hooks.safe_read_file_bytes_nolink`.
+            return None
+        real = pinned_fs.fd_real_path(fd)
+        if real is None:
+            return None  # cannot witness containment -> fail closed
+        try:
+            if os.path.commonpath([real, root_real]) != root_real:
+                return None
+        except ValueError:  # different drives on Windows
+            return None
+        if not fenced_ok and is_sensitive_path(real):
+            return None
+    except OSError:
+        return None
+    else:
+        held, fd = fd, -1
+        return held
+    finally:
+        if fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+
+@contextlib.contextmanager
+def _open_contained_file(root_real: str, rel: PurePath) -> Iterator[int | None]:
+    """Open one export file with every ancestor pinned until its descriptor closes."""
+    with contextlib.ExitStack() as held:
+        here = root_real
+        try:
+            for part in ("", *rel.parts[:-1]):
+                here = os.path.join(here, part)
+                pin = platform_compat.pin_directory(here)
+                held.callback(os.close, pin)
+        except OSError:
+            yield None
+            return
+        fd = _open_verified(os.path.join(root_real, *rel.parts), root_real)
+        if fd is not None:
+            held.callback(os.close, fd)
+        yield fd
+
+
+# ZIP's DOS date fields have a seven-bit year and two-second resolution.
+_ZIP_DATE_MIN = (1980, 1, 1, 0, 0, 0)
+_ZIP_DATE_MAX = (2107, 12, 31, 23, 59, 58)
+
+
+def _zip_date_time(epoch: float) -> tuple[int, int, int, int, int, int]:
+    """Clamp header time only; session manifests retain the descriptor's true epoch."""
+    try:
+        date_time = time.localtime(epoch)[:6]
+    except (OSError, OverflowError, ValueError):
+        # Some platforms cannot convert negative or very large filesystem epochs.
+        return _ZIP_DATE_MIN if epoch < 0 else _ZIP_DATE_MAX
+    return min(_ZIP_DATE_MAX, max(_ZIP_DATE_MIN, date_time))
+
+
+def _add_from_fd(zf: zipfile.ZipFile, fd: int, arcname: str) -> None:
+    """Stream the bytes behind *fd* into *zf* as *arcname*.
+
+    ``ZipFile.write`` takes a NAME and opens it itself, which is the re-open
+    :func:`_open_inside` exists to remove, so the entry is built by hand instead.
+    Streaming rather than reading the file whole is deliberate: a workspace file
+    has no size bound here, and the export copies one of any size.
+
+    The entry's timestamp and mode come from the same descriptor, so the metadata
+    describes the bytes actually archived — not whatever the name pointed at when
+    the header was built.
+
+    ``force_zip64`` is not optional here. ``ZipFile.write`` took a name, stat'd it,
+    and turned ZIP64 on by itself for a large source; a streamed entry does not know
+    its size when the header is written, so without this a file over
+    ``zipfile.ZIP64_LIMIT`` raises ``RuntimeError`` part-way through and the export
+    endpoint answers 500. A multi-GiB file under ``workspace/`` is ordinary — a
+    dataset, a model artifact — and must export, so leaving this off would trade
+    one defect for another.
+    """
+    st = os.fstat(fd)
+    info = zipfile.ZipInfo(arcname, date_time=_zip_date_time(st.st_mtime))
+    info.compress_type = zf.compression
+    info.external_attr = (st.st_mode & 0xFFFF) << 16
+    os.lseek(fd, 0, os.SEEK_SET)
+    with (
+        os.fdopen(os.dup(fd), "rb", closefd=True) as src,
+        zf.open(info, "w", force_zip64=True) as dest,
+    ):
+        shutil.copyfileobj(src, dest)
+
+
+#: A dashboard transcript's file name: ``<stem>.jsonl`` directly under ``sessions/``.
+_TRANSCRIPT_SUFFIX = ".jsonl"
+
+#: The longest first line a transcript header is read up to: the same bound the
+#: restricted-session write gate reads, so a longer line is unknown to both.
+_MAX_TRANSCRIPT_HEADER_BYTES = TRANSCRIPT_HEADER_MAX_BYTES
+
+
+def _transcript_stem(name: str) -> str | None:
+    """The session stem of a ``sessions/`` entry named *name*, or ``None``.
+
+    A stem is accepted only in the spelling ``history._safe_key`` writes (word
+    characters, ``-`` and ``.``), so an archive member cannot name a file this
+    platform's history layer would never produce -- a ``:`` or ``\\`` in it, say.
+    """
+    if not name.endswith(_TRANSCRIPT_SUFFIX):
+        return None
+    stem = name[: -len(_TRANSCRIPT_SUFFIX)]
+    if stem in ("", ".", "..") or _safe_key(stem) != stem:
+        return None
+    return stem
+
+
+#: The stem every dashboard chat's transcript carries: a dashboard slot key is
+#: ``dashboard:<slot>`` (`dashboard.chat_utils.dashboard_slot_key`), which
+#: ``history._safe_key`` writes as ``dashboard_<slot>``. Channel threads, cron runs
+#: and subagent runs keep transcripts under other stems and are not chats here.
+_DASHBOARD_STEM_PREFIX = "dashboard_"
+
+
+def _chat_stem(name: str) -> str | None:
+    """The stem of the dashboard chat whose transcript is *name*, or ``None``.
+
+    The one selection rule for which ``sessions/`` entries this feature carries, on
+    export and on import alike: a valid `_transcript_stem` that starts with
+    `_DASHBOARD_STEM_PREFIX` and names a slot after it.
+    """
+    stem = _transcript_stem(name)
+    if stem is None or not stem.startswith(_DASHBOARD_STEM_PREFIX):
+        return None
+    if len(stem) == len(_DASHBOARD_STEM_PREFIX):
+        return None
+    return stem
+
+
+def _transcript_header_verdict(first_line: bytes | None) -> str | None:
+    """Why a transcript may not travel in an archive, or ``None`` when it may.
+
+    Applied on both ends, export and import, so an archive can only ever carry what
+    an export of this build would write. The rule is the one every derived reader
+    applies to Incognito and Temporary chats: they are kept for the user's own
+    History and never exported or transferred. The mode comes from
+    `history.memory_mode_from_header_line`, the same parse the restricted-session
+    write gate uses, and the verdict fails CLOSED -- only a header that reads
+    persistent passes:
+
+    * a metadata header with no ``memory_mode`` reads persistent (a transcript
+      written before the mode existed);
+    * ``memory_mode`` ``persistent`` (any case, surrounding whitespace ignored)
+      passes;
+    * ``incognito`` and ``temporary`` are withheld as private chats;
+    * anything the parse cannot place -- no metadata header, a first line that is
+      not a JSON object, a non-string or unrecognised mode -- is withheld as
+      unreadable.
+    """
+    if first_line is None:
+        return "unreadable header"
+    if not first_line.strip():
+        return "empty transcript"
+    mode = memory_mode_from_header_line(first_line)
+    if mode == "persistent":
+        return None
+    if mode in INCOGNITO_MEMORY_MODES:
+        return "incognito or temporary chat"
+    return "unreadable header"
+
+
+def _read_first_line_fd(fd: int) -> bytes | None:
+    """The first line behind *fd*, without its newline; ``None`` past the header cap."""
+    os.lseek(fd, 0, os.SEEK_SET)
+    buf = bytearray()
+    while len(buf) <= _MAX_TRANSCRIPT_HEADER_BYTES:
+        chunk = os.read(fd, 64 * 1024)
+        if not chunk:
+            return bytes(buf)
+        cut = chunk.find(b"\n")
+        if cut >= 0:
+            buf += chunk[:cut]
+            return bytes(buf) if len(buf) <= _MAX_TRANSCRIPT_HEADER_BYTES else None
+        buf += chunk
+    return None
+
+
+def _keep_top_level_transcript(rel: PurePath) -> bool:
+    """``sessions/<stem>.jsonl`` for a dashboard chat (`_chat_stem`) and nothing else.
+
+    Lexical only, like every walk filter.
+    """
+    return (
+        len(rel.parts) == 2
+        and rel.parts[0] == SESSIONS_DIR_NAME
+        and _chat_stem(rel.parts[1]) is not None
+    )
+
+
+def _rotation_segment_for_stem(name: str, stem: str) -> bool:
+    """Match the complete stem, including when another stem contains the delimiter."""
+    owner, delimiter, suffix = name.rpartition(ARCHIVE_SEGMENT_DELIMITER)
+    return owner == stem and bool(delimiter) and suffix.endswith(_TRANSCRIPT_SUFFIX)
+
+
+def _is_rotation_header(first_line: bytes | None) -> bool:
+    """Only retained rotation history travels; discarded edits never do."""
+    if first_line is None:
+        return False
+    try:
+        header = json.loads(first_line)
+    except (ValueError, RecursionError):
+        return False
+    return (
+        isinstance(header, dict)
+        and header.get("_type") == "archive"
+        and header.get("reason") == "rotate"
+    )
+
+
+def _add_session_from_fd(
+    zf: zipfile.ZipFile, fd: int, arcname: str, mtimes: dict[str, float]
+) -> None:
+    """Record absolute activity time from the same descriptor as the archived bytes."""
+    mtime = os.fstat(fd).st_mtime
+    _add_from_fd(zf, fd, arcname)
+    mtimes[arcname] = mtime
+
+
+#: Minimum manifest allowance in the archive's uncompressed-byte budget. The actual
+#: envelope is measured too, including the three counters at their maximum width.
+_MANIFEST_BASE_RESERVE = 64 * 1024
+#: Per record, beyond its JSON-encoded name: a float takes at most 24 ASCII bytes;
+#: indentation, colon, comma and newline take 8. This allowance covers both.
+_MANIFEST_PER_MEMBER_RESERVE = 64
+
+
+def _export_sessions(
+    zf: zipfile.ZipFile,
+    mc_real: str,
+    prefix: str,
+    mtimes: dict[str, float],
+    *,
+    manifest: dict,
+) -> tuple[int, int, int]:
+    """Write the persistent dashboard chats into *zf*; ``(exported, withheld, skipped)``.
+
+    The pinned walk discovers candidate stems only. Each transcript is reopened and
+    judged under its canonical history lock, which stays held through its threads
+    and images so a deleted chat's private replacement cannot donate companions.
+
+    The finished archive must pass this build's own import inventory check, so the
+    chats are budgeted against the caps import enforces, `_MAX_IMPORT_MEMBERS` and
+    `_MAX_IMPORT_UNCOMPRESSED`, counting every member already in *zf* and a reserve
+    for the manifest still to be written. Chats are taken most recently active first
+    (transcript mtime) and only whole: a chat whose files do not all fit is left out
+    and counted in ``skipped``, and a later, smaller chat may still fit.
+    """
+    candidates: list[tuple[float, str]] = []
+    for rel, fd in _walk_contained(
+        mc_real, PurePath(SESSIONS_DIR_NAME), _keep_top_level_transcript
+    ):
+        try:
+            mtime = os.fstat(fd).st_mtime
+        finally:
+            os.close(fd)
+        stem = _chat_stem(rel.parts[1])
+        if stem is not None:
+            candidates.append((mtime, stem))
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+
+    # These are the only fields filled after selection; each is at most the number
+    # of candidates. Measure the actual envelope (including host/user strings) with
+    # those upper bounds, using the writer's indent and default ASCII escaping.
+    envelope = {
+        **manifest,
+        "contents": {
+            **manifest["contents"],
+            "session_count": len(candidates),
+            "sessions_withheld": len(candidates),
+            "sessions_skipped_size": len(candidates),
+        },
+        "session_mtimes": {},
+    }
+    # A nonempty nested map adds a newline plus two closing-brace indent spaces.
+    manifest_base = len(json.dumps(envelope, indent=2).encode("utf-8")) + 3
+    manifest_bytes_left = _MAX_SETTINGS_DOCUMENT_BYTES - manifest_base
+    infos = zf.infolist()
+    # +1: the manifest itself is one more member, so timestamp records also stay
+    # below _read_session_mtimes' _MAX_IMPORT_MEMBERS record cap.
+    members_left = _MAX_IMPORT_MEMBERS - len(infos) - 1
+    bytes_left = (
+        _MAX_IMPORT_UNCOMPRESSED
+        - sum(i.file_size for i in infos)
+        - max(_MANIFEST_BASE_RESERVE, manifest_base)
+    )
+
+    history = ConversationLog(base_dir=Path(mc_real) / SESSIONS_DIR_NAME)
+    exported = withheld = skipped = 0
+    for _mtime, stem in candidates:
+        with history.locked_stems([stem]):
+            rel = PurePath(SESSIONS_DIR_NAME, f"{stem}{_TRANSCRIPT_SUFFIX}")
+            with _open_contained_file(mc_real, rel) as transcript_fd:
+                if transcript_fd is None:
+                    continue
+                if _transcript_header_verdict(_read_first_line_fd(transcript_fd)) is not None:
+                    withheld += 1
+                    continue
+                # Sized in one pass and written in a second, both under the lock; the
+                # companions open one at a time, so an image-heavy chat never holds a
+                # descriptor per image.
+                members = 1
+                manifest_need = _manifest_entry_size(f"{prefix}/{rel.as_posix()}")
+                need = os.fstat(transcript_fd).st_size
+                for comp_rel, fd in _chat_companions(mc_real, stem):
+                    members += 1
+                    need += os.fstat(fd).st_size
+                    manifest_need += _manifest_entry_size(f"{prefix}/{comp_rel.as_posix()}")
+                need += manifest_need
+                if (
+                    members > members_left
+                    or need > bytes_left
+                    or manifest_need > manifest_bytes_left
+                ):
+                    skipped += 1
+                    continue
+                before = len(zf.infolist())
+                _add_session_from_fd(zf, transcript_fd, f"{prefix}/{rel.as_posix()}", mtimes)
+            for comp_rel, fd in _chat_companions(mc_real, stem):
+                _add_session_from_fd(zf, fd, f"{prefix}/{comp_rel.as_posix()}", mtimes)
+            # Charge what was actually written, not the estimate: a file that grew, or a
+            # companion that appeared, between the two passes still counts against the cap.
+            written = zf.infolist()[before:]
+            members_left -= len(written)
+            written_manifest_bytes = sum(_manifest_entry_size(i.filename) for i in written)
+            manifest_bytes_left -= written_manifest_bytes
+            bytes_left -= sum(i.file_size for i in written) + written_manifest_bytes
+            exported += 1
+    return exported, withheld, skipped
+
+
+def _manifest_entry_size(arcname: str) -> int:
+    """Reserve a record using the manifest writer's default JSON string escaping."""
+    return len(json.dumps(arcname).encode("utf-8")) + _MANIFEST_PER_MEMBER_RESERVE
+
+
+def _chat_companions(mc_real: str, stem: str) -> Iterator[tuple[PurePath, int]]:
+    """``(rel, fd)`` for each companion of *stem* that travels; each fd closes on resume.
+
+    The reply-thread sidecar, the flat image directory and the retained rotation
+    segments. Callers hold the chat's history lock across the whole iteration.
+    """
+    sidecar = PurePath(SESSIONS_DIR_NAME, THREADS_DIR_NAME, f"{stem}{THREADS_SIDECAR_SUFFIX}")
+    with _open_contained_file(mc_real, sidecar) as sidecar_fd:
+        if sidecar_fd is not None:
+            yield sidecar, sidecar_fd
+    # sessions/<stem>.attachments/ is flat: only its direct files travel.
+    images = PurePath(SESSIONS_DIR_NAME, f"{stem}{ATTACHMENTS_DIR_SUFFIX}")
+    for rel, fd in _walk_contained(
+        mc_real,
+        images,
+        lambda rel: len(rel.parts) == 3 and rel.parts[1] == f"{stem}{ATTACHMENTS_DIR_SUFFIX}",
+    ):
+        try:
+            yield rel, fd
+        finally:
+            os.close(fd)
+    archive = PurePath(SESSIONS_DIR_NAME, ARCHIVE_DIR_NAME)
+    for rel, fd in _walk_contained(
+        mc_real,
+        archive,
+        lambda rel: len(rel.parts) == 3 and _rotation_segment_for_stem(rel.name, stem),
+    ):
+        try:
+            if _is_rotation_header(_read_first_line_fd(fd)):
+                yield rel, fd
+        finally:
+            os.close(fd)
+
+
+_MANAGED_TEMPLATES = frozenset(Path(name).stem for name in OWNED_KIRO_AGENT_FILES)
+
+#: The template warnings ride a response header (export) and a summary (import), so
+#: both are bounded: at most this many names, each cut to this many characters.
+MAX_TEMPLATE_WARNINGS = 20
+MAX_TEMPLATE_NAME_CHARS = 64
+
+
+def _clip(name: str) -> str:
+    if len(name) <= MAX_TEMPLATE_NAME_CHARS:
+        return name
+    return name[: MAX_TEMPLATE_NAME_CHARS - 1] + "\u2026"
+
+
+def _installed_specs(agents_dir: Path | None = None) -> list[tuple[dict[str, Any], Path]]:
+    """Every parsed spec in the agents directory, read the one way this module reads
+    them (`parsed_agent_specs`, labelled for the SEL denial trail)."""
+    return parsed_agent_specs(
+        agents_dir if agents_dir is not None else kiro_agents_dir(),
+        operation="portability",
+        source="dashboard",
+    )
+
+
+def crew_template_refs(config_path: Path) -> list[tuple[str, str]]:
+    """``(crew, kiro_agent)`` for each crew row in *config_path* that names a template.
+
+    The two config-level selectors that also name a template, ``agent.default_agent``
+    and ``session.pool_agent``, are listed under those keys in place of a crew name.
+    A bundle never carries ``<kiro home>/agents``, so every name listed here must
+    already exist on whichever machine applies the config. The templates Kiro Crew
+    writes itself (``OWNED_KIRO_AGENT_FILES``) are left out: every install
+    regenerates them. An unreadable, malformed or pathologically nested file
+    answers ``[]``: this feeds a warning, never a refusal.
+    """
+    try:
+        data = json.loads(strip_utf8_bom(config_path.read_text(encoding="utf-8")))
+        rows = data.get("agents")
+    except (OSError, ValueError, AttributeError, RecursionError):
+        return []
+    named = [
+        (str(crew), row.get("kiro_agent"))
+        for crew, row in (rows.items() if isinstance(rows, dict) else ())
+        if isinstance(row, dict)
+    ]
+    for section, key in (("agent", "default_agent"), ("session", "pool_agent")):
+        block = data.get(section)
+        if isinstance(block, dict):
+            named.append((f"{section}.{key}", block.get(key)))
+    return sorted(
+        (holder, template)
+        for holder, template in named
+        if isinstance(template, str) and template and template not in _MANAGED_TEMPLATES
+    )
+
+
+def unbundled_agent_templates(bundled_stems: Iterable[str] = ()) -> tuple[list[str], int]:
+    """The agent templates this install's crews name that an export does not carry.
+
+    *bundled_stems* are the file stems the export carries; a crew may name one by
+    its stem or by the spec's declared ``name``, and both count as carried.
+
+    Returns ``(names, more)``: at most :data:`MAX_TEMPLATE_WARNINGS` clipped names,
+    and how many further names were left out.
+    """
+    names = sorted({template for _crew, template in crew_template_refs(_mc_dir() / "config.json")})
+    stems = set(bundled_stems)
+    if stems:
+        carried = set(stems)
+        for data, path in _installed_specs():
+            if path.stem in stems and isinstance(data, dict):
+                declared = data.get("name")
+                if isinstance(declared, str):
+                    carried.add(declared)
+        names = [n for n in names if n not in carried]
+    kept = names[:MAX_TEMPLATE_WARNINGS]
+    return [_clip(n) for n in kept], len(names) - len(kept)
+
+
+def missing_crew_templates(config_path: Path) -> tuple[list[dict[str, str]], int]:
+    """Crew rows in *config_path* whose ``kiro_agent`` template is not installed here.
+
+    Returns ``(rows, more)``, bounded like :func:`unbundled_agent_templates`.
+
+    Matches a spec by its ``name`` field or file stem, the same test the config
+    loader applies when it resolves a crew's template.
+    """
+    refs = crew_template_refs(config_path)
+    if not refs:
+        return [], 0
+    installed: set[str] = set()
+    for data, path in _installed_specs():
+        installed.add(path.stem)
+        if isinstance(data, dict) and isinstance(data.get("name"), str):
+            installed.add(data["name"])
+    missing = [(crew, template) for crew, template in refs if template not in installed]
+    kept = missing[:MAX_TEMPLATE_WARNINGS]
+    rows = [{"crew": _clip(crew), "kiro_agent": _clip(template)} for crew, template in kept]
+    return rows, len(missing) - len(kept)
+
+
+#: Archive directory (under the export prefix) that carries opted-in agent templates.
+AGENT_TEMPLATES_DIR = "agents"
+
+#: Stands in for every ``mcpServers.*.env`` and ``mcpServers.*.headers`` value of a
+#: bundled template: those values hold tokens and keys, and an export carries none.
+AGENT_TEMPLATE_SECRET_PLACEHOLDER = "<redacted: set on this machine>"
+
+#: Most templates one export carries; the reference walk stops there.
+MAX_BUNDLED_AGENT_TEMPLATES = 200
+
+#: A bundled template's file stem: one path segment, no separators, no leading dot.
+_TEMPLATE_STEM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+#: The spec keys under ``toolsSettings.subagent`` that name further templates.
+_SUBAGENT_REF_KEYS = ("availableAgents", "trustedAgents")
+
+
+def _template_refs_in_spec(data: dict[str, Any]) -> list[str]:
+    """The template names *data* hands work to (its subagent allow lists).
+
+    Glob patterns are left out: they name no single template.
+    """
+    tools_settings = data.get("toolsSettings")
+    sub = tools_settings.get("subagent") if isinstance(tools_settings, dict) else None
+    if not isinstance(sub, dict):
+        return []
+    names: list[str] = []
+    for key in _SUBAGENT_REF_KEYS:
+        value = sub.get(key)
+        for name in value if isinstance(value, list) else ():
+            if isinstance(name, str) and name and not any(ch in name for ch in "*?["):
+                names.append(name)
+    return names
+
+
+def placeholder_mcp_values(data: dict[str, Any]) -> dict[str, Any]:
+    """A copy of template *data* with every MCP server ``env`` and ``headers`` value,
+    and its ``oauth.clientSecret``, replaced by :data:`AGENT_TEMPLATE_SECRET_PLACEHOLDER`.
+    The keys stay, so the receiving machine sees which values it has to fill in."""
+    out = json.loads(json.dumps(data))
+    servers = out.get("mcpServers")
+    for server in servers.values() if isinstance(servers, dict) else ():
+        if not isinstance(server, dict):
+            continue
+        for field in ("env", "headers"):
+            block = server.get(field)
+            if isinstance(block, dict):
+                server[field] = {key: AGENT_TEMPLATE_SECRET_PLACEHOLDER for key in block}
+            elif field in server:
+                server[field] = {}
+        oauth = server.get("oauth")
+        if isinstance(oauth, dict) and "clientSecret" in oauth:
+            oauth["clientSecret"] = AGENT_TEMPLATE_SECRET_PLACEHOLDER
+    return out
+
+
+def bundled_agent_templates() -> tuple[list[tuple[str, dict[str, Any]]], int]:
+    """``(file stem, redacted spec)`` for each template an opted-in export carries,
+    and how many templates the walk reached past the cap without a crew naming them.
+
+    Starts from the templates this install's crews name (:func:`crew_template_refs`)
+    and follows each template's subagent allow lists in turn, visiting every name
+    once so a cycle ends the walk. A name is matched against a spec's ``name`` field
+    or file stem, the test the config loader applies. Templates Kiro Crew writes
+    itself are skipped (every install regenerates them), as are specs reached
+    through a link and specs whose stem is not a plain file name.
+
+    At most :data:`MAX_BUNDLED_AGENT_TEMPLATES` are carried. The walk still finishes
+    past the cap so the count is exact: a crew-named template left out already
+    shows in :func:`unbundled_agent_templates`, so only the others are counted.
+    """
+    by_name: dict[str, tuple[str, dict[str, Any]]] = {}
+    for data, path in _installed_specs():
+        if not isinstance(data, dict) or path.is_symlink():
+            continue
+        if not _TEMPLATE_STEM_RE.match(path.stem) or path.stem in _MANAGED_TEMPLATES:
+            continue
+        by_name.setdefault(path.stem, (path.stem, data))
+        spec_name = data.get("name")
+        if isinstance(spec_name, str) and spec_name:
+            by_name.setdefault(spec_name, (path.stem, data))
+
+    named = {t for _holder, t in crew_template_refs(_mc_dir() / "config.json")}
+    pending = deque(sorted(named))
+    seen: set[str] = set()
+    chosen: dict[str, dict[str, Any]] = {}
+    left_out: dict[str, dict[str, Any]] = {}
+    while pending:
+        name = pending.popleft()
+        if name in seen or name in _MANAGED_TEMPLATES:
+            continue
+        seen.add(name)
+        found = by_name.get(name)
+        if found is None:
+            continue
+        stem, data = found
+        if stem in chosen or stem in left_out:
+            continue
+        if len(chosen) < MAX_BUNDLED_AGENT_TEMPLATES:
+            chosen[stem] = placeholder_mcp_values(data)
+        else:
+            left_out[stem] = data
+        pending.extend(_template_refs_in_spec(data))
+
+    def _named_by_a_crew(stem: str, data: dict[str, Any]) -> bool:
+        declared = data.get("name")
+        return stem in named or (isinstance(declared, str) and declared in named)
+
+    unnamed = [stem for stem, data in left_out.items() if not _named_by_a_crew(stem, data)]
+    return sorted(chosen.items()), len(unnamed)
+
+
+#: Largest bundled template an import reads.
+MAX_AGENT_TEMPLATE_BYTES = 1024 * 1024
+
+
+def is_agent_template_stem(name: str) -> bool:
+    """Whether *name* can name a bundled template: one plain file-name segment."""
+    return bool(_TEMPLATE_STEM_RE.match(name))
+
+
+#: What reading one damaged archive member can raise: a corrupt or truncated deflate
+#: stream (``zlib.error``, ``EOFError``), a bad CRC or header (``BadZipFile``), an
+#: encrypted member (``RuntimeError``), an unsupported compression method
+#: (``NotImplementedError``), and undecodable or malformed text (``ValueError``).
+_UNREADABLE_MEMBER = (
+    OSError,
+    ValueError,
+    RecursionError,
+    EOFError,
+    RuntimeError,
+    NotImplementedError,
+    zipfile.BadZipFile,
+    zlib.error,
+)
+
+
+def _archive_agent_templates(
+    zf: zipfile.ZipFile, want: frozenset[str] = frozenset()
+) -> tuple[dict[str, zipfile.ZipInfo], int, set[str]]:
+    """The bundled template members of *zf* by file stem, and what the cap left out.
+
+    Only ``<prefix>/agents/<stem>.json`` regular files whose stem is a plain file name
+    count. At most :data:`MAX_BUNDLED_AGENT_TEMPLATES` are kept; returns
+    ``(kept, more, beyond)`` where *more* counts the distinct stems past the cap and
+    *beyond* is those of them named in *want*, so a pick past the cap can say so
+    instead of reading as absent.
+    """
+    found: dict[str, zipfile.ZipInfo] = {}
+    # Exact, and bounded by the archive's own member cap (`_MAX_IMPORT_MEMBERS`),
+    # which both the validator and the importer enforce before this runs.
+    past_cap: set[str] = set()
+    for info in zf.infolist():
+        parts = PurePosixPath(info.filename).parts
+        if len(parts) != 3 or parts[1] != AGENT_TEMPLATES_DIR or info.is_dir():
+            continue
+        if _unsafe_member_name(info.filename) or _is_link_entry(info):
+            continue
+        stem, dot, ext = parts[2].rpartition(".")
+        if not dot or ext != "json" or not _TEMPLATE_STEM_RE.match(stem):
+            continue
+        if stem in found:
+            continue
+        if len(found) < MAX_BUNDLED_AGENT_TEMPLATES:
+            found[stem] = info
+        else:
+            past_cap.add(stem)
+    return found, len(past_cap), past_cap & want
+
+
+def _installed_template_names() -> set[str]:
+    """Every template name an import must not write over: each file stem in the
+    agents directory (parseable or not), each declared ``name``, and the templates
+    Kiro Crew writes itself."""
+    names = set(_MANAGED_TEMPLATES)
+    agents = kiro_agents_dir()
+    with contextlib.suppress(OSError):
+        with os.scandir(agents) as entries:
+            for entry in entries:
+                if entry.name.lower().endswith(".json"):
+                    names.add(entry.name[: -len(".json")])
+    for data, path in _installed_specs(agents):
+        names.add(path.stem)
+        if isinstance(data, dict) and isinstance(data.get("name"), str):
+            names.add(data["name"])
+    return names
+
+
+def _vet_bundled_template(
+    zf: zipfile.ZipFile, stem: str, info: zipfile.ZipInfo, installed: set[str]
+) -> tuple[dict[str, Any] | None, str | None]:
+    """``(spec, None)`` when bundled template *stem* may be installed, else
+    ``(None, reason)``: ``exists`` (the stem or the declared name is taken here) or
+    ``invalid`` (too large, unreadable from the archive, not JSON, not an object, or
+    nested too deep). Never raises for a damaged member: an import calls this after
+    it has applied everything else."""
+    if stem in installed:
+        return None, "exists"
+    if info.file_size > MAX_AGENT_TEMPLATE_BYTES:
+        return None, "invalid"
+    try:
+        data = json.loads(strip_utf8_bom(zf.read(info).decode("utf-8")))
+    except _UNREADABLE_MEMBER:
+        return None, "invalid"
+    if not isinstance(data, dict) or exceeds_nesting(data):
+        return None, "invalid"
+    declared = data.get("name")
+    if isinstance(declared, str) and declared in installed:
+        return None, "exists"
+    return data, None
+
+
+def preview_agent_templates(zip_path: Path) -> tuple[list[dict[str, object]], int]:
+    """The templates *zip_path* carries, each with ``exists``: whether one by that
+    name is already installed here, so an import would skip it. Also returns how
+    many further templates the archive holds past :data:`MAX_BUNDLED_AGENT_TEMPLATES`,
+    which an import does not install."""
+    with zipfile.ZipFile(str(zip_path), "r") as zf:
+        members, more, _beyond = _archive_agent_templates(zf)
+        if not members:
+            return [], more
+        installed = _installed_template_names()
+        rows: list[dict[str, object]] = []
+        for stem, info in sorted(members.items()):
+            _data, reason = _vet_bundled_template(zf, stem, info, installed)
+            if reason != "invalid":
+                rows.append({"name": stem, "exists": reason == "exists"})
+        return rows, more
+
+
+def _install_agent_templates(zip_path: Path, picked: list[str], summary: dict) -> None:
+    """Install the bundled templates the user picked into the agents directory.
+
+    A template is written only where no template of that name exists: the file is
+    created exclusively, so even one that appears mid-import is left alone. Each
+    one not written is named in ``agent_templates_skipped`` with its reason; a pick
+    past :data:`MAX_BUNDLED_AGENT_TEMPLATES` reads ``over_limit``, not absent.
+    """
+    written: list[str] = []
+    skipped: list[dict[str, str]] = []
+    with zipfile.ZipFile(str(zip_path), "r") as zf:
+        members, _more, beyond = _archive_agent_templates(zf, frozenset(picked))
+        installed = _installed_template_names()
+        agents = kiro_agents_dir()
+        for stem in picked:
+            info = members.get(stem)
+            if info is None:
+                absence = "over_limit" if stem in beyond else "not_in_archive"
+                skipped.append({"name": _clip(stem), "reason": absence})
+                continue
+            data, reason = _vet_bundled_template(zf, stem, info, installed)
+            if data is None:
+                skipped.append({"name": _clip(stem), "reason": reason or "invalid"})
+                continue
+            # A bundled spec carries its source's allowedTools and autoApprove
+            # verbatim, and both skip the PreToolUse gate, so this host's ceiling
+            # filters them before the spec is written, like every whole-spec writer.
+            sanitize_agent_config_governance(data)
+            target = agents / f"{stem}.json"
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+            try:
+                agents.mkdir(parents=True, exist_ok=True)
+                fd = os.open(target, flags | getattr(os, "O_BINARY", 0), 0o600)
+            except FileExistsError:
+                skipped.append({"name": _clip(stem), "reason": "exists"})
+                continue
+            except OSError:
+                skipped.append({"name": _clip(stem), "reason": "unwritable"})
+                continue
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(data, fh, indent=2)
+            except OSError:
+                with contextlib.suppress(OSError):
+                    target.unlink()
+                skipped.append({"name": _clip(stem), "reason": "unwritable"})
+                continue
+            installed.add(stem)
+            if isinstance(data.get("name"), str):
+                installed.add(data["name"])
+            written.append(stem)
+    if written:
+        clear_list_agents_cache()
+        summary["items"].append(f"agent templates ({len(written)} installed)")
+    summary["agent_templates_installed"] = written
+    summary["agent_templates_skipped"] = skipped
+
+
+def create_export_zip(
+    *,
+    include_sessions: bool = False,
+    memory_only: bool = False,
+    include_agent_templates: bool = False,
+) -> tuple[bytes, dict]:
+    """Create a zip archive of Kiro Crew state. Returns (zip_bytes, manifest_dict).
+
+    *include_sessions* adds the dashboard chats (`_export_sessions`). It is off by
+    default because a transcript holds everything the agent was shown, so an archive
+    that carries chats is a different thing to hand around than one that does not;
+    the manifest then records ``session_count`` and ``sessions_withheld``. With it
+    off the archive is unchanged.
+
+    *memory_only* narrows the archive to the snapshot's ``memory`` component
+    (`MEMORY_ONLY_FILES` and `MEMORY_ONLY_TREES`): no config, crons, hooks, skills,
+    other workspace files or chats, so memory can be handed to someone else without
+    the rest of the install. The manifest records ``components: ["memory"]``. It
+    wins over *include_sessions*.
+
+    *include_agent_templates* adds the agent templates the crews name, and the ones
+    those name in turn (:func:`bundled_agent_templates`), under ``agents/`` with every
+    MCP server ``env`` and ``headers`` value replaced by a placeholder. The manifest
+    then lists them in ``agent_templates``. Off by default; with it off the archive is
+    unchanged. A memory-only export carries none.
+    """
+    if memory_only:
+        include_sessions = False
+        include_agent_templates = False
+    mc = _mc_dir()
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    prefix = f"kirocrew-export-{ts}"
+
+    _wal_checkpoint(mc / "memory.db")
+    _wal_checkpoint(mc / "memory_index.db")
+
+    buf = io.BytesIO()
+    contents_summary: dict = {}
+
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        # Core JSON/text files (none of them is memory)
+        core_files: tuple[str, ...] = (
+            ()
+            if memory_only
+            else (
+                "config.json",
+                *_SETTINGS_DOCUMENTS,
+                "hooks.json",
+                "crons.json",
+                "notifications.jsonl",
+                "project_dir",
+                "workspace_dir",
+            )
+        )
+        for fname in core_files:
+            src = mc / fname
+            if src.is_file() and not src.is_symlink():
+                zf.write(str(src), f"{prefix}/{fname}")
+                contents_summary[fname] = src.stat().st_size
+
+        # The crewmate team list: one document in its own directory. Written by name like
+        # the core files above -- the directory holds nothing else that rides (its lock
+        # file is this host's runtime state), so the pinned tree walk below is not needed.
+        teams_src = mc / "crew-teams" / "teams.json"
+        if not memory_only and teams_src.is_file() and not teams_src.is_symlink():
+            zf.write(str(teams_src), f"{prefix}/crew-teams/teams.json")
+            contents_summary["crew-teams/teams.json"] = teams_src.stat().st_size
+
+        # SQLite databases via backup API
+        for db_name in ("memory.db", "memory_index.db"):
+            src = mc / db_name
+            if src.is_file() and not src.is_symlink():
+                db_buf = io.BytesIO()
+                _backup_sqlite(src, db_buf)
+                zf.writestr(f"{prefix}/{db_name}", db_buf.getvalue())
+                contents_summary[db_name] = db_buf.tell()
+
+        # Directory trees: workspace, plan_memory, skills
+        #
+        # ``mc`` is resolved once, before the walk, and the walk is anchored on the
+        # RESOLVED root: ``$KIROCREW_HOME`` may itself legitimately be a link, and
+        # ``pin_directory`` refuses a reparse point at a name, so pinning the
+        # configured spelling would return an empty archive on such a host.
+        mc_real = os.path.realpath(mc)
+        dir_counts: dict[str, int] = {}
+        # A memory-only export walks only the memory half of the workspace; its
+        # files still count as ``workspace_files`` so the import preview reads them.
+        trees = MEMORY_ONLY_TREES if memory_only else ("workspace", "plan_memory", "skills")
+        for dirname in trees:
+            count = 0
+            for rel, fd in _walk_contained(mc_real, PurePath(dirname), _keep_for_export):
+                try:
+                    # ``as_posix()`` for the same reason the filter rebuilds from
+                    # parts: a zip member name is POSIX-separated by spec.
+                    # ``ZipInfo`` happens to rewrite ``os.sep`` today, so this is
+                    # not a fix for a live bug -- it stops the archive name
+                    # depending on that, next to a filter that must not.
+                    _add_from_fd(zf, fd, f"{prefix}/{rel.as_posix()}")
+                finally:
+                    os.close(fd)
+                count += 1
+            top = dirname.split("/", 1)[0]
+            dir_counts[top] = dir_counts.get(top, 0) + count
+        contents_summary["workspace_files"] = dir_counts.get("workspace", 0)
+        if not memory_only:
+            contents_summary["plan_memory_files"] = dir_counts.get("plan_memory", 0)
+            contents_summary["skill_count"] = dir_counts.get("skills", 0)
+
+        # Named memory stores: the same pinned walk, with the tree's own filter and the
+        # fence lifted (see `_open_verified`). A store's databases go through the backup
+        # API like the root ones -- the gateway holds every store open under WAL while
+        # this runs -- and the filter has already dropped their sidecars.
+        stores: set[str] = set()
+        with hold_stores_for_read(Path(mc_real) / MEMORY_STORES_DIR_NAME):
+            for rel, fd in _walk_contained(
+                mc_real, PurePath(MEMORY_STORES_DIR_NAME), _keep_store_for_export, fenced_ok=True
+            ):
+                try:
+                    arcname = f"{prefix}/{rel.as_posix()}"
+                    if is_product_tree_database(rel.as_posix()):
+                        real = pinned_fs.fd_real_path(fd)
+                        if real is None:
+                            continue
+                        db_buf = io.BytesIO()
+                        _backup_sqlite(Path(real), db_buf)
+                        zf.writestr(arcname, db_buf.getvalue())
+                    else:
+                        _add_from_fd(zf, fd, arcname)
+                finally:
+                    os.close(fd)
+                if len(rel.parts) > 1:
+                    stores.add(rel.parts[1])
+        contents_summary["memory_store_count"] = len(stores)
+
+        bundled_templates: list[str] = []
+        if include_agent_templates:
+            carried, past_cap = bundled_agent_templates()
+            for stem, spec in carried:
+                zf.writestr(
+                    f"{prefix}/{AGENT_TEMPLATES_DIR}/{stem}.json", json.dumps(spec, indent=2)
+                )
+                bundled_templates.append(stem)
+            contents_summary["agent_template_count"] = len(bundled_templates)
+            if past_cap:
+                contents_summary["agent_templates_past_cap"] = past_cap
+
+        # Build the envelope before selecting chats so their timestamp map is
+        # budgeted against the same document the importer will read.
+        manifest = {
+            "version": MEMORY_EXPORT_MANIFEST_VERSION if memory_only else EXPORT_MANIFEST_VERSION,
+            "format": "zip",
+            "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "hostname": socket.gethostname(),
+            "user": os.environ.get("USER", "unknown"),
+            "contents": contents_summary,
+        }
+        if memory_only:
+            manifest["components"] = ["memory"]
+        if include_agent_templates:
+            manifest["agent_templates"] = bundled_templates
+        if include_sessions:
+            session_mtimes: dict[str, float] = {}
+            exported, withheld, skipped = _export_sessions(
+                zf, mc_real, prefix, session_mtimes, manifest=manifest
+            )
+            contents_summary["session_count"] = exported
+            contents_summary["sessions_withheld"] = withheld
+            contents_summary["sessions_skipped_size"] = skipped
+            manifest["session_mtimes"] = session_mtimes
+        zf.writestr(f"{prefix}/MANIFEST.json", json.dumps(manifest, indent=2))
+
+    return buf.getvalue(), manifest
+
+
+# Zip-bomb guards for import archives (CWE-409). A real personal snapshot is far
+# below these ceilings; a decompression bomb (huge declared uncompressed size, or
+# millions of entries) is rejected before extraction rather than filling the
+# host disk.
+_MAX_IMPORT_MEMBERS = 50_000
+_MAX_IMPORT_UNCOMPRESSED = 2 * 1024**3  # 2 GiB
+
+
+def _is_link_entry(info: zipfile.ZipInfo) -> bool:
+    """True when a zip member declares itself a symlink or hardlink.
+
+    CPython's ``ZipFile.extract`` does NOT honor S_IFLNK -- it writes the link
+    target as ordinary file content -- so a link member cannot currently redirect
+    a later write outside the extraction root. This guard exists because that is a
+    property of the extraction backend rather than of the archive: swapping in
+    ``shutil.unpack_archive``, an external ``unzip``, or a future stdlib that
+    honors the mode bit would silently turn a link member into a real symlink and
+    make the escape reachable (CWE-22 via CWE-59). Rejecting these members keeps
+    the guarantee at the archive boundary, where it does not depend on which
+    extractor runs. Legitimate archives carry none: the export side skips symlinks.
+    """
+    mode = info.external_attr >> 16
+    return bool(mode) and stat.S_ISLNK(mode)
+
+
+_DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
+
+
+def _unsafe_member_name(name: str, *, backslash_separates: bool | None = None) -> bool:
+    """True for a member name an extractor could place somewhere other than it reads.
+
+    Covers traversal and absolute names, and the Windows forms: a drive prefix
+    (``C:/x``) that ``zipfile`` strips on extraction, and, where the host treats a
+    backslash as a separator, a backslash-spelled traversal or drive. A stripped
+    drive moves the member up one level, out of the archive prefix, so a lexical
+    filter on the name (the memory-only filter, the one-top-directory check) would
+    describe a different place from where it lands. On POSIX a backslash is an
+    ordinary filename character that the export itself can write, so it is not
+    refused there.
+    """
+    if backslash_separates is None:
+        backslash_separates = os.sep == "\\" or os.altsep == "\\"
+    if backslash_separates:
+        name = name.replace("\\", "/")
+    if name.startswith("/"):
+        return True
+    parts = PurePosixPath(name).parts
+    if ".." in parts:
+        return True
+    return bool(parts) and bool(_DRIVE_PREFIX.match(parts[0]))
+
+
+def _read_manifest_bytes(zf: zipfile.ZipFile, member: str | zipfile.ZipInfo) -> bytes:
+    """A manifest member's bytes, refusing one larger than the manifest budget.
+
+    The budget is ``_MAX_SETTINGS_DOCUMENT_BYTES``, the same one the export sizes
+    its manifest to (session times included), so every backup this product writes
+    reads back. Checked before anything is inflated, so an oversized member is
+    never decoded. Pass the ``ZipInfo`` when iterating entries: a name resolves to
+    the LAST entry of that name, so reading duplicates by name reads one entry many
+    times.
+    """
+    info = member if isinstance(member, zipfile.ZipInfo) else zf.getinfo(member)
+    if info.file_size > _MAX_SETTINGS_DOCUMENT_BYTES:
+        raise ValueError(f"Manifest member too large: {info.filename}")
+    return zf.read(info)
+
+
+def _top_manifest(infos: list[zipfile.ZipInfo], *, required: bool = True) -> zipfile.ZipInfo | None:
+    """The archive's one manifest, at ``<prefix>/MANIFEST.json``.
+
+    Only that placement is the manifest: a ``MANIFEST.json`` deeper in the tree is
+    ordinary content (a workspace or skill file can carry that name), so it never
+    decides what an import applies. Two at the top, under one prefix or two, are
+    refused, since then no single manifest describes the archive. With none,
+    ``required`` decides between refusing and returning ``None``.
+    """
+    tops = [
+        info
+        for info in infos
+        if len(PurePosixPath(info.filename).parts) == 2
+        and PurePosixPath(info.filename).name == "MANIFEST.json"
+    ]
+    if len(tops) > 1:
+        raise ValueError("More than one top-level MANIFEST.json in archive")
+    if not tops:
+        if required:
+            raise ValueError("No MANIFEST.json found in archive")
+        return None
+    return tops[0]
+
+
+def validate_import_zip(zip_path: Path) -> tuple[bool, str, dict]:
+    """Validate a zip file for import.
+
+    Returns (ok, error_message, manifest_dict).
+    """
+    try:
+        vet_zip_inventory(zip_path, max_members=_MAX_IMPORT_MEMBERS)
+        with zipfile.ZipFile(str(zip_path), "r") as zf:
+            names = zf.namelist()
+
+            # Check for path traversal
+            for name in names:
+                if _unsafe_member_name(name):
+                    return False, f"Rejected path traversal: {name}", {}
+
+            # Zip-bomb guard: bound entry count and total uncompressed size.
+            infos = zf.infolist()
+            if len(infos) > _MAX_IMPORT_MEMBERS:
+                return (
+                    False,
+                    f"Rejected: archive has too many entries ({len(infos)} > {_MAX_IMPORT_MEMBERS})",
+                    {},
+                )
+            total_uncompressed = sum(i.file_size for i in infos)
+            if total_uncompressed > _MAX_IMPORT_UNCOMPRESSED:
+                return (
+                    False,
+                    (
+                        f"Rejected: uncompressed size {total_uncompressed} exceeds cap "
+                        f"{_MAX_IMPORT_UNCOMPRESSED} (possible zip bomb)"
+                    ),
+                    {},
+                )
+
+            # Link members can redirect a later write outside the extraction root
+            # even when every name passes the traversal check above.
+            for info in infos:
+                if _is_link_entry(info):
+                    return False, f"Rejected link entry: {info.filename}", {}
+
+            # Find manifest
+            try:
+                top = _top_manifest(zf.infolist())
+                if top is None:  # required=True raises instead; this narrows the type
+                    return False, "No MANIFEST.json found in archive", {}
+                manifest_bytes = _read_manifest_bytes(zf, top)
+            except ValueError as exc:
+                return False, f"Rejected: {exc}", {}
+            manifest_data = json.loads(manifest_bytes)
+            version = manifest_data.get("version")
+            memory_bundle = version == MEMORY_EXPORT_MANIFEST_VERSION and manifest_is_memory_only(
+                manifest_data
+            )
+            if not memory_bundle and (
+                not isinstance(version, int) or not 1 <= version <= EXPORT_MANIFEST_VERSION
+            ):
+                return False, f"Unsupported manifest version: {version}", {}
+
+            return True, "", manifest_data
+    except ZipInventoryRejected as exc:
+        if exc.reason == "too_many_members":
+            return False, f"Rejected: archive has too many entries ({exc})", {}
+        if exc.reason in {"cdir_too_large", "zip64_saturated"}:
+            return False, f"Rejected: archive inventory exceeds cap ({exc}; possible zip bomb)", {}
+        return False, "Invalid zip file", {}
+    except zipfile.BadZipFile:
+        return False, "Invalid zip file", {}
+    except (json.JSONDecodeError, KeyError) as e:
+        return False, f"Invalid manifest: {e}", {}
+
+
+#: Stands in for a job name when the whole store had to be replaced, so the
+#: import summary can say something happened without inventing a name.
+_UNREADABLE_STORE = "<the whole cron store was unreadable>"
+
+
+def _sanitize_imported_crons(crons_path: Path) -> tuple[list[str], list[str]]:
+    """Make an imported cron store safe to load and safe to run.
+
+    Returns ``(dropped, paused)`` — two lists, because they are two different
+    outcomes and a caller that conflates them tells the user the wrong thing. A
+    dropped job is gone; a paused one is fully restored and simply waiting to be
+    switched on. Replaces *crons_path* atomically when it changes anything; a
+    missing file, or a directory at that name, is left alone.
+
+    The store is read and written as UTF-8, never through the locale codepage.
+    Cron job names are operator-authored text and routinely non-ASCII — the same
+    reason ``snapshot._merge_crons``, which merges this very file a few lines
+    later in ``apply_import_zip``, pins ``encoding="utf-8"`` on both ends. A bare
+    ``read_text()`` here decodes the archive's UTF-8 with the host codepage, and
+    both outcomes are wrong: a codepage that cannot decode the bytes raises
+    ``UnicodeDecodeError``, which IS a ``ValueError`` and therefore lands in the
+    recovery arm below — replacing a perfectly good backup with an empty store
+    and reporting it as unreadable — while a codepage that decodes most bytes
+    (cp1252) yields mojibake that the rewrite below then persists to disk.
+
+    Three rules, each closing a different way an archive can act on the host:
+
+    1. A job that is not an object, or whose ``schedule`` is not one, is DROPPED.
+       ``CronService._load`` skips such a record with a warning and it is then
+       silently dropped from the store on the next write — dead weight with an
+       invisible deadline. Dropping it at import, with the drop REPORTED to the
+       user, is the honest version of the same outcome.
+
+    2. A ``command`` is vetted with ``mcp_cron._vet_shell_command``, so it is
+       judged exactly as the same command would be at ``cron_add`` (deny-list,
+       sensitive-path, credential-path and exfiltration checks). A failure DROPS
+       the job, and so does the vet itself raising — an unverifiable command must
+       not be scheduled.
+
+    3. A job that survives with a ``command``, and any job naming a ``script``,
+       is imported DISABLED (``user_paused``) rather than live, and reported as
+       PAUSED, not rejected. The vet bounds what a command may do, not whether the
+       user asked for THIS command on THIS machine, and a ``script`` cannot be
+       vetted at all: the export never carries the ``crons/`` directory, so the
+       name resolves against whatever the target already has there. Both become an
+       ambush if they start running on their own. Disabling keeps the restore — the
+       jobs, their schedules and their history are all still there — while making
+       the first run an explicit human action. Message-only jobs are untouched:
+       they prompt an agent, they do not execute anything on the host.
+    """
+    # The store is resolved ONCE for the read and published by an atomic replace
+    # in the same pinned directory. A by-name read followed by a by-name rewrite is
+    # two resolutions: a link or hardlink alias swapped in between would have the
+    # rewrite follow it and truncate whatever it names. A rename replaces the
+    # directory entry and never follows it, so what lands is what was judged.
+    dir_fd: int | None = None
+    try:
+        if pinned_fs.supports_pinned_walk():
+            dir_fd = pinned_fs.pin_parent(
+                os.path.realpath(crons_path.parent), what="imported cron store", refusal=OSError
+            )
+        try:
+            text = _read_staged_cron_store(crons_path, dir_fd)
+        except FileNotFoundError:
+            return [], []
+        except IsADirectoryError:
+            # Not a file at all: left alone exactly as the by-name `is_file()` did.
+            return [], []
+        return _sanitize_cron_text(text, crons_path, dir_fd)
+    finally:
+        if dir_fd is not None:
+            os.close(dir_fd)
+
+
+def _read_staged_cron_store(crons_path: Path, dir_fd: int | None) -> str | None:
+    """Open the staged store once, judge the descriptor, and read through it.
+
+    Returns ``None`` when the name holds something that is not one regular file
+    (a link, a FIFO, a hardlink alias): that is unreadable as a store and is
+    replaced, never followed. ``O_NONBLOCK`` keeps a FIFO from hanging the
+    import. Raises ``FileNotFoundError`` for a missing store and
+    ``IsADirectoryError`` for a directory, which the caller leaves alone.
+    """
+    try:
+        if dir_fd is not None:
+            flags = (
+                os.O_RDONLY
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_NONBLOCK", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+            )
+            fd = os.open(crons_path.name, flags, dir_fd=dir_fd)
+        else:
+            fd = platform_compat.open_file_no_reparse(crons_path, nonblocking=True)
+    except (FileNotFoundError, IsADirectoryError):
+        raise
+    except OSError:
+        return None
+    try:
+        seen = os.fstat(fd)
+        if stat.S_ISDIR(seen.st_mode):
+            raise IsADirectoryError(str(crons_path))
+        if not stat.S_ISREG(seen.st_mode) or seen.st_nlink != 1:
+            return None
+        chunks = []
+        try:
+            while chunk := os.read(fd, 1024 * 1024):
+                chunks.append(chunk)
+            # UTF-8, never the locale codepage: see _sanitize_imported_crons.
+            return b"".join(chunks).decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+    finally:
+        os.close(fd)
+
+
+def _publish_staged_cron_store(crons_path: Path, dir_fd: int | None, data: object) -> None:
+    """Replace the staged store's directory entry with *data*, never writing through it."""
+    from kiro_crew.atomic_write import pinned_parent_replace_supported
+
+    pinned = dir_fd if dir_fd is not None and pinned_parent_replace_supported() else None
+    atomic_write(crons_path, json.dumps(data, indent=2), parent_dir_fd=pinned)
+
+
+def _sanitize_cron_text(
+    text: str | None, crons_path: Path, dir_fd: int | None
+) -> tuple[list[str], list[str]]:
+    """Apply the three rules of :func:`_sanitize_imported_crons` to the bytes read once."""
+    try:
+        if text is None:
+            raise ValueError("the staged cron store is not one regular file")
+        data = json.loads(text)
+    except ValueError:
+        # Unparseable bytes are not installable as a cron store either, but they
+        # are also not something this function can reason about — an empty store
+        # is the only safe thing to hand the loader.
+        _publish_staged_cron_store(crons_path, dir_fd, {"jobs": []})
+        return [_UNREADABLE_STORE], []
+    # A store whose top level is not an object, or whose `jobs` is not a list, is
+    # REPLACED rather than left alone. `CronService._load` treats such a document
+    # as unsalvageable (empty registry, warning) — replacing it here means the
+    # user is TOLD the store was unreadable at import time, instead of the
+    # gateway silently starting with an empty schedule later.
+    if not isinstance(data, dict) or not isinstance(data.get("jobs"), list):
+        _publish_staged_cron_store(crons_path, dir_fd, {"jobs": []})
+        return [_UNREADABLE_STORE], []
+    jobs = data["jobs"]
+
+    kept: list = []
+    dropped: list[str] = []
+    paused: list[str] = []
+    changed = False
+
+    def _name_of(job: object) -> str:
+        name = job.get("name") if isinstance(job, dict) else None
+        return str(name) if name else "<unnamed>"
+
+    for job in jobs:
+        # Rule 1: a shape unfit for the store must not survive the import. This
+        # predicate is deliberately STRICTER than the loader's (it also demands
+        # str-typed id/name/message, which `_job_from_record` would accept
+        # untyped): the loader skips a bad record with a warning and the next
+        # write drops it for good, so importing anything questionable only
+        # manufactures dead weight with an invisible deadline. Dropping it here,
+        # reported in the import summary, tells the user it happened.
+        if (
+            not isinstance(job, dict)
+            or not all(isinstance(job.get(f), str) for f in ("id", "name", "message"))
+            or not isinstance(job.get("schedule"), dict)
+            or not isinstance(job["schedule"].get("kind"), str)
+        ):
+            dropped.append(_name_of(job))
+            changed = True
+            continue
+
+        command = job.get("command", "")
+        script = job.get("script", "")
+
+        # Rule 2: the command is judged exactly as `cron_add` would judge it.
+        if command:
+            try:
+                reason = _vet_shell_command(command)
+            except Exception:  # noqa: BLE001 — unverifiable command must fail closed
+                reason = "command could not be verified"
+            if reason is not None:
+                dropped.append(_name_of(job))
+                changed = True
+                # Same audit obligation as a `cron_add` denial: the dropped
+                # command never reaches the ACP permission/hook flow, so this is
+                # the only place the denial can be recorded. Named for where it
+                # happened, so an import-time drop is not read as an attempted
+                # `cron_add`.
+                _log_cron_denial("settings_import", reason)
+                continue
+
+        # Rule 3: anything that EXECUTES arrives paused, awaiting a human.
+        if (command or script) and not job.get("user_paused", False):
+            job["user_paused"] = True
+            job["enabled"] = False
+            changed = True
+            paused.append(_name_of(job))
+            _log_cron_denial(
+                "settings_import",
+                "Error: an imported job that runs a command or script is "
+                "restored paused until it is enabled by hand",
+            )
+        kept.append(job)
+
+    if changed:
+        data["jobs"] = kept
+        _publish_staged_cron_store(crons_path, dir_fd, data)
+    return dropped, paused
+
+
+def _strip_host_local_store_state(snap: Path) -> None:
+    """Remove from the extracted archive what no export ever writes under ``memory_stores/``.
+
+    The export's own filter (`_keep_store_for_export`) keeps these out on the way out; this
+    is the same predicate applied on the way in, so an import is not the one direction in
+    which a hand-built archive can plant them. Pruned at the first matching component, so a
+    whole ``.execution-logs/`` or ``<store>/backups/`` goes as one removal.
+
+    An absent or non-directory ``memory_stores`` is a no-op, answered by the pin chain
+    below rather than by a by-name ``is_dir()`` probe ahead of it -- that probe would be
+    the screen-then-act shape this traversal exists to remove.
+    """
+
+    # Every directory is PINNED before its entries are judged, and each entry is acted
+    # on through that pin. ``os.walk`` could not be made safe here: its own descent
+    # re-check is ``os.path.islink``, which a Windows directory junction answers False
+    # to, so a junction planted after the screen below was still descended and an entry
+    # OUT THERE whose relative name matched the predicate was unlinked -- a delete
+    # outside the extracted archive entirely. The extraction directory is only
+    # owner-restricted, which does not exclude a same-UID agent process, so the swap
+    # needs no cooperation from the archive. A link is removed when the predicate
+    # matches it and is never descended either way, because what it points at is not in
+    # this archive.
+    #
+    # The pin starts at the EXTRACTION ROOT, not at ``memory_stores``. Pinning only the
+    # leaf leaves its ancestors reached by name at open time, and ``snap`` itself is one
+    # of them -- it comes from a by-name ``iterdir()`` in that same owner-only
+    # directory, so an agent that swaps ``snap`` for a directory link between the
+    # listing and this open redirects the whole strip and the delete lands outside the
+    # archive after all. The chain below is what makes the sentence above true:
+    # ``snap.parent`` is this process's own freshly created extraction directory and is
+    # the anchor, and every component under it is opened THROUGH the pin above it.
+    def _empty(pinned: platform_compat.PinnedDirectory) -> None:
+        """Remove every entry under *pinned*, through pins the whole way down."""
+        for name in sorted(pinned.names()):
+            if pinned.is_link(name) or not pinned.is_dir(name):
+                pinned.unlink(name)
+                continue
+            _remove_dir(pinned, name)
+
+    def _remove_dir(pinned: platform_compat.PinnedDirectory, name: str) -> None:
+        """Remove the real directory *name* and its whole subtree."""
+        sub = pinned.child_if_real_dir(name)
+        if sub is None:
+            # Replaced since the screen, and being removed either way. A real directory
+            # re-raises out of the helper, which is also how the depth refusal past
+            # ``PINNED_TREE_MAX_DEPTH`` leaves here: an archive nested past the bound
+            # fails the import rather than being imported half-stripped.
+            pinned.unlink(name)
+            return
+        with sub:
+            _empty(sub)
+        pinned.rmdir(name)
+
+    def _strip(pinned: platform_compat.PinnedDirectory, rel: tuple[str, ...]) -> None:
+        for name in sorted(pinned.names()):
+            here = (*rel, name)
+            matched = is_host_local_store_state((MEMORY_STORES_DIR_NAME, *here))
+            if pinned.is_link(name) or not pinned.is_dir(name):
+                if matched:
+                    pinned.unlink(name)
+                continue
+            if matched:
+                # Removed whole, so its contents are never judged individually.
+                _remove_dir(pinned, name)
+                continue
+            sub = pinned.child_if_real_dir(name)
+            if sub is None:
+                # Replaced since the screen. Not descended, and NOT removed: the
+                # predicate did not match it, so it is not this function's to delete.
+                continue
+            with sub:
+                _strip(sub, here)
+
+    with platform_compat.pinned_directory(snap.parent) as work_pin:
+        snap_pin = work_pin.child_if_real_dir(snap.name)
+        if snap_pin is None:
+            # Not a real directory under the pin: either absent, or replaced with a link
+            # since it was listed. Either way there is nothing of THIS archive to strip,
+            # and following it is the harm.
+            return
+        with snap_pin:
+            stores_pin = snap_pin.child_if_real_dir(MEMORY_STORES_DIR_NAME)
+            if stores_pin is None:
+                return
+            with stores_pin:
+                _strip(stores_pin, ())
+
+
+class _SettingsRefused(Exception):
+    """An archive settings document is not the shape its reader needs; the message says why."""
+
+
+#: The largest archive settings document an import will read. The archive itself may
+#: hold 2 GiB, and these documents are parsed before Merge decides to keep this
+#: install's copy, so an unbounded read could exhaust the gateway's memory on a file it
+#: then throws away. Real settings documents are a few KiB.
+_MAX_SETTINGS_DOCUMENT_BYTES = 8 * 1024 * 1024
+
+
+def _read_archive_text(path: Path) -> str:
+    """The archive's *path* as text, read no further than the settings-document cap."""
+    with open(path, "rb") as fh:
+        raw = fh.read(_MAX_SETTINGS_DOCUMENT_BYTES + 1)
+    if len(raw) > _MAX_SETTINGS_DOCUMENT_BYTES:
+        raise _SettingsRefused(
+            f"the archive's {path.name} is larger than {_MAX_SETTINGS_DOCUMENT_BYTES} bytes"
+        )
+    return raw.decode("utf-8")
+
+
+def _read_archive_object(path: Path) -> dict:
+    """Parse the archive's *path* as a JSON object, or raise :class:`_SettingsRefused`.
+
+    Only the top-level shape is checked, as the snapshot restore checks it
+    (`_refuse_unless_json_object`): every consumer of these files reads an object and
+    treats anything else as empty, which is exactly the silent reset an import must not
+    install. The archive's ``meta`` block is dropped -- it records the SOURCE install's
+    writer and load state, and the destination's own writer stamps a fresh one.
+    """
+    try:
+        doc = json.loads(_read_archive_text(path))
+    except (OSError, ValueError, RecursionError) as exc:
+        raise _SettingsRefused(f"the archive's {path.name} is not readable JSON ({exc})") from None
+    if not isinstance(doc, dict):
+        raise _SettingsRefused(
+            f"the archive's {path.name} is a JSON {type(doc).__name__}, not an object"
+        )
+    # Parsing succeeds well past the depth the config readers can walk: a document a
+    # few hundred levels deep installs, then every later load raises RecursionError.
+    if exceeds_nesting(doc):
+        raise _SettingsRefused(
+            f"the archive's {path.name} nests deeper than {MAX_DOCUMENT_NESTING} levels"
+        )
+    doc.pop("meta", None)
+    return doc
+
+
+def _skip_setting(summary: dict, label: str, why: str) -> None:
+    summary["items"].append(f"{label} (skipped: {why})")
+    summary.setdefault("refused_merges", []).append(label)
+
+
+def _vet_archive_settings(snap: Path, summary: dict) -> dict[str, object]:
+    """Validate every settings document the archive carries, BEFORE either branch applies one.
+
+    Returns the parsed form of each document that passed, keyed by file name. A document
+    that failed is reported as skipped and REMOVED from the extracted archive, so neither
+    branch can install it: merge never reads it, and replace (`_do_replace`) leaves the
+    live copy in place for a file the bundle does not carry.
+
+    The two documents whose readers filter on the way in are also rewritten in the
+    extracted archive to their filtered form, so a replace installs what a merge into an
+    install without the file would: ``ui-prefs.json`` without its credential-shaped keys
+    and unstorable values, ``notification_settings.json`` without a mute on a protected
+    channel.
+    """
+    vetted: dict[str, object] = {}
+    for name, label in (
+        ("config.json", "config"),
+        ("config.local.json", "config.local"),
+        ("ui-prefs.json", "ui-prefs"),
+        ("notification_settings.json", "notification-settings"),
+    ):
+        src = snap / name
+        if not src.is_file():
+            continue
+        try:
+            if name == "ui-prefs.json":
+                try:
+                    patch, dropped = ui_prefs.parse_imported_ui_prefs(src)
+                except ui_prefs.UiPrefsError as exc:
+                    raise _SettingsRefused(f"the archive's {name} is {exc}") from None
+                except OSError as exc:
+                    raise _SettingsRefused(f"the archive's {name} is unreadable ({exc})") from None
+                # Staged as the store's own bytes, so what a Replace installs is the
+                # exact document the parse just held to the store's size bound.
+                atomic_write(
+                    src, ui_prefs.render_document(patch).encode("utf-8"), restrict_to_owner=True
+                )
+                vetted[name] = (patch, dropped)
+            elif name == "notification_settings.json":
+                try:
+                    text = _read_archive_text(src)
+                    channels, dropped = parse_imported_settings(text)
+                except (OSError, ValueError) as exc:
+                    raise _SettingsRefused(f"the archive's {name} is unusable ({exc})") from None
+                # An atomic replace, as the ui-prefs branch above: a by-name
+                # write_text would follow a link or hardlink alias planted at the
+                # staged name since the read. No mode, matching the live writer.
+                atomic_write(src, json.dumps({"channel_settings": channels}, indent=2))
+                vetted[name] = (channels, dropped)
+            else:
+                vetted[name] = _read_archive_object(src)
+            # Replace installs the STAGED file's mode (`_backup_and_copy` copies it
+            # from the source fstat), and the extractor creates every staged file at
+            # the umask default -- typically group/world-readable. The config writer
+            # creates at 0o600, so a replace must not install those documents wider
+            # than their own writer ever would (the ui-prefs rewrite above already
+            # wrote 0o600). notification_settings.json is left alone: its live
+            # writer (`atomic_write` with no mode) uses the umask too.
+            if name in ("config.json", "config.local.json"):
+                # An extracted copy inside the import's private (0o700) temp dir.
+                platform_compat.restrict_to_owner(src)  # lockdown-ok: private staged copy
+        except _SettingsRefused as exc:
+            _skip_setting(summary, label, str(exc))
+            src.unlink()
+    return vetted
+
+
+#: What a Merge says about a settings document it left alone. Replace is the path
+#: that restores one over this install's own.
+_KEPT_NOTE = "kept this install's; import with Replace to restore the archive's"
+
+
+def _merge_settings(
+    mc: Path,
+    vetted: dict[str, object],
+    summary: dict,
+    channel_settings: ChannelSettings | None,
+) -> None:
+    """Apply the archive's settings documents the way Merge applies everything: never overwrite.
+
+    Per document, not per setting. A document this install LACKS is installed from the
+    vetted archive copy and reported ``"<label> (restored)"``; a document this install
+    HAS is left untouched, byte for byte, and reported as kept. Replace is the path that
+    restores the archive's settings over this install's (backing the old ones up first).
+
+    * ``config.json`` -- installed through `update_config_locked`, which re-checks the
+      absence under the config lock, writes owner-only, stamps this install's ``meta``
+      and wakes the live watcher.
+    * ``config.local.json`` -- NEVER installed by a Merge, even where this install has
+      none: the overlay outranks ``config.json`` at load, so an installed copy would set
+      every key it names over this install's own config -- the rule ``snapshot._do_merge``
+      follows for the same file.
+    * ``ui-prefs.json`` -- through the store's validated writer
+      (`ui_prefs.install_imported_ui_prefs`), which re-checks the absence under its lock.
+    * ``notification_settings.json`` -- through the running gateway's store when there
+      is one (`ChannelSettings.install_imported`), so a restored mute applies at once and
+      the in-memory copy does not write the old settings back over it.
+
+    Every document the archive carried that this Merge did not apply is named in
+    ``summary["settings_kept"]``. The entries are the four file names above, never
+    archive-authored text, so the list is bounded by construction (at most four).
+    """
+    kept: list[str] = []
+
+    def _keep(name: str, label: str, note: str = _KEPT_NOTE) -> None:
+        kept.append(name)
+        summary["items"].append(f"{label} ({note})")
+
+    incoming = vetted.get("config.json")
+    if isinstance(incoming, dict):
+        target = mc / "config.json"
+        installed: list[bool] = []
+
+        def _install_if_absent(_current: dict) -> dict | None:
+            # Inside the config lock: a writer that created the file first wins.
+            if os.path.lexists(target):
+                return None
+            installed.append(True)
+            return dict(incoming)
+
+        if os.path.lexists(target):
+            _keep("config.json", "config")
+        else:
+            try:
+                update_config_locked(target, mutate=_install_if_absent)
+            except (ConfigReadError, ConfigWriteRefused, OSError) as exc:
+                _skip_setting(summary, "config", str(exc))
+            else:
+                if installed:
+                    summary["items"].append("config (restored)")
+                else:
+                    _keep("config.json", "config")
+
+    if "config.local.json" in vetted:
+        if os.path.lexists(mc / "config.local.json"):
+            _keep("config.local.json", "config.local")
+        else:
+            _keep(
+                "config.local.json",
+                "config.local",
+                "not installed: a Merge never installs the overlay, which would outrank "
+                "this install's config.json; import with Replace to restore the archive's",
+            )
+
+    prefs = vetted.get("ui-prefs.json")
+    if isinstance(prefs, tuple):
+        patch, dropped = prefs
+        note = f"; {dropped} unstorable entr{'y' if dropped == 1 else 'ies'} dropped"
+        try:
+            installed_prefs = bool(patch) and ui_prefs.install_imported_ui_prefs(patch)
+        except (ui_prefs.UiPrefsError, OSError) as exc:
+            _skip_setting(summary, "ui-prefs", str(exc))
+        else:
+            if installed_prefs:
+                summary["items"].append(f"ui-prefs (restored{note if dropped else ''})")
+                summary["ui_prefs_restored"] = True
+            elif not patch:
+                summary["items"].append(f"ui-prefs (nothing to restore{note if dropped else ''})")
+            else:
+                _keep("ui-prefs.json", "ui-prefs")
+
+    notes = vetted.get("notification_settings.json")
+    if isinstance(notes, tuple):
+        channels, dropped = notes
+        note = f"; {dropped} invalid value{'' if dropped == 1 else 's'} dropped"
+        try:
+            live = channel_settings if channel_settings is not None else ChannelSettings()
+            installed_notes = live.install_imported(channels)
+        except OSError as exc:
+            _skip_setting(summary, "notification-settings", str(exc))
+        else:
+            if installed_notes:
+                summary["items"].append(
+                    f"notification-settings (restored{note if dropped else ''})"
+                )
+            else:
+                _keep("notification_settings.json", "notification-settings")
+
+    if kept:
+        summary["settings_kept"] = kept
+
+
+def _listing(directory: Path) -> dict[str, os.DirEntry]:
+    """The entries of *directory* by name; empty when it cannot be listed."""
+    try:
+        with os.scandir(directory) as scan:
+            return {entry.name: entry for entry in scan}
+    except OSError:
+        return {}
+
+
+def _real_dir(entry: os.DirEntry | None) -> bool:
+    """A directory that is no link or reparse point, classified from its listing."""
+    return entry is not None and not _entry_is_link(entry) and entry.is_dir(follow_symlinks=False)
+
+
+def _real_file(entry: os.DirEntry | None) -> bool:
+    """A regular file that is no link or reparse point, classified from its listing."""
+    return entry is not None and not _entry_is_link(entry) and entry.is_file(follow_symlinks=False)
+
+
+@contextlib.contextmanager
+def _open_import_session_file(root: Path, rel: PurePath) -> Iterator[int | None]:
+    """Open an extracted file with every component below the extraction root pinned.
+
+    The root is the private extraction directory, not the archive-supplied top-level
+    name. Descendants must never be resolved before opening: doing so would bless an
+    ancestor replaced by a symlink. The caller owns the yielded descriptor until exit.
+    """
+    with contextlib.ExitStack() as held:
+        fd: int | None = None
+        try:
+            parent = held.enter_context(
+                pinned_fs.open_pinned_descendant_dir(
+                    root, rel.parts[:-1], what="imported chat source"
+                )
+            )
+            if parent is None:
+                fd = platform_compat.open_file_no_reparse(root / rel, nonblocking=True)
+            else:
+                fd = os.open(
+                    rel.name,
+                    os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0),
+                    dir_fd=parent,
+                )
+            held.callback(os.close, fd)
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+                fd = None
+        except (OSError, pinned_fs.PinnedPathRefusal):
+            fd = None
+        yield fd
+
+
+def _copy_import_session_fd(
+    mc: Path,
+    rel: PurePath,
+    fd: int,
+    *,
+    held: contextlib.ExitStack,
+    parents: dict[PurePath, int | None],
+    created: dict[PurePath, tuple[int, int]],
+) -> bool:
+    """Keep each destination pin and created inode until this chat commits or rolls back."""
+    if rel.parent not in parents:
+        parents[rel.parent] = held.enter_context(
+            pinned_fs.open_pinned_descendant_dir(
+                mc, rel.parts[:-1], what="imported chat destination", create=True
+            )
+        )
+    parent = parents[rel.parent]
+
+    def record_opened(st: os.stat_result) -> None:
+        # The descriptor's identity is available even when the first write fails.
+        created[rel] = (st.st_dev, st.st_ino)
+
+    os.lseek(fd, 0, os.SEEK_SET)
+    # The primitive takes ownership; the reader's context still owns fd.
+    return pinned_fs.copy_file_pinned(
+        str(mc / rel),
+        str(mc / rel),
+        src_fd=os.dup(fd),
+        dst_dir_fd=parent,
+        dst_name=rel.name if parent is not None else None,
+        skip_existing=True,
+        on_opened=record_opened,
+    )
+
+
+def _rollback_import_session(
+    mc: Path,
+    parents: dict[PurePath, int | None],
+    created: dict[PurePath, tuple[int, int]],
+) -> list[str]:
+    """Remove only this call's files, through the pins held for their creation."""
+    left = []
+    for rel, identity in reversed(created.items()):
+        parent = parents[rel.parent]
+        try:
+            if parent is None:
+                removed = pinned_fs.unlink_verified_by_name(mc / rel.parent, rel.name, identity)
+            else:
+                removed = pinned_fs.unlink_verified(parent, rel.name, identity)
+        except OSError:
+            removed = False
+        if not removed:
+            left.append(rel.as_posix())
+    return left
+
+
+def _merge_sessions(snap: Path, mc: Path, summary: dict, *, allow_unpinned: bool) -> None:
+    """Add the archive's dashboard chats this install does not have yet.
+
+    Never overwrites: a transcript whose file name already exists here is left as
+    it is, along with its threads and images, so a re-import is a no-op and two
+    machines' copies of one chat are never spliced. Each candidate is re-judged by
+    `_transcript_header_verdict` -- the archive is not trusted to have come from an
+    export that applied it -- and by `_chat_stem`, so only dashboard chats, in the
+    spelling this platform's history layer writes, are installed.
+
+    Listings select candidates only. Every accepted file is opened with the whole
+    extraction-relative chain pinned, then copied from that descriptor into the
+    pinned destination with exclusive creation. Transcript and rotation headers
+    are judged through the descriptor that supplies the installed bytes. Nothing
+    is moved out of the extraction tree. Platforms without directory descriptors
+    use the import driver's declared unpinned policy and still copy, never move.
+
+    Records ``sessions_added``, ``sessions_skipped_existing``, ``sessions_withheld``
+    and ``sessions_failed`` in *summary*. Copy failures roll back only this call's
+    files under the stem lock and use the existing items/refused_merges reporting.
+    An archive without a ``sessions/`` tree records nothing.
+    """
+    if not _real_dir(_listing(snap).get(SESSIONS_DIR_NAME)):
+        return
+    src = snap / SESSIONS_DIR_NAME
+    entries = _listing(src)
+    threads_dir = entries.get(THREADS_DIR_NAME)
+    threads = _listing(src / THREADS_DIR_NAME) if _real_dir(threads_dir) else {}
+    archive_dir = entries.get(ARCHIVE_DIR_NAME)
+    segments = _listing(src / ARCHIVE_DIR_NAME) if _real_dir(archive_dir) else {}
+    _staging_is_pinned(allow_unpinned=allow_unpinned, what="chat import")
+    dest = mc / SESSIONS_DIR_NAME
+    history = ConversationLog(base_dir=dest)
+    added = existing = withheld = failed = 0
+    for name in sorted(entries):
+        entry = entries[name]
+        stem = _chat_stem(name)
+        if stem is None or not _real_file(entry):
+            continue
+        rel = PurePath(SESSIONS_DIR_NAME, name)
+        with _open_import_session_file(snap.parent, PurePath(snap.name) / rel) as fd:
+            if fd is None or _transcript_header_verdict(_read_first_line_fd(fd)) is not None:
+                withheld += 1
+                continue
+            # Exclusive file creation alone cannot keep two imports' companions
+            # together. Hold the transcript writers' lock through the whole install.
+            with history.locked_stems([stem]):
+                if os.path.lexists(dest / name):
+                    existing += 1
+                    continue
+                companions: list[PurePath] = []
+                sidecar = threads.get(f"{stem}{THREADS_SIDECAR_SUFFIX}")
+                if sidecar is not None and _real_file(sidecar):
+                    companions.append(PurePath(THREADS_DIR_NAME, sidecar.name))
+                images = entries.get(f"{stem}{ATTACHMENTS_DIR_SUFFIX}")
+                if images is not None and _real_dir(images):
+                    # Attachments are flat: only regular files directly inside.
+                    for image in _listing(Path(images.path)).values():
+                        if _real_file(image):
+                            companions.append(PurePath(images.name, image.name))
+                companions.extend(
+                    PurePath(ARCHIVE_DIR_NAME, segment.name)
+                    for segment in segments.values()
+                    if _rotation_segment_for_stem(segment.name, stem) and _real_file(segment)
+                )
+                with contextlib.ExitStack() as held:
+                    parents: dict[PurePath, int | None] = {}
+                    created: dict[PurePath, tuple[int, int]] = {}
+
+                    def install(member: PurePath, source_fd: int) -> None:
+                        if not _copy_import_session_fd(
+                            mc, member, source_fd, held=held, parents=parents, created=created
+                        ):
+                            raise OSError(f"chat file could not be installed: {member.as_posix()}")
+
+                    try:
+                        for companion in companions:
+                            member = PurePath(SESSIONS_DIR_NAME) / companion
+                            with _open_import_session_file(
+                                snap.parent, PurePath(snap.name) / member
+                            ) as companion_fd:
+                                if companion_fd is None:
+                                    continue
+                                if companion.parts[0] == ARCHIVE_DIR_NAME:
+                                    if not _is_rotation_header(_read_first_line_fd(companion_fd)):
+                                        continue
+                                install(member, companion_fd)
+                        # The transcript is the existing-chat marker; publish it last.
+                        install(rel, fd)
+                    except (OSError, pinned_fs.PinnedPathRefusal) as exc:
+                        left = _rollback_import_session(mc, parents, created)
+                        failed += 1
+                        summary["items"].append(f"sessions/{name} (failed: {exc})")
+                        if left:
+                            summary["items"].append(
+                                "sessions rollback incomplete (not removed: "
+                                + ", ".join(left)
+                                + ")"
+                            )
+                        continue
+                added += 1
+    summary["sessions_added"] = added
+    summary["sessions_skipped_existing"] = existing
+    summary["sessions_withheld"] = withheld
+    summary["sessions_failed"] = failed
+    if failed:
+        summary.setdefault("refused_merges", []).append("sessions")
+    summary["items"].append(
+        f"sessions (merged: {added} added, {existing} already here, {withheld} withheld, "
+        f"{failed} failed)"
+    )
+
+
+def _read_session_mtimes(zf: zipfile.ZipFile) -> dict[str, float]:
+    """Read optional absolute session times; unusable records leave extraction time.
+
+    This is bounded by both the settings-document byte cap and archive member cap.
+    ZIP wall-clock fields carry no zone, so they are never a fallback for activity.
+    """
+    manifests = [
+        info
+        for info in zf.infolist()
+        if len(PurePosixPath(info.filename).parts) == 2
+        and PurePosixPath(info.filename).name == "MANIFEST.json"
+    ]
+    if len(manifests) != 1 or manifests[0].file_size > _MAX_SETTINGS_DOCUMENT_BYTES:
+        return {}
+    try:
+        with zf.open(manifests[0]) as src:
+            raw = src.read(_MAX_SETTINGS_DOCUMENT_BYTES + 1)
+        if len(raw) > _MAX_SETTINGS_DOCUMENT_BYTES:
+            return {}
+        manifest = json.loads(raw)
+    except (OSError, ValueError, RecursionError):
+        return {}
+    if not isinstance(manifest, dict):
+        return {}
+    records = manifest.get("session_mtimes")
+    if not isinstance(records, dict) or len(records) > _MAX_IMPORT_MEMBERS:
+        return {}
+    mtimes: dict[str, float] = {}
+    for name, value in records.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        try:
+            epoch = float(value)
+        except OverflowError:
+            continue
+        if math.isfinite(epoch):
+            mtimes[name] = epoch
+    return mtimes
+
+
+def _read_member_json(zf: zipfile.ZipFile, name: str | zipfile.ZipInfo) -> object:
+    """One archive member parsed as JSON, or ``None`` when it does not parse.
+
+    An oversized member raises ``ValueError`` instead of reading as ``None``: the
+    caller asks whether ANY manifest declares memory only, and an unreadable one
+    must not quietly answer "no" and widen the import.
+    """
+    data = _read_manifest_bytes(zf, name)
+    try:
+        return json.loads(data)
+    except (ValueError, RecursionError):
+        return None
+
+
+def apply_import_zip(
+    zip_path: Path,
+    mode: str = "merge",
+    *,
+    channel_settings: ChannelSettings | None = None,
+    memory_only: bool = False,
+    agent_templates: tuple[str, ...] = (),
+) -> dict:
+    """Extract and apply an import zip.
+
+    Args:
+        zip_path: Path to validated zip file.
+        mode: "merge" (default, non-destructive) or "replace" (overwrites). Merge
+            never overwrites memory, crons, workspace files or skills, and installs
+            an archive settings document only where this install has none -- never
+            the ``config.local.json`` overlay -- naming each it kept in
+            ``settings_kept`` (see `_merge_settings`). Replace restores all four.
+        channel_settings: the running gateway's notification-settings store, so a
+            restored mute applies at once and is not written back over by the
+            in-memory copy. ``None`` (no gateway in this process) loads one from disk.
+        memory_only: apply only the memory component (`_is_memory_member`); every
+            other member stays in the zip. Also implied by an archive whose manifest
+            declares memory only. Merge only: a Replace raises ``ValueError``,
+            because a whole-install replace from a memory bundle would reset
+            everything the bundle does not carry.
+        agent_templates: the bundled agent templates (file stems under ``agents/``) to
+            install. Empty, the default, installs none. A picked template is written
+            only where no template of that name exists, in either mode; every one not
+            written is named in ``agent_templates_skipped``. A memory-only import
+            installs none.
+
+    Returns summary dict of what was imported. ``ui_prefs_restored`` is True when the
+    browser-preference backup was installed, which tells the dashboard to re-read it.
+    """
+    try:
+        vet_zip_inventory(zip_path, max_members=_MAX_IMPORT_MEMBERS)
+    except ZipInventoryRejected as exc:
+        if exc.reason == "too_many_members":
+            raise ValueError(f"Import archive has too many entries ({exc})") from exc
+        if exc.reason in {"cdir_too_large", "zip64_saturated"}:
+            raise ValueError(
+                f"Import archive inventory exceeds cap ({exc}; possible zip bomb)"
+            ) from exc
+        raise zipfile.BadZipFile("Invalid zip file") from exc
+
+    mc = _mc_dir()
+    # Asked once, at the top, before anything is extracted or written. Both branches
+    # below mutate the data home, and the merge branch writes core files with
+    # shutil.copy2 BEFORE it reaches the first tree call -- so gating inside the tree
+    # helpers let a merge on a platform that cannot pin half-apply the core files and
+    # then raise, against this function's own "fails loudly, nothing was written"
+    # contract. Raised in review. This is the third site of the same defect (after
+    # _build_snapshot and _do_merge), which is why the gate now lives at the entry of
+    # every operation that mutates rather than next to the individual writes.
+    #
+    # There is no flag to pass here: an import is a UI action, not a command line. I first
+    # concluded from that that the gate should refuse, and it was the wrong conclusion drawn
+    # from a correct observation -- CI proved it by failing four PRE-EXISTING portability
+    # tests on Windows. Refuse-by-default only means "ask the user" where a consent surface
+    # exists. Where none does, it means removing the feature on that platform, which is not
+    # a security decision anyone made.
+    #
+    # So this path PERMITS a by-name traversal and records that it happened, while snapshot
+    # and restore keep refusing -- because they have `--allow-unpinned-staging` and can
+    # actually ask. The per-entry screens still apply either way: the copy opens with
+    # O_NOFOLLOW and the walk rejects links and reparse points, so what is given up here is
+    # ancestor-swap resistance, not link resistance.
+    staging_pinned = _staging_is_pinned(allow_unpinned=True, what=f"{mode} import")
+
+    # What this field may honestly say depends on the MODE, not only the platform.
+    # Reporting "pinned" for a merge whose core files and skills are still copied by
+    # name with `shutil` is true of the platform, false of the operation, and this
+    # field exists to tell a reader what actually happened.
+    #
+    # replace delegates the whole apply to `_do_replace`, which is pinned throughout. merge
+    # routes only its tree copy through the primitive; its core files (including the
+    # databases, deliberately out of scope) and its skills copy are by name. So merge
+    # on a pinnable platform is MIXED, and saying so is the point.
+    if not staging_pinned:
+        staging_mode = "unpinned"
+    elif mode == "replace":
+        staging_mode = "pinned"
+    else:
+        staging_mode = "mixed"
+    if not staging_pinned:
+        logger.warning(
+            "%s import staged by name: this platform cannot open a directory relative to a "
+            "descriptor, so an ancestor swapped mid-import could redirect the copy. The "
+            "summary records staging=unpinned.",
+            mode,
+        )
+    summary: dict = {
+        "mode": mode,
+        "items": [],
+        "staging": staging_mode,
+    }
+
+    with tempfile.TemporaryDirectory() as work_str:
+        work = Path(work_str)
+        platform_compat.restrict_dir_to_owner(work)
+
+        with zipfile.ZipFile(str(zip_path), "r") as zf:
+            infos = zf.infolist()
+            # Zip-bomb guard (defense-in-depth; validate_import_zip also checks).
+            if len(infos) > _MAX_IMPORT_MEMBERS:
+                raise ValueError(
+                    f"Import archive has too many entries ({len(infos)} > {_MAX_IMPORT_MEMBERS})"
+                )
+            total_uncompressed = sum(i.file_size for i in infos)
+            if total_uncompressed > _MAX_IMPORT_UNCOMPRESSED:
+                raise ValueError(
+                    f"Import archive uncompressed size {total_uncompressed} exceeds cap "
+                    f"{_MAX_IMPORT_UNCOMPRESSED} (possible zip bomb)"
+                )
+            session_mtimes = _read_session_mtimes(zf)
+            if not memory_only:
+                # The same one manifest the validator read decides the scope; a file
+                # elsewhere that happens to be named MANIFEST.json is content. With no
+                # manifest at all nothing declares memory only (the validator is what
+                # requires one); two at the top are still refused.
+                top = _top_manifest(infos, required=False)
+                memory_only = top is not None and manifest_is_memory_only(
+                    _read_member_json(zf, top)
+                )
+            if memory_only and mode != "merge":
+                raise ValueError("A memory-only import is merge only")
+            for info in infos:
+                parts = PurePosixPath(info.filename).parts
+                if _unsafe_member_name(info.filename):
+                    continue
+                if _is_link_entry(info):
+                    continue
+                if memory_only and not _is_memory_member(tuple(parts[1:])):
+                    continue
+                if len(parts) >= 2 and parts[1] == AGENT_TEMPLATES_DIR:
+                    # Bundled templates are their own component, installed below
+                    # straight from the archive and only when picked.
+                    continue
+                extracted = zf.extract(info, work)
+                # The filters above read the NAME; this checks where the extractor
+                # actually put it. A member that lost its top directory on the way
+                # out would be read as a different component than it was filtered as.
+                if Path(extracted).relative_to(work).parts[:1] != parts[:1]:
+                    raise ValueError(
+                        f"Rejected member that left its archive prefix: {info.filename}"
+                    )
+                if len(parts) >= 3 and parts[1] == SESSIONS_DIR_NAME and not info.is_dir():
+                    # Only accepted chats are copied out of this private staging tree;
+                    # no-overwrite copying preserves these epochs on installed files.
+                    ts = session_mtimes.get(info.filename)
+                    if ts is not None:
+                        with contextlib.suppress(OSError, OverflowError, ValueError):
+                            os.utime(extracted, (ts, ts))
+
+        snap_dirs = [d for d in work.iterdir() if d.is_dir()]
+        if len(snap_dirs) != 1:
+            raise ValueError(f"Expected 1 top-level directory in zip, found {len(snap_dirs)}")
+        snap = snap_dirs[0]
+        if memory_only:
+            summary["components"] = ["memory"]
+
+        # Re-vet imported cron commands before ANY path below consumes
+        # crons.json (merge, copy, or replace). An import archive is
+        # attacker-influenced — the threat is a "settings backup" a user is
+        # talked into importing — and a cron ``command`` is a free-form shell
+        # string the scheduler later runs via ``sh -c``, entirely outside the
+        # ACP permission/hook flow. ``cron_add`` guards exactly that out-of-band
+        # execution with ``_vet_shell_command`` at storage time; the import path
+        # wrote crons.json directly and so skipped it, turning a crafted archive
+        # into arbitrary command execution with no CSRF, prompt injection, or
+        # auth bypass required (CWE-502, CWE-862). Apply the identical guard here
+        # and drop any job that fails, so a mostly-benign backup still restores
+        # its safe jobs instead of the whole import aborting.
+        dropped_crons, paused_crons = _sanitize_imported_crons(snap / "crons.json")
+        if dropped_crons:
+            summary["rejected_crons"] = dropped_crons
+        # Reported separately: these are restored in full and only need switching
+        # on, so calling them "rejected" would tell the user their jobs are gone.
+        if paused_crons:
+            summary["paused_crons"] = paused_crons
+
+        # Before EITHER branch, for the same reason the cron re-vet is: both branches copy
+        # the tree below. No export writes these entries, so an archive carrying one was
+        # built by hand -- and the member signing key is the one that matters, because
+        # installing it would let the archive's author sign as this host's members.
+        _strip_host_local_store_state(snap)
+
+        # The memory component's incoming databases are validated before EITHER branch
+        # moves anything, with the restore's own validator: replace installs everything
+        # the archive carries, merge only what the destination lacks, and a named store
+        # the destination lacks is exactly the merge case -- a whole-store copy
+        # would otherwise install a torn `memory_stores/<name>/memory.db` verbatim, and
+        # the member fails at its next open with the archive long gone. Refused here,
+        # nothing has been written; the exception reaches the handler as a refusal.
+        # `crew-teams` rides the same check: replace copies the tree whole through
+        # `_do_replace`, merge copies the document where the destination has none, and
+        # both would otherwise install a document the team store's reader refuses.
+        _refuse_corrupt_source_databases(
+            snap, ["memory", "crew-teams"], mc_for_merge=None if mode == "replace" else mc
+        )
+
+        # Before either branch too: a settings document neither branch may install is
+        # removed from the extraction here, and reported.
+        vetted_settings = _vet_archive_settings(snap, summary)
+
+        if mode == "replace":
+            # Strip sensitive files and skills/auto/ from snapshot before replace
+            for excluded_name in EXPORT_EXCLUDE:
+                excluded_file = snap / excluded_name
+                if excluded_file.exists():
+                    excluded_file.unlink()
+            for fpath in snap.rglob("*"):
+                if fpath.is_file() and is_sensitive_path(str(fpath)):
+                    fpath.unlink()
+            auto_dir = snap / "skills" / "auto"
+            # ``is_link_or_junction`` FIRST, not a bare ``is_dir()``: a Windows
+            # directory JUNCTION answers ``is_dir()`` True and ``is_symlink()``
+            # False, and it is the only directory link an unprivileged Windows
+            # writer can plant in the extraction tree. ``shutil.rmtree`` follows
+            # a junction into its target, so an ``is_dir()``-only guard let a
+            # junction planted at this name aim the delete OUTSIDE the extracted
+            # archive. ``unlink_link_or_junction`` removes the LINK, never what it
+            # points at; only a real directory reaches ``rmtree``.
+            if platform_compat.is_link_or_junction(auto_dir):
+                platform_compat.unlink_link_or_junction(auto_dir)
+            elif auto_dir.is_dir():
+                shutil.rmtree(str(auto_dir))
+            # A platform that cannot pin a directory by descriptor refuses this
+            # staging pass, and the refusal is allowed to propagate. An earlier
+            # revision caught it and returned the summary, which was worse than the
+            # crash it avoided: the caller reads a returned summary as success, so the
+            # dashboard rendered "Import complete" over a data home nothing had been
+            # written to. Raised in review. Propagating reaches the existing error
+            # path, which is the one that tells the user the import did not happen.
+            # Each settings store whose file this swap replaces is held at its writer
+            # lock for the whole swap (rollback included): a write from another tab or
+            # channel in between would publish its pre-import copy over the restored
+            # file. The notification store also re-reads its file before letting go.
+            # Taken in one fixed order, ui-prefs then notifications.
+            with contextlib.ExitStack() as swap_guard:
+                if "ui-prefs.json" in vetted_settings:
+                    swap_guard.enter_context(ui_prefs.replacing_file())
+                if channel_settings is not None and "notification_settings.json" in vetted_settings:
+                    channels, _dropped = cast(
+                        "tuple[dict[str, dict[str, Any]], int]",
+                        vetted_settings["notification_settings.json"],
+                    )
+                    swap_guard.enter_context(channel_settings.replacing_file(channels))
+                _do_replace(snap, mc, None, allow_unpinned=not staging_pinned)
+            summary["items"].append("full replace")
+            if "ui-prefs.json" in vetted_settings:
+                summary["ui_prefs_restored"] = True
+        else:
+            # Merge mode
+            if (snap / "memory.db").is_file():
+                if not (mc / "memory.db").is_file():
+                    # Pinned, not copy2: see `_install_core_file_if_absent`.
+                    if _install_core_file_if_absent(snap / "memory.db", mc / "memory.db"):
+                        summary["items"].append("memory (copied)")
+                        if (snap / "memory_index.db").is_file() and not (
+                            _install_core_file_if_absent(
+                                snap / "memory_index.db", mc / "memory_index.db"
+                            )
+                        ):
+                            # Never overwritten, so a leftover index does not match
+                            # the memory.db just installed; see `_core_file_not_installed`.
+                            summary["items"].append(
+                                _core_file_not_installed(
+                                    mc / "memory_index.db", index=True, dashboard=True
+                                )
+                            )
+                            summary.setdefault("refused_merges", []).append("memory_index")
+                    else:
+                        summary["items"].append("memory (skipped: not a regular file)")
+                        summary.setdefault("refused_merges", []).append("memory")
+                else:
+                    _merge_memory(snap / "memory.db", mc / "memory.db")
+                    summary["items"].append("memory (merged)")
+
+            if (snap / "crons.json").is_file():
+                if (mc / "crons.json").is_file():
+                    if _merge_crons(snap / "crons.json", mc / "crons.json"):
+                        summary["items"].append("crons (merged)")
+                    else:
+                        # A refused merge imported zero jobs. Appending
+                        # "crons (merged)" here regardless would render a
+                        # success over a restore that brought no job back.
+                        # The refusal is named in the
+                        # items and flagged machine-readably so the handler can
+                        # log the import as partial rather than a flat ok.
+                        summary["items"].append("crons (skipped: unreadable or invalid cron store)")
+                        summary.setdefault("refused_merges", []).append("crons")
+                elif _install_core_file_if_absent(snap / "crons.json", mc / "crons.json"):
+                    summary["items"].append("crons (copied)")
+                else:
+                    summary["items"].append("crons (skipped: not a regular file)")
+                    summary.setdefault("refused_merges", []).append("crons")
+
+            # The team list, like hooks.json: installed only where the destination has
+            # none -- decided and written under the store's own lock, document only, so
+            # a concurrent team write neither loses to the import nor overwrites it.
+            # Validated above by the team store's own reader, before anything moved.
+            teams_snap = snap / crew_teams.TEAMS_DIR_NAME / crew_teams.TEAMS_FILE_NAME
+            if teams_snap.is_file() and crew_teams.install_document(
+                teams_snap, mc / crew_teams.TEAMS_DIR_NAME, only_if_absent=True
+            ):
+                summary["items"].append("crew-teams (copied)")
+
+            if (snap / "hooks.json").is_file():
+                if not (mc / "hooks.json").is_file():
+                    if _install_core_file_if_absent(snap / "hooks.json", mc / "hooks.json"):
+                        summary["items"].append("hooks (copied)")
+                    else:
+                        summary["items"].append("hooks (skipped: not a regular file)")
+                        summary.setdefault("refused_merges", []).append("hooks")
+                else:
+                    summary["items"].append("hooks (skipped, already exists)")
+
+            _merge_settings(mc, vetted_settings, summary, channel_settings)
+
+            if (snap / "notifications.jsonl").is_file():
+                if (mc / "notifications.jsonl").is_file():
+                    # A platform that cannot pin raises
+                    # NotificationCopyUnsupported from inside the merge, exactly
+                    # as the copy branch does below -- record it as skipped and
+                    # let the import proceed. A link/FIFO/hardlink refusal on a
+                    # capable platform raises OSError and aborts instead, because
+                    # that is a bad or hostile source.
+                    try:
+                        _merge_notifications(
+                            snap / "notifications.jsonl", mc / "notifications.jsonl"
+                        )
+                        summary["items"].append("notifications (merged)")
+                    except NotificationCopyUnsupported as exc:
+                        # Zero records imported: flag it machine-readably so the
+                        # handler logs the import as partial, not a flat ok --
+                        # exactly as the crons refusal above does. A flat ok would
+                        # tell the API caller the import succeeded over records
+                        # left behind, the failure class this whole change removes.
+                        summary["items"].append(f"notifications (SKIPPED: {exc})")
+                        summary.setdefault("refused_merges", []).append("notifications")
+                else:
+                    # Not `copy2`: it installed records the live file's own reader
+                    # refuses, and that reader loses the whole file to one of them.
+                    # Same abort posture as the merge branch above.
+                    #
+                    # The platform refusal is NOT that abort: it says this platform
+                    # can never do this safely, so it skips one item and lets the
+                    # import proceed. Recorded in the summary as skipped WITH the
+                    # reason -- reporting "copied" for a refusal, or saying nothing,
+                    # would be the silent-install bug class this change removes.
+                    try:
+                        _copy_notifications(
+                            snap / "notifications.jsonl", mc / "notifications.jsonl"
+                        )
+                        summary["items"].append("notifications (copied)")
+                    except NotificationCopyUnsupported as exc:
+                        summary["items"].append(f"notifications (SKIPPED: {exc})")
+                        summary.setdefault("refused_merges", []).append("notifications")
+
+            for dirname in ("workspace", "plan_memory"):
+                sd = snap / dirname
+                if sd.is_dir():
+                    dd = mc / dirname
+                    dd.mkdir(parents=True, exist_ok=True)
+                    # The permission decided once at entry flows down; otherwise the inner
+                    # gate re-asks and refuses, which is the same platform outage by a
+                    # longer route.
+                    _copy_tree_no_overwrite(sd, dd, allow_unpinned=not staging_pinned)
+                    summary["items"].append(f"{dirname} (merged)")
+
+            stores_src = snap / MEMORY_STORES_DIR_NAME
+            if stores_src.is_dir():
+                stores_dst = mc / MEMORY_STORES_DIR_NAME
+                kept = _merge_named_stores(
+                    stores_src, stores_dst, allow_unpinned=not staging_pinned
+                )
+                summary["items"].append(f"{MEMORY_STORES_DIR_NAME} (merged)")
+                for store in kept:
+                    summary["items"].append(
+                        f"{MEMORY_STORES_DIR_NAME}/{store} (kept the existing store; "
+                        "the archive's copy was not merged into it)"
+                    )
+
+            if (snap / "skills").is_dir():
+                (mc / "skills").mkdir(parents=True, exist_ok=True)
+                # Skip skills/auto/ — those must go through SkillsLoader APIs
+                for item in (snap / "skills").iterdir():
+                    if item.name == "auto":
+                        continue
+                    target = mc / "skills" / item.name
+                    if item.is_dir() and not target.exists():
+                        shutil.copytree(str(item), str(target))
+                    elif item.is_file() and not target.exists():
+                        shutil.copy2(str(item), str(target))
+                summary["items"].append("skills (merged, auto/ skipped)")
+
+        # Both modes, and add-only in both: Replace restores the components it
+        # names, and chats are not one of them, so an archive -- with chats or
+        # without -- never deletes or overwrites a chat this install already has.
+        _merge_sessions(snap, mc, summary, allow_unpinned=not staging_pinned)
+
+    if agent_templates and not memory_only:
+        _install_agent_templates(zip_path, sorted(set(agent_templates)), summary)
+
+    # Warn, never refuse: the rows are already written, and a template can be
+    # installed afterwards without importing again.
+    try:
+        missing, more = missing_crew_templates(mc / "config.json")
+    except Exception:  # RecursionError included
+        # The import is already written: a spec this cannot read costs the warning,
+        # never the import's success.
+        logger.warning("Could not check crew agent templates after import", exc_info=True)
+        missing, more = [], 0
+    if missing:
+        summary["missing_agent_templates"] = missing
+    if more:
+        summary["missing_agent_templates_more"] = more
+    return summary

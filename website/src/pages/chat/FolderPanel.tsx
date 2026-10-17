@@ -1,0 +1,710 @@
+import { useEffect, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
+import { Folder, RotateCw, ExternalLink, ChevronDown, ChevronUp, Search, X } from 'lucide-react'
+import DetailPanel from '../../components/DetailPanel'
+import { revealOrOpen, useRevealFailure, useRevealLabel } from '../../components/FilePathMenu'
+import ErrorNotice from '../../components/ErrorNotice'
+import { useBranding } from '../../hooks/useBranding'
+import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
+import { api } from '../../api/client'
+import { fileIcon, colorForExt } from '../../utils/fileIcons'
+import { useFileMenuItems, visibleFileMenuItems, FolderRowActions } from '../../apps/fileMenuContributions'
+import { reportForError } from '../../utils/errorReport'
+import {
+  failureMessage,
+  LISTING_FAILURE_KEYS,
+  namingRefresh,
+  RETRYABLE_SEARCH_CAUSES,
+  SEARCH_FAILURE_KEYS,
+  searchErrorCause,
+  TREE_FAILURE_KEYS,
+  type SearchErrorCause,
+} from '../../lib/searchErrorCause'
+import { PierreWorkspaceTree } from '../../pierre/tree'
+import { useTreeState, useTreeQuery } from './FileBrowserRail'
+import { pathBasename, stripTrailingSeparators } from '../../utils/pathBasename'
+import { mergeTreeMatches } from '../../lib/treeSearchMatches'
+
+/** Last path segment, trailing slashes ignored. */
+function basename(p: string): string {
+  return pathBasename(stripTrailingSeparators(p)) || p
+}
+
+/**
+ * This surface's copy for each cause the shared classifier can report. Its nouns name THIS
+ * folder rather than the project because the panel searches the folder tab's own cwd, while
+ * `FilePickerMenu` searches the chat's project root -- the wording split is intentional.
+ */
+
+/**
+ * Whether two absolute paths name the SAME directory.
+ *
+ * The rule is deliberately narrow: normalize ONLY what the filesystem itself
+ * cannot distinguish. This gate decides which directory's tree the tab renders,
+ * so the two error directions are not symmetric -- a false negative merely keeps
+ * today's one-level listing, while a false positive renders ANOTHER directory's
+ * tree under this tab's name and opens files from it. So:
+ *
+ * - A trailing slash never distinguishes a directory. Always ignored.
+ * - Separator flavour is folded ONLY on a Windows gateway, where `\` and `/` are
+ *   the same separator and a backslash cannot appear in a filename at all -- so
+ *   folding it there can never alias two real directories. On POSIX a backslash
+ *   IS an ordinary filename character, and folding it would make the real
+ *   directory `/srv/a\b` compare equal to the different real directory
+ *   `/srv/a/b`.
+ * - Case is NEVER folded, on either platform. Windows is case-insensitive only
+ *   by default: NTFS carries a per-directory case-sensitivity flag (set by WSL
+ *   and by `fsutil file setCaseSensitiveInfo`), so two sibling directories
+ *   differing only in case can both exist there. Folding case would alias them.
+ *   Nothing produces a case-differing spelling of one directory here anyway --
+ *   `projectDir` is the slot's server-resolved project and the tab path comes
+ *   from a backend-confirmed listing, so both spellings originate from the same
+ *   filesystem.
+ *
+ * The platform is the GATEWAY's, not the browser's: the filesystem that decides
+ * what counts as one directory is the one the gateway serves.
+ *
+ * Deliberately string-only: this gate chooses which component renders, so it
+ * must not depend on a request.
+ */
+function samePath(a: string | null | undefined, b: string | null | undefined, windowsGateway: boolean): boolean {
+  if (!a || !b) return false
+  const norm = (p: string) => (windowsGateway ? p.replace(/\\/g, '/') : p).replace(/\/+$/, '')
+  return norm(a) === norm(b)
+}
+
+
+/** The backend ignores a shorter query (`api_file_search` returns an empty result
+ *  set under 2 characters), so dispatching one spends a walk that cannot match. */
+const MIN_QUERY_LEN = 2
+
+/** Mirrors the DEFAULT `max_results` in `dashboard/handlers/files.py`, which
+ *  truncates BEFORE responding. The first page always uses this size; expansion
+ *  is an explicit user action on the notice below the list. If the server's
+ *  default ever rises, a full page simply stops carrying the note rather than
+ *  stating a wrong total. */
+const SEARCH_RESULT_CAP = 15
+
+/** Mirrors `_SEARCH_LIMIT_CEILING` in `dashboard/handlers/files.py` — the hard
+ *  server-side clamp on the `limit` param. At this tier the notice renders as
+ *  plain text again: a button that cannot fetch more would recreate the inert
+ *  affordance this control replaces. */
+const SEARCH_RESULT_LIMIT_MAX = 60
+
+/** Idle gap before a keystroke becomes a request. The search walks a real
+ *  directory tree server-side, so per-keystroke dispatch would queue walks for
+ *  prefixes the user has already typed past. */
+const SEARCH_DEBOUNCE_MS = 200
+
+/**
+ * Directory listing as a side-panel tab body.
+ *
+ * Exists because a markdown path chip pointing at a directory used to open the
+ * file viewer and report "file not found" — the path was real, it just wasn't a
+ * file. A directory now gets an affordance that matches what it is.
+ *
+ * TWO BODIES, one tab. When the tab is rooted at the CURRENT CHAT's project
+ * directory it renders the shared `PierreWorkspaceTree` — the same expandable
+ * workspace tree the Files rail uses — so descending into a subdirectory expands
+ * it in place, several branches can stay open at once, and the tab keeps naming
+ * the project. Every other path keeps the one-level listing below, because
+ * `/api/project/tree` deliberately answers only for server-known project roots
+ * (403 `unknown_project_dir` otherwise) and a directory chip can point anywhere
+ * on the gateway's filesystem. `useTreeState` decides availability off the tree
+ * component's OWN query key, so the probe costs no extra request, and an error
+ * there falls back to the listing rather than showing a dead panel.
+ *
+ * Navigation in listing mode is INTERNAL to the tab: clicking a subdirectory
+ * re-targets this panel rather than spawning a tab per directory. `onPathChange`
+ * lifts the new path back to the tab record so the strip label follows along. In
+ * tree mode nothing re-targets while browsing descendants, so `onPathChange`
+ * fires only for the parent row — which leaves the project root, and therefore
+ * leaves tree mode, on purpose.
+ *
+ * Clicking a file hands off to `onFileOpen` in both modes, which opens a normal
+ * file tab.
+ *
+ * Search is RECURSIVE and files-only in listing mode, which is why it is a second
+ * request rather than a filter over `browseFiles`: that endpoint returns ONE
+ * directory level, so filtering it client-side could only ever match what is
+ * already on screen. `/api/file-search?project=<cwd>&kinds=files` walks the
+ * subtree under its own scan budget and re-applies the sensitive-path refusal per
+ * hit. In tree mode the same input feeds the tree's own search session instead:
+ * the tree then holds the whole path set, so filtering is local and instant and
+ * a second endpoint would be redundant. A TRUNCATED tree does not hold every
+ * path -- the server capped its rows -- so for one the query takes the
+ * recursive search too, and its matches stand in for the tree until the query
+ * is cleared (see `treeFiltersLocally`).
+ */
+export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onAddToContext, onPathChange }: {
+  path: string
+  /** The current chat's project directory, when it has one. Only used to decide
+   *  whether this tab is the project root — never as the path to render. */
+  projectDir?: string
+  onClose: () => void
+  onFileOpen?: (p: string) => void
+  /** Right-click "Add to context" on a tree row, forwarded to the composer host.
+   *  Passed through so the tree here is not a weaker copy of the SAME tree in the
+   *  Files rail — a row that offers the action in one surface and not the other is
+   *  the divergence a second render site invites. Listing mode has no context
+   *  menu, so it is tree-mode only. */
+  onAddToContext?: (absPath: string, kind: 'file' | 'dir') => void
+  onPathChange?: (p: string) => void
+}) {
+  const { t } = useTranslation()
+  // Still read for `atProjectRoot`'s case-sensitivity flag below; the reveal
+  // label it used to spell out now comes from the shared `useRevealLabel`.
+  const gatewayPlatform = useGatewayPlatform()
+  const [cwd, setCwd] = useState(path)
+  const [query, setQuery] = useState('')
+  const [debouncedQuery, setDebouncedQuery] = useState('')
+  const [searchLimit, setSearchLimit] = useState(SEARCH_RESULT_CAP)
+
+  // Gate on `cwd`, not on `path`: the header names `cwd`, and after the parent
+  // row is used this tab is no longer the project root even though its record
+  // still carries the path it was opened on until `onPathChange` lands.
+  const atProjectRoot = samePath(cwd, projectDir, gatewayPlatform === 'windows')
+  // Passing null keeps the hook call unconditional while spending no request for
+  // a tab that could not use the tree anyway.
+  const treeState = useTreeState(atProjectRoot ? projectDir : null)
+  // The failed read's own error, for the tree notice below: its cause picks the copy and its
+  // report feeds the hand-off, neither of which the state verdict carries. Same key as the probe
+  // above, so this is a second observer on the one request, not a second request.
+  const { error: treeErr, data: treeData } = useTreeQuery(atProjectRoot ? projectDir : null)
+  const treeMode = atProjectRoot && treeState === 'ready'
+  // The tree's own filter can only find what the tree lists, so it stands in for
+  // the recursive search only while the payload is whole. A truncated payload
+  // (the server capped its rows) sends the query to the search instead, which
+  // reaches the whole project.
+  const treeFiltersLocally = treeMode && treeData?.truncated !== true
+
+  // A different query is a different search: expansion applies to the result set
+  // the user was looking at, not to whatever they type next. Also covers
+  // navigation and re-targeting, both of which clear the query.
+  useEffect(() => { setSearchLimit(SEARCH_RESULT_CAP) }, [debouncedQuery, cwd])
+
+  // Re-sync when the tab is re-targeted from outside (a second chip click on a
+  // different directory reuses this tab when the id matches). A query typed for
+  // the previous directory must not survive: it would render matches from a tree
+  // the header no longer names.
+  useEffect(() => { setCwd(path); setQuery(''); setDebouncedQuery('') }, [path])
+
+  useEffect(() => {
+    const id = setTimeout(() => setDebouncedQuery(query.trim()), SEARCH_DEBOUNCE_MS)
+    return () => clearTimeout(id)
+  }, [query])
+
+  // App-contributed 'folder-row' actions, rendered per row (hover-revealed).
+  const folderItems = useFileMenuItems('folder-row')
+  // A contributed row's dispatch failure. Held here rather than in the row: the menu
+  // closes on select, and the row is unmounted the moment the listing re-renders, so
+  // neither can host the notice. Cleared on navigation for the reason `useRevealFailure`
+  // clears on its subject — a refusal raised for the old directory must not be shown
+  // under the new one.
+  const [contribError, setContribError] = useState<string | null>(null)
+  useEffect(() => { setContribError(null) }, [cwd])
+
+  const { data, isLoading, isError, error: listErr, refetch, isFetching } = useQuery({
+    queryKey: ['browse-files', cwd],
+    queryFn: ({ signal }) => api.browseFiles(cwd, signal),
+    retry: false,
+    staleTime: 5_000,
+  })
+  const listCause: SearchErrorCause | false = isError ? searchErrorCause(listErr) : false
+
+  // Driven by the DEBOUNCED value, so the listing does not blink away on the
+  // first keystroke and back on a backspace. A tree that filters locally (a
+  // whole payload) never spends this request; a truncated tree sends the query
+  // to the recursive search.
+  const searching = !treeFiltersLocally && debouncedQuery.length >= MIN_QUERY_LEN
+  // Tree mode shows the tree unless the search has taken over the body. The
+  // tree stays MOUNTED while it is hidden behind the matches: its model holds
+  // the folders the user expanded, and a remount would collapse them all.
+  const showTree = treeMode && !searching
+  // The active search page, exactly: the key the search reads and the key
+  // Refresh re-runs, so the two cannot drift apart.
+  const searchKey = ['folder-file-search', cwd, debouncedQuery, searchLimit] as const
+  const {
+    data: searchData,
+    isFetching: isSearching,
+    isPlaceholderData: isSearchPlaceholder,
+    isError: isSearchError,
+    error: searchError,
+  } = useQuery({
+    // react-query hands `queryFn` an AbortSignal and aborts it when the key
+    // changes, so a superseded search is cancelled rather than raced.
+    queryKey: searchKey,
+    queryFn: ({ signal }) => api.fileSearch(debouncedQuery, cwd, signal, 'files', searchLimit),
+    enabled: searching,
+    retry: false,
+    staleTime: 5_000,
+    // Keep the current rows on screen while a wider (or new) page is fetched:
+    // expansion should widen the list in place, not blank it to a spinner.
+    placeholderData: (prev) => prev,
+  })
+
+  const navigate = (next: string) => {
+    setCwd(next)
+    setQuery('')
+    setDebouncedQuery('')
+    onPathChange?.(next)
+  }
+
+  // One refresh button, two things to refresh. In tree mode the listing is not
+  // what is on screen, so refetch the queries the tree actually reads — the SAME
+  // keys `PierreWorkspaceTreeImpl` uses, which is why this needs no new endpoint
+  // and no plumbing into the tree. `refetchQueries` (not `invalidateQueries`) so
+  // the spinner tracks a real round trip.
+  const qc = useQueryClient()
+  // Brackets EVERY read one press awaits, in either arm: the listing, the active search page, the
+  // recoverable tree read, or the tree's own queries. The listing's `isFetching` alone let the
+  // spinner stop the moment the one-level listing landed while the bounded search walk pressed
+  // alongside it ran on for its whole deadline -- a control reading idle over live work. A flag
+  // around the await, not the queries' own fetching states: those also fire for reads this button
+  // did not start (each debounced keystroke's search, the Files rail's re-reads of the shared tree
+  // key), and an icon that spins for them promises a Refresh nobody pressed.
+  const [refreshing, setRefreshing] = useState(false)
+  // The SPINNER's state only. Navigation and the first load still show on the listing arm, as
+  // they always have -- but so does any listing read this button did not start (a window-focus
+  // or invalidation refetch), which is why the press guard below reads `refreshing` alone.
+  const refreshBusy = refreshing || (!treeMode && isFetching)
+  const refresh = async () => {
+    // A press landing inside a PRESS-started batch is a no-op, not a restart: `refetchQueries`
+    // cancels and re-runs an in-flight fetch by default, so a second press would throw away the
+    // walk already under way -- and the first press's `finally` would then clear the flag under
+    // the second's work. Gated on the press's own bracket, never on `refreshBusy`: a background
+    // listing read this button did not start can be out for its whole deadline on a wedged
+    // gateway, and refusing the press for it left the "Refresh to retry" remedy dead while the
+    // icon spun as if the retry were under way.
+    if (refreshing) return
+    setRefreshing(true)
+    try {
+      // Refresh is the obvious retry beside a failed search, in either arm, so it has to
+      // refetch the search as well as what is behind it -- the ACTIVE (query, limit) key,
+      // exactly. A prefix key would also re-run every cached page the user has typed past
+      // (each earlier query, each widened limit): N concurrent bounded walks for one press,
+      // N-1 of them for rows nobody is looking at.
+      const searchRefetch = searching ? [qc.refetchQueries({ queryKey: searchKey, exact: true })] : []
+      if (!treeMode) {
+        await Promise.all([
+          refetch(),
+          ...searchRefetch,
+          ...(treeState === 'recoverable'
+            ? [qc.refetchQueries({ queryKey: ['project-tree', projectDir] })]
+            : []),
+        ])
+        return
+      }
+      await Promise.all([
+        qc.refetchQueries({ queryKey: ['project-tree', projectDir] }),
+        qc.refetchQueries({ queryKey: ['git-status', projectDir] }),
+        ...searchRefetch,
+      ])
+    } finally {
+      setRefreshing(false)
+    }
+  }
+  // Either arm naming the control has to reveal it: an icon alone leaves a first-time user
+  // scanning for a label that is not rendered.
+  const namesRefresh = (c: SearchErrorCause | false) => c !== false && RETRYABLE_SEARCH_CAUSES.has(c)
+  // The tree arm counts too: `refresh()` re-reads the project tree while its failure is
+  // recoverable, so the tree notice names the control as well.
+  const treeRecoverable = atProjectRoot && treeState === 'recoverable'
+  const refreshIsNamed = namesRefresh(isSearchError ? searchErrorCause(searchError) : false)
+    || namesRefresh(listCause)
+    || treeRecoverable
+  // Reserved for the ENTIRE span the search box holds a searchable query -- the IMMEDIATE query
+  // at the same threshold that dispatches a search, not the debounced one and not the in-flight
+  // read. That span contains every in-flight search and every moment a failure notice can
+  // appear, so the width neither changes per keystroke (an in-flight read toggles on each one)
+  // nor jumps under a cursor already reaching for the control when a timeout names it. A tree
+  // that filters locally (a whole payload) spends no request, so no query can name Refresh
+  // there; a truncated tree's query goes to the search and can.
+  const holdsSearchableQuery = !treeFiltersLocally && query.trim().length >= MIN_QUERY_LEN
+  // The label's width is held for the whole of any window the USER opened in which a retryable
+  // failure can name this control -- a pressed Refresh (`refreshing`, the press's own bracket)
+  // and a searchable query -- and for as long as one does name it. Never for a read the user did
+  // not ask for: the first mount, a subdirectory click and a background refetch spin the icon
+  // (`refreshBusy`) but no cursor is reaching for Refresh during them, so a failure that then
+  // names it may take the width as the notice lands. Reserving ahead for every such listing would
+  // instead move the header controls on ordinary navigation, where nothing was going to fail.
+  const reserveRefreshLabel = refreshing || holdsSearchableQuery || refreshIsNamed
+  const dirs = data?.dirs ?? []
+  const files = data?.files ?? []
+  const isEmpty = dirs.length === 0 && files.length === 0
+  // `parent` comes from the backend (os.path.dirname of the resolved path).
+  // Suppress the up-row at the filesystem root, where parent === path.
+  const parent = data?.parent && data.parent !== data.path ? data.parent : null
+
+  // Defensive `kind` filter: the server already honours `kinds=files`, but a
+  // gateway older than that parameter ignores it and would fold directories into
+  // a list whose header promises files.
+
+  // Kept on error: a refetch that failed on the same key still holds its last rows, and the
+  // notice above them says the search did not land -- better than forcing a retype.
+  //
+  // A truncated tree's own paths join the server's matches: the server walk has a
+  // scan budget of its own and can miss a file the tree lists (`mergeTreeMatches`).
+  const searchRoot = searchData?.root || cwd
+  const matches = mergeTreeMatches(
+    (searchData?.results ?? []).filter(r => r.kind !== 'dir'),
+    searchRoot,
+    treeMode && searching ? treeData : undefined,
+    debouncedQuery,
+    searchLimit,
+  )
+  // While a wider page is in flight, `matches` are placeholder rows from the
+  // PREVIOUS tier. `expanding` names that window so the control stays mounted
+  // (inert) instead of vanishing mid-fetch, and `shownCount` keeps the notice
+  // label describing the rows actually on screen.
+  const expanding = isSearching && searchLimit > SEARCH_RESULT_CAP && matches.length < searchLimit
+  const shownCount = expanding ? Math.min(matches.length, searchLimit) : searchLimit
+
+  // Name the real application where the gateway HAS one, and fall back to the
+  // generic term for Linux and for a platform we could not read. The platform is
+  // the GATEWAY's because `/api/reveal` shells out there, and the wording holds for
+  // a directory as well as a file — this button reveals `cwd` itself. Shared with
+  // every other file-location surface via useRevealLabel.
+  const revealLabel = useRevealLabel()
+  // A failed reveal renders above the search box; askAgent on — the only
+  // editable field is a transient search string, not a durable draft.
+  const reveal = useRevealFailure(cwd)
+  // `/api/reveal` shells out on the gateway, so revealing `cwd` only makes sense
+  // when the browser is on that same machine. A remote/tunneled session would
+  // otherwise get a mis-worded "Path copied" alert; hide the button there, the
+  // same directLocal gate every other file-location surface applies.
+  const { directLocal } = useBranding()
+
+  return (
+    <DetailPanel
+      embedded
+      noPadding
+      title={basename(cwd)}
+      onClose={onClose}
+      customHeader={
+        <div className="flex items-center gap-2 h-[38px] px-3 shrink-0 border-b border-border">
+          <Folder size={14} className="shrink-0 text-muted" />
+          <span className="text-[12px] text-text-strong truncate" title={cwd}>{basename(cwd)}</span>
+          <span className="flex-1" />
+          <button
+            onClick={refresh}
+            // Inert-but-focusable while busy, like the expand control below: `aria-disabled` plus
+            // the in-handler guard, NOT `disabled`, which blurs the focused element in real
+            // browsers. Reads the same flag as the guard: the icon may spin for a listing read the
+            // press did not start, but "inert" is a promise about the press, and that press goes
+            // through.
+            aria-disabled={refreshing}
+            className={`flex items-center justify-center h-[26px] rounded-md cursor-pointer transition-colors text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none aria-disabled:cursor-default ${
+              reserveRefreshLabel ? 'gap-1 px-1.5' : 'w-[26px]'
+            }`}
+            title={t('pages.chat.folderPanel.refresh')}
+            aria-label={t('pages.chat.folderPanel.refresh')}
+          >
+            <RotateCw size={14} className={refreshBusy ? 'animate-spin' : undefined} />
+            {/* Laid out before it is needed, never animated: a 26px→auto morph cannot transition,
+                so the growth is spent while the read is still in flight. */}
+            {reserveRefreshLabel && (
+              <span
+                aria-hidden
+                className={`text-[11px] leading-none ${refreshIsNamed ? '' : 'invisible'}`}
+              >
+                {t('pages.chat.folderPanel.refresh')}
+              </span>
+            )}
+          </button>
+          {directLocal && (
+            <button
+              onClick={() => { void revealOrOpen(cwd, 'reveal', reveal) }}
+              className="flex items-center justify-center w-[26px] h-[26px] rounded-md cursor-pointer transition-colors text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none"
+              title={revealLabel}
+              aria-label={revealLabel}
+            >
+              <ExternalLink size={14} />
+            </button>
+          )}
+        </div>
+      }
+    >
+      {reveal.error && (
+        <div className="mx-2 mt-1.5">
+          <ErrorNotice variant="inline" className="whitespace-normal" message={reveal.error} askAgent onDismiss={reveal.clear} testId="folder-panel-reveal-error" />
+        </div>
+      )}
+      {/* A contributed row's endpoint refused or never answered. askAgent on for the
+          same reason the reveal notice above gives: the only editable field in this
+          panel is a transient search string, not a durable draft. */}
+      {contribError && (
+        <div className="mx-2 mt-1.5">
+          <ErrorNotice variant="inline" className="whitespace-normal" message={contribError} askAgent onDismiss={() => setContribError(null)} testId="folder-panel-contrib-error" />
+        </div>
+      )}
+      <div className="flex items-center gap-1.5 mx-2 mt-1.5 px-2 h-[28px] shrink-0 rounded-md bg-bg border border-border focus-within:border-accent">
+        <Search size={12} className="shrink-0 text-muted" />
+        <input
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); setQuery('') } }}
+          placeholder={t('pages.chat.folderPanel.search_files')}
+          aria-label={t('pages.chat.folderPanel.search_files')}
+          spellCheck={false}
+          autoComplete="off"
+          className="min-w-0 flex-1 bg-transparent border-none outline-hidden text-[12px] text-text placeholder:text-muted"
+        />
+        {treeFiltersLocally && query && (
+          // The same box does two different things in the two bodies: a recursive
+          // request that returns a flat "Matches" list, or a filter over the tree
+          // already on screen. Listing mode says "includes subfolders" above its
+          // results; tree mode has no such header, so the row itself says it --
+          // reusing that exact string rather than adding a key that would need
+          // thirteen catalogs to explain the same fact.
+          <span className="min-w-0 max-w-[45%] truncate text-[10px] text-muted/70">
+            {t('pages.chat.folderPanel.includes_subfolders')}
+          </span>
+        )}
+        {query && (
+          <button
+            onClick={() => setQuery('')}
+            className="flex items-center justify-center w-[18px] h-[18px] rounded cursor-pointer text-muted hover:text-text bg-transparent border-none"
+            title={t('pages.chat.folderPanel.clear_search')}
+            aria-label={t('pages.chat.folderPanel.clear_search')}
+          >
+            <X size={12} />
+          </button>
+        )}
+      </div>
+      <div className={showTree ? 'flex-1 min-h-0 flex flex-col py-1.5' : 'flex-1 overflow-y-auto px-2 py-1.5'}>
+        <div className={`shrink-0 text-[10.5px] text-muted/80 font-mono truncate pb-1.5 ${showTree ? 'px-3' : 'px-2'}`} title={cwd}>{cwd}</div>
+        {treeMode && (
+          // `hidden` while the matches stand in for a truncated tree, never
+          // unmounted: the expansion lives in the mounted tree's model.
+          <div className="contents" hidden={searching}>
+            {/* Kept in tree mode so the tab can still step OUT of the project —
+                the one navigation the tree cannot express, since the endpoint
+                answers for project roots only. Taking it leaves the project
+                root, which is what drops this tab back to the listing. */}
+            {parent && (
+              <div className="shrink-0 px-2 pb-1">
+                <Row
+                  icon={<ChevronUp size={14} className="shrink-0 text-muted" />}
+                  label={t('pages.chat.folderPanel.parent_folder')}
+                  title={parent}
+                  onActivate={() => navigate(parent)}
+                />
+              </div>
+            )}
+            <div className="flex-1 min-h-0 flex flex-col pl-1">
+              <PierreWorkspaceTree
+                projectDir={projectDir ?? ''}
+                onFileOpen={onFileOpen}
+                onAddToContext={onAddToContext}
+                searchQuery={treeFiltersLocally ? query || null : null}
+              />
+            </div>
+          </div>
+        )}
+        {searching ? (
+          <>
+            {treeMode && (
+              // The same box narrows the tree in place on a whole tree; here the
+              // tree is capped, so its results replace it. Say so where they land.
+              <div className="px-2 pb-1.5 text-[11px] text-muted" data-testid="folder-search-beyond-tree">
+                {t('pages.chat.folderPanel.search_beyond_tree')}
+              </div>
+            )}
+            <div className="flex items-center gap-1.5 px-2 pb-1 text-[10px] uppercase tracking-[.06em] text-muted">
+              <span>{t('pages.chat.folderPanel.matches')}</span>
+              <span className="normal-case tracking-normal text-muted/70">
+                {t('pages.chat.folderPanel.includes_subfolders')}
+              </span>
+            </div>
+            {isSearchError && (
+              // Read failure; the only editable field is the transient search
+              // box, not a durable draft → hand-off on.
+              <div className="px-2 py-2">
+                <ErrorNotice
+                  variant="inline"
+                  message={failureMessage(t, SEARCH_FAILURE_KEYS, searchErrorCause(searchError))}
+                  report={reportForError(searchError)}
+                  askAgent
+                />
+              </div>
+            )}
+            {!isSearchError && !isSearching && matches.length === 0 && (
+              <div role="status" className="px-2 py-2 text-[12px] text-muted">{t('pages.chat.folderPanel.no_files_match')}</div>
+            )}
+            {matches.map(m => {
+              const Icon = fileIcon(m.path)
+              return (
+                <Row
+                  key={m.path}
+                  icon={<Icon size={14} className={`shrink-0 ${colorForExt(m.path)}`} />}
+                  label={m.name}
+                  sub={m.sub}
+                  title={m.path}
+                  onActivate={() => onFileOpen?.(m.path)}
+                />
+              )
+            })}
+            {/* Below the rows, so the listed matches read as results and the status as
+                "more may come". Also while this query has no answer of its own yet and rows are already
+                listed (the tree's own matches, or the previous query's placeholder):
+                the list is about to change, so it is announced rather than changing
+                unannounced. Not while a wider page loads: the expand control already
+                spins for that. */}
+            {!isSearchError && isSearching && (matches.length === 0 || !searchData || (isSearchPlaceholder && !expanding)) && (
+              <div role="status" className="px-2 py-2 text-[12px] text-muted">{t('pages.chat.folderPanel.searching')}</div>
+            )}
+            {(matches.length >= searchLimit || expanding) && (searchLimit < SEARCH_RESULT_LIMIT_MAX || expanding ? (
+              // The notice IS the control: clicking "showing first N" is the
+              // natural gesture (#5639), so the text itself requests the next
+              // tier. Reusing the notice string keeps the accessible name honest
+              // and adds zero i18n keys; the chevron is the visual cue that this
+              // is an action, not just a status line.
+              //
+              // While the wider page loads (`expanding`) the button stays
+              // MOUNTED and inert-but-focusable: unmounting it mid-fetch would
+              // both show an untruncated-looking list (which this panel defines
+              // as "no more matches") and drop keyboard focus to <body> on every
+              // activation. `aria-disabled` + the in-handler guard — NOT the
+              // `disabled` attribute, which blurs the focused element in real
+              // browsers and would drop focus anyway. `shownCount` names the
+              // tier the visible rows were fetched for, so the label never
+              // overstates what is on screen.
+              <button
+                type="button"
+                aria-disabled={expanding}
+                onClick={() => { if (!expanding) setSearchLimit(l => Math.min(l * 2, SEARCH_RESULT_LIMIT_MAX)) }}
+                className="flex w-full items-center gap-1 text-left px-2 py-1.5 text-[10.5px] text-muted/80 underline decoration-dotted underline-offset-2 hover:text-text transition-colors aria-disabled:opacity-60 aria-disabled:no-underline"
+              >
+                {expanding
+                  ? <RotateCw size={11} className="shrink-0 animate-spin" />
+                  : <ChevronDown size={11} className="shrink-0" />}
+                {t('pages.chat.folderPanel.showing_first_matches', { shown: shownCount })}
+              </button>
+            ) : (
+              // At the server ceiling a button could not fetch more; plain text
+              // avoids recreating the inert affordance this control replaces.
+              <div className="px-2 py-1.5 text-[10.5px] text-muted/80">
+                {t('pages.chat.folderPanel.showing_first_matches', { shown: shownCount })}
+              </div>
+            ))}
+          </>
+        ) : !treeMode && (
+          <>
+            {parent && (
+              <Row
+                icon={<ChevronUp size={14} className="shrink-0 text-muted" />}
+                label={t('pages.chat.folderPanel.parent_folder')}
+                title={parent}
+                onActivate={() => navigate(parent)}
+              />
+            )}
+            {treeRecoverable && !isError && (
+              // The tree timed out, so this tab fell back to a one-level listing -- name the
+              // TREE, or the notice reads as a claim about the listing that just loaded. Named
+              // as retryable because `refresh()` re-reads the tree in this arm.
+              //
+              // Withheld while the listing itself has failed: at the project root both reads hit
+              // the same wedged gateway, and stacking this notice above the listing's made ONE
+              // outage read as two. The listing's notice is the one kept -- it names its own
+              // cause -- and Refresh still re-reads the tree in this arm, so nothing is lost.
+              <div className="px-2 py-2 flex items-center gap-2">
+                <ErrorNotice
+                  variant="inline"
+                  message={namingRefresh(t, t(TREE_FAILURE_KEYS[searchErrorCause(treeErr)]))}
+                  // The read's own report, as the listing arm below and the rail's tree notice
+                  // pass it: the composed line above is not a journal key, so without this the
+                  // hand-off carried a sentence that named no endpoint, status or code.
+                  report={reportForError(treeErr)}
+                  askAgent
+                />
+              </div>
+            )}
+            {isLoading && <div className="px-2 py-2 text-[12px] text-muted">{t('pages.chat.folderPanel.loading')}</div>}
+            {isError && (
+              // List failure in a side panel with nothing unsaved → hand-off on.
+              <div className="px-2 py-2 flex items-center gap-2">
+                <ErrorNotice
+                  variant="inline"
+                  message={failureMessage(t, LISTING_FAILURE_KEYS,
+                    listCause === false ? 'failed' : listCause)}
+                  report={reportForError(listErr)}
+                  askAgent
+                />
+              </div>
+            )}
+            {/* Silent while the tree notice above is up: the listing that loaded is a FALLBACK
+                for a tree that did not, and "Empty folder" stacked under that notice reads as a
+                second claim about the same directory. */}
+            {!isLoading && !isError && !treeRecoverable && isEmpty && (
+              <div className="px-2 py-2 text-[12px] text-muted">{t('pages.chat.folderPanel.empty_folder')}</div>
+            )}
+            {dirs.map(d => (
+              <Row
+                key={d.path}
+                icon={<Folder size={14} className="shrink-0 text-accent" />}
+                label={d.name}
+                title={d.path}
+                onActivate={() => navigate(d.path)}
+                actions={<FolderRowActions items={visibleFileMenuItems(folderItems, { path: d.path, kind: 'dir' })} node={{ path: d.path, kind: 'dir' }} onError={setContribError} />}
+              />
+            ))}
+            {files.map(f => {
+              const Icon = fileIcon(f.path)
+              return (
+                <Row
+                  key={f.path}
+                  icon={<Icon size={14} className={`shrink-0 ${colorForExt(f.path)}`} />}
+                  label={f.name}
+                  title={f.path}
+                  onActivate={() => onFileOpen?.(f.path)}
+                  actions={<FolderRowActions items={visibleFileMenuItems(folderItems, { path: f.path, kind: 'file' })} node={{ path: f.path, kind: 'file' }} onError={setContribError} />}
+                />
+              )
+            })}
+          </>
+        )}
+      </div>
+    </DetailPanel>
+  )
+}
+
+/** One listing row. Mirrors the Files tab's FileRow interaction contract:
+ *  clickable, focusable, Enter/Space activates.
+ *
+ *  `sub` carries a search hit's subfolder. It is right-aligned and truncates from
+ *  the START, because the tail of a path is what distinguishes two same-named
+ *  files while the head is the part they share. */
+function Row({ icon, label, sub, title, onActivate, actions }: {
+  icon: React.ReactNode
+  label: string
+  sub?: string
+  title: string
+  onActivate: () => void
+  /** App-contributed row actions (folder-row surface), right-aligned. */
+  actions?: React.ReactNode
+}) {
+  return (
+    <div
+      className="group flex items-center gap-2 px-2 py-1 rounded-md cursor-pointer hover:bg-bg-hover transition-colors"
+      onClick={onActivate}
+      title={title}
+      role="button"
+      tabIndex={0}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onActivate() } }}
+    >
+      {icon}
+      <span className="min-w-0 flex-1 text-[12.5px] text-text truncate">{label}</span>
+      {sub && (
+        <span
+          className="shrink min-w-0 max-w-[45%] text-[10.5px] text-muted font-mono truncate text-right"
+          style={{ direction: 'rtl' }}
+        >
+          {sub}
+        </span>
+      )}
+      {actions}
+    </div>
+  )
+}

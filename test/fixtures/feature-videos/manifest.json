@@ -1,0 +1,41 @@
+{
+  "cdn_base": "https://cdn.example.invalid/feature-videos",
+  "entries": [
+    {
+      "bytes": 1024,
+      "description": "Two plain sentences. This one is the ASCII entry.",
+      "doc": "feature-tips.md",
+      "duration_s": 18.5,
+      "feature": "fixture-clip",
+      "file": "fixture-clip.mp4",
+      "id": "fixture-clip",
+      "min_version": "0.6.0",
+      "poster": "fixture-clip.jpg",
+      "poster_sha256": "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752",
+      "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+      "title": "A fixture clip",
+      "used_when": [
+        "tips_feedback_exists"
+      ]
+    },
+    {
+      "bytes": 2048,
+      "description": "Non-ASCII on purpose: this entry is what pins the encoding.",
+      "doc": "monitor-loops.md",
+      "duration_s": 22.0,
+      "feature": "monitor-loops",
+      "file": "fixture-clip-2.mp4",
+      "id": "fixture-clip-2",
+      "min_version": "",
+      "poster": "fixture-clip-2.jpg",
+      "poster_sha256": "e7f6c011776e8db7cd330b54174fd76f7d0216b612387a5ffcfb81e6f0919683",
+      "sha256": "ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d",
+      "title": "Une br\u00e8ve pr\u00e9sentation \u2014 \u65e5\u672c\u8a9e\u3082",
+      "used_when": []
+    }
+  ],
+  "generated_at": "2026-01-31T09:00:00Z",
+  "release": "0.6.0",
+  "schema": "kirocrew-feature-videos-manifest-v1",
+  "signature": "MnyVm2Q7V9q8JWGj8/RyFG5CLDj/m+qIhWDXkZxaRJWiE/odKtOTwAyMeT/UkY2mM5nCFkhwxVAre7RdsQNJYZkHuC+v9FiowjkoOXMmRAf42nno+Cz8hyp0YmS9ZuR/rV//YTieifaYP71FIr8HTuMi8kE5gi52GHwDsQQfi0WjK9elrHlfzGW+DwVj8ddBLRI7ZkS8o86P2mZ/1T+Arcj9uz6lQ/soMCAI101dPQ+CcL3J397e85f1Qh3EG6Mw5oJagg0SLCbQ1RMZ9xvb78J86YELZQaedEvcHtvHDYxHqcKVJHjbCwUkofQTd8GNK6ihgrl3CK40OYe9Q+N9zpayh4rWxwFqDhvTuGQ86268CUkIcGLptzMSIpHEgWmfbvJlcRZbaUU9O19X97nH7DvAq6/GlVkTVN088la7XnHgZNFI4RTVviViznrXOm3VNzWc/1M0MmGpMf8g9uSGN9N80BpC11dciPzkJAhnITFqw2ovRCflxnByDS04bsOU"
+}

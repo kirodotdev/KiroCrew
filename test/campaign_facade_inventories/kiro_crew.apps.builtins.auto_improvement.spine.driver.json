@@ -1,0 +1,43 @@
+{
+ "base_public_names": [
+  "Archive",
+  "BudgetCaps",
+  "BugGateResult",
+  "CrPipeline",
+  "D",
+  "Driver",
+  "GIT_SAFE_CONFIG",
+  "Gate",
+  "KEPT",
+  "Keeper",
+  "L",
+  "Measurer",
+  "PF",
+  "PreflightResult",
+  "Proposal",
+  "Proposer",
+  "PushEnabledError",
+  "Stats",
+  "TRACK_BUG",
+  "TRACK_PERF",
+  "TargetProfile",
+  "UTF8_TEXT",
+  "hook_off_args",
+  "main",
+  "normalize_branch",
+  "redact_log_via_context",
+  "redact_via_context",
+  "require_pinned"
+ ],
+ "note": "The facade keeps binding every name it imported before the split; the git helpers that moved to driver_git are served through kiro_crew._facade_mirror.",
+ "rebound": {
+  "GIT_SAFE_CONFIG": "kiro_crew.apps.builtins.auto_improvement.spine.git_safety",
+  "KEPT": "kiro_crew.apps.builtins.auto_improvement.spine.keeper",
+  "UTF8_TEXT": "kiro_crew.subprocess_utf8",
+  "hook_off_args": "kiro_crew.apps.builtins.auto_improvement.spine.git_safety",
+  "normalize_branch": "kiro_crew.apps.builtins.auto_improvement.spine.push_policy",
+  "redact_log_via_context": "kiro_crew.platform.context",
+  "redact_via_context": "kiro_crew.platform.context",
+  "require_pinned": "kiro_crew.apps.builtins.auto_improvement.spine.git_safety"
+ }
+}

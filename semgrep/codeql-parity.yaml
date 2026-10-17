@@ -1,0 +1,293 @@
+# CodeQL parity rules for the fork lane.
+#
+# WHY THIS FILE EXISTS
+# CodeQL runs via GitHub's *default setup*, which uploads to code-scanning and
+# therefore needs `security-events: write`. A fork-triggered `pull_request`
+# workflow only gets a read-only token, so fork PRs never produce a CodeQL
+# check-run. Semgrep has no such constraint -- it fails on exit code instead of
+# uploading -- so it is the only SAST that actually runs on fork contributions.
+#
+# These rules port CodeQL query classes into syntactic Semgrep rules, chosen
+# for being portable at a low false-positive rate, so a fork PR gets some
+# coverage of those classes instead of none.
+#
+# HONEST SCOPE -- what this file does NOT do
+# This is a low-frequency tripwire, not fork-lane parity. Measured against
+# this repository's real code-scanning alert history (fixed + dismissed, all
+# states), the classes ported here are not where findings actually occur:
+#
+#     py/path-injection                        230   <- not portable, see below
+#     js/prototype-polluting-assignment         46   <- different query than the
+#                                                       utility-shape one below
+#     py/clear-text-logging-sensitive-data      20   <- packs cover %-args only
+#     py/polynomial-redos                       18   <- python polynomial, not
+#                                                       the JS nesting below
+#     py/incomplete-url-substring-sanitization  17   <- not ported yet
+#     py/cookie-injection                        8
+#     py/clear-text-storage-sensitive-data       6   <- ported below
+#     js/redos                                   1   <- ported below
+#     js/prototype-pollution-utility             1   <- NOT ported, see below
+#     js/identity-replacement                    0   <- ported below
+#     js/incomplete-multi-character-sanitization 0   <- ported below
+#     js/clear-text-storage-of-sensitive-data    0   <- ported below
+#
+# So: of the five rules here, one targets a class with real history, one
+# targets a class seen once, and three target classes this repo has never
+# produced an alert for. They cost nothing (validated at zero findings across
+# main and 2000 commits of history) and they fail closed on shapes that are
+# genuinely bugs, but nobody should read this file as "the fork lane is
+# covered now". The py-heavy top of that table is the real work, and is not
+# done.
+#
+# SCOPE AND LIMITS -- read before adding rules here
+#   * Already covered by the community packs, do NOT re-add:
+#       py/weak-cryptographic-algorithm, py/weak-sensitive-data-hashing,
+#       py/clear-text-logging-sensitive-data (%-style args only)
+#   * Deliberately NOT ported, needs cross-function taint tracking that a
+#     syntactic engine cannot do without either missing everything or
+#     flagging every open():
+#       py/path-injection
+#     That class remains a genuine fork-lane gap, and per the table above it
+#     is over half of this repo's entire alert history. Closing it requires
+#     running CodeQL itself in a privileged `workflow_run` context with
+#     `build-mode: none`, not another rule here.
+#   * Deliberately NOT ported, cannot be expressed soundly in semgrep 1.78:
+#       js/prototype-pollution-utility
+#     An unguarded key-copy rule needs two scoped judgements: "is this loop
+#     a for-in rather than a for-of" and "is this comparison the guard for
+#     THIS copy". Semgrep 1.78 normalises for-in and for-of to the same AST
+#     node, so the first is only reachable by a regex over source text; and
+#     `pattern-not-regex` applies to the entire matched range, so the second
+#     cannot be scoped to the guard statement -- an unrelated "__proto__"
+#     literal, or a nested for-of, anywhere in the loop body silently
+#     suppresses a genuinely vulnerable copy. A rule was written, and each
+#     iteration closed one bypass and exposed the next (for-of normalisation,
+#     a range-shrinking positive regex that silently disabled its own guard,
+#     hasOwnProperty counted as a guard, `prototype` matched as a substring,
+#     then range-scope suppression). It was withdrawn rather than patched
+#     further: the class has one alert in this repo's whole history, and an
+#     unsound security rule is worse than a missing one because it reads as
+#     coverage. This one also needs real CodeQL.
+#     Note the higher-frequency sibling js/prototype-polluting-assignment
+#     (46 alerts) is a DIFFERENT query -- single-point assignment from a
+#     tainted key -- and was never covered by that rule anyway.
+#
+# Note also that semgrep 1.78's TypeScript parser does not understand the
+# `satisfies` operator (TS 4.9+), so a handful of files on main fail to parse
+# and are skipped by EVERY semgrep rule, these included. That is a
+# pre-existing hole in the fork lane, not one this file introduces.
+#
+# Severity below is documentation only: code-review.yml runs semgrep with
+# `--error`, so ANY match fails the SAST job regardless of severity. Every
+# rule here must therefore be low-false-positive by construction. Validate
+# against real commit history before adding one.
+
+rules:
+  # ─── js/identity-replacement ────────────────────────────────────────
+  # A replace() whose search and replacement are the same value does
+  # nothing. It reads like sanitization while removing nothing at all.
+
+  - id: kirocrew.identity-replacement
+    patterns:
+      - pattern-either:
+          - pattern: $S.replace($X, $X)
+          - pattern: $S.replaceAll($X, $X)
+    paths:
+      include:
+        - website/src/**
+      exclude:
+        - website/src/**/*.test.*
+        - website/src/**/*.spec.*
+        # Vendored third-party bundle (anime.js v3.2.2, MIT), dropped in
+        # wholesale. Upstream's own code is not ours to gate on.
+        - website/src/lib/anime.es.js
+    message: >
+      This replace() substitutes a value with itself, so it is a no-op.
+      If it is meant to sanitize or normalize input, the replacement is
+      missing and the value passes through unchanged.
+    severity: ERROR
+    languages: [typescript, javascript]
+    metadata:
+      category: security
+      subcategory: sanitization
+      codeql-parity: js/identity-replacement
+      cwe: "CWE-116: Improper Encoding or Escaping of Output"
+
+  # ─── js/incomplete-multi-character-sanitization ─────────────────────
+  # Removing a dangerous multi-character sequence with a non-global
+  # replace only strips the FIRST occurrence. `<scr<script>ipt>` then
+  # survives one pass. String first-args are never global in JS, and a
+  # regex first-arg is non-global unless it carries the `g` flag.
+  #
+  # Narrowed to removals (replacement is the empty string) of sequences
+  # that contain HTML/URL-dangerous characters, so ordinary text munging
+  # like s.replace("foo", "") is not flagged.
+
+  - id: kirocrew.incomplete-multi-char-sanitization
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern: $S.replace($SEARCH, "")
+              - metavariable-regex:
+                  metavariable: $SEARCH
+                  regex: ^["'][^"']*<[a-zA-Z][^"']*["']$
+          - patterns:
+              - pattern: $S.replace($SEARCH, "")
+              # An anchored pattern is already complete in one pass, so
+              # those are exempt -- but ONLY a real anchor counts. `^` as
+              # the first character is a start anchor; `$` as the last is
+              # an end anchor. A `^` just inside `[` is class negation
+              # (`[^>]`) and a `$` inside a class is a literal, neither of
+              # which bounds the match. Testing for `[\^$]` anywhere in the
+              # source therefore exempted `/<script[^>]*>/`, a genuinely
+              # incomplete strip. Position is checked instead of presence.
+              - metavariable-regex:
+                  metavariable: $SEARCH
+                  regex: ^/(?!\^)[^/]*<[a-zA-Z][^/]*[^$/]/[^g]*$
+          # ...and the exemption above holds only WITHOUT the m flag. With
+          # /m, `^` and `$` match at every line boundary rather than once,
+          # so `replace(/^<script>/m, "")` strips the first line's tag and
+          # leaves the rest. Anchored-plus-m is therefore still incomplete
+          # and is matched here regardless of anchor position.
+          - patterns:
+              - pattern: $S.replace($SEARCH, "")
+              - metavariable-regex:
+                  metavariable: $SEARCH
+                  regex: ^/[^/]*<[a-zA-Z][^/]*/[^g]*m[^g]*$
+    paths:
+      include:
+        - website/src/**
+      exclude:
+        - website/src/**/*.test.*
+        - website/src/**/*.spec.*
+        # Vendored third-party bundle (anime.js v3.2.2, MIT), dropped in
+        # wholesale. Upstream's own code is not ours to gate on.
+        - website/src/lib/anime.es.js
+    message: >
+      Non-global replace() removing a dangerous multi-character sequence
+      strips only the first occurrence, so a nested or repeated payload
+      survives sanitization. Use a global regex (/.../g) or, preferably,
+      an encoding function rather than blocklist removal.
+    severity: ERROR
+    languages: [typescript, javascript]
+    metadata:
+      category: security
+      subcategory: sanitization
+      codeql-parity: js/incomplete-multi-character-sanitization
+      cwe: "CWE-80: Improper Neutralization of Script-Related HTML Tags"
+
+  # ─── js/redos ───────────────────────────────────────────────────────
+  # A quantified group whose own body ends in a quantifier -- (a+)+,
+  # ([\s\S]*)* -- backtracks exponentially on a non-matching suffix.
+
+  - id: kirocrew.redos-nested-quantifier
+    patterns:
+      # Matched as an EXPRESSION, not as raw file text. A bare
+      # `pattern-regex` scans the whole file, so a code comment or a
+      # prose/error string that merely mentions `(a+)+` failed the SAST
+      # job. Binding a metavariable first restricts this to real syntax,
+      # and requiring the text to open with `/` and close with
+      # `/<flags>` keeps string literals out.
+      - pattern: $RE
+      # The trailing class enumerates EVERY JavaScript regex flag --
+      # d(hasIndices) g i m s u v(unicodeSets) y. That set is closed by
+      # the language, so unlike a heuristic this cannot be bypassed by a
+      # flag variant; omitting d and v let `/(a+)+/d` through.
+      - metavariable-regex:
+          metavariable: $RE
+          regex: ^/.*\((?:\?:)?(?:\[[^\]]+\]|\\[a-zA-Z]|[a-zA-Z0-9])[+*]\)[+*].*/[dgimsuvy]*$
+    paths:
+      include:
+        - website/src/**
+      exclude:
+        - website/src/**/*.test.*
+        - website/src/**/*.spec.*
+        # Vendored third-party bundle (anime.js v3.2.2, MIT), dropped in
+        # wholesale. Upstream's own code is not ours to gate on.
+        - website/src/lib/anime.es.js
+    message: >
+      Regular expression contains a nested quantifier (a quantified group
+      whose body is itself quantified). This backtracks exponentially on
+      crafted input, so any externally supplied string reaching it is a
+      denial-of-service vector. Rewrite the group so the inner and outer
+      quantifiers cannot match the same characters.
+    severity: ERROR
+    languages: [typescript, javascript]
+    metadata:
+      category: security
+      subcategory: dos
+      codeql-parity: js/redos
+      cwe: "CWE-1333: Inefficient Regular Expression Complexity"
+
+  # ─── js/clear-text-storage-of-sensitive-data ────────────────────────
+  # Web storage is readable by any script on the origin and survives the
+  # tab. Credentials belong in memory or an httpOnly cookie.
+
+  - id: kirocrew.clear-text-web-storage
+    patterns:
+      - pattern-either:
+          - pattern: localStorage.setItem($KEY, ...)
+          - pattern: sessionStorage.setItem($KEY, ...)
+          - pattern: window.localStorage.setItem($KEY, ...)
+          - pattern: window.sessionStorage.setItem($KEY, ...)
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: (?i)^["'].*(token|passwd|password|secret|credential|apikey|api_key|privatekey|private_key|session_key).*["']$
+    paths:
+      include:
+        - website/src/**
+      exclude:
+        - website/src/**/*.test.*
+        - website/src/**/*.spec.*
+        # Vendored third-party bundle (anime.js v3.2.2, MIT), dropped in
+        # wholesale. Upstream's own code is not ours to gate on.
+        - website/src/lib/anime.es.js
+    message: >
+      Credential-like value written to web storage in clear text. Any
+      script on this origin can read it and it persists beyond the tab.
+      Keep it in memory for the lifetime of the session instead.
+    severity: ERROR
+    languages: [typescript, javascript]
+    metadata:
+      category: security
+      subcategory: credential-storage
+      codeql-parity: js/clear-text-storage-of-sensitive-data
+      cwe: "CWE-312: Cleartext Storage of Sensitive Information"
+
+  # ─── py/clear-text-storage-sensitive-data ──────────────────────────
+  # Narrowed to the shape a syntactic engine can judge: a dict literal
+  # that names a credential field, serialized straight to disk. Writing
+  # a credential-named *variable* is not flagged, because this codebase
+  # legitimately persists its own gateway secret to a 0600 file and that
+  # distinction is not visible syntactically.
+
+  - id: kirocrew.clear-text-credential-dump
+    patterns:
+      # A stream argument is required. Without one, yaml.[safe_]dump
+      # returns a string and nothing is persisted, so firing on it
+      # contradicted this rule's own message about reaching disk.
+      - pattern-either:
+          - pattern: "json.dump({..., $KEY: $V, ...}, $STREAM, ...)"
+          - pattern: "yaml.dump({..., $KEY: $V, ...}, $STREAM, ...)"
+          - pattern: "yaml.safe_dump({..., $KEY: $V, ...}, $STREAM, ...)"
+          - pattern: "yaml.dump({..., $KEY: $V, ...}, stream=$STREAM, ...)"
+          - pattern: "yaml.safe_dump({..., $KEY: $V, ...}, stream=$STREAM, ...)"
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: (?i)^["'](.*_)?(password|passwd|secret|credential|api_key|apikey|private_key|privatekey)(_.*)?["']$
+    paths:
+      include:
+        - src/kiro_crew/**
+      exclude:
+        - src/kiro_crew/_vendor/**
+    message: >
+      A credential-named field is serialized to a file in clear text.
+      Confirm the destination is created with 0600 permissions inside a
+      user-private directory, or move the value into the encrypted vault.
+    severity: WARNING
+    languages: [python]
+    metadata:
+      category: security
+      subcategory: credential-storage
+      codeql-parity: py/clear-text-storage-sensitive-data
+      cwe: "CWE-312: Cleartext Storage of Sensitive Information"

@@ -1,0 +1,54 @@
+# Exact pins resolved and served on CPU against the pinned weights. torch's
+# CPU build is taken from the PyTorch CPU index on Linux; elsewhere PyPI's
+# torch is already the CPU build.
+accelerate==1.15.0
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+certifi==2026.7.22
+click==8.5.0
+fastapi==0.142.2
+filelock==4.0.8
+fsspec==2026.9.0
+h11==0.16.0
+hf-xet==1.6.0
+httpcore==1.0.9
+httptools==0.8.0
+httpx==0.28.1
+huggingface-hub==1.33.0
+idna==3.20
+jinja2==3.1.6
+markdown-it-py==4.2.0
+markupsafe==3.0.3
+mdurl==0.1.2
+mpmath==1.3.0
+networkx==3.7
+numpy==2.5.3
+opentelemetry-api==1.45.0
+packaging==26.3
+peft==0.21.2
+psutil==7.2.2
+pydantic==2.13.5
+pydantic-core==2.46.5
+pygments==2.21.0
+python-dotenv==1.2.4
+pyyaml==6.0.3
+regex==2026.9.29
+rich==15.0.0
+safetensors==0.8.0
+setuptools==84.0.0
+shellingham==1.5.4
+starlette==1.7.0
+strands-decider @ https://github.com/strands-labs/strands-decider/archive/fe39fad9ec8ec355993f76b977348d915ec9cb65.tar.gz
+sympy==1.14.0
+tokenizers==0.23.2
+torch==2.14.1
+tqdm==4.70.1
+transformers==5.18.0
+typer==0.27.2
+typing-extensions==4.16.0
+typing-inspection==0.4.4
+uvicorn==0.54.0
+uvloop==0.23.0 ; sys_platform != "win32"
+watchfiles==1.3.0
+websockets==17.1

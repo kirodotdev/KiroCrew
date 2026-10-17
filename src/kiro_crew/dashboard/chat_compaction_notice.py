@@ -1,0 +1,294 @@
+"""Auto-compaction notice delivery for channel-originated sessions.
+
+``SessionManager`` fires its compact callback for EVERY session it compacts, but
+the dashboard's handler only knows how to append to a chat slot — so a session
+living on Slack or Discord had its context compacted silently: no notice, and no
+explanation for the summarized history the user sees afterwards. This module is
+the channel leg of that notice.
+
+Delivery reuses the two existing outbound paths rather than adding a third:
+
+* **Slack** — ``state.slack_client.post_message`` into the thread persisted by
+  the inbound leg (``SessionMap.get_slack_link``), the same resolution the
+  linked-thread auth-error notice uses. Slack is deliberately absent from the
+  ``channel_transports`` registry, so it cannot ride the ladder below.
+* **every other channel** — the governed cross-surface ladder
+  (``chat_runner._resolve_channel_target``), which vets the send against the
+  ``channels`` governance scope, records a SEL decision for grant AND denial,
+  and checks ``supports_proactive_send`` before handing the notice to the
+  shared unattended-egress leg (``messaging.egress``). The target is the
+  session's ``origin`` link, else its ``mirror`` link.
+
+Best-effort by construction: the compaction itself already succeeded and the
+session keeps running, so a failed or impossible delivery is logged and
+swallowed rather than surfaced.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import Any
+
+from kiro_crew.messaging.egress import channel_egress_parts, send_channel_parts
+from kiro_crew.messaging.link import SLACK_NAMESPACE, channel_namespace_of
+from kiro_crew.platform.context import PlatformCompositionError
+from kiro_crew.platform.governance_profiles import vet_and_audit
+from kiro_crew.session_compaction import (
+    COMPACT_OUTCOME_CANCELLED,
+    COMPACT_OUTCOME_COMPACTED,
+    COMPACT_OUTCOME_RECYCLED,
+    COMPACT_OUTCOME_RESTARTED_UNCOMPACTABLE,
+    COMPACT_OUTCOME_WAITING_FOR_SUBAGENTS,
+)
+
+logger = logging.getLogger(__name__)
+
+#: Notices are plain text: a channel session may be read on a client with no
+#: markdown rendering, and the dashboard's own notice copy does not transfer
+#: (it references UI affordances the channel user does not have).
+#: The compaction-outcome vocabulary the session layer reports. Imported rather
+#: than restated: these notices are chosen by it, and a second spelling of the
+#: same value is how a notice starts describing the wrong arm.
+CHANNEL_COMPACT_NOTICE = (
+    "Context reached {pct:.0f}% and was auto-compacted. Earlier turns are now a "
+    "summary; this conversation continues where it left off."
+)
+CHANNEL_COMPACT_WAITING_NOTICE = (
+    "Context reached {pct:.0f}%. The session is waiting for its sub-agents to "
+    "finish before it restarts; your messages are kept."
+)
+CHANNEL_COMPACT_FAILED_NOTICE = (
+    "Context reached {pct:.0f}% but auto-compact failed. It retries after a "
+    "cooldown — send {cmd} to compact now, or {new_cmd} to start fresh."
+)
+#: Shared tail of both restart notices. The successor's first turn IS built from a
+#: recent excerpt of the transcript (``ContextBuilder`` thread history), so the
+#: notice names that excerpt: a user who believes the context is gone for good has
+#: no reason to ask the agent to pick the work back up.
+_CHANNEL_RESTART_MEMORY_TAIL = (
+    "The messages above are still here, and the agent's next reply starts from a "
+    "recent excerpt of them rather than the whole thing. Send {new_cmd} any time to "
+    "start fresh yourself."
+)
+#: A user Stop ended the compaction turn. The only Stop that reaches a compacting
+#: session is the FORCED one, and a forced stop restarts the session, so the
+#: notice uses the restart notices' verb and memory tail and leads with the actor.
+CHANNEL_COMPACT_CANCELLED_NOTICE = (
+    "Your forced stop ended the compaction (condensing the conversation to free space) "
+    "that started at {pct:.0f}% of the context limit, so this session was restarted. "
+    + _CHANNEL_RESTART_MEMORY_TAIL
+)
+#: The session was REPLACED after a compaction that could have worked failed. Says
+#: what happened rather than claiming a summary, and names the loss the user would
+#: otherwise discover by asking the agent something it cannot recall.
+CHANNEL_RESTART_NOTICE = (
+    "Context reached {pct:.0f}% and compaction didn't succeed, so this session was "
+    "restarted. " + _CHANNEL_RESTART_MEMORY_TAIL
+)
+#: The same restart where NOTHING could have compacted it. Only this one names the
+#: missing capability: the notice above is reached by backends that have compaction
+#: and failed once, and telling those users their backend cannot compact is false.
+CHANNEL_RESTART_UNCOMPACTABLE_NOTICE = (
+    "Context reached {pct:.0f}% and this backend cannot compact at all, so this "
+    "session was restarted. " + _CHANNEL_RESTART_MEMORY_TAIL
+)
+
+#: Manual fallbacks differ per channel: the bang-prefixed transports own their
+#: commands locally, while the reply-token channels use slash commands. Keyed by
+#: channel namespace with a conservative default for a transport that has not
+#: been checked.
+_MANUAL_COMMANDS: dict[str, tuple[str, str]] = {
+    "slack": ("`!compact`", "`!new`"),
+    "discord": ("`!compact`", "`!new`"),
+}
+_DEFAULT_COMMANDS = ("/compact", "/new")
+
+
+def notice_text(
+    namespace: str,
+    pct: float,
+    *,
+    success: bool,
+    outcome: str = COMPACT_OUTCOME_COMPACTED,
+) -> str:
+    """Render the notice for *namespace* at *pct* usage.
+
+    ``outcome`` says WHICH arm ran, and a channel needs it for the same reason the
+    dashboard does: a recycle is a success to the caller, so ``success`` alone
+    rendered "it was compacted automatically" for a session that had been REPLACED.
+    The restart wordings name the loss the user would otherwise find by asking the
+    agent something it cannot recall, and only the uncompactable one says the
+    backend cannot compact -- a kiro-cli session whose in-place ``/compact`` merely
+    timed out reaches the other.
+
+    ``new_cmd`` is threaded into both restart notices because it is the one action a
+    user can take afterwards, and it is already per-namespace.
+    """
+    if outcome == COMPACT_OUTCOME_WAITING_FOR_SUBAGENTS:
+        return CHANNEL_COMPACT_WAITING_NOTICE.format(pct=pct)
+    if outcome == COMPACT_OUTCOME_CANCELLED:
+        _, new_cmd = _MANUAL_COMMANDS.get(namespace, _DEFAULT_COMMANDS)
+        return CHANNEL_COMPACT_CANCELLED_NOTICE.format(pct=pct, new_cmd=new_cmd)
+    if not success:
+        compact_cmd, new_cmd = _MANUAL_COMMANDS.get(namespace, _DEFAULT_COMMANDS)
+        return CHANNEL_COMPACT_FAILED_NOTICE.format(pct=pct, cmd=compact_cmd, new_cmd=new_cmd)
+    if outcome == COMPACT_OUTCOME_RESTARTED_UNCOMPACTABLE:
+        _, new_cmd = _MANUAL_COMMANDS.get(namespace, _DEFAULT_COMMANDS)
+        return CHANNEL_RESTART_UNCOMPACTABLE_NOTICE.format(pct=pct, new_cmd=new_cmd)
+    if outcome == COMPACT_OUTCOME_RECYCLED:
+        _, new_cmd = _MANUAL_COMMANDS.get(namespace, _DEFAULT_COMMANDS)
+        return CHANNEL_RESTART_NOTICE.format(pct=pct, new_cmd=new_cmd)
+    return CHANNEL_COMPACT_NOTICE.format(pct=pct)
+
+
+async def deliver_channel_compaction_notice(
+    state: Any,
+    key: str,
+    pct: float,
+    *,
+    success: bool,
+    outcome: str = COMPACT_OUTCOME_COMPACTED,
+) -> None:
+    """Post the auto-compact notice into the conversation behind *key*.
+
+    Silent no-op for a key that is not channel-originated (``cron:``,
+    ``heartbeat``, ``subagent:`` and friends have no user watching a
+    conversation), and for a channel session whose reply target cannot be
+    resolved.
+    """
+    namespace = channel_namespace_of(key)
+    if not namespace:
+        return
+    if namespace == SLACK_NAMESPACE:
+        await _deliver_slack(
+            state, key, notice_text(namespace, pct, success=success, outcome=outcome)
+        )
+        return
+    await _deliver_via_transport(state, key, pct, success=success, outcome=outcome)
+
+
+def _channel_egress_permitted(session_key: str, channel_type: str) -> bool:
+    """Vet an outbound notice against the ``channels`` governance scope.
+
+    The non-Slack leg inherits this from ``_resolve_channel_target``. Slack is
+    deliberately absent from ``channel_transports`` and so never reaches that
+    ladder, which would leave its notice as the one unvetted, unaudited egress
+    in this module. Fail-closed: a degraded evaluation denies rather than
+    degrading to permit, matching the ladder and the other ``channels``-scope
+    gates. ``vet_and_audit`` records a SEL decision for both grant and denial.
+
+    Synchronous by design — callers run it through ``asyncio.to_thread`` because
+    the gate reads the profile directory.
+    """
+    try:
+        decision = vet_and_audit(
+            "channels",
+            channel_type,
+            session_key=session_key,
+            tool_name="chat.compaction_notice",
+            fail_closed=True,
+        )
+    except PlatformCompositionError:
+        # An invalid governance ceiling is not an ordinary skip: the ladder
+        # deliberately re-raises rather than degrading, and so does this gate.
+        raise
+    except Exception:
+        logger.debug(
+            "compact notice: governance check failed for %s; denying (fail-closed)",
+            session_key,
+            exc_info=True,
+        )
+        return False
+    # Default False: a Decision without ``permitted`` is an unusable answer from
+    # a gate and must not read as permission.
+    return bool(getattr(decision, "permitted", False))
+
+
+async def _deliver_slack(state: Any, key: str, text: str) -> None:
+    """Post into the Slack thread the session is bound to."""
+    client = getattr(state, "slack_client", None)
+    sessions = getattr(state, "sessions", None)
+    if client is None or sessions is None:
+        return
+    try:
+        thread_ts, channel_id = sessions.get_slack_link(key)
+    except Exception:
+        logger.debug("compact notice: slack link lookup failed for %s", key, exc_info=True)
+        return
+    if not channel_id:
+        return
+    # Off-loop: the gate walks the profile directory (iterdir + stat, with a
+    # possible reload), which is unbounded on slow or networked storage.
+    if not await asyncio.to_thread(_channel_egress_permitted, key, SLACK_NAMESPACE):
+        return
+    try:
+        # thread_ts is optional: a session bound to a channel without a thread
+        # (post_message treats None as a top-level post) still gets the notice.
+        await client.post_message(channel_id, text, thread_ts or None)
+    except Exception:
+        logger.debug("compact notice: slack delivery failed for %s", key, exc_info=True)
+
+
+async def _deliver_via_transport(
+    state: Any,
+    key: str,
+    pct: float,
+    *,
+    success: bool,
+    outcome: str = COMPACT_OUTCOME_COMPACTED,
+) -> None:
+    """Send through the governed cross-surface ladder (Discord and friends).
+
+    The notice text is rendered from the RESOLVED channel type rather than the
+    key's namespace, so a ``unified:`` DM bucket still quotes the right manual
+    command for the channel it actually lives on.
+    """
+    sessions = getattr(state, "sessions", None)
+    if sessions is None:
+        return
+    # ORIGIN then MIRROR, the same ladder every other proactive leg walks
+    # (``GatewayOrchestrator._channel_reply_link``). Origin alone is written by
+    # exactly one channel — Discord's resume path — so a notice for a Telegram or
+    # WeCom conversation, which binds a MIRROR on its first turn, was computed and
+    # then dropped on the `link is None` return below. The conversation got
+    # summarized silently, and on a compaction FAILURE the operator never saw the
+    # "run /compact or /new" line that is the whole point of the notice.
+    link = None
+    for getter in (sessions.get_origin_link, sessions.get_mirror_link):
+        try:
+            link = getter(key)
+        except Exception:
+            logger.debug("compact notice: link lookup failed for %s", key, exc_info=True)
+            return
+        if link is not None:
+            break
+    if link is None:
+        return
+    # Lazy: chat_runner imports state at module scope, so a top-level import
+    # here would close the cycle.
+    from kiro_crew.dashboard.chat_runner import _resolve_channel_target
+
+    # Off-loop: the ladder's governance gate walks the profile directory
+    # (iterdir + stat, with a possible reload), which is unbounded on slow or
+    # networked storage. A notice is never worth stalling the loop for.
+    target = await asyncio.to_thread(_resolve_channel_target, state, key, link)
+    if target is None:
+        return
+    resolved, transport = target
+    text = notice_text(resolved.channel_type, pct, success=success, outcome=outcome)
+    # Outside the best-effort ``try``: ``redact_via_context`` re-raises an invalid
+    # governance ceiling (``PlatformCompositionError``), which this module never
+    # degrades, the same as the gate above. Only the send itself is best-effort.
+    parts = await channel_egress_parts(text, transport.capabilities)
+    try:
+        await send_channel_parts(
+            transport, resolved.channel_id, parts, thread_id=resolved.thread_id
+        )
+    except Exception:
+        logger.debug(
+            "compact notice: %s delivery failed for %s",
+            resolved.channel_type,
+            key,
+            exc_info=True,
+        )

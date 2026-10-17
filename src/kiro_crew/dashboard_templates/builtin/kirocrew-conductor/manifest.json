@@ -1,0 +1,18 @@
+{
+  "id": "kirocrew-conductor",
+  "version": 1,
+  "title": "Conductor board",
+  "description": "The goal conductor's task board, and the default page of a crewmate named kirocrew-conductor. The goal, the round and every task with its state come from the work slot fold, so the board stays current even when the conductor publishes nothing. Closed tasks the fold no longer lists still count, from its forgotten block, so done and total stay true on a long goal. One field is the conductor's own: needs_you, a list of short lines, each one thing the person must do or decide, in the person's language; drop a line once it is done. Tasks whose worker asked or is stuck are shown under Needs you as well, from the record. note is whatever the conductor last sent with panel_publish, read from its own record in the panel fold; the page shows its next line under a label that says the crewmate wrote it.",
+  "source": "builtin",
+  "fields": {
+    "goal": { "type": "string", "source": { "fold": "work", "path": "conductor.goal" } },
+    "round": { "type": "number", "source": { "fold": "work", "path": "conductor.round" } },
+    "last_entry_at": { "type": "string", "source": { "fold": "work", "path": "conductor.last_entry_at" } },
+    "items": { "type": "array", "source": { "fold": "work", "path": "items" } },
+    "omitted": { "type": "number", "source": { "fold": "work", "path": "omitted" } },
+    "forgotten": { "type": "object", "source": { "fold": "work", "path": "forgotten" } },
+    "needs_you": { "type": "array", "items": { "type": "string" }, "source": { "agentic": true }, "upkeep": {"means": "one short line per thing the person must do or decide, in the person's language", "when": "whenever an item starts or stops waiting on the person", "how": "write the whole list each time, and drop a line once it is done"} },
+    "note": { "type": "object", "source": { "fold": "panel", "path": "data" } },
+    "note_at": { "type": "string", "source": { "fold": "panel", "path": "published_at" } }
+  }
+}

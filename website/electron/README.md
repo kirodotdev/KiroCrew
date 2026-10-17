@@ -1,0 +1,365 @@
+# Kiro Crew Desktop (Electron)
+
+Desktop shell for the Kiro Crew web dashboard on macOS, Linux, and Windows. It
+automatically starts `kirocrew gateway` and connects to `localhost:5476`.
+
+## Quick Start
+
+```bash
+cd electron
+npm install
+npx electron .
+```
+
+The app will:
+
+1. Reuse an existing gateway if one is already reachable and actually serving
+   (`/api/ready` 200) — a gateway draining after `/api/shutdown` still answers
+   `/api/status`, so it is never adopted; the app waits for the port to clear
+   and spawns fresh instead. Before reusing a same-family gateway on a fixed-path
+   POSIX install, the app detects whether its sole listener is an older gateway
+   from the current bundled backend path. If so, it warns that updated features
+   may be unavailable and offers Continue or Quit, with instructions to stop the
+   old gateway before reopening the app. It does not restart or force-stop the
+   gateway automatically. Remote tunnels, separate CLI installs, unknown owners,
+   same or newer versions, Windows, and moved AppImages retain existing behavior
+2. When nothing answers the first health check but the port is held by this
+   app's own data-folder gateway (`gateway.lock` names its pid and that pid holds
+   the lock) and it keeps failing for 15 seconds, offer Stop and restart or Quit
+   (see [the desktop app guide](../../docs/build/desktop-app.md#how-the-app-finds-and-launches-the-backend))
+3. Launch `kirocrew gateway` when needed
+4. Show a loading screen while the backend boots. A live bundled backend gets an
+   extended Windows cold-start window; a child that actually exits still fails
+   immediately with its launch-log cause.
+5. Load the dashboard
+6. Point the user at Kiro CLI installation and sign-in on the gateway host when
+   either prerequisite is missing
+
+The Electron shell uses the same gateway-hosted setup screen as every browser;
+it has no separate installer or login runner, and it performs neither step. The
+screen links out to <https://kiro.dev/cli/> for the CLI, and names the commands
+the user runs to sign in: `kiro-cli login` for a personal account, or
+`kiro-cli login --use-device-flow --license pro` for organization SSO. Both are
+shown because the portal the bare command opens offers a free Builder ID
+alongside organization SSO, and picking the wrong one still succeeds — the
+mismatch only surfaces later as missing models. The app observes completion
+through the read-only `kiro-cli whoami` probe. Candidate selection is
+fail-closed: a broken higher-priority Kiro CLI is shown as needing repair and is
+not skipped in favor of a later candidate. Remote tunnel sessions check the
+remote gateway host.
+
+## Main-process owners
+
+`main.js` is the composition root. Between them, `main.js` and `ipc-registrar.js`
+require four lifecycle facades (the updater is composed from `ipc-registrar.js`),
+and each facade composes cohesive owners under `runtime/<area>/`:
+
+| Facade (what `main.js` and `ipc-registrar.js` require) | Runtime owners it composes | What stays in the facade |
+|---|---|---|
+| `gateway-supervisor.js` (`createGatewaySupervisor`) | `runtime/gateway/launch-preflight.js` (backend binary, bundle completeness, project dir, sandbox-profile advice, launchd `PATH`, relaunch target) · `port-holders.js` (lsof/ps/netstat probes, trusted Windows gateway commands, incumbent snapshot and exit wait, force-stop) · `family-takeover.js` (quitting the other release family's app) · `token-sources.js` (the local-secret mint and the SSH token fetch) · `remote-crew-prompt.js` (the Add / Edit Remote Crew form) | All gateway state (child, ownership, start failure, liveness monitor, update handoff), the spawn site and its environment, every port occupancy and identity decision, the connect flow, the failure dialog, liveness recovery and shutdown |
+| `window-lifecycle.js` (`createWindowLifecycle`) | `runtime/window/chrome.js` (traffic lights, title-bar overlay, native theme, zoom, focus-mode chrome) · `prompts.js` (New Connection Window port prompt, Rename Window) · `session-security.js` (session permission policy, microphone and screen-recording recovery dialogs) · `linux-captions.js` (frameless Linux caption controls) · `browser-panels.js` (per-window native browser panels and their agent command channel) | Window creation and state restore, the drag band, fullscreen handling, close-to-tray and every show path, the tray, the remote-host prompt, the menu, window-control admission, and the browser IPC routing |
+| `auto-update.js` (`initAutoUpdate` and 16 policy exports) | `runtime/update/state-reporter.js` (channel, lane pair, lifecycle pushes, replayable info) · `feed-lane.js` (electron-updater discovery, download, staged install) · `managed-lane.js` (the marker-driven check and apply commands) | Channel and feed policy (`KNOWN_CHANNELS`, `channelHasLane`, `channelForVersion`, `buildFeedBase`, `manualDownloadUrl`), the update-policy flags, the `EXTERNALLY-MANAGED` marker reader and its caps, the narrowed marker-command `PATH`, the install-shape probes, and the gates that choose a lane |
+| `crash-collector.js` (`armCrashCollector`, `collectCrashReports`, `crashNoticeSummary`) | `runtime/crash/ownership.js` · `artifact-parsers.js` · `candidates.js` · `persistence.js` · `scan.js` | The export surface and `crashNoticeSummary`, the one renderer-facing view |
+
+Three rules keep this layout safe to change:
+
+- Consumers require only the facades. Their export names, factory options,
+  returned object shapes and module-scope constants are the contract. Many tests
+  also read source text, so a pinned construct moves only together with its pin,
+  and the pin reads the file that defines it: the facade for most, a runtime
+  owner for a few (the managed lane's pinned shell, the browser panels' view
+  wiring).
+- A runtime owner never requires Electron, the facade, or `fs`/`os`/`path`/
+  `http`/`child_process` where its facade injects them, and never resolves a
+  path from its own `__dirname`: the Electron directory (`loading.html`, the
+  preload, icons, the baked marker) is always the facade's.
+- Every file is listed individually in `package.json` `build.files` and
+  required with a double-quoted, extensionless, file-explicit path
+  (`require("./runtime/gateway/port-holders")`, `require("../../gateway-stop")`).
+  `test/shell-contract.test.js` fails on a required file missing from the
+  allowlist, and `test/packaging.test.js` on a single-quoted or template-literal
+  relative require, which the scans cannot read, or on an owner no facade
+  composes.
+
+New main-process code goes to the runtime owner whose entry above names its
+responsibility, not to the facade: a new lsof/ps/netstat or process-identity
+probe goes to `runtime/gateway/port-holders.js`, a launch precondition to
+`launch-preflight.js`, native window chrome to `runtime/window/chrome.js`, an
+update lane's step to `feed-lane.js` or `managed-lane.js`, and a crash-artifact
+rule to its owner under `runtime/crash/`. A facade grows only in its "What stays
+in the facade" column, and a responsibility no owner names gets a new file under
+`runtime/<area>/` that its facade composes.
+
+## Install as macOS App
+
+Build a native `.app` bundle and install to `/Applications`:
+
+```bash
+cd electron
+npm install
+npx electron-builder --mac --dir
+APP_DIR=$([ "$(uname -m)" = "arm64" ] && echo "dist/mac-arm64" || echo "dist/mac")
+sudo rm -rf /Applications/KiroCrew.app
+sudo cp -R "$APP_DIR/KiroCrew.app" /Applications/KiroCrew.app
+```
+
+Launch via Spotlight (Cmd+Space → "KiroCrew"), Dock, or `open /Applications/KiroCrew.app`.
+Right-click the Dock icon → Options → Keep in Dock to pin it.
+
+## Build `.dmg`
+
+```bash
+npm run dist
+```
+
+Output goes to `electron/dist/`. The DMG opens to a branded 660×420 logical-size
+drag-to-Applications layout on a flat light-purple ground carrying the opening
+animation's white ghost cast, with one chevron pointing from the app to
+`/Applications`.
+Its background is a multi-resolution TIFF with 1× and Retina 2× representations.
+The release workflow uses this Electron-built DMG as a layout template, removes
+its unsigned app, and inserts the signed/stapled app before the DMG itself is
+signed and notarized. That keeps local previews and shipped downloads aligned.
+
+## Build Windows Installer (NSIS)
+
+The Windows desktop build is wired end to end: `package.json` declares an
+`nsis` target under `build.win`, and `packaging/build-desktop.sh` has a full
+Windows branch. Run it from Git Bash (or MSYS/Cygwin — the script normalizes
+those to `windows`) at the repo root:
+
+```bash
+bash packaging/build-desktop.sh
+```
+
+Notes:
+
+- **The build must run natively on Windows**, not cross-built from macOS or
+  Linux: the script provisions a Windows python-build-standalone interpreter
+  via `uv` and executes its `python.exe` to install and verify the bundled
+  backend, then runs `electron-builder --win` to produce the NSIS installer.
+- **Signing is optional for a local build.** The `signtoolOptions.sign` hook
+  (`scripts/sign-windows.js`) skips cleanly when none of the
+  `WINDOWS_SIGNING_*` environment variables are set, so a credential-less
+  build produces a working unsigned installer. (Setting only some of the five
+  variables is treated as a misconfiguration and fails the build.)
+- The result is an assisted (non-one-click, per-user) NSIS installer,
+  `KiroCrew Setup <version>.exe` (nightly builds:
+  `KiroCrew Nightly Setup <version>.exe`), in `website/electron/dist/`.
+- The pinned electron-builder NSIS template is patched during `npm install` to
+  expose Kiro Crew's staged-payload publish hook. On a normal same-volume
+  per-user install it renames the large `resources` / `locales` trees into place
+  and copies only the small root remainder; per-machine installs keep the
+  upstream copy path so files inherit the Program Files ACL. Cross-volume or
+  occupied destinations also retain the upstream copy-and-retry fallback. The
+  Windows backend ships hash-based (unchecked)
+  bytecode for the measured gateway import closure, so first launch consumes
+  build-time caches rather than generating thousands of files under Defender.
+  Unchecked rather than checked so the loader does not also re-read and re-hash
+  every `.py` it imports, which cost a median 12.5 s per cold boot; macOS's
+  whole-tree caches stay checked-hash.
+- The native welcome/finish sidebar and the header used on intermediate pages
+  carry the Kiro Crew logo and ghost artwork. The standard NSIS controls and
+  localized instructions remain native. Page boundaries use a short Win32
+  alpha-blended cross-fade that follows the system client-area animation setting;
+  extraction itself stays on the native progress page without timer-driven art.
+- A fresh install's native Finish page discloses that the default Kiro agent
+  needs a separately installed and authenticated Kiro CLI, names `kiro-cli
+  login`, and links to <https://kiro.dev/cli/>. It never runs either step.
+  Auto-updates skip the Finish page and keep their existing automatic relaunch.
+
+See `../../docs/guides/windows-install.md` for the CI-built installer and the
+current Windows support status.
+
+## Updating
+
+After pulling new code and rebuilding (`npm run build`):
+
+```bash
+# Rebuild and reinstall the desktop app
+cd electron && npx electron-builder --mac --dir
+APP_DIR=$([ "$(uname -m)" = "arm64" ] && echo "dist/mac-arm64" || echo "dist/mac")
+sudo rm -rf /Applications/KiroCrew.app
+sudo cp -R "$APP_DIR/KiroCrew.app" /Applications/KiroCrew.app
+
+# Restart the gateway (service-aware)
+kirocrew restart
+```
+
+## Uninstall
+
+```bash
+# Remove the desktop app
+sudo rm -rf /Applications/KiroCrew.app
+
+# Stop and remove the managed gateway service, if installed
+kirocrew service uninstall
+```
+
+## Remote Tunnel Mode (Headless CDE)
+
+If the gateway runs on a remote dev desktop (the recommended setup per
+`../../docs/guides/remote-and-mobile.md`), the app can fetch tokens automatically
+via SSH instead of minting one from the local listener secret (see Token flow
+below).
+
+### Prerequisites
+
+1. An SSH tunnel forwarding the remote gateway port to localhost. Either tick
+   **Keep an SSH tunnel to this crew open** for the app's launch port (in the
+   Add/Edit Remote Crew form the "no gateway is answering" dialog opens, or in
+   Set Remote Host… on that window, below), and the app opens and maintains it;
+   saving either form applies the choice at once. Or run your own:
+   ```bash
+   ssh -L 5476:localhost:5476 YOUR_HOST.example.com
+   ```
+   Or use a macOS LaunchAgent (see `../../docs/guides/assets/`).
+
+2. `kirocrew` installed on the remote host. The default auto-discovers across common
+   install layouts — no configuration needed unless you installed somewhere unusual.
+
+### Configure
+
+Remote host settings are **per-port** — each window can have its own remote host
+(or none, for local gateways). Focus the window you want to configure, then use
+**Connection → Set Remote Host…** (on macOS, also the title-bar right-click menu):
+
+1. The modal shows which port it's configuring (e.g. "Remote host for :5476")
+2. Enter your remote host's hostname or SSH config alias (e.g. `myhost.example.com` or `clouddesk`)
+3. Leave the binary path at the default unless you installed kirocrew somewhere
+   unusual. The default tries, in order:
+   - `~/.toolbox/bin/kirocrew` (toolbox install — recommended)
+   - `~/.local/bin/kirocrew` (install.sh / source install)
+   - `~/.kirocrew-app/.venv/bin/kirocrew` (one-liner installer venv)
+4. Optionally set a **Remote port** if the gateway port on the remote host differs
+   from the window's local port (default: same as the window's port)
+5. Optionally set a **Remote PATH** if kirocrew needs additional directories
+   (default: `~/.toolbox/bin:/usr/bin:/bin`)
+6. Optionally tick **Keep an SSH tunnel to this crew open** (macOS and Linux).
+   The checkbox appears only for the port the app launched on, and never on
+   Windows; another window's form carries its stored choice over unchanged.
+   The app then runs `kirocrew desktop tunnel`, which holds the forward from the
+   window's port to the crew's with the same supervisor and backoff Remote Crew uses
+   inside a gateway. A dropped forward is rebuilt on its own, and waking the
+   machine from sleep rebuilds it at once. Leave it unticked if something else
+   (your own ssh, a VPN, `kubectl port-forward`) already carries that port: the
+   app never takes a port over without this opt-in. Routing and identity come
+   from your `~/.ssh/config`, and ssh runs non-interactively, so the host must
+   authenticate without a prompt.
+7. Click Save. Leave hostname empty to clear (use local token for that port). On a
+   scheme-default port (`:80` / `:443`) that still resolves to a remote host, the
+   Clear is refused so the record cannot be dropped from under a live tunnel: reopen
+   the crew on a selectable port and clear it there.
+
+**Multi-instance example:**
+- Window 1 on `:5476` — local gateway, no remote host needed
+- Window 2 on `:7778` — SSH tunnel to another host, remote host configured
+
+The app will SSH into the configured remote host and run `kirocrew token` on
+each launch to get a fresh JWT — no manual paste required.
+
+### Token flow (per window)
+
+```
+1. Read `<data home>/run/gateway-<port>-<bind address>.secret` (`:` written as `_`)
+   for every loopback family the window's host can reach: v4 (`127.0.0.1`,
+   `0.0.0.0`) and v6 (`::1`, `::`). A literal host (`127.0.0.1` / `[::1]`) needs
+   its own family; `localhost` / `kirocrew.localhost` (the default backend URL is
+   `http://localhost:<port>`) need BOTH, carrying the same secret (one gateway
+   generation). Then call `/api/token/local` on that port. A missing family, or
+   families covered by different secrets, means refuse, not fall back: the
+   home-wide `.local_secret` is not consulted here.
+2. If remote host configured for this port:
+   SSH: export PATH=<remotePath> KIROCREW_PORT=<port>; <bin> token
+3. Fallback: show manual token prompt
+```
+
+### Menus
+
+| Location | Item | Action |
+|----------|------|--------|
+| Connection menu (macOS) | New Window (⌘⇧N) | Open another dashboard window with a new blank session on the existing local gateway |
+| Connection menu / macOS title-bar right-click | New Connection Window… | Open a dashboard window for another gateway port |
+| Connection menu / macOS title-bar right-click | Rename Window… | Name the **focused window** |
+| Connection menu / macOS title-bar right-click | Set Remote Host… | Configure hostname for the **focused window's** port |
+| Connection menu / macOS title-bar right-click | Refresh Token (⌘⇧T) | Fetch a fresh token for the **focused window** |
+| Connection menu / tray | Open Config File | Open `config.json` in default editor |
+
+### Window naming
+
+Windows default to `[:port]`. You can set a **default name** per port via
+**Rename Window… → ☑ Set as default name for :port windows**. New windows on that
+port will use it automatically. Names are stored in `remoteHosts[port].defaultName`.
+
+### Config file
+
+Settings are persisted via `electron-store`. On macOS the file is
+`~/Library/Application Support/KiroCrew/config.json`; on Linux and Windows, use
+**Open Config File** to reveal the platform-specific application-data path:
+
+```json
+{
+  "remoteHosts": {
+    "5476": {
+      "host": "myhost.example.com",
+      "binPath": "~/.toolbox/bin/kirocrew",
+      "remotePort": "",
+      "remotePath": "",
+      "defaultName": "Cloud"
+    }
+  },
+  "sshTimeoutMs": 20000
+}
+```
+
+Open via **Connection → Open Config File** or the tray menu.
+
+### Troubleshooting
+
+| Issue | Fix |
+|-------|-----|
+| "SSH token fetch failed" | Check `ssh -o BatchMode=yes YOUR_HOST true` works from Terminal: the fetch runs ssh non-interactively (`-n`, `BatchMode=yes`), so the host must authenticate without a prompt |
+| "ssh client not found: …" | Install the OpenSSH client. The app takes ssh only from the system directories (`/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`, `/run/current-system/sw/bin`; on Windows the in-box `System32\OpenSSH\ssh.exe`), never from `PATH` |
+| "ssh YOUR_HOST timed out after N s" | Raise `sshTimeoutMs` in the config file; ssh's `ConnectTimeout` is sized from it |
+| "kirocrew binary not found in any of …" | Install Kiro Crew through a [supported install path](../../docs/guides/install.md#install-paths), or set a custom path |
+| "command not found: kiro-cli" | Set Remote PATH to include `~/.toolbox/bin` (default does this) |
+| "command not found: dirname" | Remote PATH missing `/usr/bin` — reset to default or add it |
+| Token fetched but 403 | Restart the remote gateway — `ssh host kirocrew restart` |
+| Wrong window refreshed | Focus the target window first (use the Connection menu, not the tray) |
+
+## Notes
+
+- On macOS, **Connection → New Window** (⌘⇧N) opens an independent
+  dashboard window and creates a blank session. It shares the running local
+  gateway and authentication origin, but does not copy the current session,
+  project, draft, or context.
+- Closing the window hides to tray — right-click the tray icon or Cmd+Q to quit
+- **GPU rendering.** Hardware acceleration is on by default.
+  `KIROCREW_DISABLE_GPU=1` or `--disable-gpu` turns it off for a launch
+  (`disable-gpu.js`). On Windows, if the GPU process dies before the dashboard
+  has loaded, the app relaunches itself once with software rendering
+  (`--in-process-gpu --use-angle=swiftshader`, never `--no-sandbox`) and keeps
+  that setting for the current app version under `gpuSoftwareFallback` in
+  `config.json`; a new version tries hardware rendering again once
+  (`gpu-crash-fallback.js`). The software-mode boot drops the opt-in's
+  `--disable-software-rasterizer` so `KIROCREW_DISABLE_GPU=1` cannot veto
+  SwiftShader. Remove the key to retry hardware rendering sooner.
+- **Dead renderer.** When the dashboard's renderer process dies, the app
+  reloads it up to three times a minute (`renderer-recovery.js`). When that
+  budget is spent, a native error dialog says so and offers Try again or Quit
+  (`renderer-exhausted-notice.js`); native because no renderer is left to
+  draw an error page. On Windows, when the renderer exited with
+  `0x80000003` before any dashboard document had loaded, the dialog's heading
+  names the cause ("Security software is blocking Kiro Crew's window.") and it
+  explains that Chromium's sandboxed child processes are being blocked on
+  the device, names the supported fix (a process exclusion for the
+  executable in the software that blocks them) and opens the Windows guide,
+  then asks again (same buttons, Try again now the default) so the user is
+  never handed back the bare black window. Esc and the close button act as Try
+  again, never as Quit. The dialog reads the gpu-crash-fallback latch for
+  "has a dashboard document loaded in this run"; there is one such latch.
+  No sandbox switch is ever applied.
+- External links open in your default browser
+- Desktop leaves the child `PATH` unchanged; the gateway-side prerequisite
+  service independently probes Kiro CLI's supported user-local, Homebrew,
+  macOS app-bundle, and Windows MSI locations

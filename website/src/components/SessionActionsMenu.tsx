@@ -1,0 +1,507 @@
+import * as React from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { Pencil, Circle, Pin, Locate, Link2, Tag as TagIcon, X, Unlink, ExternalLink, Monitor, Undo2, RotateCw, PanelTop, Sparkles, GitFork, BellOff, Volume2, VolumeX } from 'lucide-react'
+import type { ChatFolder } from '../types'
+import FolderMoveSubmenu from './FolderMoveSubmenu'
+import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
+import { useFolderSortMode } from '../hooks/useFolderSortMode'
+import SendToInstanceSubmenu from './SendToInstanceSubmenu'
+import ExportSessionItem from './ExportSessionItem'
+import ImportSessionItem from './ImportSessionItem'
+import CrewBoardMenuItem from './CrewBoardMenuItem'
+import SessionColorSwatches from './SessionColorSwatches'
+import SourceLinksSubmenu from './SourceLinksSubmenu'
+import { SessionTurnLimitSubmenu } from './SessionTurnLimitMenu'
+import LinkedSurfacesSection from './LinkedSurfacesSection'
+import { DropdownMenuItem, DropdownMenuSeparator } from './ui/dropdown-menu'
+import { ContextMenuItem, ContextMenuSeparator } from './ui/context-menu'
+import { muteFlagErrorKey } from '../store/dashboardSlice'
+import { useAppSelector } from '../store'
+import { selectSlotSubagentsActive } from '../store/chatSlice'
+import { useTagPopover } from '../hooks/useTagPopover'
+import { api } from '../api/client'
+import { useSessionActions } from '../hooks/useSessionActions'
+import { useChatPopouts } from '../hooks/useChatPopouts'
+
+import { uiLocation } from '../uiLocations/uiLocation'
+import { i18nT } from '../i18n/t'
+export interface SessionActionsMenuProps {
+  /** Chooses the Radix primitive family; must match the enclosing menu. */
+  variant: 'dropdown' | 'context'
+  /**
+   * The session this menu acts on. This is a *connected* component: every
+   * store-derived fact (unread / pinned / folder / colour) and every generic
+   * action (mark read/unread · pin · move · copy link · close) is keyed on this
+   * slot and wired straight to the store internally. A surface therefore opts
+   * into the full menu simply by rendering it with a `slotKey` — no wall of
+   * handlers or data props to plumb.
+   */
+  slotKey: string
+  /** Surface mode — forwarded to useSessionActions (scopes the copy-link URL). */
+  mode?: string
+  // ── The "absolutely necessary" bubble props: surface-specific UI-state or
+  //    async ownership that genuinely can't (and shouldn't) be internalised. ──
+  /** Header only: scrolls the sidebar to reveal this session. */
+  onReveal?: () => void
+  /** Rename entry point — differs per surface (sidebar inline row-edit vs header title editor). */
+  onRename?: () => void
+  /** Auto-title entry point for a surface whose title row cannot host the
+   *  hover-revealed button (the phone's single top bar): the LLM rename lands
+   *  here as a menu item so the capability keeps a touch-reachable home. */
+  onAutoTitle?: () => void
+  /**
+   * Open this session as a tab on the calling surface. Present only where a tab
+   * strip exists (the dashboard chat surface), which is why it is a bubble prop
+   * and not internalised: there is no store-wide "tabs" the menu could reach.
+   */
+  onOpenInNewTab?: () => void
+  /**
+   * Fork this chat (labelled "Fork chat"). Passed only by the sidebar row's
+   * single-menu form, where the menu replaces the hover cluster that otherwise
+   * hosts the fork button.
+   */
+  onDuplicate?: () => void
+  /** A second, muted line under Close that says what the press reaches. It wraps,
+   *  so on a phone, where this menu is the only close, nothing is cut off. */
+  closeHint?: string
+  /** Overrides the close item's label (default "Close session"). An adopted
+   *  remote-crew row passes "Remove from this machine" here, because its ✕ removes
+   *  only this machine's copy — the session stays live on its peer — and the
+   *  default label would promise a durable close it never performs (#19958). */
+  closeLabel?: string
+  /** Render the close item in NEUTRAL colours instead of the destructive red.
+   *  Default false (a real close is destructive and reads red). An adopted
+   *  remote-crew row passes true: removing the local copy is NOT destructive —
+   *  the session keeps running on its peer — so the red danger styling would
+   *  signal an irreversible loss the action does not cause (#19958). */
+  closeNeutral?: boolean
+  /** Extra items rendered in the top "informational" group (header-only today:
+   *  the MCP-servers submenu). Generic so the shared menu stays surface-agnostic. */
+  infoSlots?: React.ReactNode[]
+  /** Called after a colour pick; lets a caller that controls its own menu close it (the header does). */
+  onColorPicked?: () => void
+  /**
+   * Whether the chat sidebar -- and with it the banner that says a failed
+   * folder-order read -- is on screen while this menu is open. The sidebar's
+   * own row menus pass `true`; the chat header passes the drawer's state, which
+   * is `false` on mobile with the drawer closed and on desktop with the sidebar
+   * collapsed. When it is `false` and the read has failed, the **Move to
+   * folder** row carries the plain subline the banner would have shown (what
+   * is listed, and that the read retries on its own) -- the one place the
+   * person can see it before acting on the folder list. Not a second banner:
+   * one screen says a failure once, and here the banner is not on the screen.
+   * Omitted means "not on screen", the direction that never hides the fact.
+   */
+  sidebarOnScreen?: boolean
+  /**
+   * Leave out the "Pop out to window" / "Focus popped-out window" rows. The
+   * phone chat page's single top bar has its own window menu (the trailing ⋯)
+   * carrying exactly those two, and the same row in two adjacent menus read
+   * as two different actions. "Bring back to main" stays: it has no other home.
+   */
+  omitPopout?: boolean
+}
+
+/**
+ * Drop falsy items within each group, then drop groups that became empty.
+ * This is what makes separators auto-collapse: the caller renders a divider
+ * only *between* surviving groups, so an absent section never leaves a stray
+ * divider behind. Exported (and generic) so the visibility logic can be
+ * unit-tested with plain values, dodging jsdom's Radix-submenu flakiness.
+ */
+export function collapseGroups<T>(groups: (T | false | null | undefined)[][]): T[][] {
+  return groups
+    .map(g => g.filter((n): n is T => Boolean(n)))
+    .filter(g => g.length > 0)
+}
+
+/**
+ * One session menu, shared by all four surfaces — the sidebar row's mobile
+ * dropdown, desktop dropdown, and right-click context menu, plus the session
+ * header dropdown. Renders the *item list only* (not the Root/Trigger/Content
+ * shell) in one canonical order; each caller keeps its own trigger + Content
+ * wrapper (they differ in alignment, width, and open-state control).
+ *
+ * It connects to the store itself (useSessionActions + selectors keyed on
+ * `slotKey`) and renders the colour row inline, so callers bubble in only the
+ * surface-specific residue (rename/reveal + the MCP node slot + the
+ * colour-pick close hook). Connected surfaces are themselves a connected
+ * sub-section (keyed on `slotKey`), so they render on every surface, not just
+ * the header. The generic actions read their live state at call time, so the
+ * labels never drift from what the handlers do.
+ *
+ * Canonical order, five groups (each renders only if it has surviving items,
+ * with dividers auto-collapsing between them):
+ *   [informational]  MCP servers ▸  (header only)
+ *   [tab modifiers]  Rename · Mark read/unread · Pin · Move to folder ▸ · Tags…
+ *   [nav / access]   Reveal in sidebar (header only) · Crew board (conductors only) · Copy link · Send a copy ▸ · Export for import (JSON) · Export as readable Markdown · Connected surfaces
+ *   [colour]         colour swatches
+ *   [close]          Close session
+ */
+export default function SessionActionsMenu({
+  variant, slotKey, mode, onReveal, onRename, onAutoTitle, onOpenInNewTab, onDuplicate, closeHint, closeLabel, closeNeutral = false, infoSlots, onColorPicked, sidebarOnScreen = false, omitPopout = false,
+}: SessionActionsMenuProps) {
+  const Item = variant === 'context' ? ContextMenuItem : DropdownMenuItem
+  const Separator = variant === 'context' ? ContextMenuSeparator : DropdownMenuSeparator
+
+  // Generic, surface-agnostic actions — one definition, wired straight to the store.
+  const { toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close } = useSessionActions(mode)
+  // Popped-out window coordination (shared singleton — one channel for all menus).
+  const { isPoppedOut, isSelfPopout, open: openPopout, focus: focusPopout, bringBack, returnSelfToMain } = useChatPopouts()
+  // This menu also renders INSIDE a popout window (via the header). There the
+  // map never contains the window's own slot (no channel self-delivery), so we
+  // must key off isSelfPopout: offering "Pop out" would window.open into the
+  // popout's own window name and reload it in place.
+  const selfPopout = isSelfPopout(slotKey)
+  const poppedOut = !selfPopout && isPoppedOut(slotKey)
+  const { open: openTagPopover } = useTagPopover()
+
+  // Store-derived per-slot state: the canonical live source, matching exactly
+  // what the action handlers read at call time (so a label never drifts from
+  // its behaviour). `unread` comes from dashboard.unreadSlots — the same source
+  // toggleRead reads — and pin/folder/colour from the slot itself.
+  const isUnread = useAppSelector(s => s.dashboard.unreadSlots.includes(slotKey))
+  const slot = useAppSelector(s => s.dashboard.slots.find(x => x.key === slotKey))
+  const isPinned = !!slot?.pinned
+  const isMutesOpened = !!slot?.mutes_opened
+  const isMuted = !!slot?.muted
+  // Same store-backed failure notice as the opened-sessions toggle below.
+  const mutedError = useAppSelector(s => s.dashboard.slotMuteFlagError?.[muteFlagErrorKey('muted', slotKey)])
+  const mutedErrorId = React.useId()
+  // A persisted mute-toggle failure for THIS row (set after rollback by the
+  // mutation's onError). Store-backed so the notice survives the kebab closing
+  // and reopening -- the row's state and what the user clicked now disagree,
+  // and this is the only place that disagreement is said.
+  const mutesOpenedError = useAppSelector(s => s.dashboard.slotMuteFlagError?.[muteFlagErrorKey('mutes_opened', slotKey)])
+  const mutesOpenedErrorId = React.useId()
+  const isRunning = !!slot?.running
+  // The move-to submenu lists chat folders in the order the sidebar draws them.
+  // A failed read (no body to draw from) is said once per screen, by the
+  // sidebar's banner over the tree -- so while that banner is on screen this
+  // menu says nothing. When it is not (mobile with the drawer closed, desktop
+  // with the sidebar collapsed), the fact would be invisible exactly where the
+  // folder list is acted on, so the row carries the banner's plain subline.
+  const { mode: folderSortMode, error: folderSortError } = useFolderSortMode()
+  const folderOrderUnsaid = folderSortError !== null && !sidebarOnScreen
+  const folderOrderErrorId = React.useId()
+  // Reload is also refused while sub-agent children are attached (the reset
+  // would tear down their shared runtime) — mirror that in the disable so a
+  // slot whose turn ended but whose children still run doesn't offer a click
+  // the backend will 409.
+  const hasActiveSubagents = useAppSelector(s => selectSlotSubagentsActive(s, slotKey))
+  const reloadBlocked = isRunning || hasActiveSubagents
+  const currentFolderId = slot?.folder_id
+  const colorIndex = slot?.color_index
+  const colorHex = slot?.color_hex
+
+  // Folders drive the Move submenu. A menu's Content only mounts while it's open
+  // (Radix), so this keyed query effectively runs only while a menu is open and
+  // dedupes against the sidebar's own ['chat-folders'] cache — no extra fetch.
+  const { data: folders = [] } = useQuery<ChatFolder[]>({ queryKey: ['chat-folders'], queryFn: () => api.chatFolders() })
+
+  const groups = collapseGroups<React.ReactNode>([
+    // Informational (header only) — generic slots injected by the caller.
+    infoSlots ?? [],
+    // Modifiers to the tab itself
+    [
+      onRename && (
+        <Item key="rename" onSelect={onRename} {...uiLocation('sessions.row-menu.rename')}>
+          <Pencil size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.rename')}
+        </Item>
+      ),
+      onAutoTitle && (
+        <Item key="auto-title" onSelect={onAutoTitle}>
+          <Sparkles size={13} className="shrink-0 text-muted" /> {i18nT('pages.chatPage.auto_title')}
+        </Item>
+      ),
+      <Item key="read" onSelect={() => toggleRead(slotKey)}>
+        <Circle size={13} className="shrink-0 text-muted" /> {isUnread ? i18nT('components.sessionActionsMenu.mark_as_read') : i18nT('components.sessionActionsMenu.mark_as_unread')}
+      </Item>,
+      <Item key="pin" onSelect={() => togglePin(slotKey)} {...uiLocation('sessions.row-menu.pin')}>
+        <Pin size={13} className="shrink-0 text-muted" /> {isPinned ? i18nT('components.sessionActionsMenu.unpin') : i18nT('components.sessionActionsMenu.pin')}
+      </Item>,
+      // Per-row mute, keyed to THIS row's slotKey (not the active tab), so a
+      // background session can be silenced while the user works elsewhere.
+      <Item key="mute" onSelect={() => toggleMuted(slotKey)}>
+        {/* A speaker, not the bell: the bell belongs to "Mute sessions this one
+         *  opens" just below, and the two must not read as one control. */}
+        {isMuted
+          ? <Volume2 size={13} className="shrink-0 text-muted" />
+          : <VolumeX size={13} className="shrink-0 text-muted" />}
+        {' '}{isMuted ? i18nT('components.sessionActionsMenu.unmute') : i18nT('components.sessionActionsMenu.mute')}
+      </Item>,
+      mutedError && (
+        <React.Fragment key="mute-error">
+          <div className="max-w-[300px] px-2 py-1.5">
+            <ErrorNotice
+              id={mutedErrorId}
+              variant="inline"
+              className="flex-wrap"
+              title={isMuted
+                // The row has rolled back, so its current state names the
+                // action that failed: still muted means the unmute failed.
+                ? i18nT('components.sessionActionsMenu.unmute_failed')
+                : i18nT('components.sessionActionsMenu.mute_failed')}
+              message={mutedError}
+              messagePlacement="below"
+              testId="session-menu-mute-error"
+            />
+          </div>
+          <ErrorNoticeMenuItem
+            Item={Item}
+            message={mutedError}
+            describedBy={mutedErrorId}
+          />
+          <Separator />
+        </React.Fragment>
+      ),
+      <Item key="mute-opened" onSelect={() => toggleMutesOpened(slotKey)}>
+        <BellOff size={13} className="shrink-0 text-muted" /> {isMutesOpened ? i18nT('components.sessionActionsMenu.unmute_sessions_it_opens') : i18nT('components.sessionActionsMenu.mute_sessions_it_opens')}
+      </Item>,
+      // The mute toggle has no server re-read; a failed PATCH leaves the row on
+      // its prior value while the user clicked the other way. Say so through
+      // ErrorNotice (the rule's in-menu form: a passive notice carrying the
+      // server's words plus a hand-off item that re-runs the toggle), so the
+      // failure is never swallowed into a silent no-op.
+      mutesOpenedError && (
+        <React.Fragment key="mute-opened-error">
+          <div className="max-w-[300px] px-2 py-1.5">
+            <ErrorNotice
+              id={mutesOpenedErrorId}
+              variant="inline"
+              className="flex-wrap"
+              title={i18nT('components.sessionActionsMenu.mute_sessions_it_opens_failed')}
+              message={mutesOpenedError}
+              messagePlacement="below"
+              testId="session-menu-mute-opened-error"
+            />
+          </div>
+          <ErrorNoticeMenuItem
+            Item={Item}
+            message={mutesOpenedError}
+            describedBy={mutesOpenedErrorId}
+          />
+          <Separator />
+        </React.Fragment>
+      ),
+      folders.length > 0 && (
+        <FolderMoveSubmenu
+          key="move"
+          variant={variant}
+          folders={folders}
+          currentFolderId={currentFolderId}
+          onPick={(folderId) => move(slotKey, folderId)}
+          label={i18nT('components.sessionActionsMenu.move_to_folder')}
+          sortMode={folderSortMode}
+        />
+      ),
+      // Under the row whose list it describes, and only with folders to list,
+      // and ONLY while the sidebar's banner is off screen -- on screen the banner
+      // says it once and this menu stays quiet. The rule's in-menu form
+      // (`errors-use-error-notice`): a PASSIVE notice carrying the server's own
+      // words, an `id`, and the hand-off as a sibling menu item the roving focus
+      // reaches (a button nested in an item is skipped), described by that id;
+      // the plain line under the notice says what the list is showing and that
+      // the read retries on its own.
+      folders.length > 0 && folderOrderUnsaid && (
+        <React.Fragment key="folder-order-error">
+          {/* Bounded width: the notice is the menu's widest child when the
+              server string is long, and an unbounded inline-flex would stretch
+              the whole menu past the viewport. Inside a bounded block the
+              notice wraps onto lines (`flex-wrap`; the message span itself wraps
+              through `min-w-0` + `overflow-wrap: anywhere`). */}
+          <div className="max-w-[300px] px-2 py-1.5">
+            <ErrorNotice
+              id={folderOrderErrorId}
+              variant="inline"
+              className="flex-wrap"
+              title={i18nT('pages.chatSidebar.folder_order_unavailable')}
+              message={folderSortError}
+              messagePlacement="below"
+              testId="session-menu-folder-order-unavailable"
+            />
+            {/* The ONE line every notice of this failure carries (sidebar, pickers,
+                card alike -- two phrasings for one failure read as two failures);
+                without the sidebar pointer the job form and the Command Bar add,
+                because the hand-off is the very next item. */}
+            <p className="mt-0.5 text-[11px] text-muted italic whitespace-normal" data-testid="session-menu-folder-order-detail">
+              {i18nT('pages.chatSidebar.folder_order_unavailable_detail')}
+            </p>
+          </div>
+          <ErrorNoticeMenuItem
+            Item={Item}
+            message={folderSortError}
+            describedBy={folderOrderErrorId}
+          />
+          {/* Closes the error block: without a rule here "Ask the agent" and the
+              regular items below it read as one run, and the reader cannot tell
+              where the failure's reach ends. The notice stays attached to the
+              Move to folder row above it, whose list it explains. */}
+          <Separator />
+        </React.Fragment>
+      ),
+      <Item key="tags" onSelect={() => openTagPopover(slotKey)}>
+        <TagIcon size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.tags')}
+      </Item>,
+    ],
+    // Navigation / access
+    [
+      onReveal && (
+        <Item key="reveal" onSelect={onReveal}>
+          <Locate size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.reveal_in_sidebar')}
+        </Item>
+      ),
+      // Open as a session TAB on the surface this menu was opened from — the
+      // discoverable form of the middle-click/modifier-click gesture. Offered
+      // only where a caller passes the handler, because only the dashboard
+      // chat surface has a tab strip to open into; the popped-out window and
+      // the embed shell would have nowhere to put it.
+      onOpenInNewTab && (
+        <Item key="open-in-tab" onSelect={onOpenInNewTab}>
+          <PanelTop size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.open_in_new_tab')}
+        </Item>
+      ),
+      onDuplicate && (
+        <Item key="duplicate" onSelect={onDuplicate}>
+          <GitFork size={13} className="shrink-0 text-muted" /> {i18nT('pages.chatSidebar.duplicate')}
+        </Item>
+      ),
+      // This session's work-item board, when it conducts one. Sits with the
+      // other "show me this session somewhere" entries because that is what it
+      // is: the same session viewed as the items it dispatched. Self-hiding —
+      // a session that owns no work ledger gets no entry, which is most of them.
+      <CrewBoardMenuItem key="crew-board" slotKey={slotKey} Item={Item} />,
+      // Pop out to a dedicated browser window — or, if already out, focus /
+      // bring it back. Lets you keep typing to one session while looking at an
+      // artifact or another view in the main window. Inside the popout window
+      // itself, the only meaningful action is returning to the main dashboard.
+      selfPopout ? (
+        <Item key="bring-back-self" onSelect={returnSelfToMain}>
+          <Undo2 size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.bring_back_to_main')}
+        </Item>
+      ) : omitPopout ? null : poppedOut ? (
+        <Item key="focus-popout" onSelect={() => focusPopout(slotKey)}>
+          <Monitor size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.focus_popped_out_window')}
+        </Item>
+      ) : (
+        <Item key="popout" onSelect={() => openPopout(slotKey, slot?.title)}>
+          <ExternalLink size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.pop_out_to_window')}
+        </Item>
+      ),
+      poppedOut && (
+        <Item key="bring-back" onSelect={() => bringBack(slotKey)}>
+          <Undo2 size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.bring_back_to_main')}
+        </Item>
+      ),
+      <Item key="copy" onSelect={() => copyLink(slotKey)}>
+        <Link2 size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.copy_link')}
+      </Item>,
+      // Copy this session to another Kiro Crew instance. Sits in nav/access
+      // rather than the tab-modifier group above because it changes nothing
+      // about this tab — the peer gets its own copy under its own key.
+      // Self-hiding when no instances are configured.
+      <SendToInstanceSubmenu key="send-instance" slotKey={slotKey} variant={variant} />,
+      // The same act with the live hop removed: a tunnel needs both machines up
+      // and reachable at once, a file does not. Adjacent to the submenu above
+      // so the two read as one choice about where the copy goes.
+      //
+      // Two rows, one per format. The JSON row keeps its original position as
+      // the established export: this change adds a format, it does not re-rank
+      // the existing one, and the Markdown row sits directly below it and
+      // directly above the Install row that reads the JSON file back.
+      <ExportSessionItem
+        key="export-file"
+        slotKey={slotKey}
+        Item={Item}
+        memoryMode={slot?.memory_mode}
+      />,
+      <ExportSessionItem
+        key="export-file-md"
+        slotKey={slotKey}
+        Item={Item}
+        memoryMode={slot?.memory_mode}
+        format="md"
+      />,
+      // The reverse direction, and the reason it is here rather than in a global
+      // menu: the file this reads is the file the row above writes, and a user
+      // looking for "how do I get that file back in" looks where it came out.
+      // Acts on no session -- it creates one -- so it takes no slotKey.
+      <ImportSessionItem key="install-file" Item={Item} />,
+      // Channel-neutral link state and actions — connected origins are read-only,
+      // explicit mirrors can be reminded/stopped, and an otherwise-unlinked
+      // dashboard session retains the existing Slack channel picker.
+      <LinkedSurfacesSection key="links" slotKey={slotKey} variant={variant} />,
+      <SourceLinksSubmenu key="source-links" slotKey={slotKey} variant={variant} />,
+    ],
+    // Colour — its own section
+    [
+      <SessionColorSwatches key="color" slotKey={slotKey} colorIndex={colorIndex} colorHex={colorHex} onPicked={onColorPicked} />,
+    ],
+    // Session runtime — relaunch the agent process in place so it picks up
+    // MCP servers / agent-spec / env changes made after the session started.
+    // Conversation preserved (resume via session/load). Disabled while a turn
+    // runs OR sub-agent children are attached: the backend answers 409 for
+    // both, so the disable makes the refusal visible instead of a dead click.
+    // The reason renders INLINE when blocked — a disabled Radix item carries
+    // data-[disabled]:pointer-events-none, so a hover `title` can never fire
+    // there and the grey row would otherwise explain nothing.
+    [
+      // This session's own turn time limit: how long one of its turns may run
+      // before it is stopped, instead of the global Settings value. Beside
+      // Reload because both are about how this session's agent runs.
+      <SessionTurnLimitSubmenu key="turn-limit" slotKey={slotKey} variant={variant} />,
+      <Item
+        key="reload"
+        disabled={reloadBlocked}
+        title={i18nT('components.sessionActionsMenu.reload_session_tooltip')}
+        onSelect={() => reload(slotKey)}
+      >
+        <RotateCw size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.reload_session')}
+        {reloadBlocked && (
+          <span className="ml-auto text-[10px] text-muted">
+            {isRunning
+              ? i18nT('components.sessionActionsMenu.reload_blocked_running')
+              : i18nT('components.sessionActionsMenu.reload_blocked_subagents')}
+          </span>
+        )}
+      </Item>,
+    ],
+    // Close session — terminal, destructive (red). An adopted remote-crew row
+    // passes closeNeutral: removing the local copy is reversible (the session
+    // stays live on its peer), so it renders in the menu's neutral colour AND
+    // with the Unlink glyph (not the ✕) — the glyph that reads "detach this
+    // machine's copy", distinct from the destructive close ✕ every other row
+    // shows, so the two actions never look like the same thing (#19958).
+    [
+      (() => {
+        const CloseGlyph = closeNeutral ? Unlink : X
+        return (
+          <Item key="close" className={closeNeutral ? undefined : 'text-danger focus:text-danger'} onSelect={() => close(slotKey)}>
+            {closeHint ? (
+              <>
+                <CloseGlyph size={13} className="self-start mt-0.5 shrink-0" />
+                <span className="flex min-w-0 flex-col">
+                  <span>{closeLabel ?? i18nT('components.sessionActionsMenu.close_session')}</span>
+                  <span className="max-w-[15rem] whitespace-normal text-[11px] leading-snug text-muted" data-testid="close-item-hint">{closeHint}</span>
+                </span>
+              </>
+            ) : (
+              <><CloseGlyph size={13} /> {closeLabel ?? i18nT('components.sessionActionsMenu.close_session')}</>
+            )}
+          </Item>
+        )
+      })(),
+    ],
+  ])
+
+  return (
+    <>
+      {groups.map((group, i) => (
+        <React.Fragment key={i}>
+          {i > 0 && <Separator />}
+          {group}
+        </React.Fragment>
+      ))}
+    </>
+  )
+}

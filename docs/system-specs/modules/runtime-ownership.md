@@ -1,0 +1,706 @@
+# Runtime Ownership — Design Document
+
+## Overview
+
+One agent runtime is one operating-system process, and one process can serve
+several sessions. Everything in this spec follows from that sentence. A pid names
+a process, never a session, so any code that reads a pid to mean "this session's
+runtime" is making a statement about the wrong subject as soon as a sub-agent's
+session sits beside its principal's on one process: a teardown ends a neighbour's
+live process, a retry budget is charged to a session that did nothing wrong, a
+stall verdict is derived from a co-tenant's activity.
+
+The model is three rules:
+
+1. **A pool owns the process.** `runtime_ownership.RuntimeOwnership` places a
+   session on a runtime and hands back a lease. A session never names a pid.
+2. **Anyone who may end a runtime holds a lease; anyone who is merely using one
+   holds a tenancy.** `runtime_ownership.RuntimeTenancy` is the second table,
+   because the two claims are held by different parties and answer different
+   questions.
+3. **Exactly one function decides whether a runtime may die.**
+   `runtime_ownership.authorize_runtime_kill` asks both tables and records who
+   fired. Every other path asks it first.
+
+What this spec owns: the two ownership tables, the kill gate, death
+classification, the kernel-versus-registry reconciler, the pid-shaped guards, and
+the asymmetries between platforms. What it does not own: the session registry and
+the sweep that drives the cleanup tick ([session.md](session.md)), the eight-step
+peer check on a shared pid ([dashboard-token-auth.md](dashboard-token-auth.md) §
+*Unix-socket transport: kernel-attested `X-Session-Key`*), and the threat model
+([security.md](security.md)).
+
+`runtime_ownership` imports nothing from `kiro_crew`. It is a leaf on purpose:
+`session_pid` is the pid-bookkeeping leaf and calls the gate, so an import in the
+other direction would close `session_pid → acp → acp.runtime → session_pid`.
+
+### What the model is made of
+
+| Mechanism | Where it lives |
+|---|---|
+| The lease table, and a lease taken where a chat session joins the registry | `runtime_ownership.RuntimeOwnership`, `acquire_session_lease` |
+| The tenancy table, so a party that cannot hold a lease is still defended | `runtime_ownership.RuntimeTenancy`, `claim_runtime_tenancy` |
+| The one gate, and the release-before-signal rule every kill path obeys | `runtime_ownership.authorize_runtime_kill`, `process_identity.release_teardown_lease` |
+| One death classified once, read by every tenant of the process | `runtime_death.announce`, `caused_by_this_session` |
+| The kernel compared against the registry, in both directions | `runtime_reconcile.RuntimeReconciler`, `session_scope_reap.instance_slice_pids` |
+| One client-side identity ladder, and a pid mapping that records its tenants | `mcp_caller.resolve_own_identity`, `session_pid_sig.read_session_pid_mapping` |
+| Liveness attributed per probe rather than claimed per module | `acp.liveness.LivenessOracle` |
+| A cgroup scope named after the runtime that holds it | `sandbox.scope_unit_name`, `name_scope_unit` |
+| Two counts of the pattern being removed, each allowed to fall only | `test/test_kill_chokepoint_ratchet.py`, `test/test_pid_reader_ratchet.py` |
+
+## The model
+
+### Leases
+
+`RuntimeOwnership.acquire(key, session_key, spawn, cap=...)` returns an
+`Acquisition`. Placement prefers the runtime this session key last landed on while
+it is alive and has room, then any compatible runtime with room, then `spawn()`.
+Room means fewer than `cap` leases. A runtime lives while at least one lease is
+outstanding; the **last** release hands it back for teardown and every earlier
+release only drops a reference.
+
+`cap` is `runtime_ownership.CHAT_RUNTIME_CAP`, and it is **1** today. At that cap
+no entry holding a lease has room, so every acquisition spawns and every release
+is a last release — byte-for-byte the unpooled behaviour, with the claim recorded.
+Raising it is a behaviour change that needs the eligibility rules deciding which
+sessions may share a process, and those do not live here.
+
+**A founding `spawn()` holds nothing.** The table's bookkeeping — entries, the
+lease index, the last-runtime map, foundings in flight — is only read or written
+in stretches with no `await`, which on one event loop is what keeps it consistent
+and what keeps a cancellation from landing mid-change; there is no registry lock.
+`spawn()` runs outside every such stretch, so a real launch (admission wait,
+subprocess, ACP handshake) never makes an unrelated `acquire` or any `release`
+wait, and founding starts on different keys overlap. A miss registers a per-key
+founding; a same-key arrival waits on it only while the launching runtime will
+still have room for it (founder plus waiters below `cap`), and otherwise founds
+concurrently, because waiting would just serialize two launches. At `cap=1` nobody
+ever waits. A waiter is shielded from the founder's fate: it wakes on success,
+failure or cancellation alike and re-picks, founding itself if it must, so a
+founder's error is never handed to another session. Every exit from the founder
+clears the marker and wakes its waiters; a runtime is published in the same
+synchronous stretch in which `spawn()` returns, so no cancellation point lies
+between a spawned runtime and its entry.
+
+On the **chat** registration path a lease means the same thing as registry
+membership, which is why it is taken there rather than at provider start:
+`session_allocation.SessionAllocationService._get_or_create_impl` calls
+`acquire_session_lease` immediately after the session enters `self._sessions`.
+Before that line no tenant exists, which is why every earlier cleanup path in
+`session_allocation.py` and its `session_allocation_parts/` owners may kill unconditionally.
+
+That equivalence holds for chat and nowhere else, and the difference matters to
+anyone reading a lease count as a tenancy count. `acquire_session_lease` is reached
+from the chat registration path alone: `open_task_session` registers a session
+without one, the task-run path forces `_owns_runtime = False` on the provider it
+hands the runtime to, and a companion runtime is spawned bare. So **no shared
+runtime holds a lease**, `outstanding_leases` reads 0 for a perfectly healthy one,
+and what defends it is a tenancy. A mechanism keyed on lease absence would end a
+task run's runtime at the close of its first step.
+
+### Tenancies
+
+A lease is a claim by a party that MAY end the runtime. A tenancy is a claim by a
+party that is using a process it may NOT end: a session-sharing sub-agent mid-turn
+on its principal's runtime (`acp.session_provider.AcpSessionProvider._claim_shared_turn`
+/ `_end_shared_turn`), and the OAuth mint child mid-exchange
+(`connections.mint`). At `cap=1` a tenancy is the only way such a party is
+represented at all, because an acquisition cannot join an occupied runtime.
+
+A claim records two things: `holder`, a label written for the refusal log, and
+`session_key`, the auth binding (`RuntimeTenancy.claim(target, holder=...,
+session_key=...)`). Session claimers (a sharing sub-agent's turn, a task run) pass
+their key; the OAuth mint child passes none and binds nothing. The claim is the
+record that binds a sharing sub-agent's `X-Session-Key` to its process: a
+sub-agent holds no lease, so without the claim nothing would place its session on
+the pid (`tenant_keys_on_pid`, read through `session_keys_bound_to_pid`).
+
+The two tables are separate for a reason a single refcount cannot express: a
+tenancy has to outlive the lease. A principal's last release forgets the lease
+entry, and that is the exact moment a co-tenant becomes undefended.
+
+The scope of a sub-agent's tenancy is the **turn**, not the object's lifetime. A
+turn is the interval in which ending the process destroys work that is never
+retried; an idle sub-agent holding a claim for its whole life would pin a runtime
+nobody is using.
+
+A self-shield is not a tenancy. Every `AcpRuntime` shields its own pid as it spawns
+and drops the shield only once its kill has succeeded, so
+`session_pid._PROTECTED_PIDS` is held for the whole life of the very process its
+owner is entitled to end. The gate therefore **never** reads it: doing so would
+refuse every ordinary teardown and leak the process it declined to signal. A
+tenancy is taken by a party that is not the owner, is named, and is released when
+that party is done — which is what lets the gate refuse on its behalf without ever
+refusing an owner.
+
+### The shape in one picture
+
+```
+   session A ──lease──┐                          ┌── RuntimeTenancy ────────────┐
+   session B ──lease──┼──► RuntimeOwnership      │ sub-agent turn  ─► claim     │
+   session C ──lease──┘    (lease table,         │ OAuth mint      ─► claim     │
+                            cap = 1 today)       │ kill owed ──► hand-back      │
+                                 │               └──────────────┬───────────────┘
+                                 │  placement / last release    │
+                                 ▼                              │
+                         ┌───────────────┐                      │
+                         │ runtime pool  │  one runtime = one process
+                         │  AcpRuntime   │  = one cgroup scope kirocrew-rt-<token>
+                         └───────┬───────┘                      │
+      every kill path            │                              │
+   ─────────────────────────────►│◄─────────────────────────────┘
+   session teardown              ▼
+   dashboard reset-all   authorize_runtime_kill(target, reason=, caller=)
+   cron run reaper         1. leases outstanding?  → REFUSED (release first)
+   sub-agent reset ladder  2. tenancies outstanding? → REFUSED (debt recorded)
+   scope reaper            3. note_runtime_kill: WARNING with caller + reason
+   cleanup sweep                 │ allow
+   reconciler                    ▼
+                          kill seam: identity re-checked, then the signal
+                                    │
+                                    ▼  death detected once
+                          runtime_death.announce ──► every tenant reads ONE record
+
+   reconciler (every cleanup tick): kernel cgroup.procs  vs  the registry
+        record with no process ──► retract, notify the holder once
+        process with no record ──► count; kill only when all conditions hold
+```
+
+## The one kill gate
+
+`authorize_runtime_kill(target, *, reason, caller) -> bool` returns a verdict and
+does not kill. Ownership ("does anyone still need this runtime?") and identity
+("is this pid still the process I recorded?", `process_identity`) are different
+questions, and a caller that owns a careful escalation — a SIGTERM grace before
+SIGKILL, a process group proved by a vouching member, a Windows tree pinned by
+handle — keeps that escalation and asks the gate once, at the top. Folding them
+together would mean re-resolving a process group from a pid at signal time, which
+is the identity defect.
+
+False means REFUSED, on either of two grounds:
+
+- **Leases outstanding.** The caller holds a pid it does not own. A caller that
+  legitimately ends this runtime releases its lease first and is then authorized;
+  one that signals without releasing is refusing its own teardown. The gate
+  therefore depends on every release site releasing first: a gate without them
+  would decline every force-kill path and leak the process it declines to signal.
+- **Tenancies outstanding.** Somebody who does not own the process is mid-flight
+  on it. This refusal is not the caller's mistake — the owner may have released
+  correctly — and the remedy is to let the tenant finish.
+
+Both outcomes log at WARNING. The allow path logs through
+`note_runtime_kill`, so there is one attribution implementation and the refusal is
+the only thing the gate adds:
+
+```
+runtime_ownership REFUSED kill pid=<pid> leases=<n> caller=<caller> reason=<reason>:
+  the process is still leased, so this caller must release before it signals
+runtime_ownership REFUSED kill pid=<pid> tenants=<n> holders=<a,b> caller=<caller> reason=<reason>:
+  a party that does not own this process is still using it
+```
+
+Two call sites are pinned by test, and the rest hold by convention. That
+difference is load-bearing for anyone adding a kill path, so it is stated rather
+than blurred:
+
+| Call site | Enforcement |
+|---|---|
+| `session_pid._sync_kill_provider` — the funnel the session layer's hard-kill sites reach | `test_kill_chokepoint_ratchet.py`'s `ATTRIBUTED_KILL_PATHS`: must call the gate, must pass `reason` and `caller`, must act on the verdict |
+| `acp.runtime.AcpRuntime.kill` | same |
+| `cron_service.service.run_kill._sigkill_session` (bound as `CronService._sigkill_session`; it passes `caller="cron._sigkill_session"`) | convention |
+| `session_cleanup._kill_authorized` | convention |
+| `session_scope_reap._stop_and_signal_members` | convention |
+| `subagent_manager.monitoring._reconcile_orphans_impl` | convention |
+| `subagent_manager.terminal._sigkill_session_impl` | convention |
+| `runtime_reconcile._default_authorize` | convention |
+| `runtime_reconcile.RuntimeReconciler.reclaim_untracked` (through the same `_authorize` seam) | convention |
+
+A convention site that drops its gate call is not caught: the primitive call it
+still makes stays counted, so `BYPASS_BASELINE` does not move and the suite stays
+green. Adding a site to `ATTRIBUTED_KILL_PATHS` is what promotes it.
+
+Releasing before the signal is shared rather than re-implemented:
+`process_identity.release_teardown_lease` releases the lease held by the teardown's
+OWN subject — matched by the handle's pid and start identity, from the manager's
+torn-down table and from the caller's captured pop — and touches no tenancy and no
+other session's lease. It is best effort by design: a release that did not happen
+costs an honest refusal, while an exception raised out of it would cost a wedged
+process its only remaining kill.
+
+The funnel also ends a registration that is not a lease. A provider reaching
+`_sync_kill_provider` is being abandoned — its client's `shutdown` will never run —
+so the funnel calls the client's own synchronous hand-back for its
+`settings.local.json` seed (`AcpClient.release_settings_seed_claim`, resolved by
+name so this leaf stays ignorant of the ACP layer). Without it the client's live
+claim on that seed outlived the client for the life of the gateway and every later
+session on the same work dir read the path as a live sibling's. The hand-back
+follows the gate's verdict rather than running ahead of it, because a successor
+that adopts the seed re-writes `permissions.defaultMode` on disk, and that must not
+happen under a runtime that may still be running:
+
+- **released** when the teardown is authorized and committed, immediately before
+  the first signal (ahead of the grace, so a replacement spawn on the same work dir
+  finds the slot free when it seeds); when there is no pid at all (a seed is
+  written before the spawn publishes one, so the claim belongs to the client
+  object and no runtime stands behind it); and when the recorded root is known to
+  be gone or recycled (`_root_identity_refuted`: the pid names no process, or a
+  live start identity was read and differs from the recorded one);
+- **kept** while the gate refuses the kill because a lease or a tenancy still
+  holds the runtime, and when the root's identity cannot be read (the pid exists
+  but its start identity is unavailable, or none was recorded at spawn). A kept
+  claim keeps the successor on the live-sibling rule — it declines its own seed
+  rather than re-seeding the file — and is handed back by a later teardown of the
+  same runtime or reclaimed as stale once this process exits.
+
+Like the lease release it is best effort and never lets an exception out. Which
+registrations it withdraws, and why the durable half, is the seed's own spec
+([claude-code-provider.md](claude-code-provider.md) § *Session-scoped Claude
+settings*).
+
+### Kill owed, and the hand-back
+
+A refusal on tenancy grounds would otherwise lose the teardown: the owner has
+released, nobody will ask again, and the process outlives every record of it. So
+the refusal records a **debt** on the claims it refused for
+(`RuntimeTenancy.refuse_for_tenants`), and the last tenant out of a runtime that
+owes one is handed the runtime back:
+
+```
+runtime_tenancy outcome=kill_owed_handback pid=<pid> holder=<holder>: ...
+```
+
+The count and the debt are one call, not a read followed by a write, because the
+two can straddle the last tenant's departure and leave a debt owed by a process
+that has no tenants — to be spent on whichever runtime holds that pid later. The
+debt is keyed so it cannot migrate to a process that reuses the pid
+(`test_runtime_ownership.py::test_refusal_debt_does_not_migrate_to_a_later_process_reusing_the_pid`).
+
+A verdict is a statement about the past, so an authorized kill also takes a
+barrier before it signals: `tenancy_epoch` is read right after the allow and
+`commit_runtime_teardown` is called immediately before the first signal. A claim
+that lands in between makes the commit fail and the kill is **abandoned**, because
+the signal would land on a live turn that is never retried. A claim arriving after
+the commit is refused with `RuntimeTeardownCommitted` rather than granted. The
+barrier is dropped on every exit from the signal path, including a raise — a pid
+left committed is one no tenant can claim for the life of the gateway.
+
+## A death is a process event
+
+`runtime_death.announce` is called ONCE, where the death is detected, and records
+what the process was carrying at that instant. Every tenant then reads the same
+record instead of re-deriving one, and the question a retry budget or a circuit
+breaker asks is `runtime_death.caused_by_this_session(target)` — by handle, never
+by pid, because a session that can name a pid can signal it.
+
+One record is what keeps a single process death from costing N resets, N budget
+charges and N unrelated accounts of why. A death on a shared runtime takes every
+session on the process with it, several of them mid-prompt, and a tenant deciding alone has no way to tell that loss from its own failure.
+
+The record carries two independent readings of co-tenancy, and both are needed.
+`leases` is what the lease table holds; `acp_sessions` is how many ACP sessions the
+process was actually multiplexing. A sub-agent runs on its parent's runtime and
+holds no lease, so the registry alone would call that process single-tenant and
+hand the parent the bill. The runtime alone would miss a tenant that has a lease
+but has not opened its session yet. The lease reading is also not available on
+every path, and the contract says so: on a REAPED death the return code is already
+set, so the registry considers the runtime dead and the lease count is 0 whatever
+it holds.
+
+Tenants PULL the record rather than being pushed it. A tenant learns of the death
+the way it already does — its poisoned session queue raises into whatever turn it
+had — and reads the record while handling it. A tenant with no turn in flight has
+nothing to recover and re-acquires on its next turn, which drops a dead runtime on
+the way past. There is deliberately no observer registry: a notification channel
+with no subscriber is a mechanism whose first real consumer would have to redesign
+it.
+
+A shared death still has to bound recovery, so it is counted per session
+(`note_shared_death` / `clear_shared_deaths`) as the substitute ceiling for the
+per-session streak it is exempt from. A substitute ceiling must share the key and
+the clearing point of the counter it replaces, or it never trips. Its contract:
+
+- **Charge sites.** The typed recovery handlers (dashboard chat, task executor,
+  cron, the Slack sub-agent path) and, for channel dispatchers that catch a failed
+  turn generically, `messaging.dispatch.charge_turn_failure`. Only a process death
+  the session did not cause (`caused_by_this_session` false) is exempt; every
+  other failure charges the session's own counter.
+- **Budget.** The re-queue is bounded by `max(own streak, shared streak)` against
+  the same ladder limit, so a shared death never refunds attempts the session
+  already spent.
+- **Hand-over at the limit.** At the threshold the caller performs the actuator
+  the counter stood in for (the same reset the breaker performs) rather than
+  charging the session; the streak is cleared after that hand-over returns, and on
+  any landed turn. Nothing refunds a charge.
+- **Keys.** A session's own key; a cron job's streak is keyed `cron:<job.id>`.
+- **Table bounds.** At most `_SHARED_STREAK_MAX_KEYS` (512) keys, evicting the
+  least recently touched; a key longer than 256 characters is stored as a
+  `sha256:` digest, never truncated.
+- **User-facing strings.** When the shared ceiling is reached the dashboard says
+  "The agent process this chat shares kept restarting — please retry."
+- **Sub-agent guard.** A sub-agent whose provider died resets its parent only
+  when `caused_by_this_session` is true; on a shared runtime's death the parent
+  and its co-tenants are left alone.
+
+Pinned by `test_runtime_death_is_a_process_event.py` —
+`test_a_shared_runtimes_death_is_nobodys_single_failure`,
+`test_co_tenancy_is_read_before_the_dead_flag_flips`,
+`test_the_death_is_announced_exactly_once`,
+`test_a_tenant_asks_by_handle_never_by_pid`.
+
+## Reconciliation: the kernel against the registry
+
+Every other sweep in the gateway asks "is this pid one I still need?" and asks it
+of a record. `runtime_reconcile.RuntimeReconciler` asks the kernel instead, and
+compares both answers in **both** directions, because each direction is a
+different leak:
+
+| Direction | What it means | Action |
+|---|---|---|
+| `owned_dead` | A record names a pid that is gone, or one the kernel gave to an unrelated process. | Retract the record; tell the holder once. The stranger is never signalled. |
+| `unowned_alive` | A process runs in this install's own agent slice and no record claims it, and it is not excluded as sandboxed tool work (below). | Count it. Kill only when every condition below holds. |
+| `owned_alive` | The healthy population. | Reported as the denominator. |
+
+`unowned_alive` and `owned_dead` are the SLI, published so an operator sees a leak
+while it is small; the actions are what makes a non-zero reading temporary rather
+than permanent. `test/e2e/process_inventory.py` uses the same three names for the
+same reconciliation read from outside the process, so a published reading and an
+external inventory describe one host state in one vocabulary.
+
+One qualification on that shared vocabulary: `resource_status.slice_ownership`
+publishes `unowned_alive` as every unclaimed slice pid, while the reconciler's own
+reading subtracts the tool-marker exclusion. On a host doing long-lived tool work the
+two therefore disagree by design, and the larger number is not a fault — it answers
+"what is unclaimed", where the reconciler's answers "what this arm can act on".
+
+A recycled pid belongs in `owned_dead` and not in the healthy population, which is
+what makes the reading a usable safety number: a record whose pid now names a
+stranger is the exact input that turns a sweep signalling by pid into a kill of
+somebody else's process.
+
+Mounted on the cleanup tick at
+`session_cleanup.SessionCleanup._reconcile_runtimes_hook`, built once and
+retained across ticks because the two-pass confirmation IS its state. Two whole-pass
+refusals come first, because a half-read pass is the dangerous one: a kernel
+reading that cannot be taken, and a registry that cannot be read, each refuse the
+entire pass rather than acting on the half that answered. An incomplete active-pid
+union does the same.
+
+A refused pass reclaims nothing and publishes no counts, so it surfaces at WARNING
+(`SessionCleanup._note_reconcile_refusal`): once per
+`RECONCILE_REFUSAL_WARN_INTERVAL_SECS` (3600s) while the same reason persists, at
+once when the reason changes, with the exact reason at debug every tick. The first
+supported pass after a refusal logs the recovery and re-arms the warning
+(`_clear_reconcile_refusal`).
+
+The registry is every record this process can read for the data home, because the
+slice is scoped to the data home too: the manager's live-pid union, the MCP backend
+pidfile, both tracked pid files across every gateway pid, and the app backend's own
+process table. An app backend runs in the slice and is none of the others.
+`apps.backend.running_spawned_backend_pids` names the root pid of each backend this
+process spawned, while its `Popen` handle says the child is running: a child that has
+not been reaped keeps its pid, so the number provably names the backend, and one that
+has exited leaves the registry instead of reading as a dead runtime. Where this
+gateway's own wrap inserted a forking sandbox launcher -- the Linux namespace
+launcher, whose `Popen` root is the launcher parent and whose forked child is the real
+server -- that root's direct children are named too, because the handle alone would
+leave the server (a sibling in the same slice) claimed by nothing. The table is
+in-process memory, never `app_backends.pids.json`. That file lives in the
+agent-writable data home and is only the stale-reap's record, so reading it for
+membership would let a written row make any pid owned. The table claims a spawned
+backend's root process, plus the launcher's forked server child where the wrap forks:
+an adopted backend, the processes a backend forks BELOW that server child, and a
+backend another process on this data home spawned are not in it.
+
+### Leaked untracked runtimes: read every pass, reclaimed only on a user confirm
+
+`session_pid`'s report-only arm finds a managed runtime reparented to init with our marker and in neither pid file. Every pass copies its current hits into the reading as `leaked_untracked`, `leaked_rss_bytes` (each root counted with its descendants) and `leaked`, Linux only. No scheduled arm acts on them.
+
+`RuntimeReconciler.reclaim_untracked` is the one path that may, and its only caller is the owner-only `POST /api/system/leaked-runtimes/reclaim` with `{"confirm": true}`. A candidate must have been reported by a sweep and be detected again on a complete tracked snapshot. Each condition can only withhold: tracked, protected, leased or claimed; not a managed harness; no spawn marker; younger than the age floor; a `KIROCREW_SPAWN_HOME` that is absent or names another data home (the marker is shared by every install on this uid, and a sibling's runtime is tracked only in its own pid files); a live session leader or group leader other than itself (the session id comes from `platform_compat.read_proc_stat`, so a leader whose name is not UTF-8 still reads as live); no readable `KIROCREW_SPAWN_INSTANCE`; or any live process outside its own tree carrying the same instance. The last one is what keeps a live runtime's descendant safe: the stamps are inherited, so that runtime itself holds the instance. The start identity is re-read before `authorize_runtime_kill` and pinned into `_kill_pid_tree`, under the tenancy barrier, at most `min(session.reconcile_max_kills, DEFAULT_MAX_KILLS)` trees per call. At a budget of `0` every candidate is refused "kill budget spent" and audited `refused`.
+
+### Why an unowned process is counted before it is killed
+
+Absence from the record is evidence that something is unclaimed, not evidence that
+it is abandoned. The unowned population on a healthy host is dominated by processes
+with perfectly good owners that no *session* record describes: a Playwright
+chromium tree owned by a browser panel, `mcp start-server` processes owned by a
+stub connection, sandbox shim wrappers owned by a spawn in progress. Killing on
+first sight would take a user's live browser out from under them and call it a leak
+fixed. Such processes are present on a healthy host at rest and grow under load.
+
+One class leaves the population before any of that, in `_unowned` rather than by a
+condition: a pid carrying the `KIROCREW_SANDBOX_TOOL` marker whose argv0 is **not** a
+managed harness. The sandbox chokepoint stamps that marker on every tree it spawns, so
+a build, an `npx` install or a provisioning run is identified as tool work by
+exec-time state a same-uid process cannot forge on another process, rather than by the
+argv0 the name test reads. Both conditions are required, because the marker describes
+a tree while the argv test is per process: the chokepoint takes harness argv on purpose
+(`is_kiro_cli`), and a marked tool tree can spawn a harness, so an orphaned harness can
+carry the marker without being tool work and must stay reachable. The exclusion is
+therefore exactly the population the argv condition withheld already — the arm's reach
+is unchanged, and what it removes is their per-pass count, gate allow and attribution.
+It FAILS OPEN, unlike every condition below: an unreadable marker leaves the pid a
+candidate, because a sparing that fails closed would widen what escapes the conditions
+on doubt.
+
+So a kill needs all of these, and any one missing leaves the process alone and
+merely counted (`RuntimeReconciler._why_not_yet`, `_reconcile_unowned`):
+
+1. the per-pass kill budget is not spent — `runtime_reconcile.DEFAULT_MAX_KILLS` is
+   the shipped value and `session.reconcile_max_kills` bounds it, with a ceiling
+   equal to that default so the setting can only lower the budget and never raise
+   it; the budget is re-read on every cleanup tick. At `0` the arm evaluates the
+   local conditions (two-pass confirmation, argv, spawn marker, age, unclaimed,
+   unchanged identity), counts each full candidate in `would_kill`, and signals
+   nothing. The ownership gate and the teardown barrier are deliberately not
+   consulted there, so no kill authorization is logged. A reconciler that is wrong about a whole population is wrong slowly
+   enough to be noticed;
+2. it was unowned on the PREVIOUS pass too, keyed on pid **and** process identity
+   so a recycled pid cannot inherit the confirmation;
+3. its argv names a harness this gateway manages
+   (`runtime_reconcile.process_is_a_managed_agent`, the kill seam's own recycle
+   guard asked here at the decision point). Most of the unowned population carries
+   the inherited spawn marker and is not a harness — a Playwright chromium tree, an
+   `mcp start-server` broker, a sandbox shim, another install's interpreter — and
+   the seam declines every one. A sandbox shim is declined for what it WRAPS, not
+   for being a shim: on Linux the namespace launcher is the pid a real agent runtime
+   is tracked under, so the gate steps over the launcher and asks its positional
+   rules of the wrapped argv (see [session.md](session.md) §Reclaim identity) — a
+   launcher around an MCP probe or an app backend still answers "not a harness", and
+   one around `kiro-cli` answers that it is. Asked here they are withheld by name; asked only
+   inside the seam, each first collects a gate allow and the attribution that allow
+   writes. The seam still re-applies it last, because a pid can change hands
+   between the two answers;
+4. it carries this install's own spawn marker (`KIROCREW_SPAWNED`, via
+   `runtime_reconcile.process_is_ours`), so it is ours to end;
+5. it is older than `runtime_reconcile.DEFAULT_MIN_AGE_SECS` — the same
+   registration window seen from the other side;
+6. neither table claims the pid, and an unreadable table counts as claimed;
+7. its process identity has not changed since classification, re-read in the
+   instant before the signal;
+8. the gate allows it — asked LAST among the authorities, because the allow path
+   writes the kill attribution, so asking earlier would record a kill that never
+   happened;
+9. the teardown barrier commits, so a tenancy claimed after the verdict abandons
+   the kill.
+
+What the kill line records is the seam's own COUNT over the tree it walked, not a
+verdict about the root: the seam signals every managed descendant it discovered and
+can still withhold the root's signal afterwards, so the log and audit name the
+count and the tree rather than claiming the root was killed.
+
+Every kill decision and phase is audited in the SEL with `session_key` `gateway`
+and `tool_kind` `process_kill` (`process_identity._audit_kill`):
+
+- sweep decision rows (`audit_kill_decision`) record `allowed` or `refused` per
+  pid;
+- sweep phase rows (`audit_kill_phase`) record `killed` or `failed` with resources
+  `allowed=N killed=M`, written only once the signal's result is known;
+- the reconciler records `refused`, `killed`, `failed` and `would_kill`.
+
+`allowed` never means killed: a phase re-judges every candidate, so only a
+`killed` row says a signal happened.
+
+Two counting rules keep the SLI honest. A call the kill seam answers by signalling
+NOTHING (its own managed-agent check refused) is not a kill: counting it would
+spend the whole budget on the same lowest pids every pass, forever, while the
+reading reported kills and nothing changed. And a withheld pid is audited on a
+CHANGE of reason, not every pass — most of the unowned population is permanently
+withheld, and one row per pid per pass would evict the history an operator needs.
+
+The dead direction acts immediately and needs no second pass: forgetting a dead
+pid harms nothing and the lease holder learns its runtime died instead of waiting
+out a timeout. A single liveness probe saying DEAD is still not enough on its own —
+an unsignalable pid is an unknown, not an absence.
+
+Retraction is three-valued (`retracted` / `failed` / `not-mine`) rather than a
+bool. A row owned by a concurrent CLI or a predecessor gateway is a real dead
+record this pass cannot remove, and a pid known only to the MCP backend pidfile, the
+app backend table or the manager's in-memory union has no row in either tracking
+file. Folding those
+into the same `False` a real failure gets would publish one WARNING per stale pid
+per tick for the gateway's life — a steady state reported as a fault.
+
+### Platform scope
+
+The kernel side of the unowned direction is Linux-only. It reads
+`session_scope_reap.instance_slice_pids`, which enumerates `cgroup.procs` of this
+install's per-instance child slice and each transient scope beneath it; an
+unresolvable slice returns the EMPTY set and the pass then has nothing to compare.
+Scoping to the per-instance child slice, not the shared parent, is what stops a
+co-resident gateway's process reading here as one of ours with no record.
+
+`session_scope_reap.reap_abandoned_agent_scopes` likewise reports
+`supported=False` off Linux, without cgroup-v2 delegation, or with no
+per-instance slice directory. The scope naming degrades the same way:
+`sandbox.name_scope_unit` returns the argv unchanged wherever
+`cgroup_scope_argv` hands back the bare command, and the runtime logs the unit
+systemd actually received rather than one re-derived from the token, so a host
+with no scope never announces one.
+
+The `owned_dead` direction is portable: it compares records against liveness and
+process identity and needs no cgroup.
+
+## Identity: one ladder, and a pid that records its tenants
+
+A pid answers per PROCESS, and one kiro-cli process hosts many ACP sessions, so on
+a shared runtime a pid-keyed identity lookup succeeds with whichever session
+published last. A wrong name is worse than no name, because the caller cannot tell
+it is wrong.
+
+**Client side** — `mcp_caller.resolve_own_identity` is the single ladder every
+client-side consumer shares, so the rungs cannot drift between files. Strongest
+first: (1) the protected member binding for this process, where an EMPTY string is
+a refusal that must never fall through; (2) the signed per-SESSION token on this
+process's own element, above the env var because a warm-pool rekey makes the env
+stale; (3) `KIROCREW_SESSION_KEY`; (4) the `session_pid_<pid>.txt` mapping, by the
+launcher-exported `KIROCREW_HOST_PID` and then by ancestor walk. Rung 4 is the one
+that cannot express the tree it reads, so it REFUSES on a shared pid rather than
+answering, and every caller that reaches it at all is warned. It never raises: an
+identity source that can raise turns a resolvable session into a crashed tool call.
+
+**The mapping** — `session_pid_sig` publishes `session_pid_<pid>.txt` with a
+`session_pid_<pid>.sig` MAC sidecar keyed by the agent-unreadable SEL trust root
+with the pid bound into the MAC. The `.txt` carries a `tenants=<n>` line and one
+`tenant=<key>` line per member.
+
+Read it through the mapping readers, not the string ones. `read_session_pid_mapping`
+(lenient) and `verify_session_pid_mapping` (MAC-verified) return a
+`session_pid_sig.PidMapping` whose `session_key` is non-empty only when the pid
+names exactly one session; otherwise `tenants` / `tenant_count` carry what is known
+and `refusal` says which kind it is (`REFUSAL_ABSENT`, `REFUSAL_MALFORMED`,
+`REFUSAL_RECYCLED`, `REFUSAL_CO_TENANT`). `read_session_pid_txt` and
+`verify_session_pid` are the thin `str` views of those two, kept for the historical
+callers: they answer `""` for every refusal, so a caller written against them
+cannot tell a co-tenanted pid from an absent file — which is the misattribution
+this section exists to prevent. The refusal kind matters at the auth boundary
+because a recycle is reported only after the signature verifies, so it is the
+publisher's attested statement rather than ambiguity about who is calling.
+
+**Server side** — the `.txt` is agent-readable, so membership in the roster is
+necessary but never sufficient: a co-tenant can read a sibling's key out of it and
+declare it. On a shared pid the caller must additionally present an
+`X-Session-Token` that `session_token_sig.verify_session_token` resolves to
+exactly the declared key. The full eight-step check —
+`socketsec.check_peer_is_self`, the peer pid,
+`peer_resolve.resolve_peer_identity(..., signed_only=True)`, the mismatch denial,
+the shared-pid token demand, the unverifiable-MAC arm, the live-manager arm, and
+the unresolved arm that proceeds under today's semantics — is specified in
+[dashboard-token-auth.md](dashboard-token-auth.md) § *Unix-socket transport:
+kernel-attested `X-Session-Key` (POSIX)* and is not repeated here.
+
+The sidecar publication contract itself lives in [session.md](session.md) §
+*session_pid sidecar contract*. Topology is pinned by
+`test_identity_topology.py`.
+
+**Liveness attribution** — `acp.liveness` states per probe whether it survives a
+shared process tree, rather than claiming it for the module. The cmdline match keys
+shell evidence to this session's in-flight command and attributes. The movement and
+socket probes read the WHOLE tree, so a co-tenant's build reads as this session's
+progress and a co-tenant's backend connection suppresses this session's wedge
+signature — both err toward forbearance, which costs detection latency and no work.
+The one reading acted on at once, the model-wait DEAD, is gated on a declared
+`tenancy` callable: with co-tenants it degrades to UNKNOWN tagged
+`liveness.EVIDENCE_SHARED_TREE`. Where attribution is impossible the verdict
+degrades to UNKNOWN, never to a kill.
+
+## Guards
+
+### Two ratchets
+
+Both are counts of a pattern the refactor is removing. Each may fall in any change
+and may never rise, and a change that lowers one records the new number in the same
+commit.
+
+- `test/test_kill_chokepoint_ratchet.py` — `BYPASS_BASELINE` counts src sites that
+  call a kill primitive without going through the gate. It also pins what a falling
+  count has to MEAN: `ATTRIBUTED_KILL_PATHS` must call the gate
+  (`test_attributed_kill_paths_consult_the_gate`), pass both `reason` and `caller`
+  (`test_the_gate_call_names_a_caller_and_a_reason`), and act on the verdict
+  (`test_the_gate_verdict_is_acted_on`) — a count driven to zero by renaming the
+  primitives, with nothing logged, would satisfy a bare ceiling and leave the field
+  as undiagnosable as before. A positive control
+  (`test_the_needles_match_a_known_call_site`) stops an empty scan reading as total
+  success.
+- `test/test_pid_reader_ratchet.py` — `_BASELINE_SITES` counts src sites that read
+  a runtime's pid, by AST rather than grep so reflective reads survive nesting and
+  wrapping. A site whose reading genuinely belongs to the module that owns the pid
+  carries an owner marker and is counted apart under `_BASELINE_OWNER_MARKED`, so
+  marking a site is a visible act rather than a silent exemption. The exact-match
+  test refuses a stale baseline in either direction: a baseline left above the real
+  count leaves room for a future reader to fill silently.
+
+The baseline is an invariant of the tree, not of a branch. Whoever merges after
+someone else re-measures on their own tree.
+
+### The leak and chaos gates
+
+`test/e2e/test_process_leak_invariant.py` boots one real gateway on a throwaway
+data home, drives several dashboard sessions through a full turn each, closes every
+one, and then asks the kernel and the registry what survived. Four populations must
+be empty: live pids in the instance's own agent slice that any session created
+(with the gateway's own background runtimes as the one documented residue, bounded
+by count and identified by the agent they run), managed MCP stub processes,
+registry entries naming a process that is gone, and crew-log write handles held by
+the gateway.
+
+Two design points carry the gate. It runs a real gateway SUBPROCESS because two of
+the four assertions are about the gateway process itself — `/proc/<pid>/fd` is only
+the gateway's fd table when the gateway is its own process, and an agent slice is
+only this instance's when the instance has its own data home. And the live PEAK is
+asserted BEFORE the teardown, because "nothing survived" is also what a run
+produces when nothing ever started.
+
+Two switches, for the same reason: `KIROCREW_E2E` lifts the module skip, and
+`KIROCREW_E2E_REQUIRE` turns an unmet precondition from a skip into a failure,
+because pytest counts a skip as a pass. The nightly job asserts the suite reported
+its expected passing count rather than trusting a zero-failure exit.
+
+`test/e2e/test_process_chaos.py` covers the external-death direction: kill a
+runtime root from outside and the registry must forget it and the lease holder must
+recover.
+
+## Known gaps
+
+- **A session token binds only where the tables can speak.** `X-Session-Token` is
+  a bearer: a same-uid process that can read `/proc/<pid>/environ` can present a
+  neighbour's token. On a shared pid, a declared key is refused
+  `peer_session_unbound` unless a lease or a tenancy places it on the nearest
+  chain pid (`session_keys_bound_to_pid`, read by
+  `token_auth._bound_session_keys_on_chain`). The residual gap is the empty case:
+  when neither table speaks about the pid the check changes nothing and the token
+  keeps fail-open bearer semantics. Tracked in issue #14646 together with the
+  recycled-ancestor case, where the lenient MCP identity refuses every call for an
+  identity-less caller.
+- **The `tenancy` seam in `acp.liveness.LivenessOracle` has no production
+  declarer.** All four construction sites take the single-tenant reading, so the
+  model-wait DEAD verdict is not degraded on a shared runtime. Wiring it means
+  passing a lease-plus-claim count from each site.
+- **A shared runtime dying during session start advances every auto-nudge loop's
+  start-failure streak on that process** (issue #14657). The start path raises
+  without carrying the runtime's identity, so the death cannot be attributed.
+- **`providers/base.py` still exposes process-shaped members.** Abort does not use
+  them: it takes the opaque `RuntimeAbortTarget` from `runtime_abort_target()`. The remaining members are the bulk of what the pid
+  reader ratchet still counts; each needs classifying as a session-level question,
+  a runtime handle, or a reading whose owner is the module that holds the pid.
+- **`cap` is not open.** Raising `CHAT_RUNTIME_CAP` needs eligibility rules that
+  decide which sessions may share a process, and a flag to stage it. Neither
+  exists, so every runtime serves one session.
+- **Membership is narrower than the slice it is compared against.** The app
+  backend table claims each spawned backend's root process, plus that root's direct
+  children where the gateway's wrap inserted a forking sandbox launcher (so the
+  launcher's forked server child is covered). An adopted backend
+  (one found already listening on its port), the processes a spawned backend forks
+  BELOW that server child, and a backend spawned by another process on this data home
+  are in no record, so
+  when they run in the slice they are unowned on every pass, and what keeps them
+  unsignalled is the argv condition rather than an ownership record. A long-lived
+  sandboxed subprocess is the other case and answers by identity
+  instead: the sandbox chokepoint stamps `KIROCREW_SANDBOX_TOOL` on its whole tree
+  and `_unowned` excludes a pid that carries it and is not a managed harness, so
+  tool work leaves the candidate population on exec-time evidence rather than on
+  its argv0. Both conditions are required because the marker is inherited while the
+  argv test is per process: a harness leaked inside a tool tree carries the marker
+  without being tool work, and stays a candidate. The excluded population is
+  therefore exactly the one the argv condition withheld already — the kill arm's
+  reach is the same, and what the exclusion removes is their per-pass count, gate
+  allow and kill attribution.

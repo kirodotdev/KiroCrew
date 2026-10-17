@@ -1,0 +1,33 @@
+{
+  "kind": "crew-companion-pack",
+  "version": 1,
+  "id": "sample-sprite",
+  "manifest": {
+    "meta": {
+      "id": "sample-sprite",
+      "name": "Sample Sprite",
+      "author": "Kiro Crew fixtures",
+      "description": "A sprite test pack for the crew appearance library.",
+      "type": "custom",
+      "format": "sprite",
+      "thumbnail": ""
+    },
+    "states": {
+      "idle": "sheet.png",
+      "working": "sheet.png"
+    },
+    "moods": {},
+    "sprite": {
+      "frameWidth": 16,
+      "frameHeight": 16,
+      "fps": 4,
+      "rowAssignments": {
+        "idle": 0,
+        "working": 1
+      }
+    }
+  },
+  "files": {
+    "sheet.png": "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAmElEQVR42u2U0Q2AIAxE2cTF3MA4kvM5BsQPEtMAPbwaovSSfpi0xztAQnC5hPb1jK0aujgCQQXITVm1bwa+CWIBIHt7PKgjMN2BeQHYW2zxF4VaE/oOsPMuF6Tl2OJV/wTI5rJQAGS+e/G7ScsUmYcApEoATwNQAJoRG0BNoKVA5ikAyzs0DOBVg+8DlM6o99Vj58cDTKcEhEhU1u+chAgAAAAASUVORK5CYII="
+  }
+}

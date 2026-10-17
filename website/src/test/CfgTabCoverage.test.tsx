@@ -1,0 +1,916 @@
+/**
+ * KiroCrewCfgTab — the Kiro Crew config table on the developer page.
+ *
+ * The file sat at ~3% before this suite: only its module-level constants ran.
+ * Everything below aims at the cold paths — the query error/loading boundaries,
+ * the three tables' per-cell fallbacks, and the three editor primitives
+ * (CfgNumber / CfgSelect / CfgToggle) whose validation, dirty-tick and patch
+ * plumbing had no coverage at all.
+ */
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { screen, waitFor, fireEvent, within, act } from '@testing-library/react'
+import KiroCrewCfgTab, { AgentRunSettings } from '../pages/overview/KiroCrewCfgTab'
+import { renderWithProviders } from './helpers'
+import { api } from '../api/client'
+
+vi.mock('../api/client')
+
+// The tab stakes a leave guard with its SidePanelLayout host; this suite renders
+// the tab bare, so capture the registration instead.
+const leaveGuard = vi.hoisted(() => vi.fn())
+vi.mock('../components/SidePanelLayout', () => ({ useSidePanelLeaveGuard: leaveGuard }))
+
+/* SimpleSelect is stubbed for the same reason as CrewEditorSelect.test.tsx and
+   WorkspaceModal.test.tsx: it wraps a Radix Select, which commits its selection
+   inside `ReactDOM.flushSync(...)`, and this tab mounts several of them at once —
+   driving them for real costs an open/close cycle per assertion for a dropdown
+   that is not the code under test. What IS under test is CfgSelect's own
+   `onChange` (markDirty → setLocal → onSave), which the stub reaches directly.
+   Each stub is a role="group" named after its row label so duplicated option
+   values ('auto' belongs to both Approval Mode and Sandbox) stay unambiguous;
+   the current selection rides on each option's aria-selected, so the stub needs
+   no trigger of its own. */
+vi.mock('../components/SimpleSelect', () => ({
+  default: ({ options, optionLabels, value, onChange, 'aria-label': ariaLabel }: {
+    options: string[]
+    optionLabels?: string[]
+    value: string
+    onChange: (v: string) => void
+    'aria-label'?: string
+  }) => (
+    <div role="group" aria-label={ariaLabel}>
+      {options.map((o, i) => (
+        <button key={o} type="button" role="option" aria-selected={o === value} onClick={() => onChange(o)}>
+          {optionLabels?.[i] ?? o}
+        </button>
+      ))}
+    </div>
+  ),
+}))
+
+type Cfg = Record<string, unknown>
+
+/**
+ * A config with something interesting in every conditional cell: `crew-beta`
+ * carries an empty `kiro_agent` (em-dash fallback), `mem-spare` has neither a
+ * description nor an embedding provider (inherited-provider italic), and
+ * `ws-idle` is bound by nobody (empty Used By). Every name is distinct so a
+ * within(row) query can never collide with a neighbouring cell.
+ */
+const CFG = {
+  agents: {
+    'crew-alpha': { kiro_agent: 'tmpl-alpha', workspace: 'ws-main', memory_store: 'mem-main', description: '', source: 'config' },
+    'crew-beta': { kiro_agent: '', workspace: 'ws-main', memory_store: 'mem-spare', description: '', source: 'config' },
+  },
+  default_agent: 'crew-alpha',
+  workspaces: { 'ws-main': { dir: 'dir-main' }, 'ws-idle': { dir: 'dir-idle' } },
+  default_workspace: 'ws-main',
+  memory_stores: {
+    'mem-main': { description: 'legacy-default store', embedding_provider: 'bge-m3' },
+    'mem-spare': { description: '', embedding_provider: '' },
+  },
+  default_memory_store: 'mem-main',
+  agent: {
+    default_agent: 'crew-alpha',
+    provider: 'kiroacp',
+    model: 'claude-opus',
+    approval_mode: 'auto',
+    sandbox: 'auto',
+    subagent_max_turns: 100,
+    max_subagents: 3,
+    subagent_auto_max: 16,
+    tool_search: true,
+    max_channels: 7,
+    max_channel_agents: 5,
+  },
+  session: { timeout_secs: 3600, pool_size: 2, pool_agent: '', pool_ttl_secs: 600 },
+  memory: { embedding_provider: 'inherited-embedder' },
+  auto_update: true,
+}
+
+/** Clone so a per-test tweak never leaks into the shared fixture. */
+const clone = (): typeof CFG => JSON.parse(JSON.stringify(CFG))
+
+function seed(cfg: Cfg = CFG, patched: Cfg = CFG) {
+  const m = vi.mocked(api)
+  m.kirocrewConfig = vi.fn().mockResolvedValue(cfg)
+  m.patchConfig = vi.fn().mockResolvedValue(patched)
+  m.saveKirocrewConfig = vi.fn().mockResolvedValue({ ok: true })
+  // ThemeProvider (installed by renderWithProviders) boots its own query; the
+  // automock would resolve undefined, which React Query rejects out loud.
+  m.themeBoot = vi.fn().mockResolvedValue({})
+  return m
+}
+
+/** Render and wait for the first table to replace the skeleton. */
+async function renderTab() {
+  const view = renderWithProviders(<KiroCrewCfgTab />)
+  expect(await screen.findByRole('heading', { name: /Crewmates/ })).toBeInTheDocument()
+  return view
+}
+
+/** Settings > Agent Harness's run cards (Subagent Settings + Warm Pool), alone. */
+async function renderRun() {
+  const view = renderWithProviders(<AgentRunSettings />)
+  expect(await screen.findByRole('heading', { name: /Subagent Settings/ })).toBeInTheDocument()
+  return view
+}
+
+/** Both surfaces on one query cache, for edits that cross from one to the other. */
+async function renderBoth() {
+  const view = renderWithProviders(<><KiroCrewCfgTab /><AgentRunSettings /></>)
+  expect(await screen.findByRole('heading', { name: /Crewmates/ })).toBeInTheDocument()
+  expect(await screen.findByRole('heading', { name: /Subagent Settings/ })).toBeInTheDocument()
+  return view
+}
+
+/** Agents, Workspaces, Memory Stores — in DOM order. */
+const tables = () => screen.getAllByRole('table')
+
+const num = (label: string) => screen.getByRole('spinbutton', { name: label }) as HTMLInputElement
+
+const optionIn = (groupLabel: string, optionName: string) =>
+  within(screen.getByRole('group', { name: groupLabel })).getByRole('option', { name: optionName })
+
+/**
+ * A config row keyed by its visible label.
+ *
+ * CfgToggle's button carries no accessible name of its own — the label lives in
+ * a sibling span — so the row has to be located by that span and the control
+ * read from inside it. Matching on the span's leading TEXT node (rather than its
+ * textContent) keeps the trailing InfoTip glyph out of the comparison.
+ */
+function rowFor(label: string): HTMLElement {
+  const span = screen.getByText(
+    (_content, el) => el?.tagName === 'SPAN' && el.firstChild?.nodeValue?.trim() === label,
+  )
+  return span.parentElement as HTMLElement
+}
+
+/** The on/off button of a CfgToggle row (the InfoTip button is named differently). */
+const toggleFor = (label: string) =>
+  within(rowFor(label)).getByRole('button', { name: /^(on|off)$/ })
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  seed()
+})
+
+// ── Query boundaries ─────────────────────────────────────────────────────
+describe('KiroCrewCfgTab — query boundaries', () => {
+  it('shows a skeleton until the config resolves', async () => {
+    const m = vi.mocked(api)
+    let release: (v: unknown) => void = () => {}
+    m.kirocrewConfig = vi.fn().mockReturnValue(new Promise((res) => { release = res }))
+
+    const { container } = renderWithProviders(<KiroCrewCfgTab />)
+    expect(container.querySelector('.skeleton')).not.toBeNull()
+    expect(screen.queryByRole('heading', { name: /Crewmates/ })).toBeNull()
+
+    // Settle it before the test ends so the query never resolves after teardown.
+    await act(async () => { release(CFG) })
+    expect(await screen.findByRole('heading', { name: /Crewmates/ })).toBeInTheDocument()
+  })
+
+  it('renders an Error rejection by its message', async () => {
+    const m = vi.mocked(api)
+    m.kirocrewConfig = vi.fn().mockRejectedValue(new Error('config file unreadable'))
+
+    renderWithProviders(<KiroCrewCfgTab />)
+    expect(await screen.findByText('config file unreadable')).toBeInTheDocument()
+    expect(screen.queryByText('Config Summary')).toBeNull()
+  })
+
+  it('stringifies a non-Error rejection', async () => {
+    const m = vi.mocked(api)
+    m.kirocrewConfig = vi.fn().mockRejectedValue('gateway offline')
+
+    renderWithProviders(<KiroCrewCfgTab />)
+    expect(await screen.findByText('gateway offline')).toBeInTheDocument()
+  })
+})
+
+// ── The three read-only tables ───────────────────────────────────────────
+describe('KiroCrewCfgTab — tables', () => {
+  it('lists agents, badges the default one, and em-dashes a blank template', async () => {
+    await renderTab()
+    const agents = tables()[0]
+
+    const beta = within(agents).getByText('crew-beta').closest('tr') as HTMLElement
+    expect(within(beta).getByText('—')).toBeInTheDocument()
+    expect(within(beta).getByText('mem-spare')).toBeInTheDocument()
+
+    const alpha = within(agents).getByText('crew-alpha').closest('tr') as HTMLElement
+    expect(within(alpha).getByText('Default')).toBeInTheDocument()
+    expect(within(alpha).getByText('tmpl-alpha')).toBeInTheDocument()
+  })
+
+  it('derives Used By per workspace and dashes one nobody binds', async () => {
+    await renderTab()
+    const workspaces = tables()[1]
+
+    const bound = within(workspaces).getByText('dir-main').closest('tr') as HTMLElement
+    // Both agents live in ws-main, so both surface as tags.
+    expect(within(bound).getByText('crew-alpha')).toBeInTheDocument()
+    expect(within(bound).getByText('crew-beta')).toBeInTheDocument()
+    expect(within(bound).getByText('Default')).toBeInTheDocument()
+
+    const idle = within(workspaces).getByText('dir-idle').closest('tr') as HTMLElement
+    expect(within(idle).getByText('—')).toBeInTheDocument()
+  })
+
+  it('falls back to the global embedder when a store sets none', async () => {
+    await renderTab()
+    const stores = tables()[2]
+
+    const spare = within(stores).getByText('mem-spare').closest('tr') as HTMLElement
+    expect(within(spare).getByText('inherited (inherited-embedder)')).toBeInTheDocument()
+    expect(within(spare).getByText('—')).toBeInTheDocument()
+    expect(within(spare).getByText('crew-beta')).toBeInTheDocument()
+
+    const main = within(stores).getByText('legacy-default store').closest('tr') as HTMLElement
+    expect(within(main).getByText('bge-m3')).toBeInTheDocument()
+  })
+
+  it('renders empty states when there are no agents and no stores', async () => {
+    const bare = clone()
+    bare.agents = {}
+    bare.memory_stores = {}
+    seed(bare)
+
+    await renderTab()
+    expect(screen.getByText('No crewmates defined')).toBeInTheDocument()
+    expect(screen.getByText('Using legacy mode — agent.default_agent as custom agent')).toBeInTheDocument()
+    expect(screen.getByText('No memory stores')).toBeInTheDocument()
+    expect(screen.getByText('Using global memory settings')).toBeInTheDocument()
+    // Only the workspaces table survives.
+    expect(tables()).toHaveLength(1)
+  })
+
+  it('shows the summary values the tab never lets you edit', async () => {
+    await renderTab()
+    expect(screen.getByText('kiroacp')).toBeInTheDocument()
+    expect(screen.getByText('inherited-embedder')).toBeInTheDocument()
+    expect(screen.getByText('7')).toBeInTheDocument()
+    expect(screen.getByText('5')).toBeInTheDocument()
+  })
+})
+
+// ── CfgNumber validation + commit ────────────────────────────────────────
+describe('KiroCrewCfgTab — numeric rows', () => {
+  it('rejects a non-numeric value without patching', async () => {
+    await renderTab()
+
+    const input = num('Session Timeout')
+    fireEvent.change(input, { target: { value: 'abc' } })
+    fireEvent.blur(input)
+
+    expect(screen.getByText('invalid')).toBeInTheDocument()
+    expect(vi.mocked(api).patchConfig).not.toHaveBeenCalled()
+  })
+
+  it('reports the floor and the ceiling instead of saving', async () => {
+    await renderTab()
+    const input = num('Session Timeout')
+
+    fireEvent.change(input, { target: { value: '10' } })
+    fireEvent.blur(input)
+    expect(screen.getByText('min 60')).toBeInTheDocument()
+
+    fireEvent.change(input, { target: { value: '99999' } })
+    fireEvent.blur(input)
+    expect(screen.getByText('max 86400')).toBeInTheDocument()
+
+    expect(vi.mocked(api).patchConfig).not.toHaveBeenCalled()
+  })
+
+  it('patches on blur and confirms with a tick once the new value lands', async () => {
+    const updated = clone()
+    updated.session.timeout_secs = 7200
+    seed(CFG, updated)
+
+    const { container } = await renderTab()
+    const input = num('Session Timeout')
+    fireEvent.change(input, { target: { value: '7200' } })
+    fireEvent.blur(input)
+
+    await waitFor(() => {
+      expect(vi.mocked(api).patchConfig).toHaveBeenCalledWith('session.timeout_secs', 7200)
+    })
+    // useDirtyTrack flips `ok` once the prop echoes the save back.
+    await waitFor(() => expect(container.querySelector('.text-ok')).not.toBeNull())
+  })
+
+  it('commits on Enter as well as blur', async () => {
+    const updated = clone()
+    updated.session.pool_ttl_secs = 900
+    seed(CFG, updated)
+
+    await renderRun()
+    const input = num('Retire After')
+    fireEvent.change(input, { target: { value: '900' } })
+
+    // Any other key is a keystroke mid-edit, not a commit.
+    fireEvent.keyDown(input, { key: 'ArrowUp' })
+    expect(vi.mocked(api).patchConfig).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => {
+      expect(vi.mocked(api).patchConfig).toHaveBeenCalledWith('session.pool_ttl_secs', 900)
+    })
+  })
+
+  it('does not patch when the committed value equals the current one', async () => {
+    await renderRun()
+    const input = num('Kept Ready')
+    fireEvent.change(input, { target: { value: '2' } })
+    fireEvent.blur(input)
+
+    expect(vi.mocked(api).patchConfig).not.toHaveBeenCalled()
+    expect(screen.queryByText('invalid')).toBeNull()
+  })
+})
+
+// ── CfgSelect + CfgToggle ────────────────────────────────────────────────
+describe('KiroCrewCfgTab — select and toggle rows', () => {
+  it('patches the selected option for the row that owns it', async () => {
+    const updated = clone()
+    updated.agent.sandbox = 'off'
+    seed(CFG, updated)
+
+    await renderTab()
+    fireEvent.click(optionIn('Sandbox', 'off'))
+
+    await waitFor(() => {
+      expect(vi.mocked(api).patchConfig).toHaveBeenCalledWith('agent.sandbox', 'off')
+    })
+  })
+
+  it('offers the strict tier beside auto and off, with auto still the shipped selection', async () => {
+    const updated = clone()
+    updated.agent.sandbox = 'strict'
+    seed(CFG, updated)
+
+    await renderTab()
+    expect(optionIn('Sandbox', 'auto')).toHaveAttribute('aria-selected', 'true')
+    expect(optionIn('Sandbox', 'off')).toBeInTheDocument()
+    fireEvent.click(optionIn('Sandbox', 'strict'))
+
+    await waitFor(() => {
+      expect(vi.mocked(api).patchConfig).toHaveBeenCalledWith('agent.sandbox', 'strict')
+    })
+  })
+
+  it('keeps same-valued options on different rows apart', async () => {
+    const updated = clone()
+    updated.agent.approval_mode = 'interactive'
+    seed(CFG, updated)
+
+    await renderTab()
+    expect(optionIn('Approval Mode', 'auto')).toHaveAttribute('aria-selected', 'true')
+    fireEvent.click(optionIn('Approval Mode', 'interactive'))
+
+    await waitFor(() => {
+      expect(vi.mocked(api).patchConfig).toHaveBeenCalledWith('agent.approval_mode', 'interactive')
+    })
+  })
+
+  it('labels the empty pool agent with the configured default', async () => {
+    await renderRun()
+    expect(optionIn('Uses Crewmate', 'Default crewmate (crew-alpha)')).toBeInTheDocument()
+
+    fireEvent.click(optionIn('Uses Crewmate', 'crew-beta'))
+    await waitFor(() => {
+      expect(vi.mocked(api).patchConfig).toHaveBeenCalledWith('session.pool_agent', 'crew-beta')
+    })
+  })
+
+  it('changes the default crewmate through its own endpoint, then refetches', async () => {
+    const m = seed()
+    m.setDefaultAgent = vi.fn().mockResolvedValue({ ok: true })
+
+    const view = await renderTab()
+    const before = view.store.getState().dashboard.refreshTrigger
+    const invalidate = vi.spyOn(view.queryClient, 'invalidateQueries')
+    expect(optionIn('Default crewmate', 'crew-alpha')).toHaveAttribute('aria-selected', 'true')
+    fireEvent.click(optionIn('Default crewmate', 'crew-beta'))
+
+    await waitFor(() => expect(m.setDefaultAgent).toHaveBeenCalledWith('crew-beta'))
+    // Not a raw config PATCH: the default-agent route validates the name.
+    expect(m.patchConfig).not.toHaveBeenCalled()
+    await waitFor(() => expect(m.kirocrewConfig).toHaveBeenCalledTimes(2))
+    expect(screen.queryByTestId('cfg-default-crewmate-error')).not.toBeInTheDocument()
+    // The composer's catalog and the shared roster/default queries must learn
+    // the new default too, or the next new session still binds to the old one.
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['kirocrew-agents'] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['default-agent'] })
+    expect(view.store.getState().dashboard.refreshTrigger).toBe(before + 1)
+  })
+
+  it('runs two quick default-crewmate picks in selection order, never side by side', async () => {
+    const m = seed()
+    // The first PUT stays open until the test releases it; the second pick must
+    // not reach the server while it is — two concurrent writes can cross at the
+    // config lock and persist the EARLIER pick last.
+    let releaseFirst: (v: { ok: boolean }) => void = () => {}
+    const first = new Promise<{ ok: boolean }>(resolve => { releaseFirst = resolve })
+    m.setDefaultAgent = vi.fn()
+      .mockImplementationOnce(() => first)
+      .mockResolvedValue({ ok: true })
+
+    await renderTab()
+    fireEvent.click(optionIn('Default crewmate', 'crew-beta'))
+    await waitFor(() => expect(m.setDefaultAgent).toHaveBeenCalledWith('crew-beta'))
+    fireEvent.click(optionIn('Default crewmate', 'crew-alpha'))
+    // Still one request: the second waits behind the open first.
+    await new Promise(r => setTimeout(r, 20))
+    expect(m.setDefaultAgent).toHaveBeenCalledTimes(1)
+
+    releaseFirst({ ok: true })
+    await waitFor(() => expect(m.setDefaultAgent).toHaveBeenCalledTimes(2))
+    expect(m.setDefaultAgent.mock.calls.map(c => c[0])).toEqual(['crew-beta', 'crew-alpha'])
+  })
+
+  it('reports a refused default-crewmate change beside the row', async () => {
+    const m = seed()
+    m.setDefaultAgent = vi.fn().mockRejectedValue(Object.assign(
+      new Error("agent 'crew-beta' is not a configured agent alias"),
+      { status: 400, body: JSON.stringify({ error: "agent 'crew-beta' is not a configured agent alias", code: 'default_agent_not_alias' }) },
+    ))
+
+    await renderTab()
+    fireEvent.click(optionIn('Default crewmate', 'crew-beta'))
+
+    // Names the refused pick in the page's own sentence (the select reverts to
+    // the stored value, so the name lives nowhere else), then the server's reason.
+    expect(await screen.findByTestId('cfg-default-crewmate-error')).toHaveTextContent('Could not set crew-beta as the default crewmate — crew-beta is no longer in the crewmate list')
+    // A refused write does not refetch; the table keeps the previous default —
+    // and so does the select, remounted on the config's value rather than
+    // left showing the pick the server refused.
+    expect(m.kirocrewConfig).toHaveBeenCalledTimes(1)
+    expect(optionIn('Default crewmate', 'crew-alpha')).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('keeps a numeric draft typed elsewhere while the default-crewmate change settles', async () => {
+    // The select remounts on its own counter, not the page-wide one: a value
+    // being typed into another card while the request is in flight must not
+    // revert to the stored value when the request settles.
+    const m = seed()
+    m.setDefaultAgent = vi.fn().mockResolvedValue({ ok: true })
+
+    await renderBoth()
+    const poolSize = screen.getByRole('spinbutton', { name: 'Kept Ready' })
+    fireEvent.change(poolSize, { target: { value: '7' } })
+    expect(poolSize).toHaveValue(7)
+    fireEvent.click(optionIn('Default crewmate', 'crew-beta'))
+
+    await waitFor(() => expect(m.setDefaultAgent).toHaveBeenCalledWith('crew-beta'))
+    await waitFor(() => expect(m.kirocrewConfig).toHaveBeenCalledTimes(2))
+    // Uncommitted (no Enter, no blur): still the typed draft, never PATCHed.
+    expect(screen.getByRole('spinbutton', { name: 'Kept Ready' })).toHaveValue(7)
+    expect(m.patchConfig).not.toHaveBeenCalled()
+  })
+
+  it('does not remount the select on a successful change, so the new value never flashes back', async () => {
+    const m = seed()
+    m.setDefaultAgent = vi.fn().mockResolvedValue({ ok: true })
+    // The refetch after the PUT returns the ACCEPTED default, as the server does.
+    m.kirocrewConfig = vi.fn()
+      .mockResolvedValueOnce(CFG)
+      .mockResolvedValue({ ...CFG, default_agent: 'crew-beta' })
+
+    await renderTab()
+    const beta = optionIn('Default crewmate', 'crew-beta')
+    fireEvent.click(beta)
+    await waitFor(() => expect(m.setDefaultAgent).toHaveBeenCalledWith('crew-beta'))
+    await waitFor(() => expect(m.kirocrewConfig).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(optionIn('Default crewmate', 'crew-beta')).toHaveAttribute('aria-selected', 'true'))
+    // Same DOM node before and after the refetch: the select was updated in
+    // place, not remounted — a remount (a key carrying the stored value) would
+    // reset useDirtyTrack and swallow the row's ✓ tick.
+    expect(optionIn('Default crewmate', 'crew-beta')).toBe(beta)
+  })
+
+  it('maps the unknown-alias refusal to friendly copy', async () => {
+    const m = seed()
+    // The endpoint's own shape for a name that is not a configured alias.
+    m.setDefaultAgent = vi.fn().mockRejectedValue(Object.assign(
+      new Error("agent 'crew-beta' is not a configured agent alias"),
+      { status: 400, body: JSON.stringify({ error: "agent 'crew-beta' is not a configured agent alias", code: 'default_agent_not_alias' }) },
+    ))
+
+    await renderTab()
+    fireEvent.click(optionIn('Default crewmate', 'crew-beta'))
+
+    const err = await screen.findByTestId('cfg-default-crewmate-error')
+    expect(err).toHaveTextContent('Could not set crew-beta as the default crewmate — crew-beta is no longer in the crewmate list')
+    expect(err).not.toHaveTextContent('configured agent alias')
+  })
+
+  it('keeps every other refusal reason instead of blaming a deleted crewmate', async () => {
+    const m = seed()
+    // A read-only config is not an unknown name: "reload and pick again" would
+    // be wrong advice, so the server's own reason must survive.
+    m.setDefaultAgent = vi.fn().mockRejectedValue(Object.assign(
+      new Error('failed to read config file'),
+      { status: 500, body: JSON.stringify({ error: 'failed to read config file', code: 'config_unreadable' }) },
+    ))
+
+    await renderTab()
+    fireEvent.click(optionIn('Default crewmate', 'crew-beta'))
+
+    const err = await screen.findByTestId('cfg-default-crewmate-error')
+    expect(err).toHaveTextContent('Could not set crew-beta as the default crewmate — failed to read config file')
+    expect(err).not.toHaveTextContent('no longer in the crewmate list')
+  })
+
+  it('anchors the default-crewmate row for the roster badge deep link', async () => {
+    await renderTab()
+    // `key:default-crewmate` is what the Crewmates roster's badge links to.
+    expect(screen.getByTestId('cfg-default-crewmate-row')).toHaveAttribute('data-setting-key', 'default-crewmate')
+  })
+
+  it('keeps the default-crewmate row with a single crewmate, so the roster badge link lands', async () => {
+    const solo = clone() as Cfg
+    solo.agents = { 'crew-alpha': (CFG.agents as Record<string, unknown>)['crew-alpha'] }
+    seed(solo)
+
+    await renderTab()
+    expect(optionIn('Default crewmate', 'crew-alpha')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByTestId('cfg-default-crewmate-row')).toBeInTheDocument()
+  })
+
+  it('flips a boolean row and patches the negated value', async () => {
+    const updated = clone()
+    updated.auto_update = false
+    seed(CFG, updated)
+
+    await renderTab()
+    const toggle = toggleFor('Auto Update')
+    expect(toggle).toHaveTextContent('on')
+
+    fireEvent.click(toggle)
+    expect(toggle).toHaveTextContent('off')
+    await waitFor(() => {
+      expect(vi.mocked(api).patchConfig).toHaveBeenCalledWith('auto_update', false)
+    })
+  })
+
+  it('surfaces a failed patch in the card that hosts the save banner', async () => {
+    const m = vi.mocked(api)
+    m.patchConfig = vi.fn().mockRejectedValue(new Error('read-only config'))
+
+    await renderTab()
+    fireEvent.click(toggleFor('MCP Tool Search'))
+
+    // Config Summary is the only card on this tab that hosts the banner.
+    await waitFor(() => {
+      expect(screen.getAllByText('read-only config')).toHaveLength(1)
+    })
+    // onError also invalidates the config query, so it refetches.
+    await waitFor(() => expect(m.kirocrewConfig).toHaveBeenCalledTimes(2))
+  })
+
+  it('surfaces a failed warm-pool patch in its own card and refetches', async () => {
+    const m = vi.mocked(api)
+    m.patchConfig = vi.fn().mockRejectedValue(new Error('read-only config'))
+
+    await renderRun()
+    fireEvent.change(num('Kept Ready'), { target: { value: '4' } })
+    fireEvent.blur(num('Kept Ready'))
+
+    // Shown through ErrorNotice, so it is announced as an alert.
+    expect(await screen.findByRole('alert')).toHaveTextContent('read-only config')
+    await waitFor(() => expect(m.kirocrewConfig).toHaveBeenCalledTimes(2))
+  })
+
+  it('applies defaults for the keys an older config file omits', async () => {
+    const sparse = clone() as Cfg
+    const agent = sparse.agent as Record<string, unknown>
+    delete agent.tool_search
+    const session = sparse.session as Record<string, unknown>
+    delete session.pool_size
+    delete session.pool_agent
+    sparse.default_agent = ''
+    seed(sparse)
+
+    await renderBoth()
+    expect(num('Kept Ready').value).toBe('0')
+    expect(toggleFor('MCP Tool Search')).toHaveTextContent('on')
+    expect(screen.queryByRole('group', { name: /Enforce Denied Commands|enforce_denied_commands/ })).not.toBeInTheDocument()
+    // With no default agent configured, the empty pool-agent option falls back
+    // to a generic placeholder instead of naming one.
+    expect(optionIn('Uses Crewmate', '(default agent)')).toBeInTheDocument()
+  })
+
+  it('renders the warm pool card for a provider that advertises the capability', async () => {
+    await renderRun()
+    // The active ACP adapter sets capabilities.warmPool, so the card is present
+    // and owns the only Kept Ready row on the page.
+    expect(screen.getByText('Pre-started Sessions')).toBeInTheDocument()
+    expect(screen.getAllByRole('spinbutton', { name: 'Kept Ready' })).toHaveLength(1)
+    // It saves on change, and says so beside the card that waits for Save.
+    expect(screen.getByText('Keeps agents started so new chats open at once. Changes save right away, and you can change them back.')).toBeInTheDocument()
+  })
+
+  it('leaves Subagent Settings and Warm Pool to Settings > Agent Harness', async () => {
+    await renderTab()
+    expect(screen.queryByRole('heading', { name: /Subagent Settings/ })).toBeNull()
+    expect(screen.queryByText('Pre-started Sessions')).toBeNull()
+    expect(screen.queryByRole('spinbutton', { name: 'Kept Ready' })).toBeNull()
+    expect(screen.queryByRole('spinbutton', { name: 'Max Turns per Subagent' })).toBeNull()
+  })
+})
+
+// ── SubagentSettings ─────────────────────────────────────────────────────
+describe('KiroCrewCfgTab — subagent settings', () => {
+  const saveBtn = () => screen.getByRole('button', { name: 'Save' })
+
+  it('keeps Save disabled until something actually differs', async () => {
+    await renderRun()
+    expect(saveBtn()).toBeDisabled()
+    // The card says it waits for Save, unlike the cards that save on change.
+    expect(screen.getByText('Helpers an agent starts for side tasks. Changes apply when you press Save.')).toBeInTheDocument()
+
+    fireEvent.change(num('Max Turns per Subagent'), { target: { value: '120' } })
+    expect(saveBtn()).toBeEnabled()
+
+    fireEvent.change(num('Max Turns per Subagent'), { target: { value: '100' } })
+    expect(saveBtn()).toBeDisabled()
+  })
+
+  it('stakes a leave guard while a subagent draft is unsaved', async () => {
+    await renderRun()
+    // Clean: the guard lets every navigation through and stakes nothing.
+    let [guard, atStake] = leaveGuard.mock.calls.at(-1) as [() => boolean, boolean]
+    expect(atStake).toBe(false)
+    expect(guard()).toBe(true)
+
+    fireEvent.change(num('Max Turns per Subagent'), { target: { value: '120' } })
+    ;[guard, atStake] = leaveGuard.mock.calls.at(-1) as [() => boolean, boolean]
+    expect(atStake).toBe(true)
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    expect(guard()).toBe(false)
+    expect(confirm).toHaveBeenCalledTimes(1)
+    confirm.mockRestore()
+  })
+
+  it('sends the whole subagent block and confirms', async () => {
+    const m = vi.mocked(api)
+    await renderRun()
+
+    fireEvent.change(num('Max Turns per Subagent'), { target: { value: '150' } })
+    fireEvent.click(saveBtn())
+
+    expect(await screen.findByText('Saved')).toBeInTheDocument()
+    expect(m.saveKirocrewConfig).toHaveBeenCalledWith({
+      subagent_max_turns: 150,
+      max_subagents: 3,
+      subagent_auto_max: 16,
+    })
+    // onSaved invalidates the config query.
+    await waitFor(() => expect(m.kirocrewConfig).toHaveBeenCalledTimes(2))
+  })
+
+  it('shows a rejection returned in the payload', async () => {
+    const m = vi.mocked(api)
+    m.saveKirocrewConfig = vi.fn().mockResolvedValue({ error: 'value out of range' })
+
+    await renderRun()
+    fireEvent.change(num('Max Turns per Subagent'), { target: { value: '7' } })
+    fireEvent.click(saveBtn())
+
+    expect(await screen.findByText('value out of range')).toBeInTheDocument()
+    // A rejected save must not refetch as if it had landed.
+    expect(m.kirocrewConfig).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows a thrown save error and re-enables the button', async () => {
+    const m = vi.mocked(api)
+    m.saveKirocrewConfig = vi.fn().mockRejectedValue(new Error('socket hang up'))
+
+    await renderRun()
+    fireEvent.change(num('Max Concurrent Subagents'), { target: { value: '5' } })
+    fireEvent.click(saveBtn())
+
+    expect(await screen.findByText('socket hang up')).toBeInTheDocument()
+    expect(saveBtn()).toBeEnabled()
+  })
+
+  it('stringifies a non-Error thrown by the save call', async () => {
+    const m = vi.mocked(api)
+    m.saveKirocrewConfig = vi.fn().mockRejectedValue('gateway went away')
+
+    await renderRun()
+    fireEvent.change(num('Max Turns per Subagent'), { target: { value: '9' } })
+    fireEvent.click(saveBtn())
+
+    expect(await screen.findByText('gateway went away')).toBeInTheDocument()
+  })
+
+  it('reveals the auto-size ceiling only while concurrency is auto', async () => {
+    await renderRun()
+    expect(screen.queryByRole('spinbutton', { name: 'Auto-Size Max' })).toBeNull()
+
+    fireEvent.change(num('Max Concurrent Subagents'), { target: { value: '0' } })
+    expect(within(rowFor('Max Concurrent Subagents')).getByText('auto')).toBeInTheDocument()
+    expect(num('Auto-Size Max').value).toBe('16')
+
+    fireEvent.change(num('Max Concurrent Subagents'), { target: { value: '4' } })
+    expect(screen.queryByRole('spinbutton', { name: 'Auto-Size Max' })).toBeNull()
+  })
+
+  it('clamps every numeric input to its own bounds', async () => {
+    await renderRun()
+
+    // A blank max-turns collapses to the minimum rather than NaN.
+    fireEvent.change(num('Max Turns per Subagent'), { target: { value: '' } })
+    expect(num('Max Turns per Subagent').value).toBe('1')
+
+    // Negative concurrency floors at 0, which means auto.
+    fireEvent.change(num('Max Concurrent Subagents'), { target: { value: '-3' } })
+    expect(num('Max Concurrent Subagents').value).toBe('0')
+
+    // A blank one lands on auto too.
+    fireEvent.change(num('Max Concurrent Subagents'), { target: { value: '' } })
+    expect(num('Max Concurrent Subagents').value).toBe('0')
+
+    fireEvent.change(num('Auto-Size Max'), { target: { value: '999' } })
+    expect(num('Auto-Size Max').value).toBe('64')
+    fireEvent.change(num('Auto-Size Max'), { target: { value: '' } })
+    expect(num('Auto-Size Max').value).toBe('1')
+  })
+
+  it('resyncs local edits when a fresh config arrives', async () => {
+    const updated = clone()
+    updated.agent.subagent_max_turns = 42
+    seed(CFG, updated)
+
+    await renderBoth()
+    fireEvent.change(num('Max Turns per Subagent'), { target: { value: '150' } })
+    expect(num('Max Turns per Subagent').value).toBe('150')
+
+    // A patch elsewhere on the page replaces the cached config; the subagent
+    // block must follow the server, discarding the uncommitted 150.
+    fireEvent.click(toggleFor('Auto Update'))
+    await waitFor(() => expect(num('Max Turns per Subagent').value).toBe('42'))
+    expect(saveBtn()).toBeDisabled()
+  })
+
+  it('keeps an unsaved subagent draft when an unrelated config write lands', async () => {
+    // A harness switch or warm-pool edit on the same tab replaces the cached
+    // config with a new object whose subagent values are unchanged.
+    const updated = clone()
+    updated.auto_update = false
+    seed(CFG, updated)
+
+    const { container } = await renderBoth()
+    fireEvent.change(num('Max Turns per Subagent'), { target: { value: '150' } })
+    fireEvent.click(toggleFor('Auto Update'))
+    await waitFor(() => expect(vi.mocked(api).patchConfig).toHaveBeenCalledWith('auto_update', false))
+    // useDirtyTrack ticks once the saved config is back in the cache, i.e. the
+    // same render that hands both cards the new config object.
+    await waitFor(() => expect(container.querySelector('.text-ok')).not.toBeNull())
+    expect(num('Max Turns per Subagent').value).toBe('150')
+    expect(saveBtn()).toBeEnabled()
+  })
+
+  it('falls back to built-in subagent defaults when the block is absent', async () => {
+    const sparse = clone() as Cfg
+    const agent = sparse.agent as Record<string, unknown>
+    delete agent.subagent_max_turns
+    delete agent.max_subagents
+    delete agent.subagent_auto_max
+    seed(sparse)
+
+    await renderRun()
+    expect(num('Max Turns per Subagent').value).toBe('100')
+    expect(num('Max Concurrent Subagents').value).toBe('3')
+    expect(saveBtn()).toBeDisabled()
+  })
+})
+
+describe('KiroCrewCfgTab workspace actions', () => {
+  const row = (name: string) => screen.getByTestId(`workspace-row-${name}`)
+  const form = (name: string) => screen.getByTestId(`workspace-form-${name}`)
+
+  beforeEach(() => {
+    // Row forms persist their draft; start every test with none.
+    localStorage.clear()
+    const m = seed()
+    m.updateWorkspace = vi.fn().mockResolvedValue({ ok: true })
+    m.deleteWorkspace = vi.fn().mockResolvedValue({ ok: true })
+  })
+
+  it('offers Delete on every workspace but the default', async () => {
+    await renderTab()
+    expect(within(row('ws-main')).queryByRole('button', { name: 'Delete' })).toBeNull()
+    expect(within(row('ws-idle')).getByRole('button', { name: 'Delete' })).toBeInTheDocument()
+  })
+
+  it('saves a new directory through PUT and refetches the config', async () => {
+    await renderTab()
+    fireEvent.click(within(row('ws-idle')).getByRole('button', { name: 'Change directory' }))
+    fireEvent.change(within(form('ws-idle')).getByRole('textbox', { name: 'Directory' }), { target: { value: ' /data/idle ' } })
+    fireEvent.click(within(form('ws-idle')).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.updateWorkspace).toHaveBeenCalledWith('ws-idle', { dir: '/data/idle' }))
+    await waitFor(() => expect(api.kirocrewConfig).toHaveBeenCalledTimes(2))
+  })
+
+  it('enables Delete only once the exact name is typed', async () => {
+    await renderTab()
+    fireEvent.click(within(row('ws-idle')).getByRole('button', { name: 'Delete' }))
+    const input = within(form('ws-idle')).getByRole('textbox', { name: 'Type \u201Cws-idle\u201D to confirm' })
+    const confirm = within(form('ws-idle')).getByRole('button', { name: 'Delete' })
+    fireEvent.change(input, { target: { value: 'ws-id' } })
+    expect(confirm).toBeDisabled()
+    fireEvent.change(input, { target: { value: 'ws-idle' } })
+    fireEvent.click(confirm)
+    await waitFor(() => expect(api.deleteWorkspace).toHaveBeenCalledWith('ws-idle'))
+  })
+
+  it('keeps the row buttons in place while a form is open, and Escape closes it', async () => {
+    await renderTab()
+    fireEvent.click(within(row('ws-idle')).getByRole('button', { name: 'Delete' }))
+    expect(within(row('ws-idle')).getByRole('button', { name: 'Delete' })).toBeDisabled()
+    fireEvent.keyDown(within(form('ws-idle')).getByRole('textbox'), { key: 'Escape' })
+    expect(screen.queryByTestId('workspace-form-ws-idle')).toBeNull()
+    expect(within(row('ws-idle')).getByRole('button', { name: 'Delete' })).toBeEnabled()
+  })
+
+  it('keeps an open form and its typed text across a remount', async () => {
+    const first = await renderTab()
+    fireEvent.click(within(row('ws-idle')).getByRole('button', { name: 'Change directory' }))
+    fireEvent.change(within(form('ws-idle')).getByRole('textbox'), { target: { value: '/data/half-typed' } })
+    first.unmount()
+    await renderTab()
+    expect(within(form('ws-idle')).getByRole('textbox')).toHaveValue('/data/half-typed')
+  })
+
+  it('locks the directory box while its save is in flight', async () => {
+    vi.mocked(api).updateWorkspace = vi.fn(() => new Promise(() => {}))
+    await renderTab()
+    fireEvent.click(within(row('ws-idle')).getByRole('button', { name: 'Change directory' }))
+    fireEvent.change(within(form('ws-idle')).getByRole('textbox'), { target: { value: '/data/idle' } })
+    fireEvent.click(within(form('ws-idle')).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(within(form('ws-idle')).getByRole('textbox')).toBeDisabled())
+  })
+
+  it('stakes a leave guard once the create dialog holds a typed name', async () => {
+    await renderTab()
+    const staked = () => leaveGuard.mock.calls.at(-1)?.[1]
+    expect(staked()).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'New workspace' }))
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'client-b' } })
+    await waitFor(() => expect(staked()).toBe(true))
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    expect(leaveGuard.mock.calls.at(-1)?.[0]()).toBe(false)
+    confirm.mockRestore()
+  })
+
+  it('never restores an armed delete on a later mount', async () => {
+    const first = await renderTab()
+    fireEvent.click(within(row('ws-idle')).getByRole('button', { name: 'Delete' }))
+    fireEvent.change(within(form('ws-idle')).getByRole('textbox'), { target: { value: 'ws-idle' } })
+    first.unmount()
+    await renderTab()
+    expect(screen.queryByTestId('workspace-form-ws-idle')).toBeNull()
+    expect(within(row('ws-idle')).getByRole('button', { name: 'Delete' })).toBeEnabled()
+  })
+
+  it('offers no Delete on a workspace an agent uses', async () => {
+    const cfg = clone()
+    cfg.agents['crew-beta'].workspace = 'ws-idle'
+    const m = seed(cfg)
+    m.deleteWorkspace = vi.fn()
+    await renderTab()
+    expect(within(row('ws-idle')).queryByRole('button', { name: 'Delete' })).toBeNull()
+    expect(within(row('ws-idle')).getByRole('button', { name: 'Change directory' })).toBeInTheDocument()
+  })
+
+  it('does not let a create from an earlier opening close the reopened dialog', async () => {
+    let finish: (v: unknown) => void = () => {}
+    vi.mocked(api).createWorkspace = vi.fn(() => new Promise(r => { finish = r }))
+    await renderTab()
+    fireEvent.click(screen.getByRole('button', { name: 'New workspace' }))
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'first' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    fireEvent.click(screen.getByRole('button', { name: 'New workspace' }))
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'second' } })
+    await act(async () => { finish({ name: 'first' }) })
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(screen.getByLabelText('Name')).toHaveValue('second')
+  })
+
+  it('keeps the typed name and shows the refusal when delete fails', async () => {
+    vi.mocked(api).deleteWorkspace = vi.fn().mockRejectedValue(new Error("Workspace 'ws-idle' is referenced by agents: bot"))
+    await renderTab()
+    fireEvent.click(within(row('ws-idle')).getByRole('button', { name: 'Delete' }))
+    fireEvent.change(within(form('ws-idle')).getByRole('textbox'), { target: { value: 'ws-idle' } })
+    fireEvent.click(within(form('ws-idle')).getByRole('button', { name: 'Delete' }))
+    expect(await within(form('ws-idle')).findByText(/referenced by agents: bot/)).toBeInTheDocument()
+    expect(within(form('ws-idle')).getByRole('textbox')).toHaveValue('ws-idle')
+  })
+})

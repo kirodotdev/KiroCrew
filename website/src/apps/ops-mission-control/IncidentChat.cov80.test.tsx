@@ -1,0 +1,151 @@
+/**
+ * IncidentChat — the live investigation panel on an ops incident row.
+ *
+ * The two wiring requirements this component exists to satisfy are exactly what
+ * is asserted: the embed has an AppApiProvider ancestor, and that provider's
+ * permission scope includes BOTH `/api/chat*` (what the embed polls/posts) and
+ * `/api/approvals*` (what a tool card's Approve button calls — omit it and the
+ * button fails silently). ChatEmbed itself is replaced by a probe that reads the
+ * SDK context, so no polling happens and the contract is observable.
+ */
+import { describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { useAppApi, useAppEvents, useAppInfo, useNavigate, useNotify } from '../../app-sdk'
+import { i18nT } from '../../i18n/t'
+import IncidentChat, {
+  INCIDENT_CHAT_BOX_HEIGHT_PX,
+  INCIDENT_CHAT_COMPOSER_MAX_HEIGHT_PX,
+  incidentSlotKey,
+} from './IncidentChat'
+
+const probeProps = vi.hoisted(() => ({ current: {} as Record<string, unknown> }))
+const unsubscribes = vi.hoisted(() => ({ current: [] as unknown[] }))
+
+vi.mock('../../app-sdk/ChatEmbed', () => {
+  // Named + capitalised so the SDK hooks below are inside a real component as
+  // far as react-hooks/rules-of-hooks is concerned.
+  function ZzqChatEmbedProbe(props: Record<string, unknown>) {
+    probeProps.current = props
+    const info = useAppInfo()
+    const notify = useNotify()
+    const navigate = useNavigate()
+    // Proves the provider's subscribeFn returns a usable unsubscribe: the SDK
+    // hook calls it on mount and invokes the return value on cleanup.
+    useAppEvents('slots', () => unsubscribes.current.push('zzq-event'))
+    // Present only so a missing provider would throw here too.
+    useAppApi()
+    return (
+      <div data-testid="zzq-embed">
+        <span data-testid="zzq-perms">{info.permissions.api.join(',')}</span>
+        <span data-testid="zzq-events">{info.permissions.events.join(',')}</span>
+        <span data-testid="zzq-app">{info.name}</span>
+        <button type="button" data-testid="zzq-notify" onClick={() => notify('zzq hello')}>
+          zzq-notify
+        </button>
+        <button type="button" data-testid="zzq-nav" onClick={() => navigate('/zzq-elsewhere')}>
+          zzq-navigate
+        </button>
+      </div>
+    )
+  }
+  return { default: ZzqChatEmbedProbe }
+})
+
+describe('incidentSlotKey', () => {
+  it('namespaces the slot per incident', () => {
+    expect(incidentSlotKey('zzq-42')).toBe('ops-mission-control-zzq-42')
+  })
+})
+
+describe('IncidentChat', () => {
+  it('mounts the embed against the incident slot with an ask placeholder', () => {
+    render(<IncidentChat incidentId="zzq-42" />)
+    expect(screen.getByTestId('zzq-embed')).toBeInTheDocument()
+    expect(probeProps.current.slotKey).toBe('ops-mission-control-zzq-42')
+    expect(probeProps.current.placeholder).toBe(
+      i18nT('apps.opsMissionControl.incidentChat.ask_about_incident', { incidentId: 'zzq-42' }),
+    )
+  })
+
+  it('caps the composer below the shared default so the transcript keeps most of the box', () => {
+    // The panel is a fixed-height box. Left at the embed's shared 240px cap, a
+    // long draft would claim more than half of it and squeeze the agent's
+    // findings to a few lines. The cap is a proportion of the box and the box
+    // reads its height from the same module, so neither can move alone.
+    render(<IncidentChat incidentId="zzq-42" />)
+    expect(probeProps.current.composerMaxHeight).toBe(INCIDENT_CHAT_COMPOSER_MAX_HEIGHT_PX)
+    expect(INCIDENT_CHAT_COMPOSER_MAX_HEIGHT_PX).toBeLessThan(240)
+    // At the maxed-out draft, at least ~240px of the box is still transcript.
+    expect(INCIDENT_CHAT_BOX_HEIGHT_PX - INCIDENT_CHAT_COMPOSER_MAX_HEIGHT_PX).toBeGreaterThanOrEqual(240)
+    const box = screen.getByTestId('zzq-embed').parentElement?.parentElement as HTMLElement
+    expect(box.style.height).toBe(`${INCIDENT_CHAT_BOX_HEIGHT_PX}px`)
+  })
+
+  it('scopes the provider to the chat AND approvals APIs', () => {
+    render(<IncidentChat incidentId="zzq-42" />)
+    const perms = screen.getByTestId('zzq-perms').textContent ?? ''
+    expect(perms.split(',')).toEqual(
+      expect.arrayContaining([
+        '/api/chat',
+        '/api/chat/*',
+        '/api/approvals',
+        '/api/approvals/*',
+        '/api/apps/ops-mission-control',
+        '/api/apps/ops-mission-control/*',
+      ]),
+    )
+    expect(screen.getByTestId('zzq-events').textContent).toBe('slots,notification')
+    expect(screen.getByTestId('zzq-app').textContent).toBe('ops-mission-control')
+  })
+
+  it('appends the incident title to the header when one is known', () => {
+    render(<IncidentChat incidentId="zzq-42" title="zzq disk pressure" />)
+    expect(
+      screen.getByText(
+        i18nT('apps.opsMissionControl.incidentChat.live_investigation_header', {
+          incident: 'zzq-42',
+          title: ' — zzq disk pressure',
+        }),
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('renders the header without a title suffix when none is known', () => {
+    render(<IncidentChat incidentId="zzq-42" />)
+    expect(
+      screen.getByText(
+        i18nT('apps.opsMissionControl.incidentChat.live_investigation_header', {
+          incident: 'zzq-42',
+          title: '',
+        }),
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('mounts and unmounts cleanly with the provider default subscribe', () => {
+    // useAppEvents calls subscribe() during its effect, so an ABSENT subscribe is
+    // a TypeError on mount. (An effect cleanup of `undefined` is legal React and
+    // throws nothing, so this does not prove what the old comment here claimed.)
+    const { unmount } = render(<IncidentChat incidentId="zzq-42" />)
+    expect(() => unmount()).not.toThrow()
+  })
+
+  it('navigates the whole window (the board is not inside the SPA router here)', () => {
+    render(<IncidentChat incidentId="zzq-42" />)
+    fireEvent.click(screen.getByTestId('zzq-nav'))
+    expect(window.location.pathname).toBe('/zzq-elsewhere')
+  })
+
+  it('routes notify to the host toast bus', () => {
+    // Was a hand-written no-op purely to satisfy the old provider contract, which
+    // meant an embed error message was dropped on the floor. The scoped provider's
+    // default is the host's own `mc:notify` bus, so it now surfaces.
+    const seen: unknown[] = []
+    const listener = (e: Event) => seen.push((e as CustomEvent).detail?.message)
+    window.addEventListener('mc:notify', listener)
+    render(<IncidentChat incidentId="zzq-42" />)
+    fireEvent.click(screen.getByTestId('zzq-notify'))
+    window.removeEventListener('mc:notify', listener)
+    expect(seen).toEqual(['zzq hello'])
+  })
+})

@@ -1,0 +1,634 @@
+"""Waves behavior for the SubagentManager facade."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from ._component import ManagerComponent
+from .admission.taskq_bridge import _in_memory_queued_entries
+
+if TYPE_CHECKING:
+    from ..subagent import (
+        _RESET_TIMEOUT,
+        SubagentDelivery,
+        SubagentInfo,
+        asyncio,
+        logger,
+        mark_delivered,
+        sel,
+        settle_delivered_batch,
+        time,
+        write_tombstone,
+    )
+
+
+class WaveDigestCoordinator(ManagerComponent):
+    """Own waves transitions while state remains facade-owned."""
+
+    __slots__ = ()
+
+    def batch_members_pending_impl(self, batch_id: str) -> bool:
+        """True while ANY member of *batch_id* is still outstanding — running
+        (registered, not done), queued behind the stagger gate (not yet
+        registered), OR not yet submitted (sibling POSTs still in flight —
+        a fast-failing first member must not finalize the
+        wave and emit a partial digest before the rest of the batch even
+        arrives). The wave digest must also not be held hostage by unrelated
+        agents under the same parent.
+
+        Inline variant (sync callers): the store read runs on the calling
+        thread. :meth:`batch_members_pending_async_impl` runs it on the
+        store's writer thread."""
+        if not batch_id:
+            return False
+        if self._batch_pending_in_memory(batch_id):
+            return True
+        # A member queued in the store outside the in-memory window also holds
+        # the wave open.
+        return self._manager._admission.taskq_batch_pending(batch_id)
+
+    async def batch_members_pending_async_impl(self, batch_id: str) -> bool:
+        """:meth:`batch_members_pending_impl` for an event-loop caller: the
+        in-memory halves are read on the loop, the store-only one off it."""
+        if not batch_id:
+            return False
+        if self._batch_pending_in_memory(batch_id):
+            return True
+        return await self._manager._admission.taskq_batch_pending_async(batch_id)
+
+    def batch_reports_in_flight_impl(self, batch_id: str) -> bool:
+        """True while any member of *batch_id* is done-but-unreported:
+        ``info.done`` has flipped (so :meth:`batch_members_pending_impl` no
+        longer counts it) but its terminal report has not yet been consumed by
+        the completion consumer, so its contribution to the wave's done-count
+        has not landed. In that window a sibling completion reaching the
+        consumer sees ``done < total`` with no pending members -- without this
+        check the last-member fallback finalizes the wave early, and the
+        in-flight report then re-creates the batch-progress record and
+        finalizes the same wave again.
+
+        The hold lives in the manager-level ``_reports_in_flight`` registry,
+        NOT on the agent records: ``_agents`` membership is operator-mutable
+        (``DELETE /api/spawn`` pops every done member), so a predicate derived
+        from it silently drops the hold when a clear lands inside the window --
+        reopening the exact hole this predicate closes. The registry is armed
+        by the report machinery in the same synchronous block that flips
+        ``done`` and disarmed by the consumer the moment the contribution
+        lands (or structurally, when the report coroutine ends without
+        reaching the consumer -- the wave keeps its degraded
+        a-sibling-can-close liveness instead of stranding).
+        """
+        if not batch_id:
+            return False
+        return bool(self._manager._reports_in_flight.get(batch_id))
+
+    def arm_report_in_flight_impl(self, info: SubagentInfo) -> None:
+        """Register *info*'s terminal report as in flight toward the consumer.
+
+        Called in the same synchronous block as EVERY terminal ``info.done``
+        flip -- the report machinery's, the run's failure except-bodies, the
+        in-run limit bails, the reaper's, and spawn-rejection flips (or, for
+        synthetic records created ``done=True``, immediately before their
+        announce) -- so the hold and the flip can never be observed apart (a
+        done-but-unarmed window would let a sibling close the wave early).
+        Idempotent: a set add, so the flip-site arm and the report
+        machinery's arm compose. Not a no-op after a release, though: a flip
+        site whose record another path already ended must not call it, or the
+        hold outlives that path's report (the run's ``was_done`` tail, the
+        approval rejection). Flush-only records never arm: they skip the
+        consumer's accounting block entirely, so a hold would only be released
+        by the structural disarm and would transiently pin the wave open for
+        no accounting reason.
+        """
+        if not info.batch_id or getattr(info, "_digest_flush_only", False):
+            return
+        self._manager._reports_in_flight.setdefault(info.batch_id, set()).add(info.id)
+
+    def consume_report_hold_impl(self, batch_id: str, agent_id: str) -> None:
+        """Release *agent_id*'s done-but-unreported hold on *batch_id*.
+
+        Idempotent. Called by the completion consumer in the same synchronous
+        block that lands the member's done-count contribution, and by the
+        report machinery's structural ``finally`` (a report that ended without
+        reaching the consumer is not in flight).
+        """
+        if not batch_id:
+            return
+        holds = self._manager._reports_in_flight.get(batch_id)
+        if holds is not None:
+            holds.discard(agent_id)
+            if not holds:
+                self._manager._reports_in_flight.pop(batch_id, None)
+
+    def _unstarted_entries(self) -> list[dict]:
+        """Accepted spawns held in memory with no registered run: the dispatch
+        window and the entries the pump holds mid re-check
+        (:func:`_in_memory_queued_entries`). Not an ``*_impl``, so it runs on
+        this module's globals, where that helper is imported."""
+        return _in_memory_queued_entries(self._manager)
+
+    def _batch_pending_in_memory(self, batch_id: str) -> bool:
+        """The halves of :meth:`batch_members_pending_impl` that read manager
+        state: submissions in flight, live members, unstarted entries."""
+        _bs = self._manager._batch_submitted.get(batch_id)
+        if _bs is not None and _bs[1] > 0 and _bs[0] < _bs[1]:
+            return True  # submissions still in flight
+        if any(a.batch_id == batch_id and not a.done for a in self._manager._agents.values()):
+            return True
+        return any(p.get("batch_id") == batch_id for p in self._unstarted_entries())
+
+    def wave_has_live_nested_spawns_impl(self, batch_id: str) -> bool:
+        """True when a member of *batch_id* itself spawned further work that is
+        still outstanding (running or queued).
+
+        The wave-completion count (``done >= total``) is a claim about the
+        wave's DIRECT members only. A member that calls ``spawn_run`` gets its
+        own independent ``batch_id`` for the work it spawns, so those nested
+        children are not counted against this wave's total; the digest can read
+        ``N ✅ · 0 ❌`` while a member's descendant is still writing its result.
+        This answers whether that is the case, so the digest can decline to
+        assert a completion it cannot substantiate.
+
+        Scope is deliberately narrow: a nested child's ``parent_session_key`` is
+        its spawning member's own session key (``conversation_key`` else
+        ``subagent:<id>``), so this matches on THIS wave's members' session
+        keys, never on a shared grandparent. A sibling wave's members are not
+        children of this wave's members, so a sibling wave under the same
+        parent cannot make this True. It is read-only and never withholds the
+        digest — it only informs the wording.
+        """
+        if not batch_id:
+            return False
+        member_keys = {
+            (a.conversation_key or f"subagent:{a.id}")
+            for a in self._manager._agents.values()
+            if a.batch_id == batch_id
+        }
+        if not member_keys:
+            return False
+        if any(
+            not a.done and a.batch_id != batch_id and a.parent_session_key in member_keys
+            for a in self._manager._agents.values()
+        ):
+            return True
+        return any(
+            p.get("batch_id") != batch_id and p.get("parent_session_key") in member_keys
+            for p in self._unstarted_entries()
+        )
+
+    def finalize_batch_impl(self, batch_id: str) -> None:
+        """Prune per-wave bookkeeping once the wave digest has fired.
+
+        Bounds `_seen_batches` / `_batch_submitted` growth: without
+        this, long-lived gateways accrete an entry per wave forever.
+        """
+        if not batch_id:
+            return
+        self._manager._seen_batches.discard(batch_id)
+        self._manager._batch_submitted.pop(batch_id, None)
+        self._manager._batch_progress_ts.pop(batch_id, None)
+        self._manager._reports_in_flight.pop(batch_id, None)
+
+    def record_lost_submission_impl(
+        self,
+        batch_id: str,
+        batch_total: int,
+        reason: str,
+        parent_session_key: str = "",
+    ) -> None:
+        """Reconcile a wave member whose spawn submission was LOST before it
+        reached :meth:`spawn` (transport error / timeout / pre-spawn HTTP
+        rejection in ``api_spawn``).
+
+        Every sibling POST carried ``batch_total`` counting the lost member,
+        but ``spawn()`` never ran for it — so ``submitted < expected``
+        forever, ``batch_members_pending()`` stays True, the digest chunk
+        never fires, and held sibling results strand until a gateway restart.
+        This helper counts the lost
+        member as submitted AND announces a synthetic terminal member through
+        the single completion consumer, so the wave's accounting sees a
+        failure line and can close.
+
+        Idempotent-ish by construction: each call reconciles exactly one lost
+        member; callers invoke it once per lost submission.
+        """
+        if not batch_id:
+            return
+        _bs = self._manager._batch_submitted.setdefault(batch_id, [0, max(0, int(batch_total))])
+        _bs[0] += 1
+        self._manager._batch_progress_ts[batch_id] = time.monotonic()
+        try:
+            sel().log_tool_invocation(
+                session_key=parent_session_key or "",
+                source="subagent",
+                tool_name="spawn_run",
+                outcome="submission_lost",
+                metadata={"batch_id": batch_id, "reason": reason[:200]},
+            )
+        except Exception:
+            logger.debug("SEL audit failed for lost submission", exc_info=True)
+        info = SubagentInfo(
+            id=self._manager._mint_agent_id(),
+            task="(submission lost before spawn)",
+            agent="",
+            parent_session_key=parent_session_key,
+            done=True,
+            error=f"spawn submission lost: {reason[:300]}",
+            batch_id=batch_id,
+            batch_total=max(0, int(batch_total)),
+        )
+        if self._manager._on_done:
+            try:
+                # Synthetic record created ``done=True`` with a batch_id and
+                # routed to a DEFERRED announce: arm the hold synchronously
+                # here, before the ensure_future yield, so a sibling completion
+                # cannot read this member as done-but-unarmed and close the
+                # wave early. The ``_safe_announce`` arm is an
+                # idempotent backstop; the done-callback is the strand-guard
+                # for a task cancelled before its first run.
+                self._manager.arm_report_in_flight(info)
+                _lost_task = asyncio.ensure_future(self._manager._safe_announce(info))
+                self._hold_announce_task(f"lost-{info.id}", _lost_task)
+                _lost_task.add_done_callback(
+                    lambda _t: self._manager.consume_report_hold(info.batch_id, info.id)
+                )
+            except RuntimeError:
+                pass  # no running loop (sync/test context)
+
+    def _sweep_stuck_waves_impl(self, now: float) -> None:
+        """Reaper backstop: force-reconcile waves wedged by lost submissions.
+
+        A wave is STUCK when ``submitted < expected``, every registered
+        member is terminal, nothing of the wave sits in the spawn queue, and
+        there has been no submission progress for ``_WAVE_STUCK_SECS``,
+        measured on the monotonic clock: ``now`` is the reaper's
+        ``time.monotonic()`` reading, the clock the ``_batch_progress_ts``
+        stamps are taken on. The
+        count-driven ``batch_members_pending()`` can never close such a wave
+        on its own — no future completion event will arrive. Reconciling via
+        :meth:`record_lost_submission` (once per sweep per wave — waves with
+        multiple losses converge across sweeps) re-enters the completion
+        consumer so held sibling results deliver instead of stranding until
+        restart. Also bounds the ``_batch_submitted``/``_batch_progress_ts``
+        leak in the stuck case.
+
+        Inline variant (sync callers): the per-wave store read runs on the
+        calling thread. :meth:`_sweep_stuck_waves_async_impl` runs it on the
+        store's writer thread.
+        """
+        for batch_id, parent in self._stuck_wave_candidates(now):
+            if self._manager._admission.taskq_batch_pending(batch_id):
+                continue  # store-only queued members still pending
+            self._reconcile_stuck_wave(batch_id, parent, now)
+
+    async def _sweep_stuck_waves_async_impl(self, now: float) -> None:
+        """:meth:`_sweep_stuck_waves_impl` for an event-loop caller: the
+        candidates come from manager state on the loop, and each one's
+        store-only membership check runs on the writer thread."""
+        for batch_id, parent in self._stuck_wave_candidates(now):
+            if await self._manager._admission.taskq_batch_pending_async(batch_id):
+                continue  # store-only queued members still pending
+            self._reconcile_stuck_wave(batch_id, parent, now)
+
+    def _stuck_wave_candidates(self, now: float) -> list[tuple[str, str]]:
+        """``(batch id, parent session key)`` for every wave that manager state
+        alone reads as wedged; the store-only check is the caller's."""
+        # Reached through the FACADE module: this helper is not an ``*_impl``, so
+        # it runs on this module's globals rather than ``subagent``'s
+        # (``bind_component_globals``) and the constants are not in scope here.
+        from .. import subagent as _facade
+
+        out: list[tuple[str, str]] = []
+        for batch_id, _bs in list(self._manager._batch_submitted.items()):
+            if _bs[1] <= 0 or _bs[0] >= _bs[1]:
+                continue  # complete or unbounded — not wedged by lost POSTs
+            last = self._manager._batch_progress_ts.get(batch_id, 0.0)
+            if now - last < _facade._WAVE_STUCK_SECS:
+                continue  # still within the grace window
+            members = [a for a in self._manager._agents.values() if a.batch_id == batch_id]
+            if any(not a.done for a in members):
+                continue  # live members will re-evaluate the wave on completion
+            if any(p.get("batch_id") == batch_id for p in self._unstarted_entries()):
+                continue  # queued members still pending — not stuck
+            out.append((batch_id, members[0].parent_session_key if members else ""))
+        return out
+
+    def _reconcile_stuck_wave(self, batch_id: str, parent: str, now: float) -> None:
+        """Reconcile ONE lost submission of a wedged wave. The counters are
+        re-read here, because an await can sit between the candidate scan and
+        this step."""
+        from .. import subagent as _facade
+
+        _bs = self._manager._batch_submitted.get(batch_id)
+        if _bs is None:
+            return
+        last = self._manager._batch_progress_ts.get(batch_id, 0.0)
+        _facade.logger.warning(
+            "Reaper: wave %s stuck (%d/%d submitted, no progress for %.0fs)"
+            " — reconciling one lost submission",
+            batch_id,
+            _bs[0],
+            _bs[1],
+            now - last,
+        )
+        self._manager.record_lost_submission(
+            batch_id,
+            _bs[1],
+            f"submission never arrived (wave stuck > {_facade._WAVE_STUCK_SECS}s"
+            " — reconciled by reaper liveness backstop)",
+            parent_session_key=parent,
+        )
+
+    def _sweep_digest_holds_impl(self, now: float) -> None:
+        """Reaper backstop: release wave results whose HOLD DEADLINE expired.
+
+        The gateway holds a completed member's per-agent injection until the
+        wave's digest chunk fires. Both of the chunk's triggers are event-driven
+        — a COUNT trigger (``SUBAGENT_DIGEST_CHUNK_SIZE`` completions pending)
+        and wave close — so neither can fire while a straggler is simply *not
+        finishing*. With the default count (10) above any realistic wave size,
+        the only flush that ever fires is the wave-close one, and a member that
+        HANGS rather than fails withholds every sibling's finished result for
+        the full ``_TIMEOUT_SECS`` reap window.
+
+        This sweep is the timer the event-driven triggers lack: when the OLDEST
+        outstanding hold in a wave has aged past :data:`DIGEST_HOLD_SECS` and
+        the wave is still live, it announces a synthetic *flush-only* record
+        through the single completion consumer (the same re-entry mechanism
+        :meth:`record_lost_submission` uses), which forces the partial digest
+        out. Ordinary fast waves never reach the deadline, so the deliberate
+        "small wave = one consolidated digest" behavior is untouched.
+
+        Inline variant (sync callers): the per-wave store read behind
+        ``batch_members_pending`` runs on the calling thread.
+        :meth:`_sweep_digest_holds_async_impl` runs it on the writer thread.
+        """
+        for hold in self._expired_digest_holds(now):
+            if not self._manager.batch_members_pending(hold[0]):
+                if self._manager.batch_reports_in_flight(hold[0]):
+                    # The wave is closing on its own -- the final member's
+                    # report is in flight and the real wave-close flush lands
+                    # when it is consumed. Forcing a partial digest here would
+                    # race it and could emit a duplicate chunk for the same
+                    # members. (The consumer clears every hold in the same
+                    # synchronous block that fires the chunk, so this skip
+                    # cannot observe a just-flushed wave's stale state.)
+                    continue
+                # No pending members AND no report in flight, yet a hold has
+                # aged past the deadline: the wave-close flush is never coming.
+                # A terminal report ended without reaching the consumer (the
+                # injection-timeout / announce-failure arms release the hold
+                # but land no accounting), so no further completion event will
+                # re-enter the consumer for this wave -- the held sibling
+                # results would strand until gateway restart. Fall through and
+                # force the flush: this sweep is the only remaining exit.
+            self._force_digest_flush_for(hold)
+
+    async def _sweep_digest_holds_async_impl(self, now: float) -> None:
+        """:meth:`_sweep_digest_holds_impl` for an event-loop caller: the held
+        records are read on the loop, each wave's store-only membership check
+        on the writer thread."""
+        for hold in self._expired_digest_holds(now):
+            if not await self._manager.batch_members_pending_async(hold[0]):
+                if self._manager.batch_reports_in_flight(hold[0]):
+                    continue  # final member's report in flight (see sync form)
+                # hold aged with no report in flight: force the flush below
+            self._force_digest_flush_for(hold)
+
+    def _expired_digest_holds(self, now: float) -> list[tuple[str, float, str, int]]:
+        """``(batch id, hold age, parent session key, batch total)`` for every
+        wave whose OLDEST hold is past the deadline."""
+        from .. import subagent as _facade
+
+        if _facade.DIGEST_HOLD_SECS <= 0 or self._manager._on_done is None:
+            return []  # deadline disabled — count-trigger-only
+        oldest: dict[str, float] = {}
+        parents: dict[str, str] = {}
+        totals: dict[str, int] = {}
+        for info in list(self._manager._agents.values()):
+            _bid = info.batch_id
+            if not _bid or info._digest_held_at <= 0.0:
+                continue
+            if info.id in self._manager._teardown_cancelled_ids:
+                # Its parent ended, so the flush this hold would arm has nowhere to
+                # announce to -- and the flush record is synthetic, so the delivery
+                # gate cannot recognise it downstream. Skipping the member here is
+                # what keeps a whole batch of teardown-cancelled members from
+                # producing an expiry at all.
+                continue
+            _prev = oldest.get(_bid)
+            if _prev is None or info._digest_held_at < _prev:
+                oldest[_bid] = info._digest_held_at
+            parents.setdefault(_bid, info.parent_session_key)
+            totals.setdefault(_bid, info.batch_total)
+        return [
+            (batch_id, now - held_at, parents.get(batch_id, ""), totals.get(batch_id, 0))
+            for batch_id, held_at in oldest.items()
+            if now - held_at >= _facade.DIGEST_HOLD_SECS
+        ]
+
+    def _force_digest_flush_for(self, hold: tuple[str, float, str, int]) -> None:
+        """Force out the partial digest of one expired hold."""
+        from .. import subagent as _facade
+
+        batch_id, age, parent, total = hold
+        _facade.logger.warning(
+            "Reaper: wave %s held results for %.0fs (deadline %.0fs) —"
+            " forcing partial digest flush",
+            batch_id,
+            age,
+            _facade.DIGEST_HOLD_SECS,
+        )
+        self._manager.force_digest_flush(batch_id, parent, total, age)
+
+    def force_digest_flush_impl(
+        self,
+        batch_id: str,
+        parent_session_key: str,
+        batch_total: int,
+        held_secs: float,
+    ) -> None:
+        """Announce a synthetic *flush-only* record to release a wave's held
+        results without waiting for another member to complete.
+
+        The record is deliberately NOT a wave member: ``_digest_flush_only``
+        tells the gateway to skip every per-member side effect (terminal WS
+        event, orchestration accounting, done/ok/err counters, digest lines) and
+        only force the pending chunk out. Announcing it through ``_on_done`` —
+        rather than reaching into the gateway's digest buffers — reuses the one
+        completion consumer that owns digest composition, routing, and the
+        held-tombstone settle contract.
+        """
+        if not batch_id or self._manager._on_done is None:
+            return
+        info = SubagentInfo(
+            id=self._manager._mint_agent_id(),
+            task=f"(wave digest flush — results held {int(held_secs)}s)",
+            parent_session_key=parent_session_key,
+            done=True,
+            batch_id=batch_id,
+            batch_total=max(0, int(batch_total)),
+        )
+        info._digest_flush_only = True
+        try:
+            sel().log_tool_invocation(
+                session_key=parent_session_key or "",
+                source="subagent",
+                tool_name="spawn_run",
+                outcome="digest_hold_expired",
+                metadata={"batch_id": batch_id, "held_secs": int(held_secs)},
+            )
+        except Exception:
+            logger.debug("SEL audit failed for digest hold expiry", exc_info=True)
+        try:
+            self._hold_announce_task(
+                f"flush-{info.id}",
+                asyncio.ensure_future(self._manager._announce_digest_flush(info)),
+            )
+        except RuntimeError:
+            pass  # no running loop (sync/test context)
+
+    async def _announce_digest_flush_impl(self, info: SubagentInfo) -> None:
+        """Run the flush-only announce with the SAME settle contract as ``_run``.
+
+        ``_settle_digest_holds`` must run only after ``_on_done`` returns
+        cleanly: a routing failure has to leave the held members undelivered so
+        orphan reconciliation can still recover them after a restart. This path
+        has no run loop to enforce that ordering, so it enforces it here.
+        """
+        assert self._manager._on_done is not None
+        try:
+            await self._manager._on_done(info)
+        except Exception:
+            logger.warning(
+                "Digest hold flush announce failed for wave %s", info.batch_id, exc_info=True
+            )
+            return
+        await self._manager._settle_digest_holds(info)
+
+    def _settle_owed_reports(
+        self, deliveries: list[SubagentDelivery], *, delivered: bool = True
+    ) -> list[SubagentDelivery]:
+        """Detach every memory-wait expiry from *deliveries*, clearing its owed
+        report only when the digest or queued announce carrying it was
+        *delivered*.
+
+        A delivered expiry is owed no report any more. One whose carrier the
+        gateway did not acknowledge (``_report_delivered`` unset) keeps its
+        mark, so the next start replays it. Either way it has no run folder, so it is left out of
+        the tombstones; the rest are returned for them.
+        """
+        owed = [delivery.agent_id for delivery in deliveries if delivery.report_owed]
+        if not owed:
+            return deliveries
+        if delivered:
+            self._manager._admission.taskq_clear_owed_reports(owed)
+        return [delivery for delivery in deliveries if not delivery.report_owed]
+
+    async def settle_queued_delivery_impl(self, deliveries: list[SubagentDelivery]) -> None:
+        """Write the ``delivered`` tombstones for completions consumed from a queue.
+
+        The queued-injection path deliberately leaves a completion
+        un-tombstoned until the parent's turn has consumed the announce, so the
+        write lands here — in the parent's drain — rather than in
+        :meth:`_report_terminal`. That is also why it must repeat the gate that
+        report holds: a ``delivered`` tombstone EXCLUDES the folder from restart
+        orphan reconciliation, and the drain can come due while the run's teardown
+        is still killing its child, so writing early would let a crash in that
+        window strand a live child that nothing would ever reap.
+
+        The wait is bounded exactly as the report's is (teardown is itself bounded
+        by ``_RESET_TIMEOUT`` then SIGKILL, and runs in a ``finally``), and a
+        timeout writes anyway rather than abandoning the retention bound — the same
+        trade the report makes. The gate is read from ``_teardown_gates``, which
+        outlives the run's ``_agents``/``_tasks`` records: a dashboard "clear
+        completed" or "cancel" pops both of those for a run that is done but still
+        tearing down, so inferring "record gone means child gone" would tombstone a
+        live child. No gate entry means teardown has finished (or never started).
+
+        The tombstone write itself is offloaded: it fsyncs, and this runs on the
+        gateway event loop. A memory-wait expiry's debt writes no tombstone; it
+        clears the store's owed report (:meth:`_settle_owed_reports`).
+        """
+        for delivery in self._settle_owed_reports(deliveries):
+            agent_id = delivery.agent_id
+            gate = self._manager._teardown_gates.get(agent_id)
+            if gate is not None and not gate.is_set():
+                try:
+                    await asyncio.wait_for(gate.wait(), timeout=_RESET_TIMEOUT + 30)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Subagent %s: teardown did not complete before the queued "
+                        "delivered tombstone; writing it anyway",
+                        agent_id,
+                    )
+            try:
+                if delivery.tombstone is not None:
+                    # A restart orphan's notice: its own record, outcome included.
+                    await asyncio.to_thread(write_tombstone, agent_id, **delivery.tombstone)
+                else:
+                    await asyncio.to_thread(
+                        mark_delivered,
+                        agent_id,
+                        elapsed=delivery.elapsed,
+                        credits=delivery.credits,
+                    )
+            except Exception:
+                logger.debug(
+                    "Failed to mark drained subagent %s delivered", agent_id, exc_info=True
+                )
+
+    async def _settle_digest_holds_impl(self, info: SubagentInfo) -> None:
+        """Settle delivery tombstones for wave members whose injection was
+        held for this member's digest. Called ONLY after ``_on_done`` returned
+        without raising — and it is a real settle only for the routes where
+        that return IS the confirmation. Both dashboard routes hand off
+        asynchronously, so they detach the ids before ``_on_done`` returns and
+        owe them to the parent's consumption instead (the queue branch via
+        ``_defer_queued_delivery``, the direct-injection branch via the same
+        slot ledger), leaving this a no-op there. Marking the held members
+        delivered does not risk the restart-loss window here (settling at
+        digest composition, before routing, would).
+
+        The ids are taken off ``info`` BEFORE settling, so a re-entry cannot
+        write a second tombstone and a route that detached them first leaves
+        this a no-op. That detachment is irrevocable, which is what decides the
+        shape below: the whole batch is handed to ONE worker operation rather
+        than awaited per id. A per-id await is a cancellation point, and
+        ``CancelledError`` is not an ``Exception``, so a shutdown or a dashboard
+        cancel landing mid-batch would discard the remaining ids with nothing
+        left holding them -- and a ``delivered`` tombstone is the marker that
+        EXCLUDES a folder from restart reconciliation, so each unwritten one
+        replays as a duplicate completion. Handed over as a unit, the worker
+        finishes every write whether or not the waiter is still waiting.
+
+        A failing tombstone write is logged and skipped, never raised: one
+        unwritable run folder must not strand the rest of the chunk.
+        """
+        deliveries, info._digest_settle_deliveries = info._digest_settle_deliveries, []
+        # ``_on_done`` also returns normally when the gateway gave up on the
+        # digest's channel or cron injection, so the held expiries it carried
+        # are cleared only on the carrier's positive acknowledgement
+        # (``_report_delivered``) and otherwise stay owed for the replay.
+        deliveries = self._settle_owed_reports(deliveries, delivered=info._report_delivered)
+        if not deliveries:
+            return
+        try:
+            # Off the loop: the tombstone write reads the existing file to
+            # preserve a recorded terminal outcome, and both callers of this
+            # settlement are coroutines. The swap above precedes the single
+            # await, so the re-entry guard still holds across the suspension.
+            #
+            # Handed over as ONE batch rather than awaited per delivery: the swap
+            # detaches them from ``info`` irrevocably, a per-delivery await makes
+            # every one after the first a cancellation point, and
+            # ``CancelledError`` is not an ``Exception`` -- so a shutdown landing
+            # mid-batch would discard the rest with nothing holding them, and each
+            # unwritten tombstone is a folder restart reconciliation admits, i.e. a
+            # duplicate completion. The batch carries each delivery's own elapsed
+            # and credits, so the tombstone still records the run's terminal usage.
+            await asyncio.to_thread(
+                settle_delivered_batch, tuple(deliveries), writer=mark_delivered
+            )
+        except Exception:
+            logger.debug("Failed to settle held subagents %s", deliveries, exc_info=True)

@@ -1,0 +1,219 @@
+rules:
+  # ─── Shapes the Determinism contract rules out, on the lines a change adds ──
+  # docs/system-specs/common/testing-conventions.md § Determinism contract names
+  # each one and the shape to use instead. The tree already holds thousands of
+  # them; these rules run diff-scoped in the SAST job (`--baseline-commit`), so
+  # they refuse only a NEW site and never report one an author did not touch.
+  # test/test_flake_pattern_ratchet.py counts per file only the shapes these
+  # patterns miss, so no site needs both markers. A line that keeps a shape on
+  # purpose says why with `# nosemgrep: <rule id>` plus the reason; for the
+  # autouse fixture rule that line is the fixture's `def` line.
+
+  - id: kirocrew.test-sleep-as-barrier
+    patterns:
+      - pattern-inside: |
+          def $TEST(...):
+            ...
+      - metavariable-regex:
+          metavariable: $TEST
+          regex: ^test
+      # A sleep inside a loop is a poll interval: the loop checks the state.
+      - pattern-not-inside: |
+          while $COND:
+            ...
+      - pattern-not-inside: |
+          for $X in $ITER:
+            ...
+      - pattern-either:
+          - pattern: time.sleep($N)
+          - pattern: await asyncio.sleep($N)
+      - metavariable-comparison:
+          metavariable: $N
+          comparison: $N > 0
+    paths:
+      include:
+        - test/**
+        - src/kiro_crew/apps/builtins/**/tests/**
+        - src/kiro_crew/apps/builtins/**/*_tests/**
+    message: >
+      A fixed sleep in a test body is a bet on how fast the host is: it passes on
+      a fast runner and reds a loaded one, or it makes a negative assertion pass
+      for the trivial reason. Wait on the state you assert with
+      kiro_crew.testing.wait.wait_until / async_wait_until (D1), or hold the
+      blocker and wait until it is parked (until_parked).
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: correctness
+      subcategory: test-determinism
+
+  - id: kirocrew.test-bare-monkeypatch-undo
+    pattern: monkeypatch.undo()
+    paths:
+      include:
+        - test/**
+        - src/kiro_crew/apps/builtins/**/tests/**
+        - src/kiro_crew/apps/builtins/**/*_tests/**
+    message: >
+      monkeypatch.undo() reverts EVERY patch on the shared instance, including
+      the autouse fixtures' that this test inherited, so the rest of the test
+      runs on the host's real value. Scope the patch with
+      `with monkeypatch.context() as mp:` instead (D11).
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: correctness
+      subcategory: test-determinism
+
+  - id: kirocrew.test-in-process-reload
+    pattern-either:
+      - pattern: importlib.reload(...)
+      - pattern: reload(...)
+    paths:
+      include:
+        - test/**
+        - src/kiro_crew/apps/builtins/**/tests/**
+        - src/kiro_crew/apps/builtins/**/*_tests/**
+    message: >
+      importlib.reload rebinds a shared module's globals in place, so code that
+      imported a name earlier keeps the old object and later tests see a module
+      graph that no longer agrees with itself. Load a private copy with
+      importlib.util.spec_from_file_location under a unique name instead (D11).
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: correctness
+      subcategory: test-determinism
+
+  - id: kirocrew.test-stdlib-clock-rebound
+    pattern-either:
+      - pattern: $MP.setattr(time, "$NAME", ...)
+      - pattern: $MP.setattr("=~/^time\./", ...)
+      - pattern: mock.patch("=~/^time\./", ...)
+      - pattern: patch("=~/^time\./", ...)
+      - pattern: patch.object(time, "$NAME", ...)
+    paths:
+      include:
+        - test/**
+        - src/kiro_crew/apps/builtins/**/tests/**
+        - src/kiro_crew/apps/builtins/**/*_tests/**
+    message: >
+      Patching the stdlib time module replaces the clock for the whole worker:
+      every thread, library and event loop (loop.time() is time.monotonic())
+      reads the fake while it holds. Install a clock on the module under test's
+      own binding instead: ManualClock().install(monkeypatch, module) (D2).
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: correctness
+      subcategory: test-determinism
+
+  - id: kirocrew.test-naive-local-time
+    pattern-either:
+      - pattern: datetime.now()
+      - pattern: datetime.datetime.now()
+      - pattern: datetime.today()
+      - pattern: date.today()
+      - pattern: datetime.date.today()
+      - pattern: time.localtime()
+    paths:
+      include:
+        - test/**
+        - src/kiro_crew/apps/builtins/**/tests/**
+        - src/kiro_crew/apps/builtins/**/*_tests/**
+    message: >
+      A naive local-time read depends on the host's zone and on when the test
+      runs: it passes in UTC and fails where local midnight falls between two
+      reads. Read the zone the product stamps with the instant frozen
+      (ManualClock), or pin the zone with the local_tz fixture (D5).
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: correctness
+      subcategory: test-determinism
+
+  - id: kirocrew.test-unseeded-random
+    pattern-either:
+      - pattern: os.urandom(...)
+      - patterns:
+          - pattern: random.$FN(...)
+          - metavariable-regex:
+              metavariable: $FN
+              regex: ^(random|randint|randrange|choice|choices|shuffle|sample|uniform|getrandbits|randbytes|gauss)$
+    paths:
+      include:
+        - test/**
+        - src/kiro_crew/apps/builtins/**/tests/**
+        - src/kiro_crew/apps/builtins/**/*_tests/**
+    message: >
+      An unseeded draw makes the input different on every run, so a red cannot
+      be replayed. Use random.Random(SEED) or the seeded_rng fixture (D6).
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: correctness
+      subcategory: test-determinism
+
+  - id: kirocrew.test-autouse-shared-monkeypatch
+    patterns:
+      - pattern: |
+          @pytest.fixture(..., autouse=True, ...)
+          def $FIXTURE(..., monkeypatch, ...):
+            ...
+      # Report the name only, so an edit to an existing fixture's body is not a
+      # new finding against the baseline commit.
+      - focus-metavariable: $FIXTURE
+    paths:
+      include:
+        - test/**
+        - src/kiro_crew/apps/builtins/**/tests/**
+        - src/kiro_crew/apps/builtins/**/*_tests/**
+        - conftest.py
+    message: >
+      An autouse fixture that patches through the shared monkeypatch is lifted
+      by any test that calls monkeypatch.undo(). Request _floor_monkeypatch
+      instead (D11); it is undone independently.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: correctness
+      subcategory: test-determinism
+
+  - id: kirocrew.test-promise-sleep
+    patterns:
+      - pattern-either:
+          - pattern: new Promise(($R) => setTimeout($R, $N))
+          - pattern: new Promise($R => setTimeout($R, $N))
+      - metavariable-comparison:
+          metavariable: $N
+          comparison: $N > 0
+    paths:
+      include:
+        - website/src/**/*.test.ts
+        - website/src/**/*.test.tsx
+        - website/src/**/test/**
+        - website/integration/**
+        - website/playwright/**
+    message: >
+      A promise-sleep is a guess at how long the UI needs. Wait for what you
+      assert: findBy* / waitFor on that state, or fake timers advanced to the
+      exported constant (website/docs/testing.md § Rules every test keeps).
+    severity: ERROR
+    languages: [typescript]
+    metadata:
+      category: correctness
+      subcategory: test-determinism
+
+  - id: kirocrew.test-wait-for-timeout
+    pattern: $PAGE.waitForTimeout(...)
+    paths:
+      include:
+        - website/playwright/**
+    message: >
+      page.waitForTimeout is a fixed sleep. Use a web-first assertion
+      (await expect(locator).toBeVisible()) or expect.poll for backend state.
+    severity: ERROR
+    languages: [typescript]
+    metadata:
+      category: correctness
+      subcategory: test-determinism
