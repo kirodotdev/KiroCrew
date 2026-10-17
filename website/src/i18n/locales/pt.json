@@ -8696,7 +8696,6 @@
       "desktop_app": "Aplicativo para desktop",
       "enable_shortcuts": "Ativar atalhos",
       "global_hotkey_hint": "Funciona em todo o sistema, mesmo com o aplicativo em segundo plano. Para alterar ou desativar, edite globalHotkey no arquivo de configuração do aplicativo para desktop (Connection > Open Config File); a alteração entra em vigor após reiniciar o aplicativo.",
-      "k": "K",
       "keyboard_shortcuts": "Atalhos de teclado",
       "keyboard_shortcuts_2": "Atalhos de teclado",
       "or": "ou",

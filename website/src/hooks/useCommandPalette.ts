@@ -26,16 +26,18 @@ import {
  *  - **`custom`**: a user-recorded chord toggles the palette; double-Shift is
  *    off.
  *
- * **⌘K / Ctrl+K is a built-in alias in every mode EXCEPT `custom` with a
- * recorded chord.** It toggles the palette, `preventDefault()` keeps a
- * browser/extension binding (e.g. some "focus search") from stealing it, and it
- * is intentionally chosen over reserved combos (⌘P print, ⌘W close tab, ⌘1–9
- * tab switch) which Chrome will NOT let a page cancel. Keeping it live until the
- * user sets their OWN chord guarantees the palette is always reachable from the
- * keyboard — so selecting `custom` before recording never strands the user.
- * Because ⌘K is live in the default (`mod-k`) mode too, a user who relied on the
- * previously shipped double-Shift default still has a working keyboard route to
- * the palette after the default moved, even before they visit Settings.
+ * **⌘K / Ctrl+K toggles the palette ONLY in `mod-k` mode**, where it is the
+ * chosen gesture: `preventDefault()` keeps a browser/extension binding (e.g.
+ * some "focus search") from stealing it, and it is cancelable in a real Chrome
+ * tab unlike reserved combos (⌘P print, ⌘W close tab, ⌘1–9 tab switch). In
+ * `double-shift` and `custom` the user picked a different trigger to reclaim
+ * Ctrl+K — it is the terminal "clear to end of line" and many text inputs' own
+ * binding — so the hook lets it fall through to the focused input rather than
+ * opening the palette. Choosing `custom` only enters the recorder; it does not
+ * persist `custom` until a valid chord is captured, so the PREVIOUS preset
+ * stays live meanwhile (and a persisted-but-invalid custom chord falls back to
+ * `mod-k` in {@link loadQuickSearchConfig}), and the palette's nav button
+ * (openPalette) is always a trigger-independent route.
  *
  * All bindings honour the global "Enable shortcuts" toggle
  * ({@link SHORTCUTS_ENABLED_KEY}, shared with useKeyboardShortcuts /
@@ -61,8 +63,8 @@ import {
  * deliberately tight (250ms): a wider window makes the palette pop open on
  * incidental Shift taps (e.g. reaching for a capital, then hesitating) that
  * were never meant as the gesture. 250ms is comfortably reachable as an
- * intentional double-tap while cutting most accidental opens; ⌘K / Ctrl+K and
- * the nav button remain as unambiguous alternatives.
+ * intentional double-tap while cutting most accidental opens; the nav button
+ * remains as an unambiguous alternative.
  */
 export const DOUBLE_SHIFT_WINDOW_MS = 250
 
@@ -153,13 +155,14 @@ export function useCommandPalette(): UseCommandPalette {
       const config = loadQuickSearchConfig()
       const customBound = hasCustomChord(config)
 
-      // ⌘K / Ctrl+K — toggle. Active as the primary gesture in `mod-k`, and as
-      // the built-in alias in `double-shift` and in `custom` BEFORE a chord is
-      // recorded. Suppressed only once the user has bound their own chord, so
-      // it can't shadow a custom binding on the same key. Require no other
-      // modifiers so it doesn't swallow richer combos. Cancelable in a real
-      // Chrome tab.
-      if (!customBound && isModKEvent(e)) {
+      // ⌘K / Ctrl+K — toggle. Active ONLY in `mod-k` mode, where it is the
+      // chosen gesture. In `double-shift` and `custom` the user has selected a
+      // different trigger precisely to free this chord (Ctrl+K is the terminal
+      // "clear to end of line" and many inputs' own binding), so it must pass
+      // through to the focused input instead of opening the palette. Require no
+      // other modifiers so it doesn't swallow richer combos. Cancelable in a
+      // real Chrome tab.
+      if (config.mode === 'mod-k' && isModKEvent(e)) {
         e.preventDefault()
         lastShiftRef.current = 0
         setOpen(v => !v)

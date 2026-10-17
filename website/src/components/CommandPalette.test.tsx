@@ -388,6 +388,25 @@ describe('useCommandPalette — configurable activation', () => {
     expect(result.current.open).toBe(true)
   })
 
+  it('double-shift mode: Ctrl+K/⌘K does NOT open the palette (issue #20363)', () => {
+    // Switching to double-Shift is how users reclaim Ctrl+K (the terminal
+    // "clear to end of line" and many inputs' own binding). The alias must not
+    // keep firing, or the setting is useless — the reported bug. Ctrl+K and ⌘K
+    // both fall through to the focused input.
+    localStorage.setItem(QUICK_SEARCH_SHORTCUT_KEY, JSON.stringify({ mode: 'double-shift' }))
+    const { result } = renderHook(() => useCommandPalette())
+    act(() => { fireEvent.keyDown(window, { key: 'k', ctrlKey: true }) })
+    expect(result.current.open).toBe(false)
+    act(() => { fireEvent.keyDown(window, { key: 'k', metaKey: true }) })
+    expect(result.current.open).toBe(false)
+    // The chosen double-Shift gesture still works.
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Shift' })
+      fireEvent.keyDown(window, { key: 'Shift' })
+    })
+    expect(result.current.open).toBe(true)
+  })
+
   it('mod-k mode: ⌘K/Ctrl+K toggles, but double-Shift no longer opens', () => {
     localStorage.setItem(QUICK_SEARCH_SHORTCUT_KEY, JSON.stringify({ mode: 'mod-k' }))
     const { result } = renderHook(() => useCommandPalette())

@@ -73,6 +73,29 @@ describe('ShortcutsModal & subcomponents', () => {
     expect(screen.getByText(/search everywhere/i)).toBeInTheDocument()
   })
 
+  it('SearchEverywhereRow in double-shift mode shows only ⇧⇧, not a Ctrl+K alias (issue #20363)', () => {
+    // ⌘K/Ctrl+K no longer fires in double-shift mode, so the reference row must
+    // not advertise it — the row would otherwise promise a dead shortcut.
+    localStorage.setItem('mc-quicksearch-shortcut', JSON.stringify({ mode: 'double-shift' }))
+    renderWithQuery(<SearchEverywhereRow />)
+    // The double-Shift gesture renders as two Shift caps (non-mac test env) —
+    // a key legend. No Ctrl/Cmd + K alias is shown (it no longer fires here).
+    expect(screen.getAllByText('Shift').length).toBe(2)
+    expect(screen.queryByText('Ctrl')).toBeNull()
+    expect(screen.queryByText('⌘')).toBeNull()
+    expect(screen.queryByText('K')).toBeNull()
+    localStorage.removeItem('mc-quicksearch-shortcut')
+  })
+
+  it('SearchEverywhereRow in mod-k mode shows Ctrl+K as the gesture', () => {
+    // mod-k is where the chord is the real trigger, so it is still shown.
+    localStorage.setItem('mc-quicksearch-shortcut', JSON.stringify({ mode: 'mod-k' }))
+    renderWithQuery(<SearchEverywhereRow />)
+    expect(screen.getByText('Ctrl')).toBeInTheDocument()
+    expect(screen.getByText('K')).toBeInTheDocument()
+    localStorage.removeItem('mc-quicksearch-shortcut')
+  })
+
   it('renders PanelToggleRows with custom ids', () => {
     const { rerender } = renderWithQuery(<PanelToggleRows ids={['left-sidebar', 'session-panel', 'side-panel']} />)
     expect(screen.getAllByText(/toggle|sidebar|panel/i).length).toBeGreaterThan(0)

@@ -8426,7 +8426,6 @@
       "desktop_app": "桌面应用",
       "enable_shortcuts": "启用快捷键",
       "global_hotkey_hint": "全局生效，即使应用在后台也可使用。如需修改或停用，请在桌面配置文件中编辑 globalHotkey（Connection > Open Config File），重启应用后生效。",
-      "k": "K",
       "keyboard_shortcuts": "键盘快捷键",
       "keyboard_shortcuts_2": "键盘快捷键",
       "or": "或",

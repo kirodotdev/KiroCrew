@@ -8696,7 +8696,6 @@
       "desktop_app": "Application de bureau",
       "enable_shortcuts": "Activer les raccourcis",
       "global_hotkey_hint": "Fonctionne dans tout le système, même lorsque l'application est en arrière-plan. Pour le modifier ou le désactiver, modifiez globalHotkey dans le fichier de configuration de l'application de bureau (Connection > Open Config File) ; le changement prend effet au redémarrage de l'application.",
-      "k": "K",
       "keyboard_shortcuts": "Raccourcis clavier",
       "keyboard_shortcuts_2": "Raccourcis clavier",
       "or": "ou",

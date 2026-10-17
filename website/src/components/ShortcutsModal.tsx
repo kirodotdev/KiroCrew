@@ -195,16 +195,19 @@ export function KeyCapSequence({ caps, plus }: { caps: string[]; plus?: boolean 
  * useKeyboardShortcuts handler), so it is documented with this dedicated row.
  *
  * The caps reflect the user's configured preset live (edited in
- * Settings → Shortcuts): the primary gesture, plus the ⌘K / Ctrl+K alias in
- * `double-shift` mode where that alias stays active. A `custom` mode awaiting a
- * recorded chord shows the record prompt.
+ * Settings → Shortcuts). ⌘K / Ctrl+K is the primary gesture in `mod-k` mode and
+ * is no longer a cross-mode alias, so no extra "or ⌘K" is advertised in
+ * `double-shift` or `custom`. A `custom` mode awaiting a recorded chord shows
+ * the record prompt.
  */
 export function SearchEverywhereRow() {
   const { config } = useQuickSearchShortcut()
+  // Keycaps for the configured gesture (⌘K / Ctrl+K, double-Shift as ⇧⇧). This
+  // is a key legend, so it shows physical keys; the top-bar trigger separately
+  // spells double-Shift as the word "Double Shift" because that chip is prose,
+  // not a legend. The only change here vs. before the PR is that the ⌘K alias
+  // is no longer advertised in double-Shift mode (it no longer fires there).
   const caps = formatQuickSearchKeys(config)
-  // ⌘K / Ctrl+K stays live as an alias in double-shift mode (see
-  // useCommandPalette), so advertise it alongside the primary gesture.
-  const showAlias = config.mode === 'double-shift'
 
   return (
     <div className="flex items-center justify-between py-1.5 px-2 rounded-md hover:bg-bg-hover transition-colors">
@@ -214,14 +217,6 @@ export function SearchEverywhereRow() {
           <KeyCapSequence caps={caps} plus={config.mode !== 'double-shift'} />
         ) : (
           <span className="text-muted text-[11px]">{i18nT('pages.settings.shortcutsPanel.record_prompt')}</span>
-        )}
-        {showAlias && (
-          <>
-            <span className="text-muted text-[11px] mx-1">{i18nT('components.shortcutsModal.or')}</span>
-            <Kbd>{IS_MAC ? '⌘' : 'Ctrl'}</Kbd>
-            <span className="text-muted text-[11px]">+</span>
-            <Kbd>{i18nT('components.shortcutsModal.k')}</Kbd>
-          </>
         )}
       </span>
     </div>
@@ -370,14 +365,10 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
     const label = i18nT('components.shortcutsModal.search_everywhere').toLowerCase()
     const sectionName = i18nT('components.shortcutsModal.search').toLowerCase()
     const capsStr = formatQuickSearchKeys(quickSearchConfig).join(' ').toLowerCase()
-    const showAlias = quickSearchConfig.mode === 'double-shift'
-    const kKey = i18nT('components.shortcutsModal.k').toLowerCase()
-    const aliasCaps = showAlias ? [IS_MAC ? '⌘' : 'ctrl', kKey].join(' ').toLowerCase() : ''
     return (
       matchesQuery(label, normalizedQuery, queryWithoutPlus) ||
       matchesQuery(sectionName, normalizedQuery, queryWithoutPlus) ||
-      matchesQuery(capsStr, normalizedQuery, queryWithoutPlus) ||
-      (showAlias && Boolean(aliasCaps) && matchesQuery(aliasCaps, normalizedQuery, queryWithoutPlus))
+      matchesQuery(capsStr, normalizedQuery, queryWithoutPlus)
     )
   }, [normalizedQuery, queryWithoutPlus, quickSearchConfig])
 

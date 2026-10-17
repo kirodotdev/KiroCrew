@@ -18,12 +18,12 @@ import { CODE_TOKENS } from './shortcutRegistry'
  *    their own, so it is now opt-in — only users who select it are exposed.
  *  - **`custom`**: a user-recorded chord toggles it; double-Shift is disabled.
  *
- * `⌘K` / `Ctrl+K` stays available as a built-in alias in every mode EXCEPT
- * `custom` with a recorded chord — see {@link isModKEvent} and
- * {@link matchesQuickSearchShortcut}. It is the near-universal command-palette
- * gesture and is page-safe, so it is the escape hatch that guarantees the
- * palette is always reachable from the keyboard until the user deliberately
- * binds their own chord.
+ * `⌘K` / `Ctrl+K` toggles the palette ONLY in `mod-k` mode, where it is the
+ * selected gesture — see {@link isModKEvent} and {@link useCommandPalette}. In
+ * `double-shift` and `custom` the user picked a different trigger specifically
+ * to reclaim this chord (Ctrl+K is the terminal "clear to end of line" and many
+ * inputs' own binding), so it is NOT intercepted there and falls through to the
+ * focused input. The palette's nav button keeps it reachable in every mode.
  *
  * The preference is persisted to localStorage and read live per keystroke (no
  * listener re-registration), mirroring the `SHORTCUTS_ENABLED_KEY` pattern in
@@ -220,9 +220,11 @@ export function chordMatchesEvent(
 }
 
 /**
- * Whether a recorded custom chord is currently the exclusive binding. When true,
- * the ⌘K/Ctrl+K alias is suppressed (the user has taken explicit control);
- * otherwise the alias stays live as the universal escape hatch.
+ * Whether a valid custom chord is bound (mode `custom` with a well-formed
+ * chord). A type guard: when true, {@link useCommandPalette} matches the
+ * recorded chord. ⌘K/Ctrl+K is no longer a cross-mode alias — it fires only in
+ * `mod-k` mode — so this does not gate an alias; the palette's nav button is the
+ * mode-independent route.
  */
 export function hasCustomChord(config: QuickSearchConfig): config is QuickSearchConfig & { custom: QuickSearchChord } {
   return config.mode === 'custom' && isValidChord(config.custom)

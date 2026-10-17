@@ -8426,7 +8426,6 @@
       "desktop_app": "데스크톱 앱",
       "enable_shortcuts": "단축키 사용",
       "global_hotkey_hint": "앱이 백그라운드에 있어도 시스템 전체에서 작동합니다. 변경하거나 비활성화하려면 데스크톱 구성 파일에서 globalHotkey를 편집하세요 (Connection > Open Config File). 변경 사항은 앱을 다시 시작한 후 적용됩니다.",
-      "k": "K",
       "keyboard_shortcuts": "키보드 단축키",
       "keyboard_shortcuts_2": "키보드 단축키",
       "or": "또는",
