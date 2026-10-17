@@ -54,8 +54,8 @@ async def _until_set_while_progressing(event, progress, what: str) -> None:
     )
 
 
-async def _within_lost_run(awaitable, what: str):
-    """Await *awaitable* under ``_LOST_RUN_SECS``; on expiry fail naming *what*.
+async def _within_lost_run(awaitable, what: str, *, timeout: float = _LOST_RUN_SECS):
+    """Await *awaitable* under a lost-run ceiling; fail naming *what* on expiry.
 
     A bare ``wait_for`` raises an empty ``TimeoutError``. This one says what never
     finished, the ceiling and the elapsed time. A ``TimeoutError`` the awaited code
@@ -64,16 +64,16 @@ async def _within_lost_run(awaitable, what: str):
     # flake-ok: pre-existing monotonic lost-run ceiling, moved verbatim; tracked for a de-flake pass
     started = time.monotonic()
     try:
-        return await asyncio.wait_for(awaitable, _LOST_RUN_SECS)
+        return await asyncio.wait_for(awaitable, timeout)
     except asyncio.TimeoutError:
         # flake-ok: pre-existing monotonic lost-run ceiling, moved verbatim; tracked for a de-flake pass
         elapsed = time.monotonic() - started
         # A loop timer can fire up to one clock tick early (15.6 ms on Windows 3.12).
         # flake-ok: pre-existing lost-run ceiling check, moved verbatim; tracked for a de-flake pass
-        if elapsed < _LOST_RUN_SECS - 1.0:
+        if elapsed < timeout - 1.0:
             raise
         pytest.fail(
-            f"{what} did not finish within the {_LOST_RUN_SECS:.0f}s lost-run ceiling "
+            f"{what} did not finish within the {timeout:.0f}s lost-run ceiling "
             f"({elapsed:.1f}s elapsed)"
         )
 
