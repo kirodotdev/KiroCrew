@@ -30,11 +30,20 @@ describe('urlTransform', () => {
     expect(urlTransform('vscode-insiders://')).toBe('')
   })
 
+  it('allows obsidian:// deep link (issue #20958)', () => {
+    const url = 'obsidian://open?vault=Notebook&file=Some%2FPath'
+    expect(urlTransform(url)).toBe(url)
+  })
+
+  it('rejects bare obsidian://', () => {
+    expect(urlTransform('obsidian://')).toBe('')
+  })
+
   // The '' return is the rejection SENTINEL MdAnchor's rejected-destination
   // guard consumes (issue #9925): a scheme outside ALLOWED_PROTOCOLS that
   // defaultUrlTransform also refuses comes back as the empty string.
   it('rejects a non-allowlisted custom scheme with the empty-string sentinel', () => {
-    expect(urlTransform('obsidian://open?vault=Notes&file=x')).toBe('')
+    expect(urlTransform('slack://open?team=T1&id=C1')).toBe('')
   })
 
   it('falls back to default for malformed URL', () => {

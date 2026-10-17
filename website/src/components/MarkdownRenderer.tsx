@@ -287,8 +287,8 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
   }
   // A destination `urlTransform` REJECTED arrives here as '' — react-markdown's
   // defaultUrlTransform sentinel for a scheme outside its allowlist (a custom
-  // scheme like `obsidian:`, a `javascript:`/`data:` payload the gate refuses
-  // on purpose, or an empty `[x]()` destination). '' is not nullish, so the
+  // scheme urlTransform does not rescue, like `slack:`, a `javascript:`/`data:`
+  // payload the gate refuses on purpose, or an empty `[x]()` destination). ''
   // plain-anchor return's `sessionHref ?? href` handed the DOM `<a href="">` —
   // an ordinary-looking link the browser resolves against the CURRENT page, so
   // "copy link address" yielded the dashboard's own session URL (issue #9925).

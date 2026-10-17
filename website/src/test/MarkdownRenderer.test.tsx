@@ -140,10 +140,10 @@ describe('MarkdownRenderer XSS sanitization', () => {
   describe('rejected link destinations (#9925)', () => {
     it('renders a non-allowlisted custom scheme as inert text, not an empty anchor', () => {
       const { container } = render(
-        <MarkdownRenderer content={'[obsidian://open?vault=Notes](obsidian://open?vault=Notes)'} />
+        <MarkdownRenderer content={'[slack://channel?id=C1](slack://channel?id=C1)'} />
       )
       // The label survives as visible text…
-      expect(container.textContent).toContain('obsidian://open?vault=Notes')
+      expect(container.textContent).toContain('slack://channel?id=C1')
       // …but there is no anchor, and specifically nothing carrying href="".
       expect(container.querySelector('a')).toBeNull()
       expect(container.querySelector('[href=""]')).toBeNull()
@@ -168,7 +168,7 @@ describe('MarkdownRenderer XSS sanitization', () => {
     })
 
     it('keeps inline markdown inside the inert label', () => {
-      const { container } = render(<MarkdownRenderer content={'[a `code` label](obsidian://x)'} />)
+      const { container } = render(<MarkdownRenderer content={'[a `code` label](slack://x)'} />)
       const code = container.querySelector('code')
       expect(code).not.toBeNull()
       expect(code!.textContent).toBe('code')
@@ -200,6 +200,19 @@ describe('MarkdownRenderer XSS sanitization', () => {
       const a = container.querySelector('a')
       expect(a).not.toBeNull()
       expect(a!.getAttribute('href')).toBe(url)
+    })
+
+    // Issue #20958: obsidian:// deep links are allowlisted like the editor
+    // schemes, so the markdown-link form renders a clickable anchor instead of
+    // inert text. It keeps in-place semantics (no target=_blank), handing off
+    // to the OS protocol handler like vscode://.
+    it('an obsidian:// link keeps its anchor and href (#20958)', () => {
+      const url = 'obsidian://open?vault=Notebook&file=Some%2FPath'
+      const { container } = render(<MarkdownRenderer content={`[my note](${url})`} />)
+      const a = container.querySelector('a')
+      expect(a).not.toBeNull()
+      expect(a!.getAttribute('href')).toBe(url)
+      expect(a!.getAttribute('target')).toBeNull()
     })
   })
 
