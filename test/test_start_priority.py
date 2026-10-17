@@ -999,6 +999,7 @@ def test_the_channel_pipeline_starts_the_session_at_the_askers_priority():
     "transport",
     [
         "imessage",
+        "signal",
         "webex",
         "weixin",
         "feishu",
@@ -1012,7 +1013,8 @@ def test_the_channel_pipeline_starts_the_session_at_the_askers_priority():
 def test_every_transport_marks_what_it_receives_as_a_persons(transport):
     """Slack is not in the list: its live inbound path is ``slack/events.py``,
     which claims the priority itself (``test_slack_automation_paths_name_no_priority``)."""
-    source = (_SRC / transport / "transport.py").read_text(encoding="utf-8")
+    package = {"signal": "signal_cli"}.get(transport, transport)
+    source = (_SRC / package / "transport.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     receive = next(
         n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "receive"
@@ -1031,6 +1033,7 @@ def test_every_transport_marks_what_it_receives_as_a_persons(transport):
     [
         ("feishu/transport_dispatch.py", "ChannelTurn", 1),
         ("imessage/transport_dispatch.py", "ChannelTurn", 1),
+        ("signal_cli/transport_dispatch.py", "ChannelTurn", 1),
         ("teams/transport_dispatch.py", "ChannelTurn", 1),
         ("webex/transport_dispatch.py", "ChannelTurn", 1),
         ("weixin/transport_dispatch.py", "ChannelTurn", 1),

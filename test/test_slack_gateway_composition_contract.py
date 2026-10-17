@@ -1253,6 +1253,7 @@ def test_no_owner_reads_a_hoisted_channel_attribute() -> None:
         "discord",
         "webex",
         "imessage",
+        "signal",
         "teams",
     )
     offenders = [

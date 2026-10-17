@@ -779,6 +779,10 @@
     "components.crew.crewEditorNextDialog.env": "Column/label in the crewmate editor's MCP server row for the server's environment variables (the env key/value map passed to the process). The abbreviation 'env' for environment variables, a technical term, not the ordinary word 'environment'.",
     "components.crew.crewEditorNextDialog.off": "Approval-state value on a tool row in the crewmate editor, meaning the tool is disabled / not granted. The adjective 'off' as in switched off, paired with the sibling states (read-only, can modify/run, runs without asking); not the preposition.",
     "components.crew.crewEditorNextDialog.shared_no": "Value in the 'Shared' column of a tool/server row in the crewmate editor, meaning this entry is NOT shared. The answer 'No' (negative), not the beginning of a longer phrase.",
-    "components.crew.crewEditorNextDialog.url": "Field label in the crewmate editor's MCP server row for an HTTP/SSE server's endpoint URL. 'URL' is kept as the acronym practitioners use; do not translate or expand it."
+    "components.crew.crewEditorNextDialog.url": "Field label in the crewmate editor's MCP server row for an HTTP/SSE server's endpoint URL. 'URL' is kept as the acronym practitioners use; do not translate or expand it.",
+    "pages.settings.signalPanel.active": "Status pill in the Settings Signal panel header: the channel is connected and answering right now; an adjective describing the channel, not a verb.",
+    "pages.settings.signalPanel.account": "Field label in the Settings Signal panel: the phone number of the Signal account signal-cli runs as. Account in the sense of a Signal user identity, not a billing account.",
+    "pages.settings.signalPanel.cli_missing": "Notice in the Settings Signal panel when no signal-cli executable was found; {{env}} is the literal environment variable name KIROCREW_SIGNAL_CLI and is never translated.",
+    "pages.settings.signalPanel.setup_linked_title": "Heading of one of the two setups in the Settings Signal panel. Note to Self is the name of a Signal app feature (the chat with yourself) and stays in English, as the other Apple and Signal feature names in these catalogs do."
   }
 }

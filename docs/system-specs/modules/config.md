@@ -1107,7 +1107,10 @@ and tailnet gates run before that split, so they apply to both.
 
 A list-typed key (`agent.apps_trusted`, `slack.allowed_users`, ...) takes a JSON array
 (`kirocrew config set agent.apps_trusted '["a","b"]'`); anything else is refused with nothing
-written. Details: [cli](cli.md) (`config set`).
+written. A string-typed key (`signal.account`, ...) stores the text exactly as typed, so a
+phone number keeps its `+` and leading zeros rather than being parsed as an integer that
+the loader would then discard as wrong-typed; `null` still clears a nullable one. Details:
+[cli](cli.md) (`config set`).
 
 ### `config_local_path() -> Path`
 Returns `~/.kiro/crew/config.local.json` (or `$KIROCREW_HOME/config.local.json`).

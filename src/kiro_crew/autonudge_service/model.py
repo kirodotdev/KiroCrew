@@ -327,6 +327,7 @@ _CHANNEL_KEY_PREFIXES = (
     "teams:",
     "weixin:",
     "imessage:",
+    "signal:",
     "feishu:",
     "unified:",
 )

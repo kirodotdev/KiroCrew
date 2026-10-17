@@ -43,6 +43,7 @@ TIP_DOC_ALLOWLIST: frozenset[str] = frozenset(
         "dynamic-subagent-sizing.md",
         "feature-tips.md",
         "imessage-integration.md",
+        "signal-integration.md",
         "feishu-integration.md",
         "issue-radar-pipeline.md",
         "knowledge-library-how-it-works.md",

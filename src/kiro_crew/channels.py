@@ -53,6 +53,7 @@ from kiro_crew.discord.gateway import maybe_start_discord
 from kiro_crew.feishu.gateway import maybe_start_feishu
 from kiro_crew.imessage.gateway import maybe_start_imessage
 from kiro_crew.messaging.registry import ChannelDescriptor
+from kiro_crew.signal_cli.gateway import maybe_start_signal
 from kiro_crew.teams.gateway import maybe_start_teams
 from kiro_crew.telegram.gateway import maybe_start_telegram
 from kiro_crew.webex.gateway import maybe_start_webex
@@ -129,6 +130,17 @@ def builtin_channel_descriptors() -> tuple[ChannelDescriptor, ...]:
             # db_path and service are handed to the Messages.app bridge when it
             # opens, so a new value needs the bridge reopened.
             boot_keys=frozenset({"enabled", "db_path", "service"}),
+        ),
+        # Signal needs no credential either: signal-cli keeps its own key store
+        # under its data dir, registered or linked out of band. The account
+        # number IS required -- the gateway cannot launch signal-cli without it.
+        ChannelDescriptor(
+            channel_type="signal",
+            start=maybe_start_signal,
+            # The account is handed to signal-cli on its argv, so a new value
+            # needs the daemon respawned.
+            boot_keys=frozenset({"enabled", "account"}),
+            required_config=("account",),
         ),
         # WhatsApp needs no credential either: it pairs by QR and keeps its own
         # session store, so `whatsapp.enabled` is the whole gate.
