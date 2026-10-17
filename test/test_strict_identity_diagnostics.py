@@ -437,7 +437,9 @@ class TestRefusalsCarryTheDiagnosis:
             r"|needs a directly-identified dashboard session"
         )
         for rel, marker in roots.items():
-            text = (src_root / rel).read_text(encoding="utf-8")
+            # The dashboard server's refusals live in its facade and its sibling owners.
+            family = sorted(src_root.glob("mcp_dashboard*.py")) if rel == "mcp_dashboard.py" else []
+            text = "".join(p.read_text(encoding="utf-8") for p in family or [src_root / rel])
             refusals = len(pattern.findall(text))
             wired = text.count(marker)
             assert refusals > 0, f"{rel}: expected strict refusal text"

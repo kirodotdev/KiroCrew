@@ -82,7 +82,6 @@
 2007 src/kiro_crew/knowledge/ingestion.py
 3928 src/kiro_crew/llm_helpers.py
 3951 src/kiro_crew/mcp_cron.py
-4804 src/kiro_crew/mcp_dashboard.py
 3778 src/kiro_crew/mcp_discovery.py
 3415 src/kiro_crew/mcp_shared.py
 2530 src/kiro_crew/mcp_tools/control.py
@@ -121,7 +120,6 @@
 2272 src/kiro_crew/tool_call_title.py
 2250 src/kiro_crew/ui_index.py
 2096 src/kiro_crew/webex/transport_dispatch.py
-4051 src/kiro_crew/work_ledger.py
 2641 test/conftest.py
 3482 test/test_acp_deepseek_backend.py
 2852 test/test_acp_pi_backend.py

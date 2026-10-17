@@ -71,7 +71,8 @@ slot and folder routes that file the new session when `folder` is given.
 internal allowlists. `SESSION_CONTROL_TOOLS` is read off the rows
 (`TABLE.names("strict")`), which is what keeps the gate, the channel containment
 list and the registration tests' pinned set naming one set. A new session verb is
-a new row in `_session_tools()`, its body, and its schema in
+a new row in `_session_tools()` (`kiro_crew.mcp_dashboard_session_tools`), its body
+(`kiro_crew.mcp_dashboard_session_runs`), and its schema in
 `MCP_DASHBOARD_SCHEMAS`.
 
 **Two verbs here write into another session's conversation: `session_send` and
