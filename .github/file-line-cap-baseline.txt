@@ -178,7 +178,6 @@
 2631 test/test_llm_pool.py
 2248 test/test_markdown_link_parentheses.py
 7022 test/test_mcp_discovery.py
-5650 test/test_mcp_gateway_backend_coverage.py
 2271 test/test_mcp_gateway_rewriter_fingerprint.py
 3224 test/test_mcp_gateway_stub_session_token.py
 2449 test/test_mcp_gatewayd_coverage.py
