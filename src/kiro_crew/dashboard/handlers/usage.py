@@ -340,6 +340,10 @@ def _build_token_record(
         "agent": agent or "",
         "context_used": _coerce_int(context_used),
         "context_window": _coerce_int(context_window),
+        # Additive: the context occupancy after each of the turn's model calls,
+        # added up (kiro-cli reports it per call; ``turns`` above counts the
+        # calls). Read off the turn's usage, so no caller passes it.
+        "context_sum": _coerce_int(getattr(u, "context_sum_tokens", 0)),
         # Additive: the turn's terminal stop reason ("" when the producer has
         # none). str-coerced so a non-string on a test double / legacy event
         # can't break json.dumps.

@@ -148,6 +148,9 @@ def _track_metadata(self: AcpClient, msg: JsonRpcMessage) -> None:
                     self.last_prompt_stats.credits += float(entry.get("value", 0) or 0)
                 except (TypeError, ValueError):
                     pass
+    # Per-call context readings and the metered call count, shared with the
+    # AcpSessionHandle tracker so both transports report the same turn.
+    self.last_prompt_stats.note_metadata_frame(pct_f, metering)
 
 
 def _handle_compaction_status(self: AcpClient, msg: JsonRpcMessage) -> None:

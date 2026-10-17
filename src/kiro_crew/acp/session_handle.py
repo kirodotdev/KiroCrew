@@ -6474,6 +6474,9 @@ class AcpSessionHandle:
             self.last_prompt_stats.note_pct_reported()
             self._backfill_context_window(pct_f)
         self.last_prompt_stats.credits += credits
+        # Per-call context readings and the metered call count, shared with the
+        # AcpClient tracker so both transports report the same turn.
+        self.last_prompt_stats.note_metadata_frame(pct_f, params.get("meteringUsage"))
         # Gated on membership, exactly as the AcpClient path gates the same read.
         # The shared runtime carries hosts outside ACP_BACKENDS_STRUCTURED_REFUSAL,
         # so an unconditional read here hands a parser written for one vocabulary
