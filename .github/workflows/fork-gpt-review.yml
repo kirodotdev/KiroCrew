@@ -759,9 +759,12 @@ jobs:
       # This step runs the escalation attempts THROUGH `codex sandbox`, which
       # applies the exact Landlock+seccomp confinement codex uses for the
       # review passes, as the SAME job uid the passes run as. It fails the job
-      # CLOSED when either probe shows the boundary is not holding:
+      # CLOSED when any probe shows the boundary is not holding:
       #   * `sudo -n true` succeeds   -> the sandbox did not block escalation;
       #   * the signer credential file is readable -> the boundary leaked;
+      #   * a path a filesystem read rule denies is still readable, or the
+      #     enforcing backend cannot apply that rule at all -> the read
+      #     restriction is not in force on this runner (#13414);
       #   * `codex sandbox` cannot establish the sandbox at all -> a denied
       #     probe is required, so an un-sandboxed run is treated as a failure.
       - name: Verify the review sandbox fails closed (no sudo, no credential read)
@@ -805,7 +808,62 @@ jobs:
             exit 1
           fi
           echo "sandbox cannot read the signer credential file (expected)."
-          echo "review sandbox fail-closed contract holds: no escalation, no credential read."
+
+          # Probe 3: the filesystem read restriction is actually ENFORCED by the
+          # backend in use -- not merely configured, and not silently weakened by
+          # a fallback. read-only mode permits every read, so the two probes
+          # above never exercise a denied path; this one does. It builds a
+          # throwaway profile that denies a single sentinel file, then confirms,
+          # through the SAME confinement the passes use, that the sentinel read
+          # is refused while an ordinary file stays readable. A permission
+          # profile is honoured only on the enforcing backend; a backend that
+          # cannot apply it leaves no read restriction in force, so this step
+          # fails CLOSED rather than review a fork diff behind a fence that is
+          # not enforced. The probe carries NO `-c sandbox_mode` flag: that key
+          # would suppress the profile and make the check a silent no-op.
+          VERIFY_HOME="$RUNNER_TEMP/sandbox-verify-home"
+          SENTINEL="$RUNNER_TEMP/sandbox-verify-sentinel"
+          CONTROL="$RUNNER_TEMP/sandbox-verify-control"
+          rm -rf "$VERIFY_HOME"
+          mkdir -p "$VERIFY_HOME"
+          printf 'sentinel\n' > "$SENTINEL"
+          printf 'control\n' > "$CONTROL"
+          cat > "$VERIFY_HOME/config.toml" <<EOF
+          default_permissions = "verify"
+
+          [permissions.verify]
+          extends = ":read-only"
+
+          [permissions.verify.filesystem]
+          "$SENTINEL" = "deny"
+          EOF
+          PROFILE_SANDBOX="env CODEX_HOME=$VERIFY_HOME $CODEX_BIN sandbox --"
+
+          # The enforcing backend must come up with the read rule applied. If it
+          # cannot (no user namespace, or a backend that refuses the profile),
+          # there is no enforced read restriction, so refuse rather than review.
+          if ! $PROFILE_SANDBOX true; then
+            echo "::error::the enforcing review sandbox could not be established with a filesystem read restriction applied; the read restriction is not in force on this runner. Refusing to review a fork diff behind an unenforced fence. Failing closed."
+            exit 1
+          fi
+
+          # The denied sentinel must be unreadable: this is the read restriction
+          # actually taking effect. A readable sentinel means the rule is
+          # configured but not enforced by the backend in use.
+          if $PROFILE_SANDBOX cat "$SENTINEL" >/dev/null 2>&1; then
+            echo "::error::the review sandbox read a path the active profile denies; the filesystem read restriction is NOT enforced by the backend in use. Failing closed."
+            exit 1
+          fi
+
+          # ...and an ordinary file must stay readable, so the restriction is a
+          # targeted deny rather than a blanket failure that would also stop the
+          # lane reading the diff it must review.
+          if ! $PROFILE_SANDBOX cat "$CONTROL" >/dev/null 2>&1; then
+            echo "::error::the review sandbox could not read an ordinary allowed file under the enforcing profile; the sandbox is not functioning as expected. Failing closed."
+            exit 1
+          fi
+          echo "sandbox enforces the filesystem read restriction (sentinel denied, control readable)."
+          echo "review sandbox fail-closed contract holds: no escalation, no credential read, read restriction enforced."
 
       - name: GPT 6.1 review (discovery pass)
         if: steps.human_override.outputs.active != 'true' && (steps.pr.outputs.obsolete != 'true')

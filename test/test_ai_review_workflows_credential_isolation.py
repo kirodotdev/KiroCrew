@@ -502,6 +502,78 @@ class TestForkGptLaneSandboxModeLivesInTheConfigFile:
         )
 
 
+class TestForkGptLaneVerifiesTheReadRestrictionIsEnforced:
+    """#13414: the lane must prove the enforcing sandbox actually ENFORCES a
+    filesystem read restriction before the model runs, and fail closed when it
+    cannot -- not merely configure read-only mode and trust it.
+
+    read-only mode permits every read, so the sudo and credential-file probes in
+    "Verify the review sandbox fails closed" never exercise a denied path. A
+    separate probe applies a permission profile that denies a sentinel file and
+    confirms, through the same confinement the passes use, that the sentinel read
+    is refused while an ordinary read still works. A permission profile is
+    honoured only on the enforcing backend; a backend that cannot apply it leaves
+    no read restriction in force, so the step fails closed rather than review a
+    fork diff behind a fence that is not enforced.
+    """
+
+    WORKFLOW = "fork-gpt-review.yml"
+    STEP = "Verify the review sandbox fails closed (no sudo, no credential read)"
+
+    def _step_body(self) -> str:
+        doc = yaml.safe_load(_workflow(self.WORKFLOW))
+        for job in (doc.get("jobs") or {}).values():
+            for step in job.get("steps") or []:
+                if step.get("name") == self.STEP:
+                    return step.get("run") or ""
+        raise AssertionError(f"{self.WORKFLOW} has no step named {self.STEP!r}")
+
+    def test_it_applies_a_deny_permission_profile(self) -> None:
+        # Without a permission profile that denies a path, the verify step never
+        # exercises a denied read, so it never verifies the read restriction.
+        body = self._step_body()
+        assert "default_permissions" in body and re.search(r'=\s*"deny"', body), (
+            "the verify step applies no permission profile that denies a path, so "
+            "it never exercises -- and so never verifies -- a filesystem read "
+            "restriction (#13414); read-only mode permits every read"
+        )
+
+    def test_the_profile_probe_does_not_pass_sandbox_mode(self) -> None:
+        # `-c sandbox_mode=...` wins over the config file AND suppresses a
+        # default_permissions profile outright, so a probe carrying it would
+        # verify nothing while still reporting success.
+        body = self._step_body()
+        for line in body.splitlines():
+            if "CODEX_HOME=" in line and "sandbox" in line:
+                assert "sandbox_mode" not in line, (
+                    "the permission-profile probe passes -c sandbox_mode, which "
+                    "suppresses the profile and makes the read-restriction check a "
+                    f"silent no-op: {line.strip()!r}"
+                )
+
+    def test_it_fails_closed_when_the_restriction_is_not_enforced(self) -> None:
+        body = self._step_body()
+        # A readable denied path, and a backend that cannot apply the profile at
+        # all, must each end the job with a clear, actionable message.
+        assert re.search(r"::error::[^\n]*read restriction[^\n]*", body), (
+            "the verify step has no fail-closed error about the read restriction "
+            "not being enforced"
+        )
+        assert re.search(
+            r'\$PROFILE_SANDBOX cat "\$SENTINEL".*\n\s*echo "::error::.*\n\s*exit 1',
+            body,
+        ), (
+            "a readable denied sentinel does not fail the job closed, so the lane "
+            "could review a fork diff behind an unenforced read restriction"
+        )
+        assert re.search(
+            r'if ! \$PROFILE_SANDBOX true;.*\n\s*echo "::error::.*\n\s*exit 1', body
+        ), (
+            "the step does not fail closed when the enforcing backend cannot be "
+            "established with the read restriction applied"
+        )
+
+
 class TestForkModelStepsDenyReadingTheEnvironment:
     """Having no Bash is not the same as having no environment access.
 
