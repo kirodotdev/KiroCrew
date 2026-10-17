@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import inspect
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -33,6 +34,8 @@ from kiro_crew.agent_materialization import conductor_agents
 from kiro_crew.crew_log import projection
 from kiro_crew.crew_log.entry_types import WORK_ENTRY_TYPE
 from kiro_crew.crew_log.schema import Entry
+from kiro_crew.dashboard import session_control as sc
+from kiro_crew.dashboard.handlers import session_control as send_routes
 from kiro_crew.dashboard.handlers import work_ledger as routes
 from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
 
@@ -266,3 +269,192 @@ async def test_a_pipeline_conductor_item_lands_on_a_workstreams_board(tmp_path, 
     tasks = boards[0]["tasks"]
     assert [t["title"] for t in tasks] == ["fix the flaky test"]
     assert tasks[0]["status"] == "done"
+
+
+# -- a session_send-only answer still hands a waiting item back ------------------
+
+ANSWER = "use the staging token and retry"
+
+
+def _ledger_request(body: dict[str, Any], sk: str, slots: dict[str, _Slot]) -> web.Request:
+    return _req("/api/work-ledger/record", body, sk, slots)
+
+
+async def _board_with_blocked_item(tmp_path, monkeypatch, recorded: list[dict[str, Any]]):
+    """goal + create + bind + a blocked report, through the real routes."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    routes._BOARD_LOCKS._locks.clear()
+
+    async def _recognized(*a: Any, **k: Any) -> None:
+        return None
+
+    monkeypatch.setattr(routes, "_recognize_session", _recognized)
+    monkeypatch.setattr(routes, "_is_restricted_session", lambda *a: False)
+    monkeypatch.setattr(routes, "reaches_a_channel", lambda state, sk: False)
+    monkeypatch.setattr(routes.crew_log_emit, "enabled", lambda: True)
+    monkeypatch.setattr(routes, "unit_for_session_key", lambda sessions, key: f"unit:{key}")
+
+    def _capture(unit: str, data: dict[str, Any]) -> bool:
+        recorded.append(data)
+        return True
+
+    monkeypatch.setattr(routes.crew_log_emit, "on_work_recorded", _capture)
+    slots: dict[str, _Slot] = {}
+
+    async def record(body: dict[str, Any]) -> dict[str, Any]:
+        resp = await routes.api_work_ledger_record(_ledger_request(body, PIPELINE, slots))
+        assert resp.status == 200, resp.text
+        return json.loads(resp.text or "")
+
+    await record({"action": "goal", "goal": "drain the pipeline queue", "round": 1})
+    created = await record(
+        {
+            "action": "create",
+            "title": "fix the flaky test",
+            "acceptance": {"kind": "file_exists", "path": "/x/REPORT.md"},
+        }
+    )
+    item_id = created["item"]["item_id"]
+    slots[WORKER] = _Slot(created_by=PIPELINE)
+    await record({"action": "bind", "item_id": item_id, "worker_session_key": WORKER})
+    resp = await routes.api_work_report(
+        _req(
+            "/api/work-ledger/report",
+            {"status": "blocked", "summary": "no token", "reason": "approval"},
+            WORKER,
+            slots,
+        )
+    )
+    assert resp.status == 200, resp.text
+    return item_id, slots
+
+
+async def _session_send(
+    monkeypatch, slots: dict[str, _Slot], *, caller: str, target: str, message: str
+) -> web.Response:
+    """Drive the real send route with the delivery itself stubbed out."""
+
+    async def _deliver(state: Any, **kwargs: Any) -> dict[str, Any]:
+        return {"ok": True, "target": kwargs["target"], "started": True, "steered": False}
+
+    monkeypatch.setattr(sc, "send_to_target", _deliver)
+
+    async def _scope(request: Any, operation: str) -> tuple[Any, Any]:
+        return None, None
+
+    monkeypatch.setattr(send_routes, "internal_memory_scope", _scope)
+    return await send_routes.api_session_control_send(
+        _req("/api/session-control/send", {"target": target, "message": message}, caller, slots)
+    )
+
+
+def _stale_now() -> datetime:
+    return datetime.now().astimezone() + timedelta(seconds=wl.DEFAULT_STALE_WINDOW_SECS + 5)
+
+
+@pytest.mark.asyncio
+async def test_a_session_send_only_answer_hands_a_waiting_item_back(tmp_path, monkeypatch):
+    """The charter's second call, made by the SERVER: a conductor that answers a
+    ``blocked`` item with ``session_send`` alone gets the ``decided_at`` stamp a
+    manual ``work_ledger_record action=decide`` would have written, and the item's
+    silence then ends in the stale flag instead of an unwatched stall."""
+    recorded: list[dict[str, Any]] = []
+    item_id, slots = await _board_with_blocked_item(tmp_path, monkeypatch, recorded)
+
+    resp = await _session_send(monkeypatch, slots, caller=PIPELINE, target=WORKER, message=ANSWER)
+    assert resp.status == 200, resp.text
+
+    item = wl.read_work_item(PIPELINE, item_id)
+    assert item is not None
+    assert item.decided_at is not None
+    assert item.decision == ANSWER
+    # The worker owns the next move again, so the window runs from the decision:
+    # a worker that never resumes is now reachable by the stale flag.
+    assert (
+        wl.is_stale(
+            item,
+            worker_running=False,
+            worker_closed=False,
+            worker_looping=False,
+            now=_stale_now(),
+        )
+        is True
+    )
+    # The stamp is recorded, not just cached: the crew-log entry carries the fields
+    # the fold applies, so a rebuild reads the same hand-back the cache does.
+    decide = [d for d in recorded if d.get("action") == "decide"]
+    assert len(decide) == 1
+    assert decide[0]["item_id"] == item_id
+    assert decide[0]["decided_at"] == item.decided_at
+    assert decide[0]["decision"] == ANSWER
+    assert decide[0]["actor"] == "conductor"
+
+
+@pytest.mark.asyncio
+async def test_a_session_send_from_another_session_does_not_hand_back(tmp_path, monkeypatch):
+    """Only the item's own conductor's answer hands the item back; a bystander's
+    message to the bound worker moves nothing."""
+    recorded: list[dict[str, Any]] = []
+    item_id, slots = await _board_with_blocked_item(tmp_path, monkeypatch, recorded)
+
+    resp = await _session_send(monkeypatch, slots, caller=WORKER, target=WORKER, message=ANSWER)
+    assert resp.status == 200, resp.text
+
+    item = wl.read_work_item(PIPELINE, item_id)
+    assert item is not None
+    assert item.decided_at is None
+    assert not item.decision
+    assert [d for d in recorded if d.get("action") == "decide"] == []
+    assert (
+        wl.is_stale(
+            item,
+            worker_running=False,
+            worker_closed=False,
+            worker_looping=False,
+            now=_stale_now(),
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_session_send_to_an_unbound_session_does_not_stamp(tmp_path, monkeypatch):
+    """A send to a session no binding names is not a work dispatch; no item moves."""
+    recorded: list[dict[str, Any]] = []
+    item_id, slots = await _board_with_blocked_item(tmp_path, monkeypatch, recorded)
+
+    resp = await _session_send(
+        monkeypatch, slots, caller=PIPELINE, target="chat-999-bystander", message=ANSWER
+    )
+    assert resp.status == 200, resp.text
+
+    item = wl.read_work_item(PIPELINE, item_id)
+    assert item is not None
+    assert item.decided_at is None
+    assert [d for d in recorded if d.get("action") == "decide"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_session_send_to_a_non_waiting_item_does_not_stamp(tmp_path, monkeypatch):
+    """The hand-back answers a ``blocked`` / ``question`` report. A ``progress``
+    item's next move is already the worker's, so a message about it writes nothing."""
+    recorded: list[dict[str, Any]] = []
+    item_id, slots = await _board_with_blocked_item(tmp_path, monkeypatch, recorded)
+    resp = await routes.api_work_report(
+        _req(
+            "/api/work-ledger/report",
+            {"status": "progress", "summary": "unblocked, working"},
+            WORKER,
+            slots,
+        )
+    )
+    assert resp.status == 200, resp.text
+
+    resp = await _session_send(monkeypatch, slots, caller=PIPELINE, target=WORKER, message=ANSWER)
+    assert resp.status == 200, resp.text
+
+    item = wl.read_work_item(PIPELINE, item_id)
+    assert item is not None
+    assert item.decided_at is None
+    assert not item.decision
+    assert [d for d in recorded if d.get("action") == "decide"] == []

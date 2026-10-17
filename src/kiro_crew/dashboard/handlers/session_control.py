@@ -620,6 +620,22 @@ async def api_session_control_send(request: web.Request) -> web.Response:
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)
+    # The server half of the work-ledger charter: a conductor's answer to a
+    # ``blocked`` / ``question`` item is also its ``decide``, so a conductor that
+    # forgets the second call does not leave the item waiting on it forever (the
+    # hand-back stamp is what :func:`kiro_crew.work_ledger.is_stale` reads to put
+    # the worker's silence back under the wake). Best-effort and conditional on
+    # the store's own bindings, so an ordinary message between sessions writes
+    # nothing; imported here to keep this module's import surface free of the
+    # work-ledger routes.
+    from kiro_crew.dashboard.handlers import work_ledger as work_ledger_routes
+
+    await work_ledger_routes.stamp_send_handback(
+        state,
+        caller_key=_read_session_key(request),
+        target_key=str(result.get("target") or ""),
+        message=message,
+    )
     return web.json_response(result)
 
 

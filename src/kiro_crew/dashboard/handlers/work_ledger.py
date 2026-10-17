@@ -1033,6 +1033,47 @@ async def _board_header(slot: str, header: Any) -> "tuple[bool, Any]":
     return record is not None, record
 
 
+async def _undo_unrecorded_write(
+    slot: str,
+    snapshot: dict[str, bytes | None],
+    *,
+    created: str | None = None,
+    item_id: str | None = None,
+    worker_session_key: str | None = None,
+) -> None:
+    """Put back every file a committed-but-unrecorded write touched.
+
+    The undo half of :func:`_refuse_unrecorded`, shared with the server-side
+    hand-back stamp (:func:`stamp_send_handback`): the log is the record, so a
+    mutation it never saw leaves the cache either restored or flagged dirty,
+    never silently kept.
+    """
+    # What this write left in those files, read before the undo touches them: the
+    # undo puts back only a file still holding it, so a write a second gateway
+    # committed in between survives and flags the cache instead of being replaced.
+    after = await asyncio.to_thread(work_ledger.current_bytes, snapshot)
+    try:
+        await asyncio.to_thread(
+            functools.partial(
+                work_ledger.restore_snapshot,
+                slot,
+                snapshot,
+                created_item=created,
+                item_id=item_id,
+                worker_session_key=worker_session_key,
+                expected=after,
+            )
+        )
+    except Exception:  # noqa: BLE001 - the refusal is the answer either way
+        logger.warning("could not undo the unrecorded write on %s", slot, exc_info=True)
+        try:
+            await asyncio.to_thread(
+                work_ledger.mark_cache_dirty, slot, "an unrecorded write could not be undone"
+            )
+        except Exception:  # noqa: BLE001 - nothing left to do but say so
+            logger.error("could not flag the cache dirty for %s", slot, exc_info=True)
+
+
 async def _refuse_unrecorded(
     key: str,
     operation: str,
@@ -1058,30 +1099,13 @@ async def _refuse_unrecorded(
     """
     logger.error("work ledger %s for %s committed without a crew-log record", operation, key)
     _audit(key, operation, "error", resources=item_id or "", error="crew_log_unrecorded")
-    # What this write left in those files, read before the undo touches them: the
-    # undo puts back only a file still holding it, so a write a second gateway
-    # committed in between survives and flags the cache instead of being replaced.
-    after = await asyncio.to_thread(work_ledger.current_bytes, snapshot)
-    try:
-        await asyncio.to_thread(
-            functools.partial(
-                work_ledger.restore_snapshot,
-                slot,
-                snapshot,
-                created_item=created,
-                item_id=item_id,
-                worker_session_key=worker_session_key,
-                expected=after,
-            )
-        )
-    except Exception:  # noqa: BLE001 - the refusal is the answer either way
-        logger.warning("could not undo the unrecorded write on %s", slot, exc_info=True)
-        try:
-            await asyncio.to_thread(
-                work_ledger.mark_cache_dirty, slot, "an unrecorded write could not be undone"
-            )
-        except Exception:  # noqa: BLE001 - nothing left to do but say so
-            logger.error("could not flag the cache dirty for %s", slot, exc_info=True)
+    await _undo_unrecorded_write(
+        slot,
+        snapshot,
+        created=created,
+        item_id=item_id,
+        worker_session_key=worker_session_key,
+    )
     return web.json_response(
         {
             "ok": False,
@@ -1091,6 +1115,160 @@ async def _refuse_unrecorded(
         },
         status=503,
     )
+
+
+async def stamp_send_handback(
+    state: DashboardState, caller_key: str, target_key: str, message: str
+) -> bool:
+    """The server half of the charter's "answer it, then record it".
+
+    When a conductor's ``session_send`` reaches the worker session an OPEN item
+    reported ``blocked`` / ``question`` on, that message IS the decision the
+    charter then tells the conductor to record with ``work_ledger_record
+    action=decide`` -- a second call an LLM conductor can forget, and a forgotten
+    one left the item pointing at the conductor forever: never handed back, so
+    :func:`work_ledger.is_stale` never flagged the worker that never resumed.
+    This stamps that ``decided_at`` hand-back on the delivery itself, with the
+    sent message as the ``decision`` -- the same write the forgotten call would
+    have made, through the same commit-and-record pipeline.
+
+    Every condition is the store's own identity, never the request's word: the
+    TARGET must be a session whose binding names a live item (folded like every
+    key that reaches the store), the CALLER must be the conductor that binding
+    resolves to (a bystander messaging the worker hands nothing back), and the
+    item must still be WAITING on that conductor -- a ``progress`` item's next
+    move is already the worker's, and a terminal one has nothing left to hand
+    back. Anything else is a plain message and moves nothing.
+
+    Best-effort, and ``False`` for every skip or refusal: the message has
+    already been delivered, so a bookkeeping miss must never read back as a
+    failed send. A stamp that commits but cannot be recorded is undone, the
+    same ``_refuse_unrecorded`` rule the routes keep.
+    """
+    conductor_key = session_ledger.ledger_key(caller_key)
+    worker_key = session_ledger.ledger_key(target_key)
+    if not conductor_key or not worker_key:
+        return False
+    try:
+        binding = await asyncio.to_thread(work_ledger.read_binding, worker_key)
+        if binding is None:
+            return False
+        bound_conductor, item_id = binding
+        if bound_conductor != conductor_key:
+            # Another board's worker: the caller's message is not that item's answer.
+            return False
+        item = await asyncio.to_thread(work_ledger.read_work_item, bound_conductor, item_id)
+    except (WorkLedgerError, OSError):
+        return False
+    if (
+        item is None
+        or item.is_terminal
+        or item.worker_session_key != worker_key
+        or item.status not in work_ledger.WAITING_STATUSES
+    ):
+        return False
+    unit, refusal = _acting_unit(state, conductor_key, "session_send", item_id)
+    if refusal is not None:
+        return False
+    assert unit is not None
+    decision = message.strip()[: work_ledger.MAX_DECISION_CHARS]
+
+    async def _stamp() -> bool:
+        dirty = await _refuse_if_dirty(conductor_key, conductor_key, "session_send")
+        if dirty is not None:
+            return False
+        snapshot = await asyncio.to_thread(
+            functools.partial(work_ledger.snapshot_for_write, conductor_key, item_id=item_id)
+        )
+        try:
+            result = await asyncio.to_thread(
+                functools.partial(
+                    work_ledger.apply_conductor_action,
+                    conductor_key,
+                    "decide",
+                    item_id=item_id,
+                    decision=decision,
+                )
+            )
+        except WorkLedgerError as exc:
+            logger.debug("session_send hand-back refused for %s: %s", item_id, exc.code)
+            return False
+        except OSError:
+            logger.warning("work ledger write failed for %s", item_id, exc_info=True)
+            return False
+        new_item = result.get("item")
+        header = result.get("conductor")
+        event = result.get("event")
+        established, header = await _board_header(conductor_key, header)
+        if not established or new_item is None:
+            await _undo_unrecorded_write(conductor_key, snapshot, item_id=item_id)
+            return False
+        # The widest entry this stamp can produce, over the item AS COMMITTED: if
+        # the probe does not fit one log line the real append would not either,
+        # so the write is undone rather than committed and left unrecorded.
+        probe, invalid = _entry_probe_with_baseline(
+            conductor_key,
+            new_item,
+            header,
+            actor="conductor",
+            by=conductor_key,
+            action="decide",
+            item_id=item_id,
+            generation=_WIDEST_HEX_ID,
+            round=_WIDEST_COUNTER,
+            depth=work_ledger.MAX_DEPTH,
+            parent_item=_WIDEST_ITEM_ID,
+            decision=getattr(new_item, "decision", None),
+            fails=_WIDEST_COUNTER,
+            event=_WIDEST_EVENT_TEXT,
+            event_kind="decision",
+            event_id=_WIDEST_HEX_ID,
+            event_ts=_WIDEST_STAMP,
+            created_at=_WIDEST_STAMP,
+            closed_at=_WIDEST_STAMP,
+            decided_at=_WIDEST_STAMP,
+        )
+        if invalid is not None or probe is None or not crew_log_emit.work_entry_fits(probe):
+            await _undo_unrecorded_write(conductor_key, snapshot, item_id=item_id)
+            return False
+        # The entry carries what the COMMIT holds, never what this function
+        # derived, so the fold rebuilds exactly what the cache now holds.
+        landed = await asyncio.to_thread(
+            crew_log_emit.on_work_recorded,
+            unit,
+            _entry_with_baseline(
+                conductor_key,
+                new_item,
+                header,
+                actor="conductor",
+                by=conductor_key,
+                action="decide",
+                item_id=item_id,
+                generation=getattr(header, "generation", None) or None,
+                round=getattr(new_item, "round", None),
+                depth=getattr(header, "depth", None),
+                parent_item=getattr(header, "parent_item", None),
+                decision=getattr(new_item, "decision", None),
+                event=getattr(event, "text", None),
+                event_kind=getattr(event, "kind", None),
+                event_id=getattr(event, "id", None) or None,
+                event_ts=getattr(event, "ts", None) or None,
+                decided_at=getattr(new_item, "decided_at", None),
+            ),
+        )
+        if not landed:
+            await _undo_unrecorded_write(conductor_key, snapshot, item_id=item_id)
+            return False
+        await asyncio.to_thread(_mark_recorded, conductor_key, item_id)
+        _audit(conductor_key, "session_send", "ok", resources=f"handback {item_id}")
+        return True
+
+    try:
+        async with _board_lock(conductor_key):
+            return await _drain_before_cancelling(_stamp())
+    except Exception:  # noqa: BLE001 - bookkeeping never fails a delivered send
+        logger.warning("session_send hand-back stamp failed for %s", item_id, exc_info=True)
+        return False
 
 
 def _work_entry(slot: str, **fields: Any) -> dict[str, Any]:
