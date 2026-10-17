@@ -219,6 +219,14 @@ def _stalled_campaign_verdict(
         verified = latest.get("verification")
         if isinstance(verified, dict) and verified.get("passed") is True:
             return CampaignStatus.COMPLETE, None
+    if stopped_reason in agent_mode.FAILURE_STANDDOWN_REASONS:
+        # The worker kept failing, which is not a finish even when a
+        # ``worker_done.json`` marker exists from an earlier turn.
+        return (
+            CampaignStatus.FAILED,
+            "The research worker kept failing and stood down. Resume to try again.",
+        )
+    if cycle_files:
         deliberate_stop = stopped_reason == agent_mode.AUTONUDGE_STOP_REASON
         if latest and (deliberate_stop or agent_mode._read_worker_done(campaign_id) is not None):
             return (
@@ -408,7 +416,10 @@ async def _watchdog_loop(app: web.Application | None = None) -> None:
                 )
                 if loop is not None and not loop.active:
                     stopped_reason = str(getattr(loop, "stopped_reason", "") or "")
-                    if stopped_reason == agent_mode.AUTONUDGE_STOP_REASON:
+                    if (
+                        stopped_reason == agent_mode.AUTONUDGE_STOP_REASON
+                        or stopped_reason in agent_mode.FAILURE_STANDDOWN_REASONS
+                    ):
                         if run_newly_observed:
                             # A resume marks the campaign RUNNING before _launch_loop
                             # removes the previous run's tombstone. Establish this
@@ -447,6 +458,8 @@ async def _watchdog_loop(app: web.Application | None = None) -> None:
                     lifecycle._audit("campaign_trust_reestablished", cid)
                 # Re-arm the autonudge loop if a prior app-disable deactivated it
                 # (see _suspend_research_loops_while_disabled at the enabled guard).
+                # Source stops and failure stand-downs never reach here: both
+                # settle the campaign above.
                 if svc is not None and loop is not None and not loop.active:
                     await svc.update(loop.id, active=True)
                 # Attended: pause for the user. Unattended: discard the stray
