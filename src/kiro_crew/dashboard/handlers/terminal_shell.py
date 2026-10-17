@@ -16,7 +16,7 @@ import os
 import shutil
 
 from kiro_crew import platform_compat
-from kiro_crew.sandbox import _PYTHON_ENV_PREFIXES
+from kiro_crew.sandbox import without_python_env
 
 
 def _resolve_cwd(cfg: dict, requested: str | None) -> str:
@@ -131,9 +131,6 @@ def _pty_child_env(extra: dict[str, str]) -> dict[str, str]:
     an existing value of any kind wins, so this only fills a gap. The variable
     means nothing to other shells and to Bash on other platforms.
     """
-    env = {**os.environ, **extra}
+    env = without_python_env({**os.environ, **extra})
     env.setdefault("BASH_SILENCE_DEPRECATION_WARNING", "1")
-    for key in list(env):
-        if any(key.startswith(prefix) for prefix in _PYTHON_ENV_PREFIXES):
-            del env[key]
     return env

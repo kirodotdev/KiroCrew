@@ -148,6 +148,44 @@ def test_scrub_env_extra_prefixes_strips_python_env():
     assert out == {"PATH": "/usr/bin"}
 
 
+def test_without_python_env_drops_only_python_settings():
+    """without_python_env drops every _PYTHON_ENV_PREFIXES key, any case, and keeps
+    the credentials scrub_env would remove."""
+    env = {
+        "PATH": "/usr/bin",
+        "PYTHONPATH": "/site",
+        "PYTHONHOME": "/py",
+        "PYTHONPYCACHEPREFIX": "/cache",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "pythonpath": "/lower",
+        "PYTHONUNBUFFERED": "1",
+        "SSH_AUTH_SOCK": "/tmp/agent.sock",
+        "AWS_PROFILE": "dev",
+        "AWS_SECRET_ACCESS_KEY": "sk",
+        "GNUPGHOME": "/home/x/.gnupg",
+        "GIT_ASKPASS": "/usr/bin/askpass",
+    }
+    out = sb.without_python_env(env)
+    assert out == {
+        "PATH": "/usr/bin",
+        "PYTHONUNBUFFERED": "1",
+        "SSH_AUTH_SOCK": "/tmp/agent.sock",
+        "AWS_PROFILE": "dev",
+        "AWS_SECRET_ACCESS_KEY": "sk",
+        "GNUPGHOME": "/home/x/.gnupg",
+        "GIT_ASKPASS": "/usr/bin/askpass",
+    }
+    assert "PYTHONPATH" in env, "the input mapping is not mutated"
+
+
+def test_without_python_env_defaults_to_os_environ(monkeypatch):
+    monkeypatch.setenv("PYTHONPATH", "/site")
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/agent.sock")
+    out = sb.without_python_env()
+    assert "PYTHONPATH" not in out
+    assert out["SSH_AUTH_SOCK"] == "/tmp/agent.sock"
+
+
 def test_strip_python_env_covers_pycache_prefix(monkeypatch):
     """PYTHONPYCACHEPREFIX is scrubbed on the agent spawn path (strip_python_env)
     and kept otherwise.
