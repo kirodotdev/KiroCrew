@@ -485,15 +485,20 @@ def _agent_tier_model(
     in_scope: Callable[[str], str],
     *,
     selection_kind: str = "",
+    template: str | None = None,
 ) -> str:
     """The model the agent itself pins: its crew's ``model``, else its template's.
 
     Tiers 1 and 2 of :func:`resolve_effective_model`. ``""`` when neither pins a
-    model the active harness can claim.
+    model the active harness can claim. A *template* the caller names is the
+    template tier itself, with no crew above it.
     """
-    _, kiro_agent, model_pin = resolve_agent_identity(
-        config, agent_name, selection_kind=selection_kind
-    )
+    if template is not None:
+        kiro_agent, model_pin = template, ""
+    else:
+        _, kiro_agent, model_pin = resolve_agent_identity(
+            config, agent_name, selection_kind=selection_kind
+        )
     if in_scope(model_pin):
         return model_pin
     if kiro_agent and kiro_agent != "kirocrew":
@@ -503,8 +508,10 @@ def _agent_tier_model(
     return ""
 
 
-def _model_scope_filter(config: KiroCrewConfig) -> Callable[[str], str]:
-    namespace = capabilities_for(config.agent.acp_backend).model_id_namespace
+def _model_scope_filter(config: KiroCrewConfig, backend: str | None = None) -> Callable[[str], str]:
+    namespace = capabilities_for(
+        config.agent.acp_backend if backend is None else backend
+    ).model_id_namespace
 
     def _in_scope(pin: str) -> str:
         return model_scope.scoped_pin(
@@ -540,6 +547,8 @@ def resolve_effective_model(
     *,
     selection_kind: str = "",
     app_name: str = "",
+    backend: str | None = None,
+    template: str | None = None,
 ) -> str:
     """Return the model a new session on *agent_name* would start with.
 
@@ -564,11 +573,22 @@ def resolve_effective_model(
     exists for: after a backend switch the chip kept naming the previous
     harness's pin while every turn ran on the new harness's default. A tier whose
     pin the active harness cannot claim is skipped, so the next tier down answers
-    -- exactly as if that tier were unset.
-    """
-    _in_scope = _model_scope_filter(config)
+    -- exactly as if that tier were unset. *backend* names that backend when it
+    is not the configured ``agent.acp_backend`` (a member DM routed to
+    ``agent.member_acp_backend``, a sub-agent spawned with an explicit backend);
+    ``None`` means the configured one.
 
-    agent_pin = _agent_tier_model(config, agent_name, _in_scope, selection_kind=selection_kind)
+    *template* is for a caller that already holds the template the session will
+    launch and no crew (the session layer, which hands that name to the provider
+    factory verbatim): it is the tier-2 agent, read directly rather than looked up
+    from *agent_name*, so the answer is the template the backend really starts.
+    ``""`` names no template, leaving tier 2 empty.
+    """
+    _in_scope = _model_scope_filter(config, backend)
+
+    agent_pin = _agent_tier_model(
+        config, agent_name, _in_scope, selection_kind=selection_kind, template=template
+    )
     if agent_pin:
         return agent_pin
     app_pin = _in_scope(app_model_pin(config, app_name))

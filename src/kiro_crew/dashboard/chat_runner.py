@@ -255,11 +255,12 @@ from kiro_crew.dashboard.chat_turn.mcp_session import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_turn.model_fallback import (  # noqa: F401
     _agent_fallback_chain,
+    _app_allocation_kwargs,
     _backfill_canonical_model,
     _clear_fallback_sticky_state,
     _configured_refusal_fallback,
-    _default_session_model,
     _fallback_swap_for_turn,
+    _inherited_default_model,
     _probe_fallback_restore_for_slot,
     _probe_fallback_restore_for_slot_locked,
     _refusal_fallback_swap,
@@ -1511,15 +1512,10 @@ async def _eager_spawn(
             # nobody's crew, so "" is its honest alias.
             crew_alias = slot.agent or ""
             agent_model = ""
-            # Same default-model resolve as the real turn — the two MUST agree,
-            # or the first message would silently reuse a pre-warmed session
-            # running a different model than the chip promised.
-            loaded_cfg: KiroCrewConfig | None = None
             resolved_ok = False
             try:
                 # Migration writes apply a delta to a fresh document, preserving other settings.
                 cfg = await asyncio.to_thread(KiroCrewConfig.load)
-                loaded_cfg = cfg
                 bindings = await asyncio.to_thread(
                     functools.partial(resolve_session_agent_bindings, agent_kind=_bound[5]),
                     resolve_agent_bindings,
@@ -1665,13 +1661,7 @@ async def _eager_spawn(
             ):
                 logger.info("Eager spawn: %s left to first turn (tool-search replay)", session_key)
                 return
-            # Off the loop: the resolve globs and reads agent JSON (see
-            # _default_session_model). It converts every resolver error,
-            # StopIteration included, to "" inside the worker.
-            default_model = await asyncio.to_thread(
-                _default_session_model, loaded_cfg, slot, agent_model
-            )
-            # Agent recovery and default-model resolution both await. A real
+            # Agent recovery awaits. A real
             # turn or a slot mutation may therefore have landed after the
             # initial gate. Nothing is registered yet, so simply stand down;
             # the current owner will allocate from its current bindings.
@@ -1738,7 +1728,6 @@ async def _eager_spawn(
                     kiro_agent=kiro_agent,
                     crew_alias=crew_alias,
                     agent_model=agent_model,
-                    default_model=default_model,
                     allow_resume=allow_resume,
                     _bound=_bound,
                     start_priority=start_priority,
@@ -1789,7 +1778,6 @@ async def _spawn_admitted_prefetch(
     kiro_agent: str | None,
     crew_alias: str,
     agent_model: str,
-    default_model: str,
     allow_resume: bool,
     _bound: tuple,
     start_priority: StartPriority,
@@ -1827,7 +1815,10 @@ async def _spawn_admitted_prefetch(
         # which case the speculative session/load runs here and the
         # resumed=True observation is armed for the real turn. See
         # get_or_create's docstring.
-        _requested_model = slot.model or agent_model or default_model or ""
+        # A slot or crew pin is the caller's own selection; with neither, the
+        # allocation resolves the default-model ladder itself, exactly as it
+        # will for the first real turn.
+        _requested_model = slot.model or agent_model or ""
         try:
             _, is_new, resumed = await sessions.get_or_create(
                 session_key,
@@ -1844,6 +1835,7 @@ async def _spawn_admitted_prefetch(
                 speculative_resume=allow_resume,
                 reasoning_effort_override=slot.reasoning_effort or None,
                 start_priority=start_priority,
+                **_app_allocation_kwargs(slot),
             )
         except (SpeculativeResumeRefused, SessionClosingError, SessionEndingError):
             # A refusal, a gateway shutdown, or a key being ended: no agent
@@ -6430,14 +6422,22 @@ async def _run_chat(
             "activity_event", {"slot": slot.key, "kind": "status", "text": "Creating session…"}
         )
         slot.model = _normalize_model(slot.model or "") or ""
-        # The model a slot that pins nothing STARTS on, kept OUT of `slot.model`
-        # — see _default_session_model for why persisting it would change what an
-        # empty slot.model means. Off the loop: the resolve globs and reads agent
-        # JSON; the helper converts every resolver error, StopIteration included,
-        # to "" inside the worker, so nothing un-deliverable reaches the Future.
-        default_model = await asyncio.to_thread(
-            _default_session_model, loaded_cfg, slot, agent_model
-        )
+        # The default a slot that pins nothing inherits, kept OUT of `slot.model`:
+        # that field is persisted and re-sent as a `set_model` override on every
+        # resume, so an empty value means "inherit" and the slot follows a later
+        # change to `agent.model` or to the agent's pin. Read from the session
+        # layer's own resolver (see _inherited_default_model) only to tell
+        # whether the live session still runs it; the allocation below is asked
+        # for no model and resolves the ladder itself.
+        default_model = ""
+        if not slot.model and not agent_model:
+            default_model = await _inherited_default_model(
+                state.sessions,
+                slot,
+                session_key,
+                agent=kiro_agent or slot.agent or None,
+                crew_agent=crew_alias,
+            )
         # Commit a pending session_set_model pick before get_or_create reads
         # slot.model. The pick's authorization is re-checked in the same
         # synchronous step as the write; when the model changed, queue a reset
@@ -6515,15 +6515,16 @@ async def _run_chat(
             if _mirror_link is not None and _mirror_resumes
             else ""
         )
-        # The model this turn SELECTS for the session, resolved through the same
-        # tiers the composer chip reads: the slot's own pin, then the crew's pin,
-        # then the resolved default. Selection is not transmission -- the provider
+        # The model this turn SELECTS for the session: the slot's own pin, then the
+        # crew's pin. With neither, the turn selects nothing and the allocation
+        # resolves the default-model ladder itself (the allocation's stamp then
+        # names what it chose). Selection is not transmission -- the provider
         # withholds a model this account cannot run rather than sending it -- so
         # this names what was chosen, not what reached the backend. Bound to a
         # local because two consumers must not diverge: the provider call below,
         # which decides whether to send it, and the crew log's `session/opened`,
         # which records the choice.
-        _requested_model = slot.model or agent_model or default_model or ""
+        _requested_model = slot.model or agent_model or ""
         _allocation_kwargs: dict[str, Any] = dict(
             agent=kiro_agent or slot.agent or None,
             # Same canonical crew identity as the eager-spawn path — the two
@@ -6538,6 +6539,7 @@ async def _run_chat(
             channel_id=_provider_channel_id or None,
             reasoning_effort_override=slot.reasoning_effort or None,
             start_priority=_turn_priority,
+            **_app_allocation_kwargs(slot),
         )
 
         def _release_dispatch_lock() -> None:

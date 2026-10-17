@@ -712,8 +712,8 @@ class TestAppAgentDispatch(unittest.TestCase):
                 by_stem = cfg._resolve_named_agent_model("KiroPkg-captain", agents_dir=d)
                 assert by_stem == cfg._resolve_named_agent_model("captain", agents_dir=d)
                 assert by_stem == "claude-opus-4.8"
-                # A pinned template defers to the factory, as the declared name does.
-                assert _session_model(cfg, None, crew_agent="pkg") is None
+                # The session's ladder reads the pin by the stem, as by the declared name.
+                assert _session_model(cfg, None, crew_agent="pkg") == by_stem
                 selected = cfg.acp_effective_model("captain", None)
                 assert selected and cfg.acp_effective_model("KiroPkg-captain", None) == selected
                 assert subagent._spawn_effective_model(None, "pkg") == selected

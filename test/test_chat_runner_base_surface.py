@@ -151,11 +151,6 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ("_clear_fallback_sticky_state", "function", "(slot: 'Any', client: 'Any') -> 'None'"),
         ("_configured_refusal_fallback", "function", "() -> 'str'"),
         (
-            "_default_session_model",
-            "function",
-            "(cfg: \"'KiroCrewConfig | None'\", slot: \"'_ChatSlot'\", agent_model: 'str') -> 'str'",
-        ),
-        (
             "_fallback_swap_for_turn",
             "async function",
             "(slot: 'Any', client: 'Any') -> 'str | None'",

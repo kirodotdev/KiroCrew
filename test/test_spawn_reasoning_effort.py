@@ -1636,8 +1636,9 @@ class TestAllocatedEffortReceipt:
                     or role_model
                     or (member_model or template_model or global_model if member else global_model)
                 )
-                expected_override = None if template_model else expected_model
-                assert provider.model_override == expected_override
+                # The session's own ladder resolves the bound template's pin too,
+                # so the factory is handed the model rather than left to find it.
+                assert provider.model_override == expected_model
                 assert actual_inputs[key]["reasoning_effort_override"] == "high"
                 assert await asyncio.to_thread(private_memory_store_for_session, key) == store
 

@@ -418,7 +418,8 @@ class TestContinuationTemplateNamespace:
             provider = world.made[-1]
             assert provider.template == "worker" and provider.crew_agent == ""
             assert provider.messages
-            expected_override = override or (None if template_model else "global-model")
+            # The session ladder resolves the template's own pin before the factory.
+            expected_override = override or template_model or "global-model"
             assert provider.model_override == expected_override
             # Exercise the same remaining model tier used by the real factory.
             resolved = await asyncio.to_thread(

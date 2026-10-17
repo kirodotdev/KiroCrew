@@ -324,10 +324,10 @@ class TestSessionModelCoversEverySurface:
         assert _session_model(cfg, "oncall") == "claude-opus-5"
 
     def test_crew_deferring_falls_through_to_its_template(self, specs_dir: Path) -> None:
-        """An unpinned crew must not shadow the template it binds: returning None
-        lets the provider factory resolve that template's own model."""
+        """An unpinned crew must not shadow the template it binds: the template's
+        own pin outranks the global."""
         cfg = _cfg({"oncall": {"kiro_agent": "pinned", "model": ""}}, "claude-haiku-4.5")
-        assert _session_model(cfg, "oncall") is None
+        assert _session_model(cfg, "oncall") == "claude-sonnet-4.6"
 
     def test_crew_deferring_with_unpinned_template_reaches_the_global(
         self, specs_dir: Path
@@ -335,18 +335,18 @@ class TestSessionModelCoversEverySurface:
         cfg = _cfg({"oncall": {"kiro_agent": "unpinned", "model": ""}}, "claude-haiku-4.5")
         assert _session_model(cfg, "oncall") == "claude-haiku-4.5"
 
-    def test_template_name_still_behaves_as_before(self, specs_dir: Path) -> None:
-        """Callers passing a kiro template name (the dashboard) are unaffected:
-        a template pin returns None so the factory resolves it natively."""
+    def test_template_name_resolves_its_own_pin(self, specs_dir: Path) -> None:
+        """Callers passing a kiro template name (the dashboard) get that
+        template's pin, the answer the model chip shows."""
         cfg = _cfg({"oncall": {"kiro_agent": "kirocrew", "model": "claude-opus-5"}}, "")
-        assert _session_model(cfg, "pinned") is None
+        assert _session_model(cfg, "pinned") == "claude-sonnet-4.6"
 
     @pytest.mark.parametrize(
         "template,global_model,expected",
         [
             ("unpinned", "global-model", "global-model"),
             ("unpinned", "auto", None),
-            ("pinned", "global-model", None),
+            ("pinned", "global-model", "claude-sonnet-4.6"),
             ("kirocrew", "global-model", "global-model"),
         ],
     )
