@@ -18,6 +18,7 @@ const mockApi = vi.hoisted(() => ({
   createSkill: vi.fn(),
   updateSkill: vi.fn(),
   deleteSkill: vi.fn(),
+  skillsAudit: vi.fn(),
   skillsPending: vi.fn(),
   skillPendingDetail: vi.fn(),
   approveSkill: vi.fn(),
@@ -52,6 +53,7 @@ beforeEach(() => {
   Object.values(mockApi).forEach(m => 'mockReset' in m && m.mockReset())
   mockApi.skill.mockResolvedValue({ name: 'x', content: '---\nname: x\n---\nbody' })
   mockApi.skillsPending.mockResolvedValue({ pending: [] })
+  mockApi.skillsAudit.mockResolvedValue({ clusters: [] })
 })
 
 describe('SkillsTab SettingRef call sites', () => {

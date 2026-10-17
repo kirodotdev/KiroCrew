@@ -25,7 +25,7 @@ from pathlib import Path
 
 from kiro_crew import pinned_fs, skill_trust
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.bounded_read import bounded_read_fd
+from kiro_crew.bounded_read import bounded_read, bounded_read_fd
 from kiro_crew.platform_compat import pinned_directory
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -142,13 +142,32 @@ def catalog_project_skills(self, project_dir: str | Path) -> list[dict]:
     return skills
 
 
-def _read_pending_meta(self, slug: str, pdir: Path | None = None) -> dict:
+def _read_pending_meta(
+    self,
+    slug: str,
+    pdir: Path | None = None,
+    *,
+    max_bytes: int | None = None,
+    refusal_reasons: list[str] | None = None,
+) -> dict:
     mf = (pdir if pdir is not None else self._pending_root() / slug) / ".meta.json"
     # Never follow an LLM-planted symlink (could point at a sensitive file).
     if mf.is_symlink():
         return {}
     try:
-        data = json.loads(mf.read_text(encoding="utf-8"))
+        if max_bytes is None:
+            text = mf.read_text(encoding="utf-8")
+        else:
+            # The cap is applied to the read, not to an earlier stat, so a
+            # file that grew or was swapped since is refused unretained.
+            with mf.open("rb") as handle:
+                raw = bounded_read(handle, max_bytes + 1)
+            if len(raw) > max_bytes:
+                if refusal_reasons is not None:
+                    refusal_reasons.append("size_cap")
+                return {}
+            text = raw.decode("utf-8")
+        data = json.loads(text)
     except (OSError, ValueError):
         return {}
     if not isinstance(data, dict):

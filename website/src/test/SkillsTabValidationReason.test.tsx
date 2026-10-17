@@ -17,6 +17,7 @@ const mockApi = vi.hoisted(() => ({
   skillPendingDetail: vi.fn(),
   approvePendingSkill: vi.fn(),
   dismissPendingSkill: vi.fn(),
+  skillsAudit: vi.fn(),
 }))
 vi.mock('../api/client', () => ({
   api: mockApi,
@@ -118,6 +119,7 @@ beforeEach(() => {
   mockApi.skills.mockResolvedValue([])
   mockApi.skillTree.mockResolvedValue({ tree: [] })
   mockApi.skillPendingDetail.mockResolvedValue(FLAGGED_DETAIL)
+  mockApi.skillsAudit.mockResolvedValue({ clusters: [] })
 })
 
 describe('pending-card script-validation verdict (issue #10861)', () => {

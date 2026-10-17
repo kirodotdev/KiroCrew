@@ -24,6 +24,7 @@ from typing import NamedTuple
 
 from kiro_crew import hooks as hooks_module
 from kiro_crew import skill_trust
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink, validate_file_path
 from kiro_crew.metrics.feature_usage import SKILL_LAZY_LOAD_COUNT, skill_label
 from kiro_crew.metrics.provider import get_recorder
@@ -380,7 +381,19 @@ def _read_enumerated_skill_bytes(
         #
         # A direct read also keeps the failure policy intact for free: an
         # unreadable file raises OSError here, which writers must hear.
-        return path.read_bytes()
+        if max_bytes is None:
+            return path.read_bytes()
+        # A bounded caller gets the cap on the read itself: a size taken
+        # earlier (a stat) says nothing about the file this open reaches, so
+        # at most one byte past the cap is ever read.
+        with path.open("rb") as handle:
+            bounded = bounded_read(handle, max_bytes + 1)
+        if len(bounded) > max_bytes:
+            if refusal_reasons is not None:
+                refusal_reasons.append("size_cap")
+            logger.warning("Skipping oversized skill file: %s", path)
+            return None
+        return bounded
     try:
         confined_max = (
             hooks_module.MAX_FILE_BYTES
