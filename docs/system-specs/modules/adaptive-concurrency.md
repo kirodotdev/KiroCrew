@@ -506,7 +506,7 @@ why, and none of those is a doctor issue, since the Connectivity section reports
 a gateway that is down (`doctor_checks/workload.py::_doctor_adaptive_live`).
 
 The two other places the model is handed a fan-out figure -- the spawn tool
-descriptions (`mcp_tools/spawn.py::schemas`, "You can run up to N sub-agents
+descriptions (`mcp_tools/spawn_parts/schemas.py::schemas`, "You can run up to N sub-agents
 concurrently", followed in both branches by the note that each start also waits
 until host memory can hold it) and the `{{MAX_SUBAGENTS}}` prompt token
 (`context_assembly/agent_spec.py::_resolve_prompt_templates`) -- read the in-process

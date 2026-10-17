@@ -2377,7 +2377,7 @@ answers `tools/list` from):
 ### A `kirocrew-core` tool has two halves
 
 Each tool is declared twice in the same per-domain module under
-`kiro_crew/mcp_tools/` (`spawn.py`, `artifacts.py`, `workflows.py`, …), and
+`kiro_crew/mcp_tools/` (`learn.py`, `artifacts.py`, `workflows.py`, …), and
 nothing at runtime notices when only one half lands:
 
 - Its **descriptor** — name, model-facing description, JSON Schema — is returned
@@ -2401,6 +2401,25 @@ either half is missing, when the two halves land in different domains, or when a
 name is claimed twice. Parity is read from `schemas()`, the declaration — not
 from `build_tool_list()`, which may legitimately omit a declared tool whose app
 is switched off.
+
+Two domains keep their code in an owner package beside the module: `control.py`
+and `spawn.py` are mirror facades (`kiro_crew._facade_mirror`) over
+`mcp_tools/control_parts/` and `mcp_tools/spawn_parts/`. Both halves are still
+read as `control.schemas()` and `control.HANDLERS`, and every name an owner
+defines reads and patches as `control.<name>` or `spawn.<name>`. The packages are
+not domains — `DOMAIN_MODULES` names the facades — and new code goes to the owner
+of its responsibility:
+
+| Module | Owns |
+|---|---|
+| `control.py` | `task_run`, `wait` and its deferred step, `route_crew`, `select_crew`, `register_hook`, `ask_question` and its card wait, `HANDLERS` |
+| `control_parts/schemas.py` | every control descriptor, and the structured-arming and runtime-ceiling reads that shape one |
+| `control_parts/directive.py` | `_emit_directive`, and the tools whose effect is one directive: `nothing_to_do`, `set_project`, `reset_conversation`, `chat_tag`, `suggest_followup` |
+| `control_parts/monitor.py` | `monitor_start`, `monitor_watch`, `monitor_inspect`, `monitor_update`, `monitor_stop`, `autonudge_stop`, and their context and preflight refusals |
+| `spawn.py` | `spawn_run` with its deferred step and receipt, `spawn_continue`, `spawn_steer`, `spawn_release`, `resource_status`, `HANDLERS` |
+| `spawn_parts/schemas.py` | every spawn descriptor, the agent roster hint and the parent allowlist filter |
+| `spawn_parts/listing.py` | `spawn_list`, `spawn_status` and the queued-wait wording |
+| `spawn_parts/wave.py` | `spawn_sub_agents` with its deferred step and resume hold, and the audit owner |
 
 ### An app's tools follow the app's enablement
 

@@ -1227,7 +1227,7 @@ positive reason. An installation that wants the cheap path for a few days is
 asking for exactly that shift, which is why the key is worth a row in the schema
 even though it changes no code path.
 
-It is read in `mcp_tools/control.py::schemas()`, which is the only place it is
+It is read in `mcp_tools/control_parts/schemas.py::schemas()`, which is the only place it is
 read, and read afresh on every build: `mcp_tools.build_tool_list` rebuilds
 descriptors per call rather than caching them, so a Settings write needs no
 gateway restart. It does not reach a session already open, because kiro-cli
