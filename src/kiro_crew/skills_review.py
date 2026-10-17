@@ -121,13 +121,23 @@ def catalog_project_skills(self, project_dir: str | Path) -> list[dict]:
     return skills
 
 
-def _read_pending_meta(self, slug: str) -> dict:
+def _read_pending_meta(self, slug: str, *, max_bytes: int | None = None) -> dict:
     mf = self._pending_root() / slug / ".meta.json"
     # Never follow an LLM-planted symlink (could point at a sensitive file).
     if mf.is_symlink():
         return {}
     try:
-        data = json.loads(mf.read_text(encoding="utf-8"))
+        if max_bytes is None:
+            text = mf.read_text(encoding="utf-8")
+        else:
+            # The cap is applied to the read, not to an earlier stat, so a
+            # file that grew or was swapped since is refused unretained.
+            with mf.open("rb") as handle:
+                raw = handle.read(max_bytes + 1)
+            if len(raw) > max_bytes:
+                return {}
+            text = raw.decode("utf-8")
+        data = json.loads(text)
     except (OSError, ValueError):
         return {}
     if not isinstance(data, dict):

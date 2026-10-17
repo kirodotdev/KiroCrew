@@ -83,6 +83,7 @@ from kiro_crew.sel import sel  # noqa: F401
 # The loader's rules live in these owners; the imports below them keep every public
 # name that moved, and every name a test patches here, importable from here as the
 # same object.
+from kiro_crew.skill_runtime import audit as _audit
 from kiro_crew.skill_runtime import authoring as _authoring
 from kiro_crew.skill_runtime import auto_skills as _auto_skills
 from kiro_crew.skill_runtime import catalog as _catalog
@@ -860,6 +861,13 @@ class SkillsLoader:
         Contract and rationale: ``skill_runtime.auto_skills.find_similar``.
         """
         return _auto_skills.find_similar(self, description, threshold, exclude=exclude)
+
+    def audit(self) -> dict[str, object]:
+        """Report overlap between pending and live skills; writes nothing.
+
+        Contract and rationale: ``skill_runtime.audit.audit``.
+        """
+        return _audit.audit(self)
 
     def create_auto_skill(
         self,
