@@ -268,7 +268,6 @@ test/metrics/test_watchdog_metrics.py
 test/test_acp_metadata_fields.py
 test/test_acp_offload.py
 test/test_acp_prompt_blocks.py
-test/test_acp_stale_recovery.py
 test/test_acp_tool_search.py
 test/test_acp_true_provider_error.py
 test/test_acp_turn_lock.py
@@ -543,7 +542,6 @@ test/test_hook_matcher_modes.py
 test/test_hooks_json_shared_file.py
 test/test_host_service_guard.py
 test/test_image_artifacts.py
-test/test_installer_distro.py
 test/test_instances_search_federation.py
 test/test_interactions_shortcut.py
 test/test_ios_simulator_preview_skill.py
@@ -610,7 +608,6 @@ test/test_mcp_gateway_stub_optin.py
 test/test_mcp_gateway_stub_paths.py
 test/test_mcp_gateway_stub_poolable_ack.py
 test/test_mcp_gateway_stub_recaller.py
-test/test_mcp_gateway_transport.py
 test/test_mcp_internal_caller.py
 test/test_mcp_knowledge_add_document.py
 test/test_mcp_oauth_banner.py

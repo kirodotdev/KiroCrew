@@ -36,14 +36,11 @@
  3 test_acp_session_handle_abandoned_turn.py
  1 test_acp_session_handle_stream_command.py
  1 test_acp_set_mode_projection_fallback.py
- 4 test_acp_set_mode_projection_race.py
- 4 test_acp_stale_recovery.py
  2 test_acp_turn_lock.py
  1 test_acp_turn_state_parity.py
  1 test_acp_watchdog_working_bound.py
  7 test_active_turn_session_key.py
  5 test_adaptive_startup_memory.py
- 4 test_admission_gate.py
  2 test_agent_fork_templates.py
  2 test_ai_pr_watchers_coverage.py
  2 test_ai_runner_coverage.py
@@ -62,28 +59,22 @@
  3 test_auto_research_handlers_coverage.py
  1 test_auto_research_onloop_db.py
  2 test_autonudge_reconciler.py
- 4 test_autonudge_remove_offload_425.py
- 4 test_aws_control_backup.py
  1 test_aws_control_backup_job.py
  2 test_aws_control_routes.py
  2 test_browser_cli_install_run_control.py
- 4 test_browser_cli_view.py
  5 test_browser_command_bus.py
  1 test_browser_install_job.py
  1 test_changelog_handler.py
  1 test_channel_approval_nonce_nonascii.py
- 4 test_channel_boot_hot_reload.py
  3 test_channel_env_write_off_loop.py
  2 test_channel_subscribe_timeout.py
  5 test_chat_close_interrupts_turn.py
  3 test_chat_fork_member_memory.py
  3 test_chat_mode_security.py
  2 test_chat_nav.py
- 4 test_chat_regenerate_cov80.py
  1 test_chat_regenerate_cov80_edit_resend_boundary.py
  1 test_chat_runner_folder_steering.py
  2 test_chat_send_client_meta_survival.py
- 4 test_chat_send_echo_scope.py
  1 test_chat_slot_switch_atomicity_alias_and_bulk.py
  1 test_chat_title.py
  1 test_ci_pytest_progress.py
@@ -92,7 +83,6 @@
  2 test_cloud_connect.py
  2 test_cloud_ssm.py
  1 test_codex_session_mcp.py
- 4 test_cold_start_concurrency_config.py
  3 test_conductor_wake.py
  3 test_conductor_wake_pushed_ticks.py
  1 test_config_api.py
@@ -107,7 +97,6 @@
  1 test_context_omissions.py
  3 test_coordinator_approval_slot_lane.py
  1 test_crew_log_real_crash.py
- 4 test_crew_main_contract.py
  3 test_crewmate_prune_migration.py
 17 test_cron_cancel.py
  4 test_cron_chat_folder.py
@@ -125,7 +114,6 @@
  2 test_cron_undispatched_one_shot.py
  1 test_cron_wake_budget.py
  7 test_cross_surface_stop_gate.py
- 4 test_dashboard_approval.py
  1 test_dashboard_cron_run_guard.py
  1 test_dashboard_execution_retention.py
  2 test_dashboard_files_coverage.py
@@ -158,7 +146,6 @@
  1 test_fairness_lanes.py
  2 test_fargate_closed_forward_remedy.py
  2 test_feishu_client.py
- 4 test_fork_reconciles_after_flush.py
  1 test_gateway_lock_diagnosis.py
  2 test_handlers_memory_coverage.py
  1 test_handlers_taskrunner_coverage.py
@@ -175,18 +162,14 @@
  1 test_inbound_spool.py
  3 test_inbound_unbind_notice.py
  1 test_installer_binary_only.py
- 4 test_installer_distro.py
  1 test_issue_radar_crew_runtime.py
- 4 test_issue_radar_http_routes_contracts.py
  1 test_issue_radar_http_routes_seams.py
  2 test_issue_radar_list_probe.py
  2 test_job_routes.py
  1 test_kas_hooks_acp.py
- 4 test_kas_login_api.py
  1 test_kas_login_loopback.py
  3 test_kas_manual_compact.py
  2 test_kas_mcp_sign_in.py
- 4 test_kas_session_teardown.py
  3 test_kiro_prerequisite_handlers.py
  1 test_kiro_prerequisite_readiness_state.py
  2 test_kiro_prerequisite_supervisor.py
@@ -200,7 +183,6 @@
  1 test_knowledge_sync_local_file.py
  3 test_lessons_context_embedding_deadline.py
  1 test_listener_guard.py
- 4 test_llm_helpers_deny_notice.py
  1 test_llm_helpers_tool_input_offload.py
  3 test_llm_pool.py
  2 test_local_turn_restart_marker.py
@@ -217,7 +199,6 @@
  1 test_mcp_gateway_recaller.py
  1 test_mcp_gateway_session_inject.py
  3 test_mcp_gateway_stub_recaller.py
- 4 test_mcp_gateway_transport.py
  1 test_mcp_launch_approval.py
  1 test_mcp_preflight.py
  3 test_mcp_shared_deferred_tools.py
@@ -381,7 +362,6 @@
  4 test_vector_memory.py
  1 test_wait_tool_early_end.py
  2 test_wake_judge_feedback_decision_log.py
- 4 test_webhook_memory_preparation.py
  2 test_webhook_permission_requests.py
  4 test_wecom_client.py
  1 test_wecom_client_cov80.py

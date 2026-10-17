@@ -34,6 +34,7 @@ from kiro_crew import llm_helpers
 from kiro_crew.apps.builtins.issue_radar.backend import github_client as gh
 from kiro_crew.apps.builtins.issue_radar.backend import provider, routes, store
 from kiro_crew.start_priority import StartPriority
+from kiro_crew.testing.wait import await_until, finished
 
 BASE = "/api/apps/issue-radar"
 SHA = "a" * 40
@@ -205,7 +206,7 @@ class TestDepsRefreshLifecycle(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(t2.done())
             self.assertEqual(a1[routes._DEPS_REFRESH_TASKS_APP_KEY], {})
             release.set()
-            await asyncio.wait_for(t2, 5)
+            await await_until(t2, timeout=5)
         self.assertEqual(a2[routes._DEPS_REFRESH_TASKS_APP_KEY], {})
         self.assertIsNot(routes._deps_rebuild_lock(a1, KEY), routes._deps_rebuild_lock(a2, KEY))
         self.assertIs(routes._deps_rebuild_lock(a1, KEY), routes._deps_rebuild_lock(a1, KEY))
@@ -216,7 +217,7 @@ class TestDepsRefreshLifecycle(unittest.IsolatedAsyncioTestCase):
         done = asyncio.get_running_loop().create_future()
         done.set_result(None)
         app[routes._DEPS_REFRESH_TASKS_APP_KEY] = {REG: done}
-        await asyncio.wait_for(routes._stop_deps_refreshes(app), 5)
+        await finished(routes._stop_deps_refreshes(app), "_stop_deps_refreshes", timeout=5)
 
     async def test_a_failed_background_refresh_is_logged_and_frees_its_slot(self):
         app = web.Application()
@@ -228,7 +229,7 @@ class TestDepsRefreshLifecycle(unittest.IsolatedAsyncioTestCase):
         ):
             routes._schedule_deps_refresh(app, KEY)
             task = app[routes._DEPS_REFRESH_TASKS_APP_KEY][REG]
-            await asyncio.wait_for(task, 5)
+            await await_until(task, timeout=5)
         self.assertIsNone(task.exception())
         self.assertEqual(app[routes._DEPS_REFRESH_TASKS_APP_KEY], {})
         self.assertIn(
@@ -318,7 +319,7 @@ class TestProbeCoalescing(unittest.IsolatedAsyncioTestCase):
             )
             await asyncio.sleep(0)
             release.set()
-            results = await asyncio.wait_for(asyncio.gather(first, second), 5)
+            results = await finished(asyncio.gather(first, second), "gather", timeout=5)
         self.assertEqual(results, [(True, READING), (True, READING)])
         self.assertEqual(probe.call_count, 1)
 

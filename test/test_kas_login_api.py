@@ -32,6 +32,7 @@ from kiro_crew.dashboard.handlers.kas_login import (
     api_kas_login_poll,
     api_kas_login_status,
 )
+from kiro_crew.testing.wait import await_until
 
 
 class _FakeState:
@@ -467,7 +468,7 @@ async def test_wait_for_callback_returns_query_fields():
     task = asyncio.create_task(wait_for_callback(sock, port, "st-1", timeout_secs=10))
     await asyncio.sleep(0.05)  # let the listener start
     await _hit(port, "/oauth/callback", {"login_option": "google", "code": "c1", "state": "st-1"})
-    result = await asyncio.wait_for(task, timeout=5)
+    result = await await_until(task, timeout=5)
     assert result["login_option"] == "google"
     assert result["code"] == "c1"
     assert result["state"] == "st-1"
@@ -480,7 +481,7 @@ async def test_wait_for_callback_accepts_signin_path():
     task = asyncio.create_task(wait_for_callback(sock, port, "st-2", timeout_secs=10))
     await asyncio.sleep(0.05)
     await _hit(port, "/signin/callback", {"login_option": "github", "code": "c2", "state": "st-2"})
-    result = await asyncio.wait_for(task, timeout=5)
+    result = await await_until(task, timeout=5)
     assert result["path"] == "/signin/callback"
 
 
@@ -491,7 +492,7 @@ async def test_wait_for_callback_state_mismatch_raises():
     await asyncio.sleep(0.05)
     await _hit(port, "/oauth/callback", {"login_option": "google", "code": "c", "state": "evil"})
     with pytest.raises(PortalAuthError, match="state mismatch"):
-        await asyncio.wait_for(task, timeout=5)
+        await await_until(task, timeout=5)
 
 
 @pytest.mark.asyncio
@@ -501,7 +502,7 @@ async def test_wait_for_callback_portal_error_raises():
     await asyncio.sleep(0.05)
     await _hit(port, "/oauth/callback", {"error": "access_denied", "state": "st"})
     with pytest.raises(PortalAuthError, match="access_denied"):
-        await asyncio.wait_for(task, timeout=5)
+        await await_until(task, timeout=5)
 
 
 @pytest.mark.asyncio

@@ -50,6 +50,7 @@ from kiro_crew.dashboard.state import (
     build_tool_stall_recovery_prompt,
     extract_log_redirect_target,
 )
+from kiro_crew.testing.wait import await_until
 
 # Tight windows for tests: consult the oracle almost immediately and act on
 # UNKNOWN verdicts after 50ms idle.
@@ -198,9 +199,7 @@ async def test_acked_stale_probe_completes_normally_no_redrive():
     handle._cancel_ts = time.monotonic()  # grace NOT yet exceeded
     handle._cancel_grace_secs = 10.0
     # kiro acks: the prompt response frame arrives on the queue.
-    handle._queue.put_nowait(
-        JsonRpcMessage(id=1, result={"stopReason": "end_turn"})
-    )
+    handle._queue.put_nowait(JsonRpcMessage(id=1, result={"stopReason": "end_turn"}))
 
     events = await _drain(handle, req_id=1, timeout=5.0)
 
@@ -223,9 +222,7 @@ async def test_stale_probe_flag_consumed_on_reclassification():
     handle._cancelled = True
     handle._cancel_ts = time.monotonic()
     handle._cancel_grace_secs = 10.0
-    handle._queue.put_nowait(
-        JsonRpcMessage(id=1, result={"stopReason": STOP_REASON_CANCELLED})
-    )
+    handle._queue.put_nowait(JsonRpcMessage(id=1, result={"stopReason": STOP_REASON_CANCELLED}))
 
     events = await _drain(handle, req_id=1, timeout=5.0)
 
@@ -246,9 +243,7 @@ async def test_genuine_cancel_supersedes_pending_probe():
     await handle.cancel()
     assert handle._stale_probe is False
 
-    handle._queue.put_nowait(
-        JsonRpcMessage(id=1, result={"stopReason": STOP_REASON_CANCELLED})
-    )
+    handle._queue.put_nowait(JsonRpcMessage(id=1, result={"stopReason": STOP_REASON_CANCELLED}))
     events = await _drain(handle, req_id=1, timeout=5.0)
 
     assert events[0].stop_reason == STOP_REASON_CANCELLED  # NOT stale-recover
@@ -398,7 +393,8 @@ async def test_dead_tool_verdict_cancels_within_one_tick():
     )
     handle._queue = _SilentQueue()  # type: ignore[assignment]
     handle._oracle.check_tool = lambda pid, tool: (
-        "dead", "shell child 4242 exited 16s ago, no result frame"
+        "dead",
+        "shell child 4242 exited 16s ago, no result frame",
     )
 
     events = await _drain(handle, req_id=1, timeout=5.0)
@@ -419,15 +415,17 @@ async def test_stuck_input_verdict_flagged_in_evidence():
     on the terminal event so the recovery nudge can name the cause."""
     from kiro_crew.acp.liveness import ToolCallState
 
-    wd = WatchdogSettings(check_after_secs=0.01, tool_stall_suspect_secs=999.0,
-                          tool_stall_hard_cap_secs=999.0)
+    wd = WatchdogSettings(
+        check_after_secs=0.01, tool_stall_suspect_secs=999.0, tool_stall_hard_cap_secs=999.0
+    )
     handle = _make_handle(watchdog=wd)
     handle._stale_eligible = False
     handle._tool_dispatched = True
     handle._inflight_tool = ToolCallState(title="bash", command="ssh host", is_shell=True)
     handle._queue = _SilentQueue()  # type: ignore[assignment]
     handle._oracle.check_tool = lambda pid, tool: (
-        "stuck_input", "stuck_input: pid 7 blocked reading /dev/tty with flat subtree"
+        "stuck_input",
+        "stuck_input: pid 7 blocked reading /dev/tty with flat subtree",
     )
 
     events = await _drain(handle, req_id=1, timeout=5.0)
@@ -442,8 +440,9 @@ async def test_unknown_tool_verdict_waits_for_suspect_window():
     before tool_stall_suspect_secs, cancel after."""
     from kiro_crew.acp.liveness import ToolCallState
 
-    wd = WatchdogSettings(check_after_secs=0.01, tool_stall_suspect_secs=0.2,
-                          tool_stall_hard_cap_secs=999.0)
+    wd = WatchdogSettings(
+        check_after_secs=0.01, tool_stall_suspect_secs=0.2, tool_stall_hard_cap_secs=999.0
+    )
     handle = _make_handle(watchdog=wd)
     handle._stale_eligible = False
     handle._tool_dispatched = True
@@ -474,15 +473,20 @@ async def test_established_flat_tool_verdict_narrows_to_model_silent_window():
 
     # Build-scale suspect window (999s) but a tight model-silent budget: only
     # the narrowed window can trigger the cancel inside this test's runtime.
-    wd = WatchdogSettings(check_after_secs=0.01, tool_stall_suspect_secs=999.0,
-                          tool_stall_hard_cap_secs=999.0, model_silent_probe_secs=0.05)
+    wd = WatchdogSettings(
+        check_after_secs=0.01,
+        tool_stall_suspect_secs=999.0,
+        tool_stall_hard_cap_secs=999.0,
+        model_silent_probe_secs=0.05,
+    )
     handle = _make_handle(watchdog=wd)
     handle._stale_eligible = False
     handle._tool_dispatched = True
     handle._inflight_tool = ToolCallState(title="use_subagent", command="{}", is_shell=False)
     handle._queue = _SilentQueue()  # type: ignore[assignment]
     handle._oracle.check_tool = lambda pid, tool: (
-        "unknown", "established_flat: mcp subtree flat (io +0B cpu +0t)"
+        "unknown",
+        "established_flat: mcp subtree flat (io +0B cpu +0t)",
     )
 
     events = await _drain(handle, req_id=1, timeout=5.0)
@@ -501,16 +505,18 @@ async def test_plain_flat_tool_verdict_keeps_full_suspect_window():
 
     # Tight model-silent budget, build-scale suspect window: if the narrowing
     # incorrectly applied here, the cancel would fire within this test.
-    wd = WatchdogSettings(check_after_secs=0.01, tool_stall_suspect_secs=999.0,
-                          tool_stall_hard_cap_secs=999.0, model_silent_probe_secs=0.05)
+    wd = WatchdogSettings(
+        check_after_secs=0.01,
+        tool_stall_suspect_secs=999.0,
+        tool_stall_hard_cap_secs=999.0,
+        model_silent_probe_secs=0.05,
+    )
     handle = _make_handle(watchdog=wd)
     handle._stale_eligible = False
     handle._tool_dispatched = True
     handle._inflight_tool = ToolCallState(title="mystery", command="", is_shell=False)
     handle._queue = _SilentQueue()  # type: ignore[assignment]
-    handle._oracle.check_tool = lambda pid, tool: (
-        "unknown", "mcp subtree flat (io +0B cpu +0t)"
-    )
+    handle._oracle.check_tool = lambda pid, tool: ("unknown", "mcp subtree flat (io +0B cpu +0t)")
 
     events = await _drain(handle, req_id=1, timeout=0.3)
 
@@ -525,15 +531,20 @@ async def test_narrowed_tool_window_never_exceeds_suspect_window():
     tool stall (an override can only ever narrow, never extend)."""
     from kiro_crew.acp.liveness import ToolCallState
 
-    wd = WatchdogSettings(check_after_secs=0.01, tool_stall_suspect_secs=0.05,
-                          tool_stall_hard_cap_secs=999.0, model_silent_probe_secs=999.0)
+    wd = WatchdogSettings(
+        check_after_secs=0.01,
+        tool_stall_suspect_secs=0.05,
+        tool_stall_hard_cap_secs=999.0,
+        model_silent_probe_secs=999.0,
+    )
     handle = _make_handle(watchdog=wd)
     handle._stale_eligible = False
     handle._tool_dispatched = True
     handle._inflight_tool = ToolCallState(title="use_subagent", command="{}", is_shell=False)
     handle._queue = _SilentQueue()  # type: ignore[assignment]
     handle._oracle.check_tool = lambda pid, tool: (
-        "unknown", "established_flat: mcp subtree flat (io +0B cpu +0t)"
+        "unknown",
+        "established_flat: mcp subtree flat (io +0B cpu +0t)",
     )
 
     events = await _drain(handle, req_id=1, timeout=5.0)
@@ -547,8 +558,12 @@ async def test_working_verdict_still_never_acted_on_with_established_flat_window
     verdict is never cancelled regardless of the model-silent budget."""
     from kiro_crew.acp.liveness import ToolCallState
 
-    wd = WatchdogSettings(check_after_secs=0.01, tool_stall_suspect_secs=0.05,
-                          tool_stall_hard_cap_secs=0.05, model_silent_probe_secs=0.05)
+    wd = WatchdogSettings(
+        check_after_secs=0.01,
+        tool_stall_suspect_secs=0.05,
+        tool_stall_hard_cap_secs=0.05,
+        model_silent_probe_secs=0.05,
+    )
     handle = _make_handle(watchdog=wd)
     handle._stale_eligible = False
     handle._tool_dispatched = True
@@ -580,13 +595,16 @@ def test_per_agent_override_narrows_watchdog_snapshot(monkeypatch):
     from kiro_crew.acp.session_handle import _load_watchdog_settings
     from kiro_crew.config.loader import KiroCrewAgentConfig
 
-    _cfg_with_agent_overrides(monkeypatch, {
-        "pr-reviewer": KiroCrewAgentConfig(
-            kiro_agent="pr-reviewer-kiro",
-            watchdog_tool_stall_suspect_secs=900.0,
-            watchdog_tool_stall_hard_cap_secs=1800.0,
-        ),
-    })
+    _cfg_with_agent_overrides(
+        monkeypatch,
+        {
+            "pr-reviewer": KiroCrewAgentConfig(
+                kiro_agent="pr-reviewer-kiro",
+                watchdog_tool_stall_suspect_secs=900.0,
+                watchdog_tool_stall_hard_cap_secs=1800.0,
+            ),
+        },
+    )
 
     wd = _load_watchdog_settings("pr-reviewer")
     assert wd.tool_stall_suspect_secs == 900.0
@@ -602,9 +620,12 @@ def test_per_agent_override_zero_inherits_global(monkeypatch):
     from kiro_crew.acp.session_handle import _load_watchdog_settings
     from kiro_crew.config.loader import KiroCrewAgentConfig
 
-    _cfg_with_agent_overrides(monkeypatch, {
-        "builder": KiroCrewAgentConfig(kiro_agent="builder-kiro"),
-    })
+    _cfg_with_agent_overrides(
+        monkeypatch,
+        {
+            "builder": KiroCrewAgentConfig(kiro_agent="builder-kiro"),
+        },
+    )
 
     wd = _load_watchdog_settings("builder")
     assert wd.tool_stall_suspect_secs == _GLOBAL.tool_stall_suspect_secs
@@ -620,14 +641,20 @@ def test_kiro_binding_name_is_not_resolved(monkeypatch):
     from kiro_crew.acp.session_handle import _load_watchdog_settings
     from kiro_crew.config.loader import KiroCrewAgentConfig
 
-    _cfg_with_agent_overrides(monkeypatch, {
-        "pr-reviewer": KiroCrewAgentConfig(
-            kiro_agent="pr-reviewer-kiro",
-            watchdog_tool_stall_suspect_secs=600.0,
-        ),
-    })
+    _cfg_with_agent_overrides(
+        monkeypatch,
+        {
+            "pr-reviewer": KiroCrewAgentConfig(
+                kiro_agent="pr-reviewer-kiro",
+                watchdog_tool_stall_suspect_secs=600.0,
+            ),
+        },
+    )
 
-    assert _load_watchdog_settings("pr-reviewer-kiro").tool_stall_suspect_secs == _GLOBAL.tool_stall_suspect_secs
+    assert (
+        _load_watchdog_settings("pr-reviewer-kiro").tool_stall_suspect_secs
+        == _GLOBAL.tool_stall_suspect_secs
+    )
 
 
 def test_shared_binding_cannot_collide_canonical_names(monkeypatch):
@@ -637,10 +664,13 @@ def test_shared_binding_cannot_collide_canonical_names(monkeypatch):
     from kiro_crew.acp.session_handle import _load_watchdog_settings
     from kiro_crew.config.loader import KiroCrewAgentConfig
 
-    _cfg_with_agent_overrides(monkeypatch, {
-        "a": KiroCrewAgentConfig(kiro_agent="shared", watchdog_tool_stall_suspect_secs=60.0),
-        "b": KiroCrewAgentConfig(kiro_agent="shared", watchdog_tool_stall_suspect_secs=120.0),
-    })
+    _cfg_with_agent_overrides(
+        monkeypatch,
+        {
+            "a": KiroCrewAgentConfig(kiro_agent="shared", watchdog_tool_stall_suspect_secs=60.0),
+            "b": KiroCrewAgentConfig(kiro_agent="shared", watchdog_tool_stall_suspect_secs=120.0),
+        },
+    )
 
     assert _load_watchdog_settings("a").tool_stall_suspect_secs == 60.0
     assert _load_watchdog_settings("b").tool_stall_suspect_secs == 120.0
@@ -652,12 +682,15 @@ def test_handle_snapshots_crew_agent_overrides(monkeypatch):
     globals."""
     from kiro_crew.config.loader import KiroCrewAgentConfig
 
-    _cfg_with_agent_overrides(monkeypatch, {
-        "pr-reviewer": KiroCrewAgentConfig(
-            kiro_agent="pr-reviewer-kiro",
-            watchdog_tool_stall_suspect_secs=450.0,
-        ),
-    })
+    _cfg_with_agent_overrides(
+        monkeypatch,
+        {
+            "pr-reviewer": KiroCrewAgentConfig(
+                kiro_agent="pr-reviewer-kiro",
+                watchdog_tool_stall_suspect_secs=450.0,
+            ),
+        },
+    )
 
     rt = MagicMock()
     rt.pid = None
@@ -675,11 +708,14 @@ def test_rebind_watchdog_follows_warm_pool_rekey(monkeypatch):
     crew's windows back to the globals."""
     from kiro_crew.config.loader import KiroCrewAgentConfig
 
-    _cfg_with_agent_overrides(monkeypatch, {
-        "claimer": KiroCrewAgentConfig(
-            kiro_agent="shared", watchdog_tool_stall_suspect_secs=300.0
-        ),
-    })
+    _cfg_with_agent_overrides(
+        monkeypatch,
+        {
+            "claimer": KiroCrewAgentConfig(
+                kiro_agent="shared", watchdog_tool_stall_suspect_secs=300.0
+            ),
+        },
+    )
 
     rt = MagicMock()
     rt.pid = None
@@ -703,7 +739,9 @@ def test_unknown_agent_inherits_global(monkeypatch):
 
     _cfg_with_agent_overrides(monkeypatch, {})
 
-    assert _load_watchdog_settings("nope").tool_stall_suspect_secs == _GLOBAL.tool_stall_suspect_secs
+    assert (
+        _load_watchdog_settings("nope").tool_stall_suspect_secs == _GLOBAL.tool_stall_suspect_secs
+    )
     assert _load_watchdog_settings("").tool_stall_suspect_secs == _GLOBAL.tool_stall_suspect_secs
 
 
@@ -712,13 +750,15 @@ async def test_established_flat_model_wait_gets_extended_window():
     """UNKNOWN with the established_flat evidence tag (probably a non-streamed
     server-side think) is probed only past model_silent_probe_secs, not the
     ordinary stale window."""
-    wd = WatchdogSettings(check_after_secs=0.01, stale_window_secs=0.05,
-                          model_silent_probe_secs=10.0, tool_stall_hard_cap_secs=999.0)
+    wd = WatchdogSettings(
+        check_after_secs=0.01,
+        stale_window_secs=0.05,
+        model_silent_probe_secs=10.0,
+        tool_stall_hard_cap_secs=999.0,
+    )
     handle = _make_handle(last_activity=time.monotonic() - 100.0, watchdog=wd)
     handle._queue = _SilentQueue()  # type: ignore[assignment]
-    handle._oracle.check_model_wait = lambda pid: (
-        "unknown", "established_flat: io +0B cpu +0t"
-    )
+    handle._oracle.check_model_wait = lambda pid: ("unknown", "established_flat: io +0B cpu +0t")
 
     # Well past stale_window (0.05) but far below the extended window (10s):
     await _drain(handle, req_id=1, timeout=0.3)
@@ -731,12 +771,17 @@ async def test_established_flat_model_wait_gets_extended_window():
 async def test_dead_model_wait_probes_immediately():
     """A DEAD model-wait verdict (no backend socket, flat counters — the
     done-but-lost-frame wedge) probes without waiting for the stale window."""
-    wd = WatchdogSettings(check_after_secs=0.01, stale_window_secs=999.0,
-                          model_silent_probe_secs=999.0, tool_stall_hard_cap_secs=999.0)
+    wd = WatchdogSettings(
+        check_after_secs=0.01,
+        stale_window_secs=999.0,
+        model_silent_probe_secs=999.0,
+        tool_stall_hard_cap_secs=999.0,
+    )
     handle = _make_handle(last_activity=time.monotonic() - 100.0, watchdog=wd)
     handle._queue = _SilentQueue()  # type: ignore[assignment]
     handle._oracle.check_model_wait = lambda pid: (
-        "dead", "no established backend socket and flat counters"
+        "dead",
+        "no established backend socket and flat counters",
     )
 
     await _drain(handle, req_id=1, timeout=0.3)
@@ -791,16 +836,20 @@ async def test_wait_tool_declared_duration_reads_working():
     elapses — the real oracle (not a stub) must defer the stall cancel."""
     from kiro_crew.acp.liveness import ToolCallState
 
-    wd = WatchdogSettings(check_after_secs=0.01, tool_stall_suspect_secs=0.05,
-                          tool_stall_hard_cap_secs=999.0)
+    wd = WatchdogSettings(
+        check_after_secs=0.01, tool_stall_suspect_secs=0.05, tool_stall_hard_cap_secs=999.0
+    )
     handle = _make_handle(watchdog=wd)
     handle._stale_eligible = False
     handle._tool_dispatched = True
     handle._runtime.pid = 999999  # oracle path needs a pid to reach the contract
     handle._inflight_tool = ToolCallState(
-        title="wait", command='{"seconds": 1800, "reason": "babysit"}',
-        dispatch_ts=time.monotonic(), is_shell=False,
-        tool_name="wait", mcp_server_name="kirocrew-core",
+        title="wait",
+        command='{"seconds": 1800, "reason": "babysit"}',
+        dispatch_ts=time.monotonic(),
+        is_shell=False,
+        tool_name="wait",
+        mcp_server_name="kirocrew-core",
     )
     handle._queue = _SilentQueue()  # type: ignore[assignment]
 
@@ -814,7 +863,9 @@ async def test_wait_tool_declared_duration_reads_working():
 
 
 def test_build_tool_stall_recovery_prompt_basics():
-    body = build_tool_stall_recovery_prompt("bash", 613, command="long-build release > build.log 2>&1")
+    body = build_tool_stall_recovery_prompt(
+        "bash", 613, command="long-build release > build.log 2>&1"
+    )
     low = body.lower()
     assert "not a user action" in low
     assert "partial results" in low
@@ -957,6 +1008,7 @@ async def test_toctou_path_b_ingress_seq_prevents_cancel():
     handle._stale_eligible = False
     handle._tool_dispatched = True
     from kiro_crew.acp.liveness import ToolCallState
+
     handle._inflight_tool = ToolCallState(title="ReadInternalWebsites", command="")
     handle._queue = _SilentQueue()  # type: ignore[assignment]
     handle._consult_oracle_offloaded = oracle  # type: ignore[method-assign]
@@ -965,7 +1017,7 @@ async def test_toctou_path_b_ingress_seq_prevents_cancel():
         return [ev async for ev in handle._dispatch_events(req_id=99, timeout=2.0)]
 
     drain_task = asyncio.create_task(do_drain())
-    await asyncio.wait_for(oracle_entered.wait(), timeout=1.0)
+    await await_until(oracle_entered, timeout=1.0)
 
     # Simulate _wait_for_response buffering a notification during oracle.
     # Path B: frame is NOT in the queue; _ingress_seq is the only signal.
@@ -1008,6 +1060,7 @@ async def test_toctou_path_a_queue_depth_prevents_cancel():
     handle._stale_eligible = False
     handle._tool_dispatched = True
     from kiro_crew.acp.liveness import ToolCallState
+
     handle._inflight_tool = ToolCallState(title="ReadInternalWebsites", command="")
     # Backlog queue: times out fast when empty, delivers put_nowait items.
     handle._queue = _SilentQueueWithBacklog()  # type: ignore[assignment]
@@ -1017,7 +1070,7 @@ async def test_toctou_path_a_queue_depth_prevents_cancel():
         return [ev async for ev in handle._dispatch_events(req_id=99, timeout=2.0)]
 
     drain_task = asyncio.create_task(do_drain())
-    await asyncio.wait_for(oracle_entered.wait(), timeout=1.0)
+    await await_until(oracle_entered, timeout=1.0)
 
     # Put a progress frame directly into the queue DURING the oracle.
     # Path A: no _wait_for_response active; qsize() grows from 0 to 1.
@@ -1063,7 +1116,7 @@ async def test_toctou_stale_eligible_path_also_guarded():
         return [ev async for ev in handle._dispatch_events(req_id=99, timeout=2.0)]
 
     drain_task = asyncio.create_task(do_drain())
-    await asyncio.wait_for(oracle_entered.wait(), timeout=1.0)
+    await await_until(oracle_entered, timeout=1.0)
 
     # Progress frame arrives during oracle — qsize grows from 0 to 1.
     handle._queue.put_nowait(  # type: ignore[union-attr]
@@ -1112,7 +1165,7 @@ async def test_toctou_stale_path_c_runtime_activity_prevents_probe():
         return [ev async for ev in handle._dispatch_events(req_id=99, timeout=2.0)]
 
     drain_task = asyncio.create_task(do_drain())
-    await asyncio.wait_for(oracle_entered.wait(), timeout=1.0)
+    await await_until(oracle_entered, timeout=1.0)
 
     # Runtime clock advances during the oracle — no frame, no _ingress_seq.
     handle._runtime._last_activity = time.monotonic()
@@ -1144,8 +1197,8 @@ async def test_hard_cap_below_suspect_window_fires_at_cap():
 
     wd = WatchdogSettings(
         check_after_secs=0.01,
-        tool_stall_suspect_secs=999.0,   # would never fire without the cap
-        tool_stall_hard_cap_secs=0.05,   # hard cap < suspect → governs
+        tool_stall_suspect_secs=999.0,  # would never fire without the cap
+        tool_stall_hard_cap_secs=0.05,  # hard cap < suspect → governs
     )
     handle = _make_handle(watchdog=wd)
     handle._stale_eligible = False
@@ -1162,6 +1215,7 @@ async def test_hard_cap_below_suspect_window_fires_at_cap():
     # ... and the terminal event carries the tool-stall stop reason.
     assert events and events[-1].kind == EVENT_COMPLETE
     assert events[-1].stop_reason == STOP_REASON_TOOL_STALL
+
 
 # ── Offloaded-consult hygiene: one walk per generation, retire don't reset ────
 #
@@ -1187,9 +1241,7 @@ def _consult_handle(sample_secs: float = 3.0) -> AcpSessionHandle:
     process_backend.descendants.return_value = None
     process_backend.row.return_value = None
     process_backend.cpu_nanos.return_value = None
-    handle._oracle = LivenessOracle(
-        sample_min_secs=sample_secs, darwin_backend=process_backend
-    )
+    handle._oracle = LivenessOracle(sample_min_secs=sample_secs, darwin_backend=process_backend)
     handle._turn_done.clear()
     handle._inflight_tool = ToolCallState(title="bash", command="sleep 1", is_shell=True)
     return handle
@@ -1624,9 +1676,7 @@ async def test_tracked_child_still_carries_across_ticks_after_retirement(monkeyp
     host_backend = MagicMock(spec=DarwinProcessBackend)
     host_backend.descendants.return_value = None
     host_backend.row.return_value = ProcessRow(pid=4321, started=0.0, cmdline="sleep 1")
-    monkeypatch.setattr(
-        "kiro_crew.acp.liveness.select_darwin_backend", lambda _proc: host_backend
-    )
+    monkeypatch.setattr("kiro_crew.acp.liveness.select_darwin_backend", lambda _proc: host_backend)
     handle = _consult_handle()
     handle._retire_liveness_state()
     live = handle._oracle

@@ -41,6 +41,7 @@ from kiro_crew.providers.base import (
     EVENT_THINKING_CHUNK,
     LLMEvent,
 )
+from kiro_crew.testing.wait import async_wait_until, await_until, finished
 from kiro_crew.validation import MAX_TOOL_NAME_LEN
 
 # ── Helpers ──
@@ -235,25 +236,22 @@ async def _answer_approval(
     arrive after the poke, leaving the turn parked on an approval nobody will
     ever answer.
     """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while True:
-        fut = owner._approval_futures.get(request_id)  # type: ignore[attr-defined]
-        if fut is not None:
-            if not fut.done():
-                try:
-                    if before_answer is not None:
-                        before_answer()
-                finally:
-                    # A failed observation must not leave the runner parked.
-                    fut.set_result(outcome)
-            return
-        assert loop.time() < deadline, (
+    await async_wait_until(
+        lambda: owner._approval_futures.get(request_id) is not None,  # type: ignore[attr-defined]
+        timeout=timeout,
+        describe=lambda: (
             f"approval future {request_id!r} was never registered within "
-            f"{timeout:.0f}s — the turn never reached its permission event, so "
-            f"there was nothing to answer"
-        )
-        await asyncio.sleep(_ANSWER_POLL_SECS)
+            f"{timeout:.0f}s — the turn never reached its permission event"
+        ),
+    )
+    fut = owner._approval_futures.get(request_id)  # type: ignore[attr-defined]
+    if fut is not None and not fut.done():
+        try:
+            if before_answer is not None:
+                before_answer()
+        finally:
+            # A failed observation must not leave the runner parked.
+            fut.set_result(outcome)
 
 
 def _context_builder(hook_result: ToolHookResult | None = None) -> MagicMock:
@@ -311,8 +309,8 @@ class TestApprovalModes:
         )
         try:
             with _patch_stats():
-                await asyncio.wait_for(_run_chat(state, slot, "hello"), 15)
-            await asyncio.wait_for(answer, 5)
+                await finished(_run_chat(state, slot, "hello"), "_run_chat", timeout=15)
+            await await_until(answer, timeout=5)
             assert slot._approval_futures["req-1"] is replacement
             assert slot.approval_instance("req-1") == row_mid(observed["row"])
             assert "resolved" not in parse_cls_meta(observed["row"]["cls"])
@@ -1593,14 +1591,14 @@ class TestExpiredApprovalRetiresTheCard:
         task = asyncio.get_running_loop().create_task(
             state.request_approval(request_id, "dashboard", "fs_write", slot=slot_key)
         )
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + _ANSWER_WAIT_SECS
-        while request_id not in state._pending_approvals:
-            assert loop.time() < deadline, (
+        await async_wait_until(
+            lambda: request_id in state._pending_approvals,
+            timeout=_ANSWER_WAIT_SECS,
+            describe=lambda: (
                 f"approval {request_id!r} was never registered — the wait "
                 f"never started, so there is nothing to expire or resolve"
-            )
-            await asyncio.sleep(_ANSWER_POLL_SECS)
+            ),
+        )
         return task
 
     @pytest.mark.asyncio

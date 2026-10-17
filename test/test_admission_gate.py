@@ -31,6 +31,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS
 from kiro_crew.cron import CronService
 from kiro_crew.subagent import _UNLEARNED_DEDICATED_START_GB
+from kiro_crew.testing.wait import async_wait_until, await_until, wait_until
 
 #: The macOS pressure hold's bound under the default config: the
 #: ``agent.subagent_queue_max_wait_secs`` default, which a fresh manager boots on.
@@ -78,13 +79,14 @@ _QUEUED_EMIT_CEILING_SECS = 5.0
 async def _await_queued_event(events: list[dict[str, Any]], reason: str | None = None) -> None:
     """Wait for a ``subagent_queued`` extra (one carrying *reason*, when given);
     RAISE, naming what was read, at the ceiling."""
-    deadline = time.monotonic() + _QUEUED_EMIT_CEILING_SECS
-    while not any(reason is None or e.get("reason") == reason for e in events):
-        assert time.monotonic() < deadline, (
+    await async_wait_until(
+        lambda: any(reason is None or e.get("reason") == reason for e in events),
+        timeout=_QUEUED_EMIT_CEILING_SECS,
+        describe=lambda: (
             f"no subagent_queued{f' with reason {reason!r}' if reason else ''} within "
             f"{_QUEUED_EMIT_CEILING_SECS}s; events={events!r}"
-        )
-        await asyncio.sleep(0.01)
+        ),
+    )
 
 
 async def _wait_for(predicate, timeout=5.0, interval=0.05, message="predicate"):
@@ -250,7 +252,7 @@ class TestCronAdmissionDeferral:
         assert run_task is not None
         # The callback precedes finalization, and claim release precedes the
         # result merge. Wait for the whole run before changing its timestamp.
-        await asyncio.wait_for(run_task, timeout=5.0)
+        await await_until(run_task, timeout=5.0)
         await _wait_for(lambda: "gated" in executed)
 
         # A NEW critical episode logs its own INFO line. The run's result merge
@@ -279,7 +281,7 @@ class TestCronAdmissionDeferral:
             await svc._on_timer()
             run_task = svc._claims[job_id].task
         assert run_task is not None
-        await asyncio.wait_for(run_task, timeout=5.0)
+        await await_until(run_task, timeout=5.0)
 
         # Force the next _sync() to reload, the way a failed fingerprint read
         # after a store write does: every job object is replaced.
@@ -2037,10 +2039,9 @@ class TestCachedAdmissionCheck:
             first = rs.cached_admission_check()
             assert first.admitted  # fail-open before the first refresh lands
             gate.set()
-            for _ in range(200):  # refresh thread publishes shortly after
-                if rs._cached_decision is not None:
-                    break
-                time.sleep(0.01)
+            wait_until(
+                lambda: rs._cached_decision is not None
+            )  # refresh thread publishes shortly after
             assert rs.cached_admission_check() is verdict  # fresh cache served
         finally:
             # A refused verdict left in the module-global cache would poison

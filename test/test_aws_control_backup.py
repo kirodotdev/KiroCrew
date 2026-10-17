@@ -37,6 +37,7 @@ import pytest
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.aws_control.backend import backup, costs
 from kiro_crew.config import loader
+from kiro_crew.testing.wait import default_timeout
 
 ACCOUNT = "111122223333"
 
@@ -4612,8 +4613,8 @@ class TestALostRunWriteDoesNotReUploadForever:
                 second_future = pool.submit(second_run)
             finally:
                 release.set()
-            first = first_future.result(timeout=10)
-            second = second_future.result(timeout=10)
+            first = first_future.result(timeout=default_timeout())
+            second = second_future.result(timeout=default_timeout())
         assert first["at"] == second["at"]
         assert first["sequence"] < second["sequence"]
         assert backup.last_runs(ACCOUNT)[backup.KIND_SNAPSHOT] == second
@@ -4836,8 +4837,8 @@ class TestALostRunWriteDoesNotReUploadForever:
                 )
             finally:
                 release.set()
-            first = first_future.result(timeout=10)
-            second = second_future.result(timeout=10)
+            first = first_future.result(timeout=default_timeout())
+            second = second_future.result(timeout=default_timeout())
 
         # The contender's own document already carries the failed run.
         assert self._on_disk()["accounts"][ACCOUNT]["uploads"] == {

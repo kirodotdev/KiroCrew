@@ -52,6 +52,7 @@ from kiro_crew.dashboard.dynamic_cards import (
     CardBudget,
     normalize_card,
 )
+from kiro_crew.testing.wait import async_wait_until, await_until, finished
 
 FOLD_NAMES = ("status", "usage", "approvals", "work")
 
@@ -849,7 +850,7 @@ def _wire(monkeypatch, reads: dict, replies: list[str]):
 async def _settle(lifecycle) -> None:
     for task in (lifecycle.worker, lifecycle._derived_worker):
         if task is not None:
-            await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 2)
+            await finished(asyncio.gather(task, return_exceptions=True), "settle", timeout=2)
 
 
 @pytest.mark.asyncio
@@ -896,7 +897,7 @@ async def test_numbers_follow_the_log_between_generations_with_no_model_call(mon
     reads["now"] = _reads(work={"items": [{"state": "accepted", "status": "done"}], "omitted": 0})
     lifecycle.notify(root, "progress")
     # Only the refresher settles: the model queue now waits out the hour.
-    await asyncio.wait_for(lifecycle._derived_worker, 2)
+    await await_until(lifecycle._derived_worker, timeout=2)
     card = (await lifecycle.read(root))["card"]
     assert card["data"]["items_done"] == "1 of 1 items accepted"
     assert card["data"][PHRASES_FIELD] == crew_main_phrases(reads["now"])
@@ -1189,11 +1190,12 @@ async def test_a_log_commit_with_no_transcript_row_re_binds_the_numbers(monkeypa
     reads["now"] = _reads(work={"items": [{"state": "accepted", "status": "done"}], "omitted": 0})
     await asyncio.to_thread(lifecycle.log_grew, "other")
     await asyncio.to_thread(lifecycle.log_grew, "u")
-    for _ in range(50):
-        await asyncio.sleep(0.01)
-        card = (await lifecycle.read(root))["card"]
-        if card["data"]["items_done"] == "1 of 1 items accepted":
-            break
+
+    async def _card_items_done():
+        return (await lifecycle.read(root))["card"]["data"]["items_done"] == "1 of 1 items accepted"
+
+    await async_wait_until(_card_items_done)
+    card = (await lifecycle.read(root))["card"]
     assert card["data"]["items_done"] == "1 of 1 items accepted"
     assert card["data"]["lede"] == "Reviewing."
     assert len(prompts) == 1
@@ -1215,11 +1217,12 @@ async def test_a_workers_report_re_binds_the_conductors_numbers(monkeypatch) -> 
     await _settle(lifecycle)
     reads["now"] = _reads(work={"items": [bound], "omitted": 0})
     await asyncio.to_thread(lifecycle.log_grew, "w")
-    for _ in range(50):
-        await asyncio.sleep(0.01)
-        card = (await lifecycle.read(root))["card"]
-        if card["data"]["items_progress"].startswith("1 "):
-            break
+
+    async def _card_items_progress():
+        return (await lifecycle.read(root))["card"]["data"]["items_progress"].startswith("1 ")
+
+    await async_wait_until(_card_items_progress)
+    card = (await lifecycle.read(root))["card"]
     assert card["data"]["items_progress"] == "1 of 1 open items reporting progress"
     assert len(prompts) == 1
     await lifecycle.shutdown()

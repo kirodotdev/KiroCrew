@@ -17,6 +17,7 @@ import pytest
 
 from kiro_crew import platform_compat
 from kiro_crew.browser_cli import view as mod
+from kiro_crew.testing.wait import wait_until
 
 _REAL_STRUCTURAL_BLINDNESS_PROBE = mod._structurally_blind_listener_attribution
 _REAL_PROCESS_OWNS_LOOPBACK_LISTENER = platform_compat.process_owns_loopback_listener
@@ -1155,9 +1156,7 @@ def test_relay_caps_concurrent_connections(
     try:
         held = [socket.create_connection(("127.0.0.1", public), timeout=2) for _ in range(2)]
         # Give the accept loop a moment to register both.
-        deadline = time.time() + 5
-        while time.time() < deadline and len(relay._conns) < 2:
-            time.sleep(0.05)
+        wait_until(lambda: len(relay._conns) >= 2, timeout=5)
         assert len(relay._conns) == 2
         # The third is accepted at the OS level then closed by the cap: reads EOF.
         extra = socket.create_connection(("127.0.0.1", public), timeout=2)
@@ -1168,9 +1167,7 @@ def test_relay_caps_concurrent_connections(
             extra.close()
         # Closing a held connection frees its slot.
         held[0].close()
-        deadline = time.time() + 5
-        while time.time() < deadline and len(relay._conns) > 1:
-            time.sleep(0.05)
+        wait_until(lambda: len(relay._conns) <= 1, timeout=5)
         assert len(relay._conns) == 1
     finally:
         for sock in held:
@@ -1187,9 +1184,7 @@ def test_relay_close_tears_down_live_connections(redirecting_server: int) -> Non
     client: socket.socket | None = None
     try:
         client = socket.create_connection(("127.0.0.1", public), timeout=2)
-        deadline = time.time() + 5
-        while time.time() < deadline and not relay._conns:
-            time.sleep(0.05)
+        wait_until(lambda: bool(relay._conns), timeout=5)
         assert relay._conns
     finally:
         relay.close()
@@ -1226,9 +1221,7 @@ def test_relay_slot_held_until_both_pumps_finish() -> None:
     client: socket.socket | None = None
     try:
         client = socket.create_connection(("127.0.0.1", public), timeout=2)
-        deadline = time.time() + 5
-        while time.time() < deadline and not relay._conns:
-            time.sleep(0.05)
+        wait_until(lambda: bool(relay._conns), timeout=5)
         assert relay._conns
         # Half-close: our write side closes, so the client->upstream pump sees
         # EOF and exits, while the upstream->client pump stays parked on the
