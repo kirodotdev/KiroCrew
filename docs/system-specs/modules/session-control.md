@@ -708,6 +708,23 @@ No tail fork (`direction` is fixed to `head`); the human route keeps it behind
 it is `session_send`'s job — the same split that keeps `session_create` from
 being the front half of a delivery.
 
+**A parent with no recorded execution identity.** A legacy slot saved before
+execution carriers were recorded has only its `agent` name and `agent_kind`
+stamp. `chat_fork._fork_execution_context` rebuilds the child's carrier the way
+`resolve_session_agent_bindings` resolves the parent's own turns: a stored
+skill-view name is first mapped back to its source agent with `_source_of_view`,
+then `resolve_agent_identity(cfg, agent, selection_kind=agent_kind)` decides
+whether the name is a crewmate alias. An alias gets the member carrier
+`resolve_member_execution` writes for an owner's create, with that crewmate's
+template, model pin and store, so `default` launches `kirocrew` rather than a
+template called `default`. Any other name, and any slot stamped `template`, gets
+a template carrier under the name as written, and an empty name falls back to
+`kirocrew`. The fork is refused with `store_unavailable` when the recorded store
+or the crewmate's resolved store is private V2 memory, because no carrier proves
+the parent ran on it, and when the resolved store differs from a store the
+parent recorded. `agent_kind` is one of the identity fields the fork re-reads
+to detect a parent changed mid-fork.
+
 ### What a created child inherits
 
 Creation copies two different kinds of state, and the split is deliberate.
