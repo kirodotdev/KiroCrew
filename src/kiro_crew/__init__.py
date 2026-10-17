@@ -101,6 +101,18 @@ def _apply_build_version_file(base: str, package_dir: "str | None") -> str:
 
 __version__ = _apply_build_version_file(__version__, os.path.dirname(__file__ or ""))
 
+# Answer platform.machine() without WMI, before anything below -- or any
+# submodule this package's importers pull in -- can call it: CPython 3.11+
+# serves machine() from a WMI query whose helper thread is abandoned whenever
+# the query is slow, and on a contended gateway start it is, so a long-lived
+# MCP server carries a spinning thread for the rest of its life (#21632).
+# It must sit HERE, after the one import that precedes every submodule's
+# import-time platform.machine() and before every one of them.
+from kiro_crew.native_machine import install_platform_override as _install_platform_override
+
+_install_platform_override()
+del _install_platform_override
+
 
 class _LazyShutdownEvent:
     """Proxy for ``asyncio.Event`` that defers construction until first use.
