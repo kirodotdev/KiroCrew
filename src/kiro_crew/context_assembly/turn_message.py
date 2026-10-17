@@ -75,6 +75,7 @@ def build_message(
     execution_context: Any = None,
     context_provider: "ContextPromptProvider | None" = None,
     steering_dirs: tuple[str, ...] = (),
+    folder_repos: tuple[str, ...] = (),
     skill_bodies_session: str | None = None,
 ) -> tuple[str, HookResult]:
     """Build the full message with context and hook processing.
@@ -581,6 +582,7 @@ def build_message(
     parts.extend(
         _turn.rail_parts(
             project=project,
+            folder_repos=folder_repos,
             context_groups=context_groups,
             board_tags=board_tags,
             minimal_context=minimal_context,

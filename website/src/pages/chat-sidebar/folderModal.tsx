@@ -39,6 +39,7 @@ export function renderFolderModal(shell: SidebarScope, folderModal: FolderModalT
                 icon: draft.icon,
                 tags: draft.tags,
                 steeringDirs: draft.steeringDirs,
+                repos: draft.repos,
               })
               // Creating a folder while flat view is on would otherwise appear
               // to do nothing (flat rendering skips folder blocks in both the
@@ -76,6 +77,9 @@ export function renderFolderModal(shell: SidebarScope, folderModal: FolderModalT
               // folder's extra steering directories (server resolves effective
               // dirs from folder_id, so nothing resolved is sent).
               if (touched.has('steeringDirs')) body.steering_dirs = draft.steeringDirs
+              // '' / [] clears here as well: PATCH repos:[] removes the folder's
+              // extra repositories.
+              if (touched.has('repos')) body.repos = draft.repos
               if (Object.keys(body).length > 0) {
                 await updateFolderMutation.mutateAsync({ id: folderModal.folderId, body })
               }

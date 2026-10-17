@@ -58,6 +58,35 @@ export function resolveFolderProjectDir(
 }
 
 /**
+ * Resolve the EXTRA repository directories for a folder (the multi-repo project
+ * feature). Repos belong to the folder that owns the primary `project_dir` —
+ * one project is one folder — so this returns the `repos` of the SAME nearest
+ * ancestor that `resolveFolderProjectDir` resolves the primary from, mirroring
+ * the backend `_resolve_folder_repos`. `[]` when no folder in the chain
+ * declares a project or that folder lists no extra repos.
+ *
+ * Cycle-guarded like `nearestFolderValue`: a corrupt `parent_id` chain ends the
+ * walk rather than spinning.
+ */
+export function resolveFolderRepos(
+  folders: ChatFolder[],
+  folderId: string
+): string[] {
+  let current: ChatFolder | undefined = folders.find(f => f.id === folderId)
+  const seen = new Set<string>()
+  while (current) {
+    if (seen.has(current.id)) break // cycle guard
+    seen.add(current.id)
+    if (current.project_dir) {
+      return Array.isArray(current.repos) ? current.repos.filter(r => !!r) : []
+    }
+    const parentId = current.parent_id
+    current = parentId ? folders.find(f => f.id === parentId) : undefined
+  }
+  return []
+}
+
+/**
  * Resolve the extra steering directories for a folder.
  *
  * Unlike `resolveFolderProjectDir` (nearest-wins), steering dirs ACCUMULATE up

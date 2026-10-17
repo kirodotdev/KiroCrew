@@ -194,36 +194,60 @@ async def api_file_search(request: web.Request) -> web.Response:
     want_files = kinds in ("all", "files")
     want_dirs = kinds in ("all", "dirs")
 
-    # Scope search to project (arbitrary path) or workspace
-    project = request.query.get("project", "")
+    # Scope search to project (arbitrary path) or workspace. ``?project=`` may
+    # be REPEATED: a folder that holds several repositories (the multi-repo
+    # project feature) sends its primary project dir plus each extra repo, and
+    # the ``@``-picker fans one search across all of them. ``getall`` preserves
+    # order, so the primary (first) stays first and its in-memory index still
+    # drives the single-root fast path when no extra repo is named. Each entry
+    # is validated independently by the same sensitive-path + isdir rules the
+    # single root always had; a non-existent or sensitive repo is dropped from
+    # the set rather than failing the whole search, EXCEPT when a single root
+    # is named (the legacy one-repo call), where a missing root keeps its
+    # ``project_not_found`` 404 so that contract is byte-for-byte unchanged.
+    projects = [p for p in request.query.getall("project", []) if p]
     ws_name = request.query.get("workspace", "")
     search_roots: list[str] = []
-    if project:
+    single_project = len(projects) == 1
+    _seen_roots: set[str] = set()
+    for raw_project in projects:
         # Off-loop: realpath on a caller-supplied root, then its isdir probe.
         # ``?project=`` names any path on the host, so an unresponsive mount
         # would stall the loop here, before the already-offloaded walk is
         # reached.
         try:
-            project, project_is_dir = await _run_path_probe(_resolve_search_root, project)
+            resolved_project, project_is_dir = await _run_path_probe(
+                _resolve_search_root, raw_project
+            )
         except _PathProbeBusy:
-            return _probe_busy_response(resource=project, operation="file_search", caller=caller)
-        if is_sensitive_path(project):
-            _sel().log_api_access(
-                caller=caller,
-                operation="file_search",
-                outcome="denied",
-                resources=project,
-                error="sensitive path",
+            return _probe_busy_response(
+                resource=raw_project, operation="file_search", caller=caller
             )
-            return web.json_response(
-                {"error": "Access denied", "code": "access_denied"}, status=403
-            )
+        if is_sensitive_path(resolved_project):
+            if single_project:
+                _sel().log_api_access(
+                    caller=caller,
+                    operation="file_search",
+                    outcome="denied",
+                    resources=resolved_project,
+                    error="sensitive path",
+                )
+                return web.json_response(
+                    {"error": "Access denied", "code": "access_denied"}, status=403
+                )
+            # One sensitive repo among several does not deny the whole search:
+            # skip it (it is dropped again by the safe_roots filter below).
+            continue
         if project_is_dir:
-            search_roots.append(project)
-        else:
+            if resolved_project not in _seen_roots:
+                _seen_roots.add(resolved_project)
+                search_roots.append(resolved_project)
+        elif single_project:
             # Audited for the same reason as the short-query exit above: the
             # authorization succeeded, so the record must not end at the gate.
-            await _audit_file_search_exit(caller, f"project={project}", error="not a directory")
+            await _audit_file_search_exit(
+                caller, f"project={resolved_project}", error="not a directory"
+            )
             return web.json_response(
                 {
                     "results": [],
@@ -232,7 +256,8 @@ async def api_file_search(request: web.Request) -> web.Response:
                 },
                 status=404,
             )
-    elif ws_name:
+        # A missing extra repo (multi-repo call) is skipped, not fatal.
+    if not projects and ws_name:
         from kiro_crew.config.loader import workspace_dir_for  # noqa: F811
 
         ws_path = str(workspace_dir_for(ws_name))

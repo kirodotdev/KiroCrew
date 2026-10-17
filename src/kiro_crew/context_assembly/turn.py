@@ -282,6 +282,7 @@ def thread_context_parts(
 def rail_parts(
     *,
     project: str | None,
+    folder_repos: tuple[str, ...] | None = None,
     context_groups: frozenset[str] | None,
     board_tags: list[tuple[str, str]] | None,
     minimal_context: bool,
@@ -301,13 +302,39 @@ def rail_parts(
     # Project context — inject on every message so the LLM always knows
     # the active project, even when set/changed after session start.
     if project and _inclusion._group_included(context_groups, _inclusion.CONTEXT_GROUP_PROJECT):
-        parts.append(
-            f"[PROJECT] Active project directory: {project}\n"
-            "This is the codebase you are working in for this session. "
-            "File search, @-mentions, and code references are scoped to "
-            "this directory. Prefer files and patterns from this project "
-            "when answering questions.\n\n"
-        )
+        # Extra repository directories the session's folder holds beside the
+        # primary project (the multi-repo project feature). The primary stays
+        # the active working directory and the first line; the extras are listed
+        # as additional repositories in scope, reachable under the SAME rules as
+        # the primary (the agent reads and edits them exactly as it does the
+        # working directory, with the same sandbox treatment — this adds no
+        # access the primary does not already have). ``folder_repos`` is already
+        # resolved, deduped and primary-excluded by
+        # ``chat_folders._resolve_folder_repos``; it is empty for a folder with
+        # no extras, which keeps the single-project line byte-for-byte unchanged.
+        _repos = tuple(folder_repos or ())
+        if _repos:
+            _extra_lines = "".join(f"- {repo}\n" for repo in _repos)
+            parts.append(
+                f"[PROJECT] Active project directory: {project}\n"
+                "This is the primary codebase for this session and your working "
+                "directory. This project also includes these additional "
+                "repositories, reachable under the same rules as the active "
+                "project (read and edit them the way you do the working "
+                "directory, using absolute paths):\n"
+                f"{_extra_lines}"
+                "File search, @-mentions, and code references cover the active "
+                "project and these additional repositories. Prefer files and "
+                "patterns from this project when answering questions.\n\n"
+            )
+        else:
+            parts.append(
+                f"[PROJECT] Active project directory: {project}\n"
+                "This is the codebase you are working in for this session. "
+                "File search, @-mentions, and code references are scoped to "
+                "this directory. Prefer files and patterns from this project "
+                "when answering questions.\n\n"
+            )
 
     # Board state — the session's dashboard board tags, so the agent knows
     # its own workflow lane and which tags it is allowed to change with

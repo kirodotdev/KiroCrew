@@ -627,6 +627,69 @@ def _validate_project_dir(raw: str) -> tuple[str, str | None]:
     return resolved, None
 
 
+#: Ceiling on the EXTRA repository directories one folder may declare beside its
+#: primary ``project_dir`` (the multi-repo project feature). A project is a small
+#: set of related repositories, not a general file list, so the bound is a
+#: product cap as much as a cost one: each entry is a directory a filed session
+#: can read and write, and the frontend ``@``-picker fans a file search across
+#: every one. Chosen to sit well above any real project while a runaway write
+#: cannot park an unbounded list in folder state.
+MAX_FOLDER_REPOS = 16
+
+
+def _validate_repos(value: object, primary: str = "") -> tuple[list[str], str | None]:
+    """Validate a folder's ``repos`` list. Returns ``(resolved, error_msg)``.
+
+    The multi-repo project field: extra repository directories a folder holds
+    beside its primary ``project_dir``. Each entry is validated by the EXACT
+    same contract as ``project_dir`` — ``_validate_project_dir`` per entry
+    (absolute or ``~``-prefixed, ``expanduser`` + ``realpath``, sensitive-path
+    rejection SEL-logged like ``project_dir``, and must be an existing
+    directory) — so an extra repo can never reach a path the primary could not.
+    It is NOT the ``steering_dirs`` contract: a repo is a working directory a
+    filed session reads and writes, not an unsandboxed Markdown read the gateway
+    performs on the folder's behalf, so the host-file principal gate, the
+    memory-silo fence and the pinned-open screen that ``steering_dirs`` carries
+    do not apply here — a repo is governed exactly as ``project_dir`` is.
+
+    On top of the per-entry contract come list-level rules a single project path
+    does not need: a :data:`MAX_FOLDER_REPOS` count cap, rejection of duplicates
+    within one folder (compared by the resolved realpath, so two spellings of one
+    directory are still a duplicate), and rejection of an entry that resolves to
+    the folder's own *primary* ``project_dir`` (passed resolved) — the primary is
+    already the cwd and the first [PROJECT] line, so listing it again would
+    double it. An empty list is valid and resolves to ``[]`` — the one spelling
+    that clears the field. An explicit ``None`` is refused like any other
+    non-list: a ``PATCH {"repos": null}`` is one ordinary request any client can
+    send, and accepting it as "clear" would silently drop a configured list.
+
+    The voice-runtime / data-home overlap guard (``_folder_project_overlap_denied``)
+    is NOT run here: like ``_validate_project_dir``, this validator also runs on
+    the stored-value read path at every turn, where re-priming per read would be
+    loop-blocking. The write sites run that guard per entry before storing, the
+    same pre-flight ``project_dir`` gets, and the agent-spawn guard remains the
+    authority on both.
+    """
+    if not isinstance(value, list) or any(not isinstance(entry, str) for entry in value):
+        return [], "repos must be a list of strings (send [] to clear)"
+    if len(value) > MAX_FOLDER_REPOS:
+        return [], f"repos may list at most {MAX_FOLDER_REPOS} directories"
+    resolved: list[str] = []
+    for entry in value:
+        stripped = entry.strip()
+        if not stripped:
+            return [], "repository directory must not be empty"
+        one, err = _validate_project_dir(stripped)
+        if err:
+            return [], err
+        if primary and one == primary:
+            return [], "a repository must differ from the folder's project directory"
+        if one in resolved:
+            return [], "repos must not repeat a directory"
+        resolved.append(one)
+    return resolved, None
+
+
 def _folder_project_overlap_denied(resolved: str) -> str | None:
     """Pre-flight the voice-runtime workspace guard for a folder's project_dir.
 
@@ -709,6 +772,88 @@ async def resolve_folder_project_dir_off_loop(
     if raw_project is None or error:
         return "", error
     return await asyncio.to_thread(_validate_project_dir, raw_project)
+
+
+def _nearest_project_folder(folders: list[dict[str, Any]], folder_id: str) -> dict[str, Any] | None:
+    """The nearest folder up *folder_id*'s chain that declares a ``project_dir``.
+
+    Repos belong to the folder that owns the primary ``project_dir`` — one
+    project is one folder — so the same nearest-wins walk that resolves the
+    primary names the row whose ``repos`` apply. Cycle-guarded exactly like
+    ``_folder_declared_project``. ``None`` when no folder in the chain declares
+    a project, so a subtree with no project has no repos.
+    """
+    by_id = {str(folder.get("id") or ""): folder for folder in folders if isinstance(folder, dict)}
+    seen: set[str] = set()
+    current_id = folder_id
+    while current_id and current_id not in seen:
+        seen.add(current_id)
+        folder = by_id.get(current_id)
+        if folder is None:
+            break
+        if folder.get("project_dir"):
+            return folder
+        current_id = str(folder.get("parent_id") or "")
+    return None
+
+
+def _resolve_folder_repos(
+    folders: list[dict[str, Any]], folder_id: str
+) -> tuple[list[str], str | None]:
+    """The EXTRA repository directories a folder inherits, nearest-folder-wins.
+
+    Resolved from the SAME folder the primary ``project_dir`` resolves from
+    (``_nearest_project_folder``), so a project's repos travel with its project
+    directory rather than accumulating up the chain the way ``steering_dirs``
+    does — one project is one folder. The primary is passed to ``_validate_repos``
+    so a stored entry that now equals it is dropped, and every entry is
+    RE-VALIDATED at read time (never trusted from ``folders.json``, which can
+    list a directory since moved or made sensitive). A directory that has since
+    disappeared or become sensitive fails the per-entry contract; that surfaces
+    as a resolution error the turn path degrades on (no repos, a warning naming
+    the slot), never a failed turn — the same contract the primary resolver has
+    for a corrupt stored value. ``([], None)`` when the folder declares none.
+    """
+    folder = _nearest_project_folder(folders, folder_id)
+    if folder is None:
+        return [], None
+    raw = folder.get("repos")
+    if raw is None or raw == []:
+        # Absent or an empty LIST is "declares none" — the only two shapes the
+        # writer stores. Any other falsy value is a corrupt folders.json and
+        # must fail the shape check in ``_validate_repos`` below.
+        return [], None
+    # At READ time an entry equal to the primary is DROPPED, not an error: the
+    # write path refuses one the user typed (``primary=`` makes it a 400), but a
+    # stored repo that only later came to equal the primary (the primary was
+    # changed to it) must not break the whole subtree's repos. So validate
+    # without the primary rule, then filter the resolved set against the
+    # resolved primary — the same "skip-and-continue" contract the steering
+    # resolver has for a stale stored entry.
+    primary, _ = _validate_project_dir(str(folder.get("project_dir") or "").strip())
+    resolved, err = _validate_repos(raw)
+    if err:
+        return [], err
+    return [r for r in resolved if not (primary and r == primary)], None
+
+
+async def resolve_folder_repos_off_loop(
+    folders: list[dict[str, Any]], folder_id: str
+) -> tuple[list[str], str | None]:
+    """:func:`_resolve_folder_repos` for callers on the event loop.
+
+    The chain walk is a dict lookup and runs here; only the per-entry
+    validation, which ``stat``s each directory, hops to a worker thread — and
+    only when the nearest project folder declares repos, so an ordinary folder
+    pays nothing.
+    """
+    folder = _nearest_project_folder(folders, folder_id)
+    if folder is None:
+        return [], None
+    raw = folder.get("repos")
+    if raw is None or raw == []:
+        return [], None
+    return await asyncio.to_thread(_resolve_folder_repos, folders, folder_id)
 
 
 #: Ceiling on the extra steering directories one folder may declare. Small on
@@ -1201,6 +1346,7 @@ async def create_folder_record(
     request_app: str = "",
     tags: list[str] | None = None,
     steering_dirs: list[str] | None = None,
+    repos: list[str] | None = None,
     unique_project_dir: bool = False,
     require_resolved_project_dir: bool = False,
     refuse_duplicate_name: bool = False,
@@ -1343,6 +1489,22 @@ async def create_folder_record(
         )
         if steering_err:
             raise FolderCreateError(steering_err, "steering_dirs_invalid")
+    # Extra repository directories (the multi-repo project field), validated
+    # off-loop per entry by the same project_dir contract, with the primary
+    # ``project_dir`` passed so an entry equal to it is refused rather than
+    # silently doubling the first [PROJECT] line.
+    resolved_repos: list[str] = []
+    if repos:
+        resolved_repos, repos_err = await asyncio.to_thread(_validate_repos, repos, project_dir)
+        if repos_err:
+            raise FolderCreateError(repos_err, "repos_invalid")
+        # Each repo gets the same voice-runtime / data-home overlap pre-flight
+        # the primary project_dir gets above — an extra repo can never be
+        # pointed somewhere the primary could not.
+        for _repo in resolved_repos:
+            conflict = await asyncio.to_thread(_folder_project_overlap_denied, _repo)
+            if conflict is not None:
+                raise FolderCreateError(conflict, "workspace_overlaps_data_home")
     folder: dict[str, Any] = {
         "id": uuid.uuid4().hex[:12],
         "name": name,
@@ -1366,6 +1528,11 @@ async def create_folder_record(
         # Omitted when empty, like ``color``/``tags``: "absent means none" stays
         # the single on-disk representation.
         folder["steering_dirs"] = resolved_steering
+    if resolved_repos:
+        # Omitted when empty, like ``steering_dirs``/``color``: "absent means
+        # none" stays the single on-disk representation, so a folder with no
+        # extra repos is byte-for-byte what it is on disk today.
+        folder["repos"] = resolved_repos
     if request_app:
         folder["owner_app"] = request_app
     if created_by_session:
@@ -1534,6 +1701,24 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
                 status=400,
             )
         steering_dirs = raw_steering
+    # Extra repository directories (multi-repo project field). Shape-checked
+    # here (request-facing) so a non-array / non-string payload is refused
+    # before any folder work; the authoritative path validation runs in
+    # ``create_folder_record`` off the loop. Unlike ``steering_dirs`` there is
+    # no principal gate: a repo is a working directory a filed session reads and
+    # writes, governed exactly as ``project_dir`` is, and an app may write
+    # ``project_dir`` today — so an app may write ``repos`` too, no wider.
+    repos: list[str] = []
+    if "repos" in body:
+        raw_repos = body.get("repos")
+        if not isinstance(raw_repos, list) or any(
+            not isinstance(entry, str) for entry in raw_repos
+        ):
+            return web.json_response(
+                {"error": "repos must be a list of strings", "code": "repos_invalid"},
+                status=400,
+            )
+        repos = raw_repos
     # Never from the body: a caller that could name its own owner could name
     # someone else's. Written only when a NON-PERSON principal is calling (an
     # app -> its bare name; an admitted crew member -> ``member:<store>``), so
@@ -1562,6 +1747,7 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
             request_app=request_app,
             tags=folder_tags,
             steering_dirs=steering_dirs,
+            repos=repos,
             # An agent (internal transport) never mints a same-name sibling: its
             # path walk reuses what exists, so a collision here is a race it lost
             # or a folder it cannot see, and a duplicate is wrong in both cases.
@@ -1832,6 +2018,33 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
                 {"error": steering_err, "code": "steering_dirs_invalid"}, status=400
             )
         changes["steering_dirs"] = resolved_steering
+    if "repos" in body:
+        # Extra repository directories (multi-repo project field). An empty list
+        # clears them; anything else is validated per entry by the same
+        # project_dir contract, capped, deduped, and refused when it equals the
+        # folder's own project_dir. No principal gate (see the create handler):
+        # a repo is governed exactly as ``project_dir`` is. The primary used for
+        # the "differs from project_dir" check is the folder's project_dir AS IT
+        # WILL BE after this PATCH — a repos+project_dir change in one request is
+        # judged against the new primary, not the stale stored one.
+        raw_repos_body = body["repos"]
+        if "project_dir" in changes:
+            _primary = str(changes["project_dir"] or "")
+        else:
+            _primary, _ = _validate_project_dir(str(folder.get("project_dir") or "").strip())
+        resolved_repos, repos_err = await asyncio.to_thread(
+            _validate_repos, raw_repos_body, _primary
+        )
+        if repos_err:
+            return web.json_response({"error": repos_err, "code": "repos_invalid"}, status=400)
+        # Same overlap pre-flight the primary project_dir gets.
+        for _repo in resolved_repos:
+            conflict = await asyncio.to_thread(_folder_project_overlap_denied, _repo)
+            if conflict is not None:
+                return web.json_response(
+                    {"error": conflict, "code": "workspace_overlaps_data_home"}, status=400
+                )
+        changes["repos"] = resolved_repos
     from kiro_crew.dashboard.handlers.change_cards import REQ_CARD_FOLDER_STEERING_EXPECT
 
     # Set only by a folder.steering card's Apply/Undo step: the list it
@@ -1980,6 +2193,13 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             # the single on-disk representation (mirrors color/tags). PATCH with
             # ``[]`` therefore clears a folder's steering directories.
             target.pop("steering_dirs", None)
+        if not target.get("repos"):
+            # Empty list clears the key entirely, so "absent means none" stays
+            # the single on-disk representation (mirrors steering_dirs). PATCH
+            # with ``[]`` therefore clears a folder's extra repositories, and a
+            # folder that never had any keeps the exact on-disk shape it has
+            # today.
+            target.pop("repos", None)
         if not target.get("tags"):
             # Empty list clears the key entirely, so "absent means no tags"
             # stays the single on-disk representation (mirrors color above).

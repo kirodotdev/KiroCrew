@@ -241,6 +241,11 @@ describe('query-string builders', () => {
     await api.fileSearch('cli')
     expect(call(1).url).toBe('/api/file-search?q=cli')
     expect(call(1).init?.signal).toBeInstanceOf(AbortSignal)
+
+    // Extra repos (multi-repo project) are appended as repeated project= roots,
+    // primary first; a repo equal to the primary and an empty one are dropped.
+    await api.fileSearch('cli', '/p/foo', undefined, undefined, undefined, ['/p/bar', '/p/foo', '', '/p/baz'])
+    expect(call(2).url).toBe('/api/file-search?q=cli&project=%2Fp%2Ffoo&project=%2Fp%2Fbar&project=%2Fp%2Fbaz')
   })
 
   it('artifactSessionDocs can scope to one session', async () => {

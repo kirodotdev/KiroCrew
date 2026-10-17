@@ -396,6 +396,81 @@ resolves it without creating it (the doctor's census uses that).
 
 The CLI (`cli.py:main()`) auto-detects and sets the env var at startup.
 
+## Folder repositories (multi-repo projects) (`dashboard/chat_folders.py`)
+
+A chat folder is a project, and a project may hold several repositories. Beside
+its primary `project_dir` a folder record in `folders.json` may carry an optional
+`repos` list of absolute (or `~`-prefixed) directories — the extra repositories
+the project holds. `project_dir` stays the primary repo and the session's working
+directory (`slot.project`, the agent's cwd); `repos` are additional directories
+every chat filed in the subtree knows about and can reach under the SAME rules
+as `project_dir` — the agent reads and edits them exactly as it does the working
+directory, with the same sandbox treatment, so writes in a secondary repo
+succeed under precisely the conditions writes in the primary do (reachable in the
+standalone/standard sandbox modes; withheld under an ENFORCED harness, exactly
+like the primary). This adds no access the primary does not already have. The key is
+omitted when empty (like `steering_dirs`/`color`/`tags`), so "absent means none"
+is the single on-disk representation and a folder with no extras is byte-for-byte
+what it is on disk today; a PATCH with `[]` clears it.
+
+- **Validation** (`_validate_repos`) applies the EXACT `project_dir` contract per
+  entry — `_validate_project_dir` (absolute or `~`-prefixed, `expanduser` +
+  `realpath`, sensitive-path rejection SEL-logged like `project_dir`, must be an
+  existing directory) — so an extra repo can never reach a path the primary could
+  not. On top of it: a `MAX_FOLDER_REPOS` (16) list cap, rejection of duplicates
+  within one folder (compared by resolved realpath), and rejection of an entry
+  that resolves to the folder's own `project_dir` (the primary is already the cwd
+  and first [PROJECT] line). Both write sites also run the voice-runtime /
+  data-home overlap pre-flight (`_folder_project_overlap_denied`) per entry, the
+  same gate the primary gets. Failures return `400` with code `repos_invalid`
+  (or `workspace_overlaps_data_home` for an overlap). It is NOT the
+  `steering_dirs` contract: a repo is a working directory a filed session reads
+  and writes, not an unsandboxed host-file read, so the host-file principal gate,
+  the memory-silo fence and the pinned-open screen do not apply — a repo is
+  governed exactly as `project_dir` is.
+- **No principal gate.** Unlike `steering_dirs`, an app or crew-member principal
+  may write `repos`: a repo is governed as `project_dir` is, and a principal may
+  write `project_dir` today, so `repos` is allowed no wider.
+- **No sandbox change.** `repos` adds nothing to any sandbox scope. The sandbox
+  seals the data home and sensitive trees (`sandbox.py`); `project_dir` is never
+  a write fence, only the cwd / context / file-search scope. An extra repo is
+  reachable under the exact same rules as the primary — and nothing wider, which
+  is why the validator refuses a sensitive or data-home-overlapping entry at the
+  write, the same ceiling the primary has.
+- **Resolution** (`_resolve_folder_repos` / `resolve_folder_repos_off_loop`) is
+  NEAREST-folder-wins, resolved from the SAME folder the primary `project_dir`
+  resolves from (`_nearest_project_folder`), not accumulative like
+  `steering_dirs`: a project's repos travel with its project directory. The walk
+  is cycle-guarded, re-validates each stored path at read time (never trusting
+  `folders.json`), dedups by resolved realpath, and drops an entry that now
+  equals the primary. A malformed stored shape fails the resolution; a directory
+  since moved or made sensitive fails the per-entry contract — both surface as a
+  resolution error the turn path degrades on (no repos, a warning naming the
+  slot), never a failed turn.
+- **Live resolution, no slot field.** Like `steering_dirs`, the effective list
+  is never cached on the slot: `_ChatSlot` carries no repos field. The dashboard
+  turn path (`dashboard/chat_runner.py`) resolves it live from the slot's current
+  `folder_id` whenever the slot carries both a folder and a project, and passes
+  `folder_repos` to `build_message`. The `[PROJECT]` context line
+  (`context_assembly/turn.py` `rail_parts`) then lists the primary followed by
+  each extra repository; with no extras the single-project line is byte-for-byte
+  unchanged. A resolution error logs a warning and the turn proceeds with the
+  primary alone.
+- **File search / `@`-mentions.** `GET /api/file-search` accepts a REPEATED
+  `project=` query param: the frontend `@`-picker (`FilePickerMenu`) sends the
+  folder's primary project plus each extra repo (`resolveFolderRepos` resolves
+  them from the `['chat-folders']` cache, nearest-folder-wins), and the endpoint
+  walks and merges every named root. The primary stays first so its in-memory
+  index still drives the single-root fast path when no extra repo is named. A
+  single named root keeps its `project_not_found` 404; among several, a missing
+  or sensitive repo is skipped rather than failing the whole search. The `./`
+  path-completion picker (`pathMode`) resolves against the single primary only.
+- **Folder settings UI.** `FolderConfigModal` adds an "Additional repositories"
+  row editor beside the project-directory field, built with the same
+  `ProjectPicker` (routed through `pickerTarget='repo'`); the create and update
+  handlers (`chat-sidebar/folders.ts`, `chat-sidebar/folderModal.tsx`) send
+  `repos` on `POST`/`PATCH`, and `[]` clears it.
+
 ## Folder steering directories (`dashboard/chat_folders.py`)
 
 A chat folder record in `folders.json` may carry an optional `steering_dirs`

@@ -15,7 +15,7 @@ import { ChatFolder, ChatTag } from '../types'
 import { i18nT } from '../i18n/t'
 
 /** The folder fields this modal owns. */
-export type FolderConfigField = 'name' | 'color' | 'icon' | 'projectDir' | 'defaultAgent' | 'tags' | 'steeringDirs'
+export type FolderConfigField = 'name' | 'color' | 'icon' | 'projectDir' | 'defaultAgent' | 'tags' | 'steeringDirs' | 'repos'
 
 export interface FolderConfigDraft {
   name: string
@@ -36,6 +36,10 @@ export interface FolderConfigDraft {
   /** Extra steering directories loaded for every chat in this folder's subtree
    *  (accumulative with ancestors, resolved server-side from folder_id). */
   steeringDirs: string[]
+  /** Extra repository directories this project folder holds beside its primary
+   *  `projectDir` (multi-repo project). Each is a working directory a filed
+   *  session may read and work in, and the `@`-picker searches across them. */
+  repos: string[]
   /** Fields the USER actually edited, measured against what the modal opened
    *  with. The caller must build its PATCH from this rather than diffing the
    *  draft against live cache: a field another client changed while the modal
@@ -87,7 +91,7 @@ function ancestorChain(folders: ChatFolder[], id: string | undefined): ChatFolde
   return out
 }
 
-const EMPTY: FolderConfigDraft = { name: '', color: '', icon: '', regenerateIcon: false, projectDir: '', defaultAgent: '', tags: [], steeringDirs: [], touched: [] }
+const EMPTY: FolderConfigDraft = { name: '', color: '', icon: '', regenerateIcon: false, projectDir: '', defaultAgent: '', tags: [], steeringDirs: [], repos: [], touched: [] }
 
 /** Set-equality on two tag-id lists (order-insensitive): the picker toggles
  *  membership, so "changed?" is about which ids are present, not their order. */
@@ -126,7 +130,7 @@ export default function FolderConfigModal({
   // REPLACES the scalar project_dir; 'steering' PUSHES the picked path into the
   // steering-dirs array. One picker instance serves both — routing by target
   // keeps folder-directory picking identical to every other project picker.
-  const [pickerTarget, setPickerTarget] = useState<'project' | 'steering'>('project')
+  const [pickerTarget, setPickerTarget] = useState<'project' | 'steering' | 'repo'>('project')
   // The backend rejects a free-typed project_dir (not absolute / not an existing
   // directory / sensitive path) with a 400. Submit used to be fire-and-forget,
   // so a rejection closed the modal and threw the whole draft away with no
@@ -138,11 +142,17 @@ export default function FolderConfigModal({
   // server message in the modal's top alert, which names no field. Only the
   // icon codes route here; every other failure keeps the top alert.
   const [iconErr, setIconErr] = useState(false)
+  // A short note under the repos editor when a repo pick was a no-op (the picked
+  // path is already the project directory, or already in the list), so a user
+  // whose pick added no row is told why instead of thinking the add failed. An
+  // i18n key, not the raw path; cleared on any successful repos change.
+  const [repoNote, setRepoNote] = useState('')
   // What the draft looked like when the modal opened — the baseline for
   // "has the user actually typed something worth protecting?".
   const seedRef = useRef<FolderConfigDraft>(EMPTY)
   const browseRef = useRef<HTMLButtonElement>(null)
   const steeringBrowseRef = useRef<HTMLButtonElement>(null)
+  const repoBrowseRef = useRef<HTMLButtonElement>(null)
   const nameRef = useRef<HTMLInputElement>(null)
   // A folder name is prime IME territory (the sidebar's inline input it replaces
   // guarded this too). Without the guard, the Enter that COMMITS a Chinese /
@@ -190,6 +200,7 @@ export default function FolderConfigModal({
         defaultAgent: f.default_agent ?? '',
         tags: Array.isArray(f.tags) ? (known ? f.tags.filter(t => vocab.has(t)) : [...f.tags]) : [],
         steeringDirs: Array.isArray(f.steering_dirs) ? [...f.steering_dirs] : [],
+        repos: Array.isArray(f.repos) ? [...f.repos] : [],
         touched: [],
       }
       : EMPTY
@@ -301,6 +312,7 @@ export default function FolderConfigModal({
     if (draft.defaultAgent !== seeded.defaultAgent) edited.push('defaultAgent')
     if (tagsEdited) edited.push('tags')
     if (!sameDirs(draft.steeringDirs, seeded.steeringDirs)) edited.push('steeringDirs')
+    if (!sameDirs(draft.repos, seeded.repos)) edited.push('repos')
     setSaving(true); setSaveErr(''); setIconErr(false)
     try {
       await onSubmit({ ...draft, name: trimmedName, touched: edited })
@@ -335,6 +347,7 @@ export default function FolderConfigModal({
   if (draft.defaultAgent !== seed.defaultAgent) touched.push('defaultAgent')
   if (!sameTags(draft.tags, seed.tags)) touched.push('tags')
   if (!sameDirs(draft.steeringDirs, seed.steeringDirs)) touched.push('steeringDirs')
+  if (!sameDirs(draft.repos, seed.repos)) touched.push('repos')
   const isDirty = touched.length > 0
 
   return (
@@ -620,6 +633,49 @@ export default function FolderConfigModal({
             )}
           </div>
 
+          {/* Additional repositories — the multi-repo project feature. An
+           *  ordered list of directory rows the user builds with the SAME
+           *  ProjectPicker the project-dir field uses (routed through
+           *  pickerTarget='repo'). Each is an extra repository the project holds
+           *  beside the primary project directory above; every chat filed here
+           *  can read and work in all of them, and the @-picker searches across
+           *  them. Mirrors the steering-dirs editor below in shape. */}
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[11.5px] font-semibold text-muted">{i18nT('components.folderConfigModal.repos')}</span>
+            {draft.repos.length > 0 && (
+              <div data-testid="folder-config-repos" className="flex flex-col gap-1.5">
+                {draft.repos.map((dir, i) => (
+                  <div
+                    key={`${dir}-${i}`}
+                    data-testid={`folder-config-repo-${i}`}
+                    className="flex items-center gap-2 bg-bg-elevated border border-border rounded-lg px-2.5 py-1.5"
+                  >
+                    <FolderOpen size={12} className="text-accent shrink-0" />
+                    <span className="flex-1 min-w-0 font-mono text-[12px] text-text truncate" title={dir}>{dir}</span>
+                    <button
+                      type="button"
+                      data-testid={`folder-config-repo-remove-${i}`}
+                      aria-label={i18nT('components.folderConfigModal.repo_remove', { path: dir })}
+                      onClick={() => { setRepoNote(''); setDraft(d => ({ ...d, repos: d.repos.filter((_, j) => j !== i) })) }}
+                      className="shrink-0 p-0.5 text-muted hover:text-danger rounded hover:bg-bg-hover cursor-pointer bg-transparent border-none"
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div>
+              <Btn ref={repoBrowseRef} data-testid="folder-config-repo-add" onClick={() => { setPickerTarget('repo'); setPickerOpen(true) }}>
+                <Plus size={13} /> {i18nT('components.folderConfigModal.repo_add')}
+              </Btn>
+            </div>
+            {repoNote && (
+              <span data-testid="folder-config-repo-note" className="text-[11px] text-warn">{repoNote}</span>
+            )}
+            <span className="text-[11px] text-muted-strong">{i18nT('components.folderConfigModal.repos_hint')}</span>
+          </div>
+
           {/* Extra steering directories — an ordered list of directory rows the
            *  user builds with the SAME ProjectPicker the project-dir field uses
            *  (routed through pickerTarget='steering'). Ancestor dirs accumulate
@@ -722,14 +778,34 @@ export default function FolderConfigModal({
         <ProjectPicker
           open={true}
           onOpenChange={o => { if (!o) setPickerOpen(false) }}
-          anchorRef={pickerTarget === 'steering' ? steeringBrowseRef : browseRef}
+          anchorRef={pickerTarget === 'steering' ? steeringBrowseRef : pickerTarget === 'repo' ? repoBrowseRef : browseRef}
           startPath={draft.projectDir}
           onSelect={path => {
-            setDraft(d => pickerTarget === 'steering'
-              // Append to the ordered list, ignoring a path already present so a
-              // double-pick cannot duplicate a row.
-              ? (d.steeringDirs.includes(path) ? d : { ...d, steeringDirs: [...d.steeringDirs, path] })
-              : { ...d, projectDir: path })
+            setDraft(d => {
+              if (pickerTarget === 'steering') {
+                // Append to the ordered list, ignoring a path already present so
+                // a double-pick cannot duplicate a row.
+                return d.steeringDirs.includes(path) ? d : { ...d, steeringDirs: [...d.steeringDirs, path] }
+              }
+              if (pickerTarget === 'repo') {
+                // Append, skipping a duplicate and the primary project directory
+                // itself — the backend refuses a repo equal to project_dir, so
+                // keep the picker from staging one that would 400 on save. A
+                // skipped pick sets an inline note so the user is told why no
+                // row appeared instead of thinking the add silently failed.
+                if (path === d.projectDir) {
+                  setRepoNote(i18nT('components.folderConfigModal.repo_is_project_dir'))
+                  return d
+                }
+                if (d.repos.includes(path)) {
+                  setRepoNote(i18nT('components.folderConfigModal.repo_already_added'))
+                  return d
+                }
+                setRepoNote('')
+                return { ...d, repos: [...d.repos, path] }
+              }
+              return { ...d, projectDir: path }
+            })
             setPickerOpen(false)
           }}
         />

@@ -508,7 +508,6 @@ test/test_fetch_thread_replies.py
 test/test_file_download.py
 test/test_file_raw.py
 test/test_file_read_resolve.py
-test/test_file_search.py
 test/test_file_search_dirs.py
 test/test_file_send_channel.py
 test/test_file_send_units.py

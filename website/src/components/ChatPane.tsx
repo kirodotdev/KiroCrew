@@ -49,6 +49,8 @@ import { useSelectionQuoteAsk } from '../chat-core/composer/selectionActions'
 import FlyingQuote from './FlyingQuote'
 import { revealComposer } from '../pages/chat/composerFocus'
 import { api } from '../api/client'
+import type { ChatFolder } from '../types'
+import { resolveFolderRepos } from '../utils/folderAgent'
 import { slotMessagesQueryKey } from '../api/slotMessagesQuery'
 import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../chat-core/composer/Composer'
 import { slotApprovalMode } from '../utils/slotApprovalMode'
@@ -171,6 +173,16 @@ export default function ChatPane({
   // has_more freezes at mount while a later bounded warm can truncate the cache.
   const warmHasMore = useAppSelector((s) => s.chat.slotPaneHasMore?.[slotKey])
   const paneSlot = useAppSelector((s) => s.dashboard.slots.find((x) => x.key === slotKey))
+  // Extra repository directories of this session's project folder (multi-repo
+  // project): read from the shared ['chat-folders'] cache the sidebar fills, so
+  // no extra fetch, and resolved nearest-folder-wins from the slot's folder_id.
+  // Empty for an unfiled chat or a folder with no extra repos — then the
+  // @-picker searches `project` alone, exactly as before.
+  const { data: paneFolders } = useQuery<ChatFolder[]>({ queryKey: ['chat-folders'], queryFn: () => api.chatFolders() })
+  const paneRepos = useMemo(
+    () => (paneSlot?.folder_id ? resolveFolderRepos(paneFolders ?? [], paneSlot.folder_id) : []),
+    [paneFolders, paneSlot?.folder_id],
+  )
   // A stop is under way on this pane's turn: the stream state's own `stopping`
   // phase, or a Stop pressed from another tab that reaches this pane only as
   // the slots frame's `stopping` flag. This is the footer's and composer's
@@ -1071,6 +1083,7 @@ export default function ChatPane({
           }}
           onFollowUpSend={(text?: string) => doSend(text)}
           project={paneSlot?.project ?? ''}
+          repos={paneRepos}
           // A crewmate's chat is a DM with one named crewmate, so the composer
           // addresses it by name rather than the product ("Message Kiro Crew…").
           placeholder={crewmate ? i18nT('components.chatInput.message_placeholder', { bot: crewmate.label || crewmate.name }) : undefined}

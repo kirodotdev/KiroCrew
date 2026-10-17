@@ -1519,6 +1519,13 @@ export interface ChatFolder {
    *  ACCUMULATIVE up the parent_id chain (unlike `project_dir`, which is
    *  nearest-wins). Absent = none, mirroring the optional `tags`. */
   steering_dirs?: string[]
+  /** Extra repository directories this project folder holds BESIDE its primary
+   *  `project_dir` (the multi-repo project feature). Each is a working
+   *  directory a filed session may read and work in, and the `@`-picker fans
+   *  file search across all of them. NEAREST-folder-wins like `project_dir`
+   *  (repos belong to the folder that owns the primary), not accumulative like
+   *  `steering_dirs`. Absent = none, mirroring the optional `steering_dirs`. */
+  repos?: string[]
   /** Principal that owns the folder: an app's name, `member:<store>` for a
    *  crew member, absent/empty for the person. Folder steering from an
    *  ancestor owned by ANOTHER principal is never delivered to this folder's

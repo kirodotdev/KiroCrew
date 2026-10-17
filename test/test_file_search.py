@@ -141,8 +141,12 @@ class TestFileSearch:
         explicitly (``?project=``) still works and is covered separately.
         """
         (tmp_path / "findme.txt").write_text("x")
-        with patch.dict(os.environ, {"HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}, clear=False), \
-             patch.dict(os.environ, {"KIROCREW_PROJECT_DIR": ""}, clear=False):
+        with (
+            patch.dict(
+                os.environ, {"HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}, clear=False
+            ),
+            patch.dict(os.environ, {"KIROCREW_PROJECT_DIR": ""}, clear=False),
+        ):
             async with TestClient(TestServer(_make_app())) as client:
                 resp = await client.get("/api/file-search?q=findme")
                 names = {r["name"] for r in (await resp.json())["results"]}
@@ -152,7 +156,9 @@ class TestFileSearch:
     async def test_explicit_home_project_still_searched(self, tmp_path, mock_sel):
         """Naming home is deliberate and stays fully searchable."""
         (tmp_path / "findme.txt").write_text("x")
-        with patch.dict(os.environ, {"HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}, clear=False):
+        with patch.dict(
+            os.environ, {"HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}, clear=False
+        ):
             async with TestClient(TestServer(_make_app())) as client:
                 resp = await client.get(f"/api/file-search?q=findme&project={tmp_path}")
                 names = {r["name"] for r in (await resp.json())["results"]}
@@ -178,9 +184,7 @@ class TestFileSearch:
         sensitive_dir.mkdir()
         with patch("kiro_crew.security.is_sensitive_path", return_value=True):
             async with TestClient(TestServer(_make_app())) as client:
-                resp = await client.get(
-                    f"/api/file-search?q=test&project={sensitive_dir}"
-                )
+                resp = await client.get(f"/api/file-search?q=test&project={sensitive_dir}")
                 assert resp.status == 403
                 data = await resp.json()
                 assert data["error"] == "Access denied"
@@ -191,16 +195,14 @@ class TestFileSearch:
     async def test_path_match_ranked_below_name_match(self, tmp_path, mock_sel):
         sub = tmp_path / "myfeature"
         sub.mkdir()
-        (sub / "utils.py").write_text("x")          # path matches "myfeature"
+        (sub / "utils.py").write_text("x")  # path matches "myfeature"
         (tmp_path / "myfeature.py").write_text("x")  # filename matches "myfeature"
         async with TestClient(TestServer(_make_app())) as client:
             # kinds=files: this asserts name-match vs path-match ranking among
             # files. The "myfeature" directory itself is a legitimate hit under
             # the default kinds=all, so it is excluded here to keep the
             # assertion about the ranking rule under test.
-            resp = await client.get(
-                f"/api/file-search?q=myfeature&kinds=files&project={tmp_path}"
-            )
+            resp = await client.get(f"/api/file-search?q=myfeature&kinds=files&project={tmp_path}")
             results = (await resp.json())["results"]
             assert results[0]["name"] == "myfeature.py"  # filename match ranked first
             assert any(r["name"] == "utils.py" for r in results)  # path match included
@@ -283,6 +285,7 @@ class TestFileSearch:
         passed to the walk -- max_collect multiplies it 10x, so an unclamped
         value would amplify server-side filesystem work."""
         from kiro_crew.dashboard.handlers.files import _SEARCH_LIMIT_CEILING
+
         for i in range(_SEARCH_LIMIT_CEILING + 10):
             (tmp_path / f"match_{i:03d}.txt").write_text("x")
         async with TestClient(TestServer(_make_app())) as client:
@@ -345,3 +348,85 @@ class TestFolderScopedSearchReachesWhatTheProjectPageMisses:
         assert len(project_names) == 50
         assert "billing_report_quarterly_final_v2.ts" not in project_names
         assert "billing_report_quarterly_final_v2.ts" in scoped_names
+
+
+class TestFileSearchMultiRepo:
+    """A folder that holds several repositories sends its primary project plus
+    each extra repo as a REPEATED ``project=`` param; the search fans across all
+    of them. The single-root contract is unchanged."""
+
+    @pytest.mark.asyncio
+    async def test_searches_across_multiple_project_roots(self, tmp_path, mock_sel):
+        a = tmp_path / "repo_a"
+        b = tmp_path / "repo_b"
+        a.mkdir()
+        b.mkdir()
+        (a / "target_a.py").write_text("x")
+        (b / "target_b.py").write_text("y")
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(
+                "/api/file-search",
+                params=[("q", "target"), ("project", str(a)), ("project", str(b))],
+            )
+            data = await resp.json()
+        names = {r["name"] for r in data["results"]}
+        # Both repos contribute hits.
+        assert "target_a.py" in names
+        assert "target_b.py" in names
+
+    @pytest.mark.asyncio
+    async def test_a_missing_extra_repo_is_skipped_not_404(self, tmp_path, mock_sel):
+        a = tmp_path / "repo_a"
+        a.mkdir()
+        (a / "target_a.py").write_text("x")
+        missing = tmp_path / "gone"
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(
+                "/api/file-search",
+                params=[("q", "target"), ("project", str(a)), ("project", str(missing))],
+            )
+            # Among several roots a missing one is dropped, not a whole-batch 404.
+            assert resp.status == 200, await resp.text()
+            names = {r["name"] for r in (await resp.json())["results"]}
+        assert "target_a.py" in names
+
+    @pytest.mark.asyncio
+    async def test_a_single_missing_root_still_404s(self, tmp_path, mock_sel):
+        # The legacy one-repo call keeps its project_not_found contract.
+        missing = tmp_path / "gone"
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-search?q=target&project={missing}")
+            assert resp.status == 404
+            assert (await resp.json())["code"] == "project_not_found"
+
+    @pytest.mark.asyncio
+    async def test_a_sensitive_extra_repo_is_skipped_not_403(self, tmp_path, mock_sel):
+        a = tmp_path / "repo_a"
+        sensitive = tmp_path / "secret"
+        a.mkdir()
+        sensitive.mkdir()
+        (a / "target_a.py").write_text("x")
+
+        def _is_sensitive(p):
+            return str(sensitive) in str(p)
+
+        with patch("kiro_crew.security.is_sensitive_path", side_effect=_is_sensitive):
+            async with TestClient(TestServer(_make_app())) as client:
+                resp = await client.get(
+                    "/api/file-search",
+                    params=[("q", "target"), ("project", str(a)), ("project", str(sensitive))],
+                )
+                # One sensitive repo among several does not deny the whole search.
+                assert resp.status == 200, await resp.text()
+                names = {r["name"] for r in (await resp.json())["results"]}
+        assert "target_a.py" in names
+
+    @pytest.mark.asyncio
+    async def test_a_single_sensitive_root_still_403s(self, tmp_path, mock_sel):
+        sensitive = tmp_path / "secret"
+        sensitive.mkdir()
+        with patch("kiro_crew.security.is_sensitive_path", return_value=True):
+            async with TestClient(TestServer(_make_app())) as client:
+                resp = await client.get(f"/api/file-search?q=test&project={sensitive}")
+                assert resp.status == 403
+                assert (await resp.json())["code"] == "access_denied"

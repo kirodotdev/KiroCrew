@@ -160,9 +160,15 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
      *  Bounded HERE, not per initiator: react-query dedupes on the key, so the
      *  weakest initiator would otherwise decide whether the promise is bounded —
      *  and a future caller would arrive unbounded by default. */
-    fileSearch: (q: string, project?: string, signal?: AbortSignal, kinds?: 'files' | 'dirs', limit?: number) => {
+    fileSearch: (q: string, project?: string, signal?: AbortSignal, kinds?: 'files' | 'dirs', limit?: number, repos?: readonly string[]) => {
       const p = new URLSearchParams({ q })
-      if (project) p.set('project', project)
+      // The primary project goes first so the server's single-root in-memory
+      // index still drives the fast path when no extra repo is named. `repos`
+      // are the folder's ADDITIONAL repositories (multi-repo project): each is
+      // appended as a repeated `project=` param the server walks and merges.
+      // `append`, not `set`, so the repeats are preserved rather than collapsed.
+      if (project) p.append('project', project)
+      if (repos) for (const r of repos) if (r && r !== project) p.append('project', r)
       if (kinds) p.set('kinds', kinds)
       if (limit) p.set('limit', String(limit))
       return withJournaledDeadline(FILE_SEARCH_TIMEOUT_MS, signal, '/api/file-search', s =>

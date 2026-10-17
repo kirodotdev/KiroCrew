@@ -374,7 +374,7 @@ export function useFolderMutations({ queryClient, setFolderActionError, setFolde
 }) {
   // Folder mutations
   const createFolderMutation = useMutation({
-    mutationFn: (v: { name: string; parentId?: string; projectDir?: string; defaultAgent?: string; color?: string; icon?: string; tags?: string[]; steeringDirs?: string[] }) =>
+    mutationFn: (v: { name: string; parentId?: string; projectDir?: string; defaultAgent?: string; color?: string; icon?: string; tags?: string[]; steeringDirs?: string[]; repos?: string[] }) =>
       api.createChatFolder(v.name.trim(), v.parentId, {
         project_dir: v.projectDir || undefined,
         default_agent: v.defaultAgent || undefined,
@@ -382,6 +382,7 @@ export function useFolderMutations({ queryClient, setFolderActionError, setFolde
         icon: v.icon || undefined,
         tags: v.tags && v.tags.length > 0 ? v.tags : undefined,
         steering_dirs: v.steeringDirs && v.steeringDirs.length > 0 ? v.steeringDirs : undefined,
+        repos: v.repos && v.repos.length > 0 ? v.repos : undefined,
       }),
     // Through the idle gate, not a direct invalidate: a refetch here would
     // land inside a still-pending update's optimistic window.

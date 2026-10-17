@@ -9,7 +9,7 @@ import type { ChatInputProps } from './props'
 
 /** The trigger menus anchored to the composer, and the consent dialog a
  *  project skill asks for before its token can be inserted. */
-export function ComposerPickerMenus({ pickers, value, onChange, composerAnchorRef, sendOnEnter, typedCommandMenus, hiddenCommands, project, agentName, onFileSelect, onFileOpen }: {
+export function ComposerPickerMenus({ pickers, value, onChange, composerAnchorRef, sendOnEnter, typedCommandMenus, hiddenCommands, project, repos, agentName, onFileSelect, onFileOpen }: {
   pickers: ReturnType<typeof useComposerPickers>
   value: string
   onChange: (v: string) => void
@@ -18,6 +18,9 @@ export function ComposerPickerMenus({ pickers, value, onChange, composerAnchorRe
   typedCommandMenus: boolean
   hiddenCommands?: readonly string[]
   project?: string
+  /** Extra repository directories to also search in @-mention mode (multi-repo
+   *  project). Passed only to the @-mention picker, never the `./` path picker. */
+  repos?: readonly string[]
   agentName?: string
   onFileSelect: ChatInputProps['onFileSelect']
   onFileOpen: ChatInputProps['onFileOpen']
@@ -38,6 +41,7 @@ export function ComposerPickerMenus({ pickers, value, onChange, composerAnchorRe
           anchorRef={composerAnchorRef}
           open={filePickerOpen}
           project={project}
+          repos={repos}
           sendOnEnter={sendOnEnter}
           onFileOpen={onFileOpen}
           onSelect={({ path, relativePath, kind }) => {

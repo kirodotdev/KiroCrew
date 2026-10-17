@@ -264,11 +264,12 @@ def _folder_tools() -> tuple[Tool, ...]:
                 "refused, since the two could not be told apart by path. Metadata "
                 "only: sessions and subfolders stay where they are. To reparent or "
                 "reorder use chat_folder_move. This tool deliberately cannot set "
-                "project_dir, default_agent or steering_dirs (they are unknown "
-                "fields here): those fields change the working directory, agent, "
-                "memory boundary or standing instructions of every future session "
-                "filed in the folder, which is the person's call in the folder "
-                "settings, not an agent's. To ask for a steering_dirs change, "
+                "project_dir, repos, default_agent or steering_dirs (they are "
+                "unknown fields here): those fields change the working directory, "
+                "extra repositories, agent, memory boundary or standing "
+                "instructions of every future session filed in the folder, which "
+                "is the person's call in the folder settings, not an agent's. To "
+                "ask for a steering_dirs change, "
                 "propose_change(kind='folder.steering') puts a card in front of "
                 "the person. An app agent or crew member may update "
                 "only a folder it created. Refused in a session linked to a channel "
@@ -3733,6 +3734,11 @@ def _run_chat_folder_tree(args: dict[str, Any], ctx: ToolContext) -> str:
         meta_bits = []
         if row.get("project_dir"):
             meta_bits.append(f"project={row['project_dir']}")
+        # Extra repositories this project folder holds beside the primary
+        # (multi-repo project), so the agent's tree view shows them the same
+        # way it shows ``project`` — the person sets them in folder settings.
+        if isinstance(row.get("repos"), list) and row.get("repos"):
+            meta_bits.append(f"repos=[{', '.join(str(p) for p in row['repos'])}]")
         if row.get("default_agent"):
             meta_bits.append(f"agent={row['default_agent']}")
         # What the folder DECLARES, so an agent proposing a folder.steering

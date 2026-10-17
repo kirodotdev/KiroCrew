@@ -346,6 +346,10 @@ export interface ChatInputProps {
   optimizerMentionGuard?: (draft: string) => (rewrite: string) => boolean
   onFileOpen?: (path: string) => void
   project?: string
+  /** Extra repository directories this session's project folder holds beside
+   *  `project`, so the `@`-mention file picker searches across all of them
+   *  (the multi-repo project feature). Absent/empty = search `project` alone. */
+  repos?: readonly string[]
   /** The session runs on another machine (the crew window). `project` is
    *  then that machine's folder: drawn as a plain label, never a picker, and
    *  nothing on this machine is rooted at it (no `./path` completion, no file

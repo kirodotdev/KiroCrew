@@ -1238,4 +1238,104 @@ describe('FolderConfigModal', () => {
       expect(err.textContent).toContain('Could not save the folder.')
     })
   })
+
+  describe('additional repositories (multi-repo project)', () => {
+    // The "Add repository" button opens the SAME ProjectPicker the project-dir
+    // Browse button uses, routed to push into the repos array. The mock picker
+    // resolves the Browse tab at '/', so committing a typed path asserts on it.
+    const addRepo = async (path: string) => {
+      fireEvent.click(screen.getByTestId('folder-config-repo-add'))
+      const { api } = await import('../api/client')
+      await waitFor(() => expect(api.browseDirs).toHaveBeenCalled())
+      const combo = await screen.findByRole('combobox', { name: /project directory path/i })
+      fireEvent.change(combo, { target: { value: path } })
+      fireEvent.mouseDown(screen.getByText('Select'))
+    }
+
+    it('renders no repo rows for a folder with none', () => {
+      open()
+      expect(screen.queryByTestId('folder-config-repos')).toBeNull()
+      expect(screen.getByTestId('folder-config-repo-add')).toBeTruthy()
+    })
+
+    it('prefills existing repos in edit mode', () => {
+      const f = folder('f1', { name: 'Payments', project_dir: '/p/foo', repos: ['/p/bar', '/p/baz'] })
+      open({ mode: 'edit', folder: f, folders: [f] })
+      const list = screen.getByTestId('folder-config-repos')
+      expect(list.textContent).toContain('/p/bar')
+      expect(list.textContent).toContain('/p/baz')
+    })
+
+    it('adds a repository via the picker and submits it under repos', async () => {
+      const { onSubmit } = open()
+      fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'Platform' } })
+      await addRepo('/p/service-b')
+      await waitFor(() =>
+        expect(screen.getByTestId('folder-config-repo-0').textContent).toContain('/p/service-b'))
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+        repos: ['/p/service-b'],
+        touched: expect.arrayContaining(['repos']),
+      }))
+    })
+
+    it('removes a repo row', async () => {
+      const f = folder('f1', { name: 'Payments', project_dir: '/p/foo', repos: ['/p/bar', '/p/baz'] })
+      const { onSubmit } = open({ mode: 'edit', folder: f, folders: [f] })
+      fireEvent.click(screen.getByTestId('folder-config-repo-remove-0'))
+      await waitFor(() =>
+        expect(screen.getByTestId('folder-config-repo-0').textContent).toContain('/p/baz'))
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+        repos: ['/p/baz'],
+        touched: expect.arrayContaining(['repos']),
+      }))
+    })
+
+    it('clearing every repo submits an empty array (PATCH [] clears)', async () => {
+      const f = folder('f1', { name: 'Payments', project_dir: '/p/foo', repos: ['/p/only'] })
+      const { onSubmit } = open({ mode: 'edit', folder: f, folders: [f] })
+      fireEvent.click(screen.getByTestId('folder-config-repo-remove-0'))
+      await waitFor(() => expect(screen.queryByTestId('folder-config-repos')).toBeNull())
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+        repos: [],
+        touched: expect.arrayContaining(['repos']),
+      }))
+    })
+
+    it('does not report repos in touched when unchanged', async () => {
+      const f = folder('f1', { name: 'Payments', project_dir: '/p/foo', repos: ['/p/bar'] })
+      const onSubmit = vi.fn().mockResolvedValue(undefined)
+      render(
+        <FolderConfigModal open={true} mode="edit" folder={f} folders={[f]}
+          installedAgents={AGENTS} onClose={vi.fn()} onSubmit={onSubmit} onRetryTags={vi.fn()} />
+      )
+      fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'Renamed' } })
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+      expect(onSubmit.mock.calls[0][0].touched).not.toContain('repos')
+    })
+
+    it('shows an inline note when a pick duplicates an existing repo (adds no row)', async () => {
+      const f = folder('f1', { name: 'Payments', project_dir: '/p/foo', repos: ['/'] })
+      // The mock picker commits '/', which this folder already lists — the pick
+      // is a no-op and the user is told why instead of seeing nothing happen.
+      open({ mode: 'edit', folder: f, folders: [f] })
+      await addRepo('/')
+      await waitFor(() => expect(screen.getByTestId('folder-config-repo-note')).toBeTruthy())
+      // No duplicate row was added: the one existing row stays.
+      expect(screen.getAllByTestId(/^folder-config-repo-\d+$/).length).toBe(1)
+    })
+
+    it('shows an inline note when the pick is the project directory itself', async () => {
+      // project_dir '/' equals the mock picker's committed path, so the pick is
+      // rejected (backend refuses a repo equal to project_dir) with a note.
+      const f = folder('f1', { name: 'Payments', project_dir: '/' })
+      open({ mode: 'edit', folder: f, folders: [f] })
+      await addRepo('/')
+      await waitFor(() => expect(screen.getByTestId('folder-config-repo-note')).toBeTruthy())
+      expect(screen.queryByTestId('folder-config-repos')).toBeNull()
+    })
+  })
 })

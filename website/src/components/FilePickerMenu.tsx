@@ -55,6 +55,15 @@ interface Props {
   onFileOpen?: (path: string) => void
   project?: string
   /**
+   * Extra repository directories to ALSO search in @-mention mode (the
+   * multi-repo project feature): the folder's `project_dir` is `project`, and
+   * each of its extra repos is an additional root the file search fans across.
+   * Ignored in `pathMode`, where a `./` token resolves against the single
+   * primary project only. Absent/empty = search `project` alone, exactly as
+   * before.
+   */
+  repos?: readonly string[]
+  /**
    * Path-completion mode: `query` is a relative-path token (`./src/comp`) and the
    * rows are ONE directory level of `project`, from `/api/path-complete`, instead
    * of a fuzzy @-mention search. Same rows, same keyboard contract, same geometry
@@ -122,7 +131,7 @@ export function selectionFor(f: FileResult, root: string, dirPrefix?: string): {
   }
 }
 
-export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClose, onFileOpen, project, pathMode = false, sendOnEnter = 'enter' }: Props) {
+export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClose, onFileOpen, project, repos, pathMode = false, sendOnEnter = 'enter' }: Props) {
   const rootRef = useRef('')
   const resultsRef = useRef<FileResult[]>([])
   const onFileOpenRef = useRef(onFileOpen)
@@ -157,12 +166,15 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
   const { data, isFetching, isError } = useQuery<FileSearchResponse>({
     queryKey: pathMode
       ? ['path-complete', project, scope.dir, scope.partial]
-      : ['file-search', debounced, project],
+      // `repos` joins the key so adding/removing a repo refetches rather than
+      // serving a cached single-root result; a stable join keeps the key stable
+      // across renders when the set is unchanged.
+      : ['file-search', debounced, project, (repos ?? []).join('\u0000')],
     queryFn: async ({ signal }) => pathMode
       // Stamped with the prefix it was asked for, which is what makes a
       // placeholder payload self-describing rather than merely stale.
       ? { ...(await api.pathComplete(project ?? '', scope.dir, scope.partial, signal)), dir: scope.dir }
-      : api.fileSearch(debounced, project, signal),
+      : api.fileSearch(debounced, project, signal, undefined, undefined, repos),
     // An empty `scope.dir` means the debounced token is not a path token yet —
     // the tick right after the menu opens. Fetching there would ask for the
     // project root under a token that names something else.

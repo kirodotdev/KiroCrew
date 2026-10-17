@@ -244,6 +244,7 @@ function ChatInput({
   optimizerMentionGuard,
   onFileOpen,
   project: projectProp,
+  repos: reposProp,
   sessionOnPeer = false,
   projectBranch,
   projectDetached,
@@ -1116,7 +1117,7 @@ function ChatInput({
         <SketchDialog open={sketchOpen} onOpenChange={setSketchOpen} onInsert={onUploadFiles} returnFocusRef={composerAnchorRef} />
       )}
 
-      {!terminal.active && <ComposerPickerMenus pickers={pickers} value={value} onChange={onChange} composerAnchorRef={composerAnchorRef} sendOnEnter={sendOnEnter} typedCommandMenus={typedCommandMenus} hiddenCommands={hiddenCommands} project={project} agentName={agentName} onFileSelect={onFileSelect} onFileOpen={onFileOpen} />}
+      {!terminal.active && <ComposerPickerMenus pickers={pickers} value={value} onChange={onChange} composerAnchorRef={composerAnchorRef} sendOnEnter={sendOnEnter} typedCommandMenus={typedCommandMenus} hiddenCommands={hiddenCommands} project={project} repos={sessionOnPeer ? undefined : reposProp} agentName={agentName} onFileSelect={onFileSelect} onFileOpen={onFileOpen} />}
 
       {/* Unified input container — drag-to-resize targets the inner div. */}
       {/* The composer's SHOWN state is initial === animate ({opacity:1,height:auto}),

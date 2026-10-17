@@ -146,6 +146,7 @@ from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_folders import (
     _resolve_folder_steering_dirs,
+    resolve_folder_repos_off_loop,
     slot_steering_principal,
 )
 from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
@@ -7541,6 +7542,26 @@ async def _run_chat(
                     )
                 else:
                     _folder_steering_dirs = tuple(_resolved_dirs)
+            # Extra repository directories (the multi-repo project feature). The
+            # [PROJECT] rail is injected on EVERY turn (not only fresh/reinjection
+            # ones), so repos are resolved on every turn the slot carries both a
+            # folder and a project — cheap when the folder declares none (a dict
+            # walk, no thread hop). The resolver re-validates every stored path
+            # off-loop and nearest-folder-wins like the primary project_dir. A
+            # resolution error degrades to no extra repos with a warning naming
+            # the slot; it must never fail the turn.
+            _folder_repos: tuple[str, ...] = ()
+            if slot.folder_id and _turn_project:
+                _repos_snapshot = await state.read_folders(
+                    lambda folders: [dict(folder) for folder in folders]
+                )
+                _resolved_repos, _repos_err = await resolve_folder_repos_off_loop(
+                    _repos_snapshot, slot.folder_id
+                )
+                if _repos_err:
+                    logger.warning("Folder repos unavailable for slot %s: %s", slot.key, _repos_err)
+                else:
+                    _folder_repos = tuple(_resolved_repos)
             # Stand up this crew's OWN vector store before the offloaded build.
             # It has to happen here, on the loop, because init() is blocking file
             # IO (sqlite connect, migrations, a FAISS load) that build_message's
@@ -7600,6 +7621,7 @@ async def _run_chat(
                     user_span_out=_user_span,
                     needs_reinjection=_needs_reinjection,
                     steering_dirs=_folder_steering_dirs,
+                    folder_repos=_folder_repos,
                     context_provider=client,
                 )
             slot_ctx_omitted = dict(_ctx_omitted)
