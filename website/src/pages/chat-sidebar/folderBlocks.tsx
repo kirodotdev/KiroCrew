@@ -7,6 +7,7 @@ import { X, Eye, EyeOff, FolderPlus, CornerUpRight, MessageSquarePlus, Pencil, L
 import { FolderBody } from '../../components/FolderBody'
 import { FolderRail } from '../../components/FolderRail'
 import ErrorNotice from '../../components/ErrorNotice'
+import StatusNotice from '../../components/StatusNotice'
 import FolderGlyph from '../../components/FolderGlyph'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '../../components/ui/dropdown-menu'
@@ -145,16 +146,54 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
          *  and both stock single-row layouts squeeze the message to a sliver
          *  beside the Ask-agent / dismiss controls. Wrapping lets the message
          *  take the full line and the controls fold under it. */}
-        <ErrorNotice
-          message={folderCreateError.message}
-          title={folderCreateError.title}
-          report={folderCreateError.report}
-          variant="inline"
-          askAgent
-          onDismiss={() => setFolderCreateError(null)}
-          testId={columnId ? `col-${columnId}-folder-create-error-${folderId}` : `folder-create-error-${folderId}`}
-          className="flex-wrap w-full"
-        />
+        {folderCreateError.status ? (
+          // A crew create under way, or where a background one went: a polite
+          // status in the info tone. Nothing failed and nothing is offered.
+          <StatusNotice
+            tone="info"
+            message={folderCreateError.message}
+            onDismiss={() => setFolderCreateError(null)}
+            testId={columnId ? `col-${columnId}-folder-crew-status-${folderId}` : `folder-crew-status-${folderId}`}
+            className="w-full !px-2 !py-1.5 text-[12px]"
+          />
+        ) : folderCreateError.localOffer ? (
+          // The folder's crew is offline: a state, not a failure, so the warn
+          // tone with nothing for an agent to diagnose. Its remedy sits inside
+          // the notice, under the text: start THIS chat on Local, with the
+          // options the click carried. The folder keeps its crew, so the next
+          // New chat asks the same question.
+          <StatusNotice
+            tone="warn"
+            message={folderCreateError.message}
+            onDismiss={() => setFolderCreateError(null)}
+            testId={columnId ? `col-${columnId}-folder-create-error-${folderId}` : `folder-create-error-${folderId}`}
+            className="w-full !px-2 !py-1.5 text-[12px]"
+            action={{
+              label: i18nT('pages.chatSidebar.folder_crew_offline_use_local'),
+              testId: `folder-create-error-local-${folderId}`,
+              onClick: () => {
+                const offer = folderCreateError.localOffer
+                setFolderCreateError(null)
+                createChatInFolder(folderId, { ...offer, local: true })
+              },
+            }}
+          />
+        ) : (
+          // inline variant with flex-wrap: the sidebar drawer is ~250px wide,
+          // and both stock single-row layouts squeeze the message to a sliver
+          // beside the Ask-agent / dismiss controls. Wrapping lets the message
+          // take the full line and the controls fold under it.
+          <ErrorNotice
+            message={folderCreateError.message}
+            title={folderCreateError.title}
+            report={folderCreateError.report}
+            variant="inline"
+            askAgent
+            onDismiss={() => setFolderCreateError(null)}
+            testId={columnId ? `col-${columnId}-folder-create-error-${folderId}` : `folder-create-error-${folderId}`}
+            className="flex-wrap w-full"
+          />
+        )}
         {/* Direct remedy for the stale-directory case: open Folder settings
          *  right here instead of describing a hover-only menu glyph. On its
          *  own line, never as a row peer of the notice's Ask-agent/dismiss

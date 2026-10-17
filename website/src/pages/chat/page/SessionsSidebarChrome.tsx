@@ -99,7 +99,7 @@ interface SessionsSidebarChromeProps {
   sidebarOpen: boolean
   flyoutSwitch: (key: string) => void
   flyoutNew: () => void
-  mobileNewSessionItem: { label: string; disabled: boolean; onSelect: () => void; }
+  mobileNewSessionItem: { label: string; disabled: boolean; onSelect: () => void; localInstead?: { label: string; onSelect: () => void } }
   topbarSessionsToggle: JSX.Element
 }
 

@@ -179,6 +179,11 @@ export interface SidebarScope {
   setHistoryFilter: SetState<string>
   hasRemoteExecutedRow: boolean
   warmCrews: { id: string; name: string }[]
+  /** Every registered crew and whether it is connected (Folder settings' Default crew). */
+  crewChoices: { id: string; name: string; online: boolean }[]
+  /** False while the crew list is pending or failed: `crewChoices` is then an
+   *  empty stand-in, not proof that a pinned crew was removed. */
+  crewChoicesLoaded: boolean
   collapsedHistoryGroups: Set<string>
   setCollapsedHistoryGroups: SetState<Set<string>>
   setFolderModal: SetState<FolderModalTarget | null>

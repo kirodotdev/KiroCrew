@@ -6937,7 +6937,16 @@
       "tags_loading_hint": "टैग लोड हो रहे हैं…",
       "tags_error_hint": "टैग लोड नहीं हो सके।",
       "tags_retry": "पुनः प्रयास करें",
-      "top_level": "सर्वोच्च स्तर"
+      "top_level": "सर्वोच्च स्तर",
+      "default_crew": "डिफ़ॉल्ट Crew",
+      "default_crew_hint": "इस फ़ोल्डर से शुरू की गई नई चैट इसी Crew पर चलती हैं। किसी मौजूदा चैट को यहाँ ले जाने पर वह वहीं चलती रहती है जहाँ चल रही है।",
+      "default_crew_offline_notice": "यह Crew ऑफ़लाइन है। इस फ़ोल्डर में नई चैट यह बताएगी और सिर्फ़ उसी एक चैट के लिए स्थानीय विकल्प देगी।",
+      "default_crew_not_registered_notice": "यह Crew अब पंजीकृत नहीं है। इस फ़ोल्डर में नई चैट यह बताएगी और सिर्फ़ उसी एक चैट के लिए स्थानीय विकल्प देगी। नई चैट फिर से किसी Crew पर शुरू करने के लिए कोई दूसरा Crew चुनो।",
+      "default_agent_hint_with_crew": "स्थानीय रूप से शुरू की गई नई चैट के लिए पहले से चुना गया। फ़ोल्डर के Crew पर चलने वाली चैट उसी Crew का अपना डिफ़ॉल्ट एजेंट इस्तेमाल करती है।",
+      "crew_local": "स्थानीय",
+      "crew_online": "{{name}} (ऑनलाइन)",
+      "crew_offline": "{{name}} (ऑफ़लाइन)",
+      "crew_not_registered": "{{id}} (पंजीकृत नहीं)"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "फ़ोल्डर सुझाव",
@@ -12778,7 +12787,13 @@
       "broadcast_col_result": "नतीजा",
       "broadcast_open_unknown": "पुष्टि नहीं · खोलो",
       "broadcast_delivery_hint": "चल रहा काम नहीं रुकता: चालू टर्न इसे मौजूदा टूल कॉल के बाद पढ़ता है; खाली सेशन नया टर्न शुरू करता है।",
-      "broadcast_retry": "{{n}} विफल फिर से भेजो"
+      "broadcast_retry": "{{n}} विफल फिर से भेजो",
+      "folder_crew_offline": "{{name}} ऑफ़लाइन है, इसलिए कोई चैट शुरू नहीं हुई। इस फ़ोल्डर की नई चैट उसी Crew पर चलती हैं।",
+      "folder_crew_offline_use_local": "इसके बजाय यह चैट स्थानीय रूप से शुरू करो",
+      "folder_crew_starting": "{{name}} पर चैट शुरू हो रही है…",
+      "folder_crew_started_background": "{{name}} पर एक चैट शुरू हुई। यह साइडबार में {{name}} के नीचे दिखती है।",
+      "folder_crew_not_registered": "{{name}} अब पंजीकृत Crew नहीं है, इसलिए कोई चैट शुरू नहीं हुई। फ़ोल्डर सेटिंग्स में कोई दूसरा Crew चुनो, या यह चैट स्थानीय रूप से शुरू करो।",
+      "folder_crew_new_on_local": "{{name}} में स्थानीय रूप से नई चैट"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",
