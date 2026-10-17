@@ -10,7 +10,7 @@
  * change is "the chip's appearance is decided by the backend, not by a regex".
  * So instead of mocking the component, this stubs `fetch` at the same seam the
  * real hook uses and answers with the same `X-Path-Kind` header the real
- * endpoint sends (see api_file_read in dashboard/handlers/files.py) — the chips
+ * endpoint sends (see api_file_read in dashboard/file_api/editor.py) — the chips
  * then classify themselves exactly as they do in production.
  *
  * Scene + theme come from the query string: ?scene=chips&theme=dark

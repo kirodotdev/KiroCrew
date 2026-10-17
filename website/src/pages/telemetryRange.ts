@@ -3,7 +3,7 @@
  * the query string both turn into.
  *
  * Pure functions only, so the arithmetic is tested without rendering the panel.
- * The backend (`resolve_window` in `dashboard/handlers/usage.py`) clamps whatever
+ * The backend (`resolve_window` in `dashboard/handlers/usage_store.py`) clamps whatever
  * arrives as a backstop; the custom range is also kept inside the ceiling here,
  * so the days a reader picks are the days that get measured.
  */
