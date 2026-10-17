@@ -686,13 +686,16 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(slot: '_ChatSlot', blocked_links: 'list[dict]', redactions: 'list[dict] | None' = None) -> 'dict | None'",
         ),
         ("_SEGMENT_RAW_MAX_CHARS", "value", "int"),
-        ("_accumulate_segment_raw", "function", "(slot: '_ChatSlot', text: 'str') -> 'None'"),
+        (
+            "_accumulate_segment_raw",
+            "function",
+            "(slot: '_ChatSlot', text: 'str', shown: 'str', removed: 'Iterable[tuple[str, str]]') -> 'None'",
+        ),
         (
             "_redact_segment",
             "function",
             "(slot: '_ChatSlot', text: 'str') -> 'tuple[str, list[dict], list[dict]]'",
         ),
-        ("_CREDENTIAL_TAG_RE", "value", "Pattern"),
         (
             "_redact_segment_text",
             "function",

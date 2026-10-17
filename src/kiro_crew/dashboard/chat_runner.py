@@ -16,6 +16,7 @@ import stat as stat_module  # noqa: F401
 import time
 import uuid
 import weakref
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import (  # noqa: F401
@@ -339,8 +340,10 @@ from kiro_crew.dashboard.chat_turn.segment_flush import (
     _append_command_reply,
     _cleared_segment_text,
     _flush_segment,
+    _redact_delta,
     _redact_segment,
     _reflow_label_and_audit,
+    _reset_segment_copy,
     _segment_row_meta,
 )
 from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
@@ -701,6 +704,8 @@ from kiro_crew.recovery.ladder import (
 from kiro_crew.repeat_loop import RepeatLoopTracker
 from kiro_crew.safety_override import safety_override  # noqa: F401
 from kiro_crew.security import (
+    EXFILTRATION_REDACTION_TAG_PREFIX,
+    REDACTED_CREDENTIAL_TAG,
     StreamRedactor,
     is_sensitive_path,
     oauth_url_contains_credential,
@@ -713,7 +718,6 @@ from kiro_crew.security import (
     sanitized_oauth_endpoint_display,
 )
 from kiro_crew.security.credential_sources import credential_records
-from kiro_crew.security.exfil import MAX_BLOCKED_LINKS_PER_MESSAGE
 from kiro_crew.security.readonly_bash import (
     command_invokes_git,
     is_read_only_bash,
@@ -4681,9 +4685,9 @@ async def _run_chat(
     # Rolling-buffer redactor for the live chat_chunk wire stream. Per-chunk
     # redaction misses a credential split across streaming boundaries;
     # this withholds the trailing credential-class run until it is confirmed safe
-    # so raw fragments never reach WS/SSE consumers. assistant_text (the source
-    # for the final _flush_segment redaction) is accumulated independently and is
-    # unaffected. Reset per segment via _flush_text_stream / _wsred.reset().
+    # so raw fragments never reach WS/SSE consumers. assistant_text and the
+    # slot's raw segment copy (what _flush_segment redacts as one text and
+    # saves) are accumulated independently and are unaffected. Reset per segment via _flush_text_stream / _wsred.reset().
     # Deliberately NOT an owner-view seam: this wire stream fans to every
     # connected dashboard client, owner or not, and the finalized text is
     # redacted before it is appended, so the owner's credential-redaction switch
@@ -4743,14 +4747,14 @@ async def _run_chat(
         # leaves it in ``assistant_text``, so a cancel landing after it (a late
         # Stop, the turn ceiling's task cancel) must not save it a second time.
         if turn.assistant_text and not turn._reply_flushed:
-            # Same glued-marker repair as _flush_segment: the interrupted body is
-            # the same accumulated text, and it is rendered by the same grammar.
-            body = _reflow_label_and_audit(slot, turn.assistant_text)
             slot.purge_chunks()
+            # Same glued-marker repair and whole-text redaction as
+            # _flush_segment (both inside _redact_segment): the interrupted body
+            # is the same accumulated text, rendered by the same grammar.
             # Records come out of the same pass for the reason _redact_segment
             # gives: after this line only the placeholder exists, so an
             # interrupted reply would otherwise lose what it explains for good.
-            _redacted, _blocked, _redactions = _redact_segment(slot, body)
+            _redacted, _blocked, _redactions = _redact_segment(slot, turn.assistant_text)
             _note_reply_row(
                 slot,
                 slot.append(
@@ -5412,7 +5416,7 @@ async def _run_chat(
     _turn_started = time.monotonic()
     # A credential in this turn's reply is traced only to this turn's tools.
     slot.credential_evidence.clear()
-    slot.segment_raw_text = ""
+    _reset_segment_copy(slot)
     slot.segment_message_id = ""
     # session_id -> {started, done, agent, task} for native kiro-cli subagents,
     # reconciled from `_kiro.dev/subagent/list_update` (one card per sub-agent).
@@ -8495,11 +8499,10 @@ async def _run_chat(
                 # would have granted can never apply. Every other pass still runs
                 # per delta; the live wire goes through `_wsred`, which never
                 # exempts; with the empty default prefix set nothing changes.
-                safe_chunk, _ = redact_exfiltration_urls(event.text)
-                safe_chunk, _ = redact_credentials(safe_chunk, defer_token_param=True)
+                safe_chunk, _removed = _redact_delta(event.text)
                 if event.message_id:
                     slot.segment_message_id = event.message_id
-                _accumulate_segment_raw(slot, event.text)
+                _accumulate_segment_raw(slot, event.text, safe_chunk, _removed)
                 turn.assistant_text += safe_chunk
                 if event.control_notice:
                     # A backend control notice that arrived as assistant text

@@ -54,6 +54,8 @@ class _ChatSlot:
         "_closing",
         "credential_evidence",
         "segment_raw_text",
+        "segment_shown_sha",
+        "segment_removed",
         "segment_message_id",
         "key",
         "title",
@@ -424,6 +426,8 @@ class _ChatSlot:
     _closing: int
     credential_evidence: CredentialEvidence
     segment_raw_text: str | None
+    segment_shown_sha: Any  # a ``hashlib.sha256()`` object
+    segment_removed: dict[str, str]
     segment_message_id: str
     _task: asyncio.Task[Any] | None
     _turn_admission_reserved: bool

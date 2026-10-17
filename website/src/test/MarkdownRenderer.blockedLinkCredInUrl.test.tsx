@@ -4,8 +4,10 @@ import MarkdownRenderer from '../components/MarkdownRenderer'
 import fixture from './fixtures/credInUrl.json'
 import { expectCardListsHostRecords } from './blockedLinkCardAsserts'
 
-// Backend output of TestBlockedLinkCardRecords._key_split_presigned_flush
-// (test/test_chat_runner_coverage.py), byte for byte: S3 presigned URLs split
+// A row saved by a build that stored each streamed delta's own redaction (the
+// deltas of TestBlockedLinkCardRecords._key_split_presigned_deltas in
+// test/test_chat_runner_coverage.py; the save now redacts the whole reply, but
+// rows like this stay in history): S3 presigned URLs split
 // at &X-Amz-Date (placeholders with no record of their own) plus same-host
 // URLs whose credential was redacted per delta (records with no placeholder in
 // the text). The counts can match; the card lists every record under its own

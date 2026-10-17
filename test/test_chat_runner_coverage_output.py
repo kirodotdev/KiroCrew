@@ -712,36 +712,50 @@ class TestFlushSegment:
 
         state, slot = _state(tmp_path), _slot()
         raw = "connect with postgresql://user:pass@host:5432/db now"
-        chat_runner._accumulate_segment_raw(slot, raw)
+        shown, removed = chat_runner._redact_delta(raw)
+        assert shown == redact_credentials(raw)[0]
+        chat_runner._accumulate_segment_raw(slot, raw, shown, removed)
 
-        chat_runner._flush_segment(state, slot, redact_credentials(raw)[0])
+        chat_runner._flush_segment(state, slot, shown)
 
         assert [r["rule"] for r in slot.messages[0]["meta"]["redactions"]] == ["url_userinfo"]
         assert slot.segment_raw_text == ""
 
     def test_a_disagreeing_raw_copy_is_not_trusted(self, tmp_path):
+        """A raw copy that is not the copy of the streamed text is neither saved
+        nor described: the flush fails closed."""
         state, slot = _state(tmp_path), _slot()
-        chat_runner._accumulate_segment_raw(slot, "other text postgresql://u:p@h/db")
+        raw = "other text postgresql://u:p@h/db"
+        chat_runner._accumulate_segment_raw(slot, raw, raw, ())
 
         chat_runner._flush_segment(state, slot, "plain text")
 
+        assert slot.messages[0]["content"] == chat_runner._SEGMENT_UNCHECKED_TEXT
         assert "redactions" not in (slot.messages[0].get("meta") or {})
 
-    def test_records_pair_by_placeholder_when_the_texts_differ_elsewhere(self, tmp_path):
-        """A transform or a delta cut elsewhere in the text must not cost the
-        records of placeholders both texts carry."""
+    def test_records_come_from_the_one_whole_text_pass(self, tmp_path):
+        """A delta cut through a link and a key: the saved row is the raw copy
+        redacted once, and its records describe the placeholders it holds."""
         from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
         state, slot = _state(tmp_path), _slot()
         url = "https://collector.example-sink.net/v1/ingest?d=" + "eyJhIjoiYiJ9" * 30
         key = "AKIA" + "5Q7XTR2M9LBC4WZN"
         raw = f"key {key} then [see]({url}) done."
-        chat_runner._accumulate_segment_raw(slot, raw)
-        streamed = redact_credentials(redact_exfiltration_urls(raw)[0])[0]
+        text = ""
+        for delta in (raw[:6], raw[6:60], raw[60:]):
+            safe, removed = chat_runner._redact_delta(delta)
+            assert (
+                safe
+                == redact_credentials(redact_exfiltration_urls(delta)[0], defer_token_param=True)[0]
+            )
+            chat_runner._accumulate_segment_raw(slot, delta, safe, removed)
+            text += safe
 
-        chat_runner._flush_segment(state, slot, streamed + "\n\nA reflowed tail.")
+        chat_runner._flush_segment(state, slot, text)
 
-        meta = slot.messages[0]["meta"]
+        content, meta = slot.messages[0]["content"], slot.messages[0]["meta"]
+        assert key[4:] not in content and "eyJ" not in content
         assert [r["domain"] for r in meta["blocked_links"]] == ["collector.example-sink.net"]
         assert [r["rule"] for r in meta["redactions"]] == ["aws_access_key_id"]
 
