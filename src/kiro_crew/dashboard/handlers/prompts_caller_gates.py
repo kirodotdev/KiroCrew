@@ -18,6 +18,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.slot_ownership import slot_not_found
 from kiro_crew.dashboard.state import DashboardState
 
 from ._shared import active_project_dir, requesting_slot_project
@@ -26,7 +27,6 @@ logger = logging.getLogger("kiro_crew.dashboard.handlers.prompts")
 
 
 _CODE_DASHBOARD_OWNER_REQUIRED = "dashboard_owner_required"
-_CODE_SLOT_NOT_FOUND = "slot_not_found"
 
 
 #: The literal the dashboard's browser client sends as ``X-Session-Key`` on every
@@ -148,7 +148,7 @@ def _deny_foreign_app_skill_slot(
         )
     except Exception:  # noqa: BLE001 — preserve the anti-enumeration response
         logger.debug("Could not audit denied app skill access", exc_info=True)
-    return web.json_response({"error": "not found", "code": _CODE_SLOT_NOT_FOUND}, status=404)
+    return slot_not_found()
 
 
 def _sel():
