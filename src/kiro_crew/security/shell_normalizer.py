@@ -1738,78 +1738,37 @@ def _heredoc_marker(raw: str) -> "str | None":
     return raw[3:] if raw.startswith("<<-") else raw[2:]
 
 
-def _xargs_here_string_rebuild(
-    verb: str, tokens: "list[str]", xargs_index: int, verb_index: int
-) -> "str | None":
-    """The command an xargs-launched verb runs when a here-string feeds it.
+def _xargs_here_string_feeds(tokens: "list[str]") -> bool:
+    """True when a HERE-STRING (``<<<``) appears anywhere in the command.
 
-    ``xargs ssh <<< localhost`` reaches ``ssh localhost``: bash removes the
-    ``<<< word`` pair from the command's argv and delivers the word on stdin,
-    and xargs turns stdin into ARGUMENTS for the program it launches --
-    appended after the verb's own args, or substituted for every ``-I``/``-i``
-    replacement token (round-35).  Every piece is in the source text, so the
-    caller can judge the rebuilt command exactly like a directly-typed one.
-    Returns ``None`` when no here-string feeds this simple command.  Tokens
-    are kept verbatim (quotes and mask sentinels intact) so the rebuilt text
-    walks the caller's own tokenizer unchanged.
+    An ``xargs`` turns its stdin into the ARGV of the program it launches, and a
+    here-string (``<<< word``) puts that stdin in the source text, so
+    ``xargs ssh <<< localhost`` reaches ``ssh localhost`` -- a self dial the
+    launcher assembles at run time.  WHICH record of the stdin reaches the verb
+    is decided by the shell's quoting and redirection provenance (an overriding
+    ``0<<<`` or a quoted ``<<<`` that is data, not a redirect), by xargs's own
+    record-splitting options (a delimiter, NUL input, a count, a size, a replace
+    marker), AND by where in the command the here-string, the ``xargs`` and the
+    verb sit relative to every separator and operator -- a glued ``x& xargs``, a
+    nested ``bash -c`` whose quote the tokenizer flattens, a ``find`` operand
+    that is or is not run.  That is more than a text check can model, and every
+    attempt to pin one shape down has left another shape open.  So the floor does
+    not model it: the caller refuses on the mere PRESENCE of a here-string
+    alongside an ``xargs`` and an ssh-family verb, WHATEVER the separators,
+    operators or position.  The destination is UNKNOWN; failing closed is the
+    only sound reading.  The accepted cost is a false DENIAL of a here-string-fed
+    ``xargs`` whose launched program is inert (``xargs echo ssh <<< -V``) or
+    whose ``xargs`` is a ``find`` operand -- never a false ALLOW.  This interim
+    tier is deleted whole when an OS-level network fence closes the residual.
+
+    PRESENCE is the ``<<<`` operator appearing as a SUBSTRING of any token, not
+    only as a token's prefix: bash breaks ``<<<`` off into its own word only when
+    the preceding word ends, so ``ssh<<<localhost`` and ``2<<<x`` arrive as one
+    glued token whose stdin is still a here-string, and an fd-prefixed ``0<<<``
+    carries one too.  A heredoc ``<<`` (two angle brackets) does not contain
+    ``<<<`` and is not matched.
     """
-    payload: "str | None" = None
-    consumed: "set[int]" = set()
-    # A redirection can sit anywhere in the simple command, including BEFORE
-    # the utility word (``<<< localhost xargs ssh``), so the scan covers the
-    # whole simple command: back to the token after the previous separator,
-    # forward to the next one.
-    start = xargs_index
-    while start > 0 and not _ends_argv(tokens[start - 1]):
-        start -= 1
-    for j in range(start, len(tokens)):
-        tok = tokens[j]
-        if _ends_argv(tok):
-            break
-        hs = _here_string_payload(tok)
-        if hs is None:
-            continue
-        if hs:
-            payload = hs
-            consumed = {j}
-        elif j + 1 < len(tokens) and not _ends_argv(tokens[j + 1]):
-            payload = tokens[j + 1]
-            consumed = {j, j + 1}
-        break
-    if payload is None:
-        return None
-    # xargs's own options decide HOW stdin becomes argv: an ``-I``/``-i``
-    # replacement token is swapped in wherever it appears among the verb's
-    # args; with none, the stdin words are APPENDED after them.
-    replstr: "str | None" = None
-    for k in range(xargs_index + 1, verb_index):
-        opt = tokens[k].strip("\"'")
-        if opt == "-I" and k + 1 < verb_index:
-            replstr = tokens[k + 1].strip("\"'")
-        elif opt.startswith("-I") and len(opt) > 2:
-            replstr = opt[2:]
-        elif opt in ("-i", "--replace"):
-            replstr = "{}"
-        elif opt.startswith("--replace="):
-            replstr = opt.split("=", 1)[1] or "{}"
-        elif opt.startswith("-i") and not opt.startswith("--") and len(opt) > 2:
-            replstr = opt[2:]
-    args: "list[str]" = []
-    for j in range(verb_index + 1, len(tokens)):
-        if j in consumed:
-            continue
-        tok = tokens[j]
-        if _ends_argv(tok):
-            break
-        args.append(tok)
-    if replstr is not None:
-        # xargs substitutes the replacement token ANYWHERE inside an argument
-        # (``ssh user@{}`` becomes ``ssh user@localhost``), so the rebuild
-        # replaces substrings, not only whole tokens.
-        args = [tok.replace(replstr, payload) if replstr in tok else tok for tok in args]
-    else:
-        args.append(payload)
-    return " ".join([verb, *args]).strip()
+    return any("<<<" in tok for tok in tokens)
 
 
 def _operand_span_end(run: list[str], idx: int, text: str) -> int:

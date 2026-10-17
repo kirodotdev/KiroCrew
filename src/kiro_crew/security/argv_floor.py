@@ -130,7 +130,7 @@ from .shell_normalizer import (
     _strip_redirect,
     _substitution_bodies,
     _substitution_depth_delta,
-    _xargs_here_string_rebuild,
+    _xargs_here_string_feeds,
 )
 from .vocabulary import _KILL_BY_NAME_PROGRAMS, _SELF_FILE_DELIVERY_VERBS, _SELF_NAME_RE
 
@@ -3226,15 +3226,29 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                 continue
             # round-35 (GPT): launched through xargs, the verb's REAL argv
             # arrives on stdin -- and a here-string puts that stdin in the
-            # source text, so ``xargs ssh <<< localhost`` runs
-            # ``ssh localhost``.  Rebuild that command and judge it like a
-            # directly-typed one; the rebuild drops the xargs word and the
-            # here-string pair, so the recursion walks strictly fewer tokens
-            # and terminates.
-            if xargs_prefix_index is not None and xargs_prefix_index < i:
-                rebuilt = _xargs_here_string_rebuild(verb, tokens, xargs_prefix_index, i)
-                if rebuilt is not None and _is_ssh_to_self(rebuilt):
-                    return True
+            # source text, so ``xargs ssh <<< localhost`` runs ``ssh localhost``.
+            # WHICH record of that stdin reaches the verb is decided by quoting,
+            # redirection provenance (an overriding ``0<<<``, a quoted ``<<<``
+            # that is data), xargs's own record-splitting options (a delimiter,
+            # NUL input, a count, a size, a replace marker), AND by where the
+            # here-string, the xargs and the verb sit relative to every separator
+            # and operator -- a glued ``x& xargs``, a flattened ``bash -c``, a
+            # ``find`` operand that is or is not run.  Each attempt to pin one
+            # shape down left another open, so this floor does not model it: a
+            # here-string anywhere in the command, alongside an xargs ahead of an
+            # ssh-family verb, fails closed on the mere PRESENCE of the
+            # here-string -- WHATEVER the separators, operators or position.  The
+            # accepted cost is a false DENIAL of an inert launched program
+            # (``xargs echo ssh <<< -V``) or a ``find``-operand xargs, never a
+            # false ALLOW.  (``xargs`` fed by a PIPE is not in the source text,
+            # so it is not judged here.)  This interim tier is deleted whole when
+            # an OS-level network fence closes the residual.
+            if (
+                xargs_prefix_index is not None
+                and xargs_prefix_index < i
+                and _xargs_here_string_feeds(tokens)
+            ):
+                return True
             # rsync execs a pending ``RSYNC_RSH`` / ``RSYNC_CONNECT_PROG``
             # value as its remote shell (or daemon proxy) FROM HERE, so a
             # value that opens a channel to this host is a self dial.
