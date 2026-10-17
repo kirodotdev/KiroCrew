@@ -627,15 +627,23 @@ def test_owners_keep_boot_path_imports_function_local() -> None:
 
 
 def test_the_seams_that_need_a_call_time_import_still_import_at_call_time() -> None:
-    """Tests patch ``kiro_crew.kiro_cli.installed_kiro_cli_version`` and the SDK
-    driver's permission helper at their source; that reaches the permission writer
-    only while it imports them when it runs."""
+    """Tests patch ``kiro_crew.kiro_cli``'s ``installed_kiro_cli_version`` and
+    ``resolve_kiro_cli``, the install probe's ``_kas_bundle_route``, the engine
+    bundle's ``installed_bundle`` and the SDK driver's permission helper at their
+    source; that reaches the permission writer and its gate only while they import
+    them when they run."""
     from kiro_crew.agent_materialization import auto_approve
 
-    src = inspect.getsource(auto_approve._write_derived_permissions)
-    assert "from kiro_crew.kiro_cli import" in src
-    assert "installed_kiro_cli_version" in src
-    assert "from kiro_crew.agent_sdk.drivers.acp import" in src
+    gate = inspect.getsource(auto_approve._spec_permissions_accepted)
+    assert "from kiro_crew.agent_sdk.backend_install import" in gate
+    accepts = inspect.getsource(auto_approve._kiro_cli_accepts_permissions)
+    assert "from kiro_crew.kiro_cli import" in accepts
+    assert "installed_kiro_cli_version" in accepts
+    assert "from kiro_crew.kiro_cli import kiro_cli_installed" in gate
+    engine = inspect.getsource(auto_approve._bundled_engine_accepts_permissions)
+    assert "from kiro_crew.agent_sdk import kas_bundle" in engine
+    writer = inspect.getsource(auto_approve._write_derived_permissions)
+    assert "from kiro_crew.agent_sdk.drivers.acp import" in writer
 
 
 def test_no_other_src_module_imports_an_owner() -> None:
