@@ -739,4 +739,45 @@ describe('SchedulePage failed-job error surface', () => {
 
     expect(await screen.findByText('12 files copied')).toBeInTheDocument()
   })
+
+  it('caps a failed job\'s error surface on the viewport, not a fixed 200px', async () => {
+    // Two properties, and the surface needs both. The cap has to be
+    // viewport-relative: the dialog is `max-h-[86vh]` with a scrolling body, so
+    // a fixed 200px box is the *smaller* of the two caps on every viewport tall
+    // enough to scroll. And the notice must not be a shrinking flex item: it is
+    // `overflow-y-auto`, so its automatic minimum size is 0 and the dialog
+    // body's flex column squeezes it to a one-line sliver -- the box that is
+    // meant to explain a failure collapses to the width of its own title.
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({
+      jobs: [mkJob({ command: 'backup.sh', last_status: 'error', last_error: 'disk full' })],
+    })
+
+    renderWithProviders(<SchedulePage />)
+    fireEvent.click(await screen.findByText('Nightly report'))
+
+    const surface = await screen.findByTestId('schedule-job-last-error')
+    expect(surface.className).toContain('max-h-[min(45vh,420px)]')
+    expect(surface.className).not.toContain('max-h-[200px]')
+    expect(surface.className).toContain('shrink-0')
+  })
+
+  it('caps a successful command job\'s output the same way', async () => {
+    // last_result carries the identical fixed cap and the identical failure
+    // mode: a long log is crushed behind an inner scrollbar, readable only by
+    // selecting it and copying out of the clipped box.
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({
+      jobs: [mkJob({ command: 'backup.sh', last_status: 'ok', last_result: '12 files copied' })],
+    })
+
+    renderWithProviders(<SchedulePage />)
+    fireEvent.click(await screen.findByText('Nightly report'))
+
+    const output = (await screen.findByText('12 files copied')).closest('pre')
+    expect(output).not.toBeNull()
+    expect(output?.className).toContain('max-h-[min(45vh,420px)]')
+    expect(output?.className).not.toContain('max-h-[200px]')
+  })
+
 })
