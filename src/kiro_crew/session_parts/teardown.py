@@ -245,11 +245,17 @@ async def cancel_current(
     key: str,
     *,
     wait_ack_timeout: float = 0.0,
+    owner_task: Any = None,
 ) -> CancelOutcome:
-    """Cancel the in-flight operation without destroying its session."""
+    """Cancel the in-flight operation without destroying its session.
+
+    *owner_task* fences the cancel to that task's own turn lease; see the
+    lifecycle boundary's ``cancel_current``.
+    """
     return await self._lifecycle_boundary().cancel_current(
         key,
         wait_ack_timeout=wait_ack_timeout,
+        owner_task=owner_task,
     )
 
 

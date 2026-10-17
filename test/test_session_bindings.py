@@ -182,7 +182,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "aws_profile_split_possible": ("function", False, "3780bd272b7a", "claims"),
     "batched_save": ("function", False, "08ba78a8a6e0", "links"),
     "begin_turn": ("function", False, "958babeb61c8", "claims"),
-    "cancel_current": ("function", True, "bb92c20b501c", "teardown"),
+    "cancel_current": ("function", True, "9859e2116ea5", "teardown"),
     "cancel_owned_turn": ("function", True, "86bfc9daa5fd", "teardown"),
     "cancel_queued": ("function", False, "50fe52427d8c", "claims"),
     "capability_runtime_view": ("function", False, "de139dca2f5d", "claims"),

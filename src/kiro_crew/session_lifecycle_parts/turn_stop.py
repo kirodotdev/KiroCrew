@@ -212,12 +212,24 @@ async def cancel_current(
     key: str,
     *,
     wait_ack_timeout: float = 0.0,
+    owner_task: Any = None,
 ) -> CancelOutcome:
-    """Cancel the in-flight operation without destroying its session."""
+    """Cancel the in-flight operation without destroying its session.
+
+    With *owner_task*, cancel only while that task still holds the session's
+    turn lease, and answer ``no_turn`` otherwise. A caller cleaning up its own
+    prompt passes itself: if a reset popped its session in the meantime, the
+    key may already hold a successor whose live turn belongs to another task,
+    and an unfenced cancel by key would interrupt that turn instead. Unlike
+    :meth:`cancel_owned_turn` this arms no replay, so a cancel that finds the
+    caller's own turn already finished leaves the next turn's context alone.
+    """
     owner = self._owner
     key = owner._fold_key(key)
     session = owner._sessions.get(key)
     if not session:
+        return "no_turn"
+    if owner_task is not None and session.turn_owner is not owner_task:
         return "no_turn"
     outcome = await session.provider.cancel(wait_ack_timeout=wait_ack_timeout)
     self._deps.logger.info("Cancelled in-flight operation for %s: %s", key, outcome)

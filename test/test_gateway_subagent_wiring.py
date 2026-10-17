@@ -95,7 +95,7 @@ class _Done:
         sessions.get_or_create = AsyncMock(side_effect=self._get_or_create)
         sessions.reset = AsyncMock(side_effect=lambda key: self.calls.append(("reset", key)))
         sessions.cancel_current = AsyncMock(
-            side_effect=lambda key: self.calls.append(("cancel", key))
+            side_effect=lambda key, **_kw: self.calls.append(("cancel", key))
         )
         sessions.release = MagicMock(side_effect=lambda key: self.calls.append(("release", key)))
         sessions.get_thread = MagicMock(return_value=None)
