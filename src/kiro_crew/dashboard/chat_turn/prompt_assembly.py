@@ -31,10 +31,11 @@ from kiro_crew.dashboard.chat_utils import (
     _CONN_RECOVER_MSG,
     _MANUAL_RESUME_MSG,
     _apply_incognito_prefix,
+    effective_session_key,
     user_text_span,
 )
 from kiro_crew.dashboard.handlers import _prompt_read_within_root
-from kiro_crew.dashboard.state import TURN_OPENING_INJECT_KINDS
+from kiro_crew.dashboard.state import TURN_OPENING_INJECT_KINDS, _note_authorized_elsewhere
 from kiro_crew.executors import (
     EmbedAdmissionTimeout,
     acquire_embed_admission,
@@ -86,6 +87,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.turn_context import (
         _detach_appended_context,
         _folder_steering_turn,
+        _merge_card_identity,
         _startup_query_prewarm_applies,
         drop_session_notes_out_of_reach,
         resolve_turn_transcript_identity,
@@ -745,6 +747,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 if preamble:
                     message = preamble + "\n\n" + message
                     turn.message = message
+                    turn._drained_prev_turn_cancelled = True
         # A turn that CONTINUES an interrupted one, on a session this turn
         # natively resumed (session/load). kiro-cli logs a prompt only once it
         # is answered, so the turn cut off by the process dying is missing
@@ -808,6 +811,17 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
         _turn_identity = await resolve_turn_transcript_identity(state, slot)
         # After the await, so a link gained while it waited is compared too.
         drop_session_notes_out_of_reach(state, slot)
+        # The plain context the slot still holds for this session is recorded
+        # first, so a raw-announce retry can hand it back; the turn's end puts
+        # merge cards back (``_restore_consumed_merge_contexts``) and the
+        # retry's own drain discards expired entries.
+        _live_session = effective_session_key(slot)
+        _drained_context: list[dict[str, Any]] = [
+            entry
+            for entry in slot._pending_context
+            if _merge_card_identity(entry) is None
+            and not _note_authorized_elsewhere(entry, _live_session)
+        ]
         _turn_context = take_turn_context(state, slot, transcript_identity=_turn_identity)
         _ctx_prefix = _turn_context.prefix
         turn._drained_merge_contexts = _turn_context.consumed
@@ -815,6 +829,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
         _message_without_merge_cards = _turn_context.prefix_without_cards + message
         turn._message_without_merge_cards = _message_without_merge_cards
         if _ctx_prefix:
+            turn._drained_pending_context = _drained_context
             message = _ctx_prefix + message
             turn.message = message
         # The message that started the Slack thread this session joined

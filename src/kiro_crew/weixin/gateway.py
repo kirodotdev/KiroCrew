@@ -79,6 +79,7 @@ async def maybe_start_weixin(orch: "GatewayOrchestrator") -> "WeixinClient | Non
             conv_log=getattr(orch, "conv_log", None),
             approval_mode=_resolve_approval_mode(orch),
         )
+        dispatcher.subagent_manager = getattr(orch, "subagent_mgr", None)
         dispatcher.client = client
         transport = WeixinTransport(
             client,

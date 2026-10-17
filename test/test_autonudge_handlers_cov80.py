@@ -794,6 +794,9 @@ async def test_monitor_stop_retains_authoritative_record(monkeypatch: pytest.Mon
     payload = _body(await h.api_monitor_stop(request))
     assert payload["monitor"]["id"] == "mon-1"
     stop.assert_awaited_once()
+    request.app["state"].subagents.release_completion_deliveries_for.assert_called_once_with(
+        f"dashboard:{loop.slot_key}"
+    )
 
 
 @pytest.mark.asyncio

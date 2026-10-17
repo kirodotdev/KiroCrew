@@ -1698,7 +1698,12 @@ class TestMergedQueueKeepsSourceChannelsApart:
         def _pop(index=0):
             return queue.pop(index)
 
-        return SimpleNamespace(_queue=queue, queue_pop=_pop)
+        def _pop_many(count):
+            taken = queue[:count]
+            del queue[:count]
+            return taken
+
+        return SimpleNamespace(_queue=queue, queue_pop=_pop, queue_pop_many=_pop_many)
 
     def test_a_channel_reply_and_a_dashboard_message_are_not_merged(self):
         from kiro_crew.dashboard.chat_utils_injected_rows import _dequeue_next_message
